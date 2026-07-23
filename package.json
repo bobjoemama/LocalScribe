@@ -1,0 +1,69 @@
+{
+  "name": "localscribe",
+  "productName": "LocalScribe",
+  "version": "0.1.0",
+  "description": "Private, local-first Whisper desktop dictation for macOS and Windows.",
+  "author": "Devesh",
+  "license": "UNLICENSED",
+  "main": ".vite/build/main.js",
+  "private": true,
+  "engines": {
+    "node": ">=24 <25",
+    "npm": ">=11 <12"
+  },
+  "scripts": {
+    "start": "electron-forge start",
+    "package": "electron-forge package",
+    "make": "electron-forge make",
+    "package:mac": "npm run worker:bundle && electron-forge package --platform=darwin --arch=arm64",
+    "make:mac": "npm run worker:bundle && electron-forge make --platform=darwin --arch=arm64",
+    "package:windows": "npm run worker:bundle:windows && npm run native:build:windows && electron-forge package --platform=win32 --arch=x64",
+    "make:windows": "npm run worker:bundle:windows && npm run native:build:windows && electron-forge make --platform=win32 --arch=x64",
+    "worker:sync": "UV_PROJECT_ENVIRONMENT=../.worker-venv uv sync --project worker --locked --no-dev --python 3.12.13",
+    "worker:bundle": "bash scripts/build-worker-runtime.sh",
+    "worker:bundle:windows": "powershell -ExecutionPolicy Bypass -File scripts/build-worker-runtime.ps1",
+    "worker:check-locks": "uv lock --check --project worker && uv lock --check --project worker/windows_transformers && uv lock --check --project tools/python-audit",
+    "worker:test:windows": "python -m unittest discover -s worker/windows_transformers/tests -v",
+    "native:build:windows": "powershell -NoProfile -ExecutionPolicy Bypass -File resources/native/windows/build.ps1",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:packaging": "vitest run tests/packageInventory.test.ts tests/buildSecurity.test.ts",
+    "test:watch": "vitest",
+    "audit:production": "npm audit --omit=dev --audit-level=high",
+    "audit:all": "npm audit --audit-level=high",
+    "audit:python": "node scripts/audit-python-deps.mjs",
+    "sbom": "npm sbom --sbom-format cyclonedx --omit=dev"
+  },
+  "dependencies": {
+    "better-sqlite3": "13.0.1",
+    "electron-squirrel-startup": "1.0.1",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "uiohook-napi": "1.5.5",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@electron-forge/cli": "7.11.2",
+    "@electron-forge/maker-dmg": "7.11.2",
+    "@electron-forge/maker-squirrel": "7.11.2",
+    "@electron-forge/maker-zip": "7.11.2",
+    "@electron-forge/plugin-auto-unpack-natives": "7.11.2",
+    "@electron-forge/plugin-fuses": "7.11.2",
+    "@electron-forge/plugin-vite": "7.11.2",
+    "@electron/fuses": "1.8.0",
+    "@electron/osx-sign": "1.3.3",
+    "@types/better-sqlite3": "7.6.13",
+    "@types/node": "24.10.1",
+    "@types/react": "19.2.7",
+    "@types/react-dom": "19.2.3",
+    "@vitejs/plugin-react": "6.0.3",
+    "electron": "43.2.0",
+    "typescript": "5.9.3",
+    "vite": "8.1.5",
+    "vitest": "4.1.0"
+  },
+  "overrides": {
+    "tar": "7.5.21",
+    "tmp": "0.2.7"
+  }
+}

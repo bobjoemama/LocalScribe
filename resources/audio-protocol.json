@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "container": "wav",
+  "encoding": "pcm_s16le",
+  "sampleRateHz": 16000,
+  "channels": 1,
+  "bitsPerSample": 16,
+  "maxDurationMs": 600000,
+  "maxFileBytes": 20971520
+}

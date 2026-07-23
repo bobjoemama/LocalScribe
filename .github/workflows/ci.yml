@@ -1,0 +1,169 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CI: "true"
+
+jobs:
+  macos-package:
+    name: macOS arm64 validation package
+    runs-on: macos-15
+    timeout-minutes: 90
+    steps:
+      - name: Check out source
+        uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+        with:
+          persist-credentials: false
+
+      - name: Use Node 24
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "24"
+          cache: npm
+
+      - name: Install pinned uv
+        uses: astral-sh/setup-uv@5a7eac68fb9809dea845d802897dc5c723910fa3 # v7.1.3
+        with:
+          version: "0.11.11"
+          enable-cache: true
+
+      - name: Install JavaScript dependencies
+        run: npm ci
+
+      - name: Verify dependencies and source
+        run: |
+          npm run audit:production
+          npm run audit:all
+          npm run worker:check-locks
+          npm run audit:python
+          npm run typecheck
+          npm test -- --reporter=dot
+
+      - name: Prove public release mode fails without credentials
+        env:
+          LOCALSCRIBE_RELEASE: "1"
+        run: |
+          if npx electron-forge package --platform=darwin --arch=arm64; then
+            echo "Public release unexpectedly succeeded without signing credentials." >&2
+            exit 1
+          fi
+
+      - name: Build unsigned validation DMG and ZIP
+        run: npm run make:mac
+
+      - name: Generate SBOM and checksums
+        run: |
+          npm run --silent sbom > out/localscribe-sbom.cdx.json
+          find out/make -type f \( -name '*.dmg' -o -name '*.zip' \) -print0 |
+            xargs -0 shasum -a 256 > out/SHA256SUMS.txt
+
+      - name: Upload unsigned validation artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: LocalScribe-macOS-UNSIGNED-VALIDATION
+          path: |
+            out/make/**/*.dmg
+            out/make/**/*.zip
+            out/localscribe-sbom.cdx.json
+            out/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 3
+
+  windows-package:
+    name: Windows x64 validation installer
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - name: Check out source
+        uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+        with:
+          persist-credentials: false
+
+      - name: Use Node 24
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "24"
+          cache: npm
+
+      - name: Install pinned uv
+        uses: astral-sh/setup-uv@5a7eac68fb9809dea845d802897dc5c723910fa3 # v7.1.3
+        with:
+          version: "0.11.11"
+          enable-cache: true
+
+      - name: Install JavaScript dependencies
+        run: npm ci
+
+      - name: Verify dependencies and source
+        run: |
+          npm run audit:production
+          npm run audit:all
+          npm run worker:check-locks
+          npm run audit:python
+          npm run typecheck
+          npm test -- --reporter=dot
+
+      - name: Build Windows faster-whisper runtime
+        run: npm run worker:bundle:windows
+
+      - name: Test Windows worker with bundled Python
+        shell: pwsh
+        run: |
+          & resources/python-runtime-windows/venv/Scripts/python.exe `
+            -m unittest discover -s worker/windows_transformers/tests -v
+
+      - name: Build and smoke Win32 helper
+        shell: pwsh
+        run: |
+          npm run native:build:windows
+          if (-not (Test-Path resources/native/windows/active-target.exe -PathType Leaf)) {
+            throw "Win32 helper was not built."
+          }
+          & resources/native/windows/active-target.exe clipboard-sequence
+          if ($LASTEXITCODE -ne 0) { throw "Win32 helper smoke failed." }
+
+      - name: Prove public release mode fails without credentials
+        shell: pwsh
+        env:
+          LOCALSCRIBE_RELEASE: "1"
+        run: |
+          npx electron-forge package --platform=win32 --arch=x64
+          if ($LASTEXITCODE -eq 0) {
+            throw "Public release unexpectedly succeeded without signing credentials."
+          }
+
+      - name: Build unsigned Squirrel validation installer
+        run: npx electron-forge make --platform=win32 --arch=x64
+
+      - name: Generate SBOM and checksums
+        shell: pwsh
+        run: |
+          npm run --silent sbom | Out-File -Encoding utf8 out/localscribe-sbom.cdx.json
+          Get-ChildItem out/make -Recurse -File |
+            Where-Object { $_.Extension -in @(".exe", ".nupkg") -or $_.Name -eq "RELEASES" } |
+            Get-FileHash -Algorithm SHA256 |
+            ForEach-Object { "$($_.Hash.ToLowerInvariant())  $($_.Path)" } |
+            Out-File -Encoding ascii out/SHA256SUMS.txt
+
+      - name: Upload unsigned validation artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: LocalScribe-Windows-UNSIGNED-VALIDATION
+          path: |
+            out/make/**/LocalScribe-Setup.exe
+            out/make/**/*.nupkg
+            out/make/**/RELEASES
+            out/localscribe-sbom.cdx.json
+            out/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 3

@@ -1,0 +1,18 @@
+* text=auto
+
+*.sh text eol=lf
+*.ps1 text eol=crlf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.json text eol=lf
+*.ts text eol=lf
+*.tsx text eol=lf
+*.py text eol=lf
+
+*.icns binary
+*.ico binary
+*.png binary
+*.dylib binary
+*.dll binary
+*.exe binary
+*.node binary

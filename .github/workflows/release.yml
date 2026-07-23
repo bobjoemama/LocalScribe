@@ -1,0 +1,209 @@
+name: Signed release artifacts
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CI: "true"
+
+jobs:
+  release-verify:
+    name: Verify immutable release source
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out exact release commit
+        uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+
+      - name: Use Node 24
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "24"
+          cache: npm
+
+      - name: Install pinned uv
+        uses: astral-sh/setup-uv@5a7eac68fb9809dea845d802897dc5c723910fa3 # v7.1.3
+        with:
+          version: "0.11.11"
+          enable-cache: true
+
+      - name: Require version-matched tag
+        shell: bash
+        run: |
+          release_version="$(node -p "require('./package.json').version")"
+          expected_ref="refs/tags/v${release_version}"
+          if [[ "$GITHUB_REF" != "$expected_ref" ]]; then
+            echo "Release workflow requires $expected_ref; received $GITHUB_REF." >&2
+            exit 1
+          fi
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Audit production JavaScript dependencies
+        run: npm run audit:production
+
+      - name: Audit the full JavaScript dependency graph
+        run: npm run audit:all
+
+      - name: Verify committed Python locks
+        run: npm run worker:check-locks
+
+      - name: Audit locked Python worker dependencies
+        run: npm run audit:python
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Run tests
+        run: npm test -- --reporter=dot
+
+  macos:
+    name: Signed and notarized macOS release
+    needs: release-verify
+    runs-on: macos-15
+    timeout-minutes: 120
+    environment: release
+    steps:
+      - name: Check out source
+        uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+
+      - name: Use Node 24
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "24"
+          cache: npm
+
+      - name: Install pinned uv
+        uses: astral-sh/setup-uv@5a7eac68fb9809dea845d802897dc5c723910fa3 # v7.1.3
+        with:
+          version: "0.11.11"
+          enable-cache: true
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Import Developer ID certificate
+        env:
+          MACOS_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        run: |
+          test -n "$MACOS_CERTIFICATE_P12_BASE64"
+          certificate_path="$RUNNER_TEMP/localscribe-release.p12"
+          keychain_path="$RUNNER_TEMP/localscribe-build.keychain-db"
+          printf '%s' "$MACOS_CERTIFICATE_P12_BASE64" | base64 --decode > "$certificate_path"
+          security create-keychain -p "$GITHUB_RUN_ID" "$keychain_path"
+          security set-keychain-settings -lut 21600 "$keychain_path"
+          security unlock-keychain -p "$GITHUB_RUN_ID" "$keychain_path"
+          security import "$certificate_path" -k "$keychain_path" -P "$MACOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$GITHUB_RUN_ID" "$keychain_path"
+          security list-keychains -d user -s "$keychain_path"
+          security find-identity -v -p codesigning "$keychain_path"
+
+      - name: Build signed and notarized DMG
+        env:
+          LOCALSCRIBE_RELEASE: "1"
+          LOCALSCRIBE_CODESIGN_IDENTITY: ${{ secrets.LOCALSCRIBE_CODESIGN_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: npm run make:mac
+
+      - name: Generate SBOM and checksums
+        run: |
+          npm run --silent sbom > out/localscribe-sbom.cdx.json
+          find out/make -type f \( -name '*.dmg' -o -name '*.zip' \) -print0 |
+            xargs -0 shasum -a 256 > out/SHA256SUMS.txt
+
+      - name: Upload signed release candidates
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: LocalScribe-macOS-SIGNED
+          path: |
+            out/make/**/*.dmg
+            out/make/**/*.zip
+            out/localscribe-sbom.cdx.json
+            out/SHA256SUMS.txt
+          if-no-files-found: error
+
+  windows:
+    name: Signed Windows Squirrel release
+    needs: release-verify
+    runs-on: windows-latest
+    timeout-minutes: 120
+    environment: release
+    steps:
+      - name: Check out source
+        uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+
+      - name: Use Node 24
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "24"
+          cache: npm
+
+      - name: Install pinned uv
+        uses: astral-sh/setup-uv@5a7eac68fb9809dea845d802897dc5c723910fa3 # v7.1.3
+        with:
+          version: "0.11.11"
+          enable-cache: true
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Materialize signing certificate
+        shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE_PFX_BASE64: ${{ secrets.WINDOWS_CERTIFICATE_PFX_BASE64 }}
+        run: |
+          if (-not $env:WINDOWS_CERTIFICATE_PFX_BASE64) {
+            throw "WINDOWS_CERTIFICATE_PFX_BASE64 is required."
+          }
+          $certificatePath = Join-Path $env:RUNNER_TEMP "localscribe-release.pfx"
+          [IO.File]::WriteAllBytes(
+            $certificatePath,
+            [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE_PFX_BASE64)
+          )
+          "WINDOWS_CERTIFICATE_FILE=$certificatePath" | Out-File `
+            -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Build signed Squirrel Setup.exe
+        env:
+          LOCALSCRIBE_RELEASE: "1"
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+          WINDOWS_TIMESTAMP_SERVER: ${{ secrets.WINDOWS_TIMESTAMP_SERVER }}
+        run: npm run make:windows
+
+      - name: Generate SBOM and checksums
+        shell: pwsh
+        run: |
+          npm run --silent sbom | Out-File -Encoding utf8 out/localscribe-sbom.cdx.json
+          Get-ChildItem out/make -Recurse -File |
+            Where-Object { $_.Extension -in @(".exe", ".nupkg") -or $_.Name -eq "RELEASES" } |
+            Get-FileHash -Algorithm SHA256 |
+            ForEach-Object { "$($_.Hash.ToLowerInvariant())  $($_.Path)" } |
+            Out-File -Encoding ascii out/SHA256SUMS.txt
+
+      - name: Upload signed release candidates
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: LocalScribe-Windows-SIGNED
+          path: |
+            out/make/**/LocalScribe-Setup.exe
+            out/make/**/*.nupkg
+            out/make/**/RELEASES
+            out/localscribe-sbom.cdx.json
+            out/SHA256SUMS.txt
+          if-no-files-found: error

@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "platform": "darwin-arm64",
+  "backend": "MLX Whisper",
+  "displayName": "Whisper large-v3 · MLX 4-bit",
+  "modelId": "mlx-community/whisper-large-v3-mlx-4bit",
+  "storageDirectory": "whisper-large-v3-mlx-4bit-d12b5d0",
+  "revision": "d12b5d0043a6fe0c59af321617fba041d4e8e0c8",
+  "license": "MIT",
+  "files": {
+    "config.json": {
+      "bytes": 342,
+      "sha256": "2169666f6066dc3cb5b97456b14d799d9846fc713cb0bbd98367834b95726ec1"
+    },
+    "weights.npz": {
+      "bytes": 973563040,
+      "sha256": "3bfa3c4e42344ea87a5b81a73992a867088ae076d377042e384b657adea81db9"
+    }
+  }
+}

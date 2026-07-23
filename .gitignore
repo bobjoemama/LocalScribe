@@ -1,0 +1,52 @@
+# JavaScript build and dependency output
+/node_modules/
+/.vite/
+/dist/
+/out/
+/artifacts/
+/coverage/
+/main.js
+*.tsbuildinfo
+
+# Python environments, caches, and generated bundled runtimes
+/.worker-venv/
+/.worker-venv-windows/
+/worker/.venv/
+/tools/python-audit/.venv/
+/audit-results/
+**/__pycache__/
+**/.pytest_cache/
+**/.mypy_cache/
+**/.ruff_cache/
+*.py[cod]
+/resources/python-runtime/*
+!/resources/python-runtime/.gitkeep
+/resources/python-runtime-windows/*
+!/resources/python-runtime-windows/.gitkeep
+/resources/native/macos/active-target
+/resources/native/windows/active-target.exe
+
+# Downloaded model artifacts never belong in source control or app installers
+/models/
+/resources/models/
+*.safetensors
+*.gguf
+*.bin
+
+# Local configuration, credentials, certificates, and signing material
+.env
+.env.*
+!.env.example
+*.key
+*.p12
+*.pfx
+*.mobileprovision
+secrets/
+.secrets/
+
+# Logs and operating-system/editor state
+*.log
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

@@ -1,0 +1,16 @@
+# macOS insertion helper
+
+This helper exposes only two read-only commands:
+
+- `active-target target` returns the frontmost process identity and a SHA-256 fingerprint of the focused window metadata. It uses Accessibility when available and otherwise falls back to the opaque Core Graphics window number. The window title itself never leaves the helper.
+- `active-target clipboard-sequence` returns `NSPasteboard.changeCount` so LocalScribe restores the clipboard only when no other process changed it.
+- `active-target control-monitor` polls the combined-session key-state table and emits only Control down/up, Control-Space, or generic modified-input events. It never emits key identities or typed content. This provides push-to-talk without granting Accessibility; Accessibility is still required for automatic paste injection.
+
+Build it during packaging, before Electron signing:
+
+```sh
+xcrun swiftc -O -target arm64-apple-macos13.0 resources/native/macos/active-target.swift \
+  -o resources/native/macos/active-target
+```
+
+The generated binary must be placed at `Contents/Resources/native/macos/active-target` and signed as nested code. `src/main/nativeHelperPath.ts` resolves this same helper for insertion and the Control monitor: it prefers the packaged signed binary, then the source-tree binary during development. Development may instead set `LOCALSCRIBE_NATIVE_INSERTION_HELPER` to an absolute compiled-helper path; that explicit override is shared by both consumers only when the main-process caller explicitly enables development overrides. Packaged callers never accept it and use the bundled signed helper.
