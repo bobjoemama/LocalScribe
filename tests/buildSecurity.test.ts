@@ -110,6 +110,10 @@ describe("release hardening configuration", () => {
     expect(ciWorkflow).toContain(
       '$releaseOutput -notmatch "Public release mode requires WINDOWS_CERTIFICATE_FILE"',
     );
+    expect(ciWorkflow).toContain(
+      'Write-Host "Public Windows release correctly failed closed without signing credentials."\n' +
+        "          exit 0",
+    );
   });
 
   it("does not emit source maps unless a private diagnostic build opts in", () => {

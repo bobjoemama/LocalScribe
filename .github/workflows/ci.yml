@@ -150,6 +150,7 @@ jobs:
             throw "Public release failed for an unexpected reason."
           }
           Write-Host "Public Windows release correctly failed closed without signing credentials."
+          exit 0
 
       - name: Build unsigned Squirrel validation installer
         run: npx electron-forge make --platform=win32 --arch=x64
