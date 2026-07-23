@@ -18,6 +18,7 @@ function Import-X64VisualCppEnvironment {
 
   $installationPath = (& $vswherePath `
     -latest `
+    -prerelease `
     -products * `
     -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
     -property installationPath | Select-Object -First 1)
@@ -52,7 +53,7 @@ if ($null -eq $compiler -or $env:VSCMD_ARG_TGT_ARCH -ne "x64") {
   $compiler = Get-Command "cl.exe" -ErrorAction SilentlyContinue
 }
 if ($null -eq $compiler) {
-  throw "cl.exe was not found. Install Visual Studio 2022 Build Tools with the Desktop development with C++ workload."
+  throw "cl.exe was not found. Install Visual Studio Build Tools 2022 or newer with the Desktop development with C++ workload."
 }
 
 $sourcePath = Join-Path $PSScriptRoot "active-target.cpp"

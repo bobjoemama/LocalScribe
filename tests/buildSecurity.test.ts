@@ -144,6 +144,7 @@ describe("release hardening configuration", () => {
     expect(windowsHelperBuild).toContain(
       '$OutputPath = Join-Path $PSScriptRoot "active-target.exe"',
     );
+    expect(windowsHelperBuild).toContain("-prerelease");
   });
 
   it("audits every exact worker package with a separately locked pip-audit", () => {
