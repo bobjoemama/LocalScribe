@@ -97,6 +97,7 @@ describe("release hardening configuration", () => {
 
   it("keeps public signing fail-closed while permitting clearly non-release local builds", () => {
     const forgeConfig = projectFile("forge.config.ts");
+    const ciWorkflow = projectFile(".github/workflows/ci.yml");
 
     expect(forgeConfig).toContain('process.env.LOCALSCRIBE_RELEASE === "1"');
     expect(forgeConfig).toContain('startsWith("Developer ID Application:")');
@@ -105,6 +106,10 @@ describe("release hardening configuration", () => {
     expect(forgeConfig).toContain('execFileSync("codesign", ["--verify"');
     expect(forgeConfig).toContain('execFileSync("spctl", ["--assess"');
     expect(forgeConfig).toContain("verifyAuthenticode");
+    expect(ciWorkflow).toContain('$releaseExitCode = $LASTEXITCODE');
+    expect(ciWorkflow).toContain(
+      '$releaseOutput -notmatch "Public release mode requires WINDOWS_CERTIFICATE_FILE"',
+    );
   });
 
   it("does not emit source maps unless a private diagnostic build opts in", () => {

@@ -137,10 +137,19 @@ jobs:
         env:
           LOCALSCRIBE_RELEASE: "1"
         run: |
-          npx electron-forge package --platform=win32 --arch=x64
-          if ($LASTEXITCODE -eq 0) {
+          $ErrorActionPreference = "Continue"
+          $releaseOutput = npx electron-forge package --platform=win32 --arch=x64 2>&1 |
+            Out-String
+          $releaseExitCode = $LASTEXITCODE
+          $ErrorActionPreference = "Stop"
+          if ($releaseExitCode -eq 0) {
             throw "Public release unexpectedly succeeded without signing credentials."
           }
+          if ($releaseOutput -notmatch "Public release mode requires WINDOWS_CERTIFICATE_FILE") {
+            Write-Error $releaseOutput
+            throw "Public release failed for an unexpected reason."
+          }
+          Write-Host "Public Windows release correctly failed closed without signing credentials."
 
       - name: Build unsigned Squirrel validation installer
         run: npx electron-forge make --platform=win32 --arch=x64
