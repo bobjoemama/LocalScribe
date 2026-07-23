@@ -18,6 +18,7 @@ describe("release hardening configuration", () => {
     const releaseWorkflow = projectFile(".github/workflows/release.yml");
 
     expect(packageJson.packageManager).toBe("npm@11.16.0");
+    expect(projectFile("package.json")).toContain('"@electron/rebuild": "4.2.0"');
     expect(packageJson.allowScripts).toEqual({
       "better-sqlite3@13.0.1": true,
       "electron-winstaller@5.4.4": true,

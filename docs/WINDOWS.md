@@ -86,11 +86,13 @@ HTTP server.
 
 ## Build on Windows
 
-Install Node 24, npm 11, `uv` 0.11.11, and Visual Studio 2022 C++ Build Tools.
-Then run:
+Install Node 24.18.0, npm 11.16.0, `uv` 0.11.11, and Visual Studio 2026
+Build Tools with the Desktop development with C++ workload. LocalScribe pins
+`@electron/rebuild` 4.2.0, which uses a node-gyp release that recognizes
+Visual Studio 2026. Then run:
 
 ```powershell
-npm ci
+npm ci --strict-allow-scripts
 npm run worker:check-locks
 npm run worker:bundle:windows
 npm run native:build:windows

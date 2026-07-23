@@ -16,7 +16,7 @@ Every release first passes this credential-free verification gate on the exact
 tagged commit:
 
 ```sh
-npm ci
+npm ci --strict-allow-scripts
 npm run audit:production
 npm run audit:all
 npm run worker:check-locks

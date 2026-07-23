@@ -114,9 +114,13 @@ npm run audit:all
 ```
 
 The Python audit uses a separately locked `pip-audit==2.10.1` toolchain under
-`tools/python-audit`. Both npm audits are required. The full build-tool audit is currently clean
-because compatible overrides pin patched `tar` and `tmp` releases; removing
-those overrides reopens known high/critical Forge-transitive findings.
+`tools/python-audit`. npm's dependency install scripts are denied by default
+unless their exact package version appears in `allowScripts`; CI makes any new
+unreviewed script a hard failure. Both npm audits are required. The full
+build-tool audit is currently clean because compatible overrides pin patched
+`tar` and `tmp` releases. The `@electron/rebuild` override uses its supported
+Node 24/Visual Studio 2026 toolchain. Removing these overrides reopens known
+security findings or breaks current Windows native builds.
 
 ### Build the macOS DMG
 
