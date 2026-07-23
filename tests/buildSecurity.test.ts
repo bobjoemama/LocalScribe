@@ -140,6 +140,19 @@ describe("release hardening configuration", () => {
       expect(buildScript).toContain("uv lock --check");
       expect(buildScript).not.toContain("uv pip install");
     }
+    expect(windowsBuild).toContain(
+      '"cpython-$PythonVersion-windows-x86_64-none"',
+    );
+    expect(windowsBuild.match(/FileAttributes\]::ReparsePoint/g)).toHaveLength(4);
+    expect(windowsBuild.match(/ForEach-Object \{ \$_\.Delete\(\) \}/g)).toHaveLength(2);
+    expect(
+      windowsBuild.match(
+        /\(\$_\.Attributes -band \[IO\.FileAttributes\]::ReparsePoint\) -ne 0\s*\}\s*\|\s*ForEach-Object \{ \$_\.Delete\(\) \}/gu,
+      ),
+    ).toHaveLength(2);
+    expect(windowsBuild).toContain(
+      "Relocatable runtime still contains non-portable reparse points",
+    );
   });
 
   it("resolves the Windows helper output only after PowerShell initializes the script path", () => {

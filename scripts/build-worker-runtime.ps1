@@ -18,8 +18,17 @@ if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
 }
 
 New-Item -ItemType Directory -Force -Path $RuntimeRoot | Out-Null
-Get-ChildItem -LiteralPath $RuntimeRoot -Force |
-  Where-Object { $_.Name -ne ".gitkeep" } |
+$ExistingRuntimeEntries = @(Get-ChildItem -LiteralPath $RuntimeRoot -Force |
+  Where-Object { $_.Name -ne ".gitkeep" })
+$ExistingRuntimeEntries |
+  Where-Object {
+    ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0
+  } |
+  ForEach-Object { $_.Delete() }
+$ExistingRuntimeEntries |
+  Where-Object {
+    ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0
+  } |
   Remove-Item -Recurse -Force
 
 uv lock --check --project $WorkerRoot
@@ -27,10 +36,11 @@ uv lock --check --project $WorkerRoot
 # Keep interpreter and package resolution deterministic. The committed lockfile
 # includes the artifact hashes consumed by `uv sync --locked` below.
 uv python install $PythonVersion --install-dir $RuntimeRoot --no-bin
-$Python = Get-ChildItem $RuntimeRoot -Recurse -Filter python.exe |
-  Where-Object { $_.FullName -notlike "*\venv\*" } |
-  Select-Object -First 1 -ExpandProperty FullName
-if (-not $Python) { throw "Bundled Python interpreter was not found." }
+$ManagedPythonRoot = Join-Path $RuntimeRoot "cpython-$PythonVersion-windows-x86_64-none"
+$Python = Join-Path $ManagedPythonRoot "python.exe"
+if (-not (Test-Path -LiteralPath $Python -PathType Leaf)) {
+  throw "Bundled Python interpreter was not found at the pinned install path."
+}
 
 uv venv --clear --relocatable --python $Python $VenvRoot
 $env:UV_PROJECT_ENVIRONMENT = $VenvRoot
@@ -41,6 +51,15 @@ uv sync `
   --no-editable `
   --link-mode copy `
   --python $Python
+
+# uv also creates convenience aliases such as
+# cpython-3.12-windows-x86_64-none. On Windows these are absolute reparse
+# points back to the build machine, so they must not enter the portable app.
+Get-ChildItem -LiteralPath $RuntimeRoot -Force |
+  Where-Object {
+    ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0
+  } |
+  ForEach-Object { $_.Delete() }
 
 # Remove wheel tests, bytecode/caches, activation scripts, and developer-only
 # console entrypoints before Forge copies this runtime into the installer.
@@ -78,5 +97,13 @@ Get-ChildItem -LiteralPath $VenvScripts -File -Force |
 $BundledPython = Join-Path $VenvScripts "python.exe"
 if (-not (Test-Path -LiteralPath $BundledPython -PathType Leaf)) {
   throw "Relocatable runtime is missing venv\Scripts\python.exe."
+}
+$RemainingReparsePoints = @(Get-ChildItem -LiteralPath $RuntimeRoot -Recurse -Force |
+  Where-Object {
+    ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0
+  })
+if ($RemainingReparsePoints.Count -ne 0) {
+  $Paths = ($RemainingReparsePoints | ForEach-Object { $_.FullName }) -join ", "
+  throw "Relocatable runtime still contains non-portable reparse points: $Paths"
 }
 & $BundledPython -B -c "import ctranslate2, faster_whisper, localscribe_windows_worker; print('Bundled Windows worker runtime is ready')"
