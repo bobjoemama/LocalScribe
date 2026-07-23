@@ -135,6 +135,7 @@ describe("release hardening configuration", () => {
 
   it("resolves the Windows helper output only after PowerShell initializes the script path", () => {
     const windowsHelperBuild = projectFile("resources/native/windows/build.ps1");
+    const windowsHelperSource = projectFile("resources/native/windows/active-target.cpp");
     const parameterBlock = windowsHelperBuild.slice(
       windowsHelperBuild.indexOf("param("),
       windowsHelperBuild.indexOf("$ErrorActionPreference"),
@@ -148,6 +149,12 @@ describe("release hardening configuration", () => {
     expect(windowsHelperBuild).toContain("VC\\Auxiliary\\Build\\vcvars64.bat");
     expect(windowsHelperBuild).not.toContain(
       "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
+    );
+    expect(windowsHelperSource.indexOf("#include <unknwn.h>")).toBeLessThan(
+      windowsHelperSource.indexOf("#include <uiautomation.h>"),
+    );
+    expect(windowsHelperSource.indexOf("#include <objbase.h>")).toBeLessThan(
+      windowsHelperSource.indexOf("#include <uiautomation.h>"),
     );
   });
 

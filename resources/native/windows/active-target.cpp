@@ -5,6 +5,8 @@
 #endif
 #include <windows.h>
 #include <bcrypt.h>
+#include <unknwn.h>
+#include <objbase.h>
 #include <uiautomation.h>
 
 #include <array>
