@@ -16,18 +16,27 @@ function Import-X64VisualCppEnvironment {
     return $false
   }
 
-  $installationPath = (& $vswherePath `
-    -latest `
+  $installationPaths = @(& $vswherePath `
+    -all `
     -prerelease `
     -products * `
-    -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
-    -property installationPath | Select-Object -First 1)
-  if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($installationPath)) {
+    -property installationPath)
+  if ($LASTEXITCODE -ne 0) {
     return $false
   }
 
-  $vcvarsPath = Join-Path $installationPath.Trim() "VC\Auxiliary\Build\vcvars64.bat"
-  if (-not (Test-Path -LiteralPath $vcvarsPath -PathType Leaf)) {
+  $vcvarsPath = $null
+  foreach ($installationPath in $installationPaths) {
+    if ([string]::IsNullOrWhiteSpace($installationPath)) {
+      continue
+    }
+    $candidate = Join-Path $installationPath.Trim() "VC\Auxiliary\Build\vcvars64.bat"
+    if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+      $vcvarsPath = $candidate
+      break
+    }
+  }
+  if ($null -eq $vcvarsPath) {
     return $false
   }
 

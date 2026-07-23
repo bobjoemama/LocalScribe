@@ -145,6 +145,10 @@ describe("release hardening configuration", () => {
       '$OutputPath = Join-Path $PSScriptRoot "active-target.exe"',
     );
     expect(windowsHelperBuild).toContain("-prerelease");
+    expect(windowsHelperBuild).toContain("VC\\Auxiliary\\Build\\vcvars64.bat");
+    expect(windowsHelperBuild).not.toContain(
+      "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
+    );
   });
 
   it("audits every exact worker package with a separately locked pip-audit", () => {
