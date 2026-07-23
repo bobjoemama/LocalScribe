@@ -28,7 +28,7 @@ describe("native platform bridge execution", () => {
       windowFingerprint: "c".repeat(64),
       focusedEditable: true,
     });
-    const bridge = new NativeExecutableInsertionBridge("/bin/echo");
+    const bridge = new NativeExecutableInsertionBridge(process.execPath);
 
     await expect(bridge.captureActiveTarget()).resolves.toMatchObject({
       platform: "win32",
@@ -36,7 +36,7 @@ describe("native platform bridge execution", () => {
       focusedEditable: true,
     });
     expect(mocks.execFile).toHaveBeenCalledWith(
-      "/bin/echo",
+      process.execPath,
       ["target"],
       expect.objectContaining({
         encoding: "utf8",
@@ -51,11 +51,11 @@ describe("native platform bridge execution", () => {
 
   it("passes no clipboard text or script to the native paste command", async () => {
     mocks.stdout = JSON.stringify({ injected: true });
-    const bridge = new NativeExecutableInsertionBridge("/bin/echo");
+    const bridge = new NativeExecutableInsertionBridge(process.execPath);
 
     await expect(bridge.paste()).resolves.toEqual({ status: "injected" });
     expect(mocks.execFile).toHaveBeenCalledWith(
-      "/bin/echo",
+      process.execPath,
       ["paste"],
       expect.objectContaining({ shell: false }),
       expect.any(Function),

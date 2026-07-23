@@ -1,3 +1,4 @@
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { parseControlMonitorLine } from "../src/main/hotkeys/macControlMonitor";
 import { resolveNativeActiveTargetHelperPath } from "../src/main/nativeHelperPath";
@@ -19,43 +20,58 @@ describe("macOS Control monitor protocol", () => {
 
 describe("native active-target helper resolution", () => {
   it("uses the explicit development override for both insertion and Control monitoring", () => {
+    const override = path.resolve("test-fixtures", "test-helper");
     expect(resolveNativeActiveTargetHelperPath({
       platform: "darwin",
-      environment: { LOCALSCRIBE_NATIVE_INSERTION_HELPER: "/tmp/test-helper" },
+      environment: { LOCALSCRIBE_NATIVE_INSERTION_HELPER: override },
       allowEnvironmentOverride: true,
-    })).toBe("/tmp/test-helper");
+    })).toBe(override);
   });
 
   it("never accepts an environment helper override for a packaged caller", () => {
-    const packaged = "/bundle/resources/native/macos/active-target";
+    const resourcesPath = path.resolve("test-fixtures", "bundle", "resources");
+    const workingDirectory = path.resolve("test-fixtures", "workspace");
+    const packaged = path.join(resourcesPath, "native", "macos", "active-target");
     expect(resolveNativeActiveTargetHelperPath({
       platform: "darwin",
-      environment: { LOCALSCRIBE_NATIVE_INSERTION_HELPER: "/tmp/untrusted-helper" },
+      environment: {
+        LOCALSCRIBE_NATIVE_INSERTION_HELPER: path.resolve("test-fixtures", "untrusted-helper"),
+      },
       allowEnvironmentOverride: false,
-      resourcesPath: "/bundle/resources",
-      workingDirectory: "/workspace",
+      resourcesPath,
+      workingDirectory,
       exists: (candidate) => candidate === packaged,
     })).toBe(packaged);
   });
 
   it("prefers the signed packaged helper before the source-tree copy", () => {
-    const packaged = "/bundle/resources/native/macos/active-target";
+    const resourcesPath = path.resolve("test-fixtures", "bundle", "resources");
+    const workingDirectory = path.resolve("test-fixtures", "workspace");
+    const packaged = path.join(resourcesPath, "native", "macos", "active-target");
     expect(resolveNativeActiveTargetHelperPath({
       platform: "darwin",
       environment: {},
-      resourcesPath: "/bundle/resources",
-      workingDirectory: "/workspace",
+      resourcesPath,
+      workingDirectory,
       exists: (candidate) => candidate === packaged,
     })).toBe(packaged);
   });
 
   it("uses the development helper only when no packaged helper exists", () => {
-    const development = "/workspace/resources/native/macos/active-target";
+    const resourcesPath = path.resolve("test-fixtures", "bundle", "resources");
+    const workingDirectory = path.resolve("test-fixtures", "workspace");
+    const development = path.join(
+      workingDirectory,
+      "resources",
+      "native",
+      "macos",
+      "active-target",
+    );
     expect(resolveNativeActiveTargetHelperPath({
       platform: "darwin",
       environment: {},
-      resourcesPath: "/bundle/resources",
-      workingDirectory: "/workspace",
+      resourcesPath,
+      workingDirectory,
       exists: (candidate) => candidate === development,
     })).toBe(development);
   });

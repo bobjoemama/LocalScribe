@@ -188,7 +188,15 @@ describe("HotkeyService capture and validation", () => {
       }),
       stop: vi.fn(),
     };
-    const service = new HotkeyService(onPress, onRelease, vi.fn(), monitor);
+    const service = new HotkeyService(
+      onPress,
+      onRelease,
+      vi.fn(),
+      monitor,
+      "Control",
+      "Control+Space",
+      "darwin",
+    );
 
     service.startFallback();
     expect(monitor.start).toHaveBeenCalledOnce();
