@@ -1,10 +1,14 @@
 [CmdletBinding()]
 param(
-  [string]$OutputPath = (Join-Path $PSScriptRoot "active-target.exe")
+  [string]$OutputPath
 )
 
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
+
+if ([string]::IsNullOrWhiteSpace($OutputPath)) {
+  $OutputPath = Join-Path $PSScriptRoot "active-target.exe"
+}
 
 function Import-X64VisualCppEnvironment {
   $vswherePath = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"

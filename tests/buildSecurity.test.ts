@@ -133,6 +133,19 @@ describe("release hardening configuration", () => {
     }
   });
 
+  it("resolves the Windows helper output only after PowerShell initializes the script path", () => {
+    const windowsHelperBuild = projectFile("resources/native/windows/build.ps1");
+    const parameterBlock = windowsHelperBuild.slice(
+      windowsHelperBuild.indexOf("param("),
+      windowsHelperBuild.indexOf("$ErrorActionPreference"),
+    );
+
+    expect(parameterBlock).not.toContain("$PSScriptRoot");
+    expect(windowsHelperBuild).toContain(
+      '$OutputPath = Join-Path $PSScriptRoot "active-target.exe"',
+    );
+  });
+
   it("audits every exact worker package with a separately locked pip-audit", () => {
     const packageJson = projectFile("package.json");
     const auditScript = projectFile("scripts/audit-python-deps.mjs");
