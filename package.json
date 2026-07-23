@@ -5,6 +5,7 @@
   "description": "Private, local-first Whisper desktop dictation for macOS and Windows.",
   "author": "Devesh",
   "license": "UNLICENSED",
+  "packageManager": "npm@11.16.0",
   "main": ".vite/build/main.js",
   "private": true,
   "engines": {
@@ -65,5 +66,13 @@
   "overrides": {
     "tar": "7.5.21",
     "tmp": "0.2.7"
+  },
+  "allowScripts": {
+    "better-sqlite3@13.0.1": true,
+    "electron-winstaller@5.4.4": true,
+    "fs-xattr@0.3.1": true,
+    "fsevents": false,
+    "macos-alias@0.2.12": true,
+    "uiohook-napi@1.5.5": true
   }
 }

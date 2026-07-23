@@ -9,6 +9,37 @@ function projectFile(relativePath: string): string {
 }
 
 describe("release hardening configuration", () => {
+  it("pins the clean-install toolchain and fail-closes unreviewed dependency scripts", () => {
+    const packageJson = JSON.parse(projectFile("package.json")) as {
+      packageManager?: string;
+      allowScripts?: Record<string, boolean>;
+    };
+    const ciWorkflow = projectFile(".github/workflows/ci.yml");
+    const releaseWorkflow = projectFile(".github/workflows/release.yml");
+
+    expect(packageJson.packageManager).toBe("npm@11.16.0");
+    expect(packageJson.allowScripts).toEqual({
+      "better-sqlite3@13.0.1": true,
+      "electron-winstaller@5.4.4": true,
+      "fs-xattr@0.3.1": true,
+      fsevents: false,
+      "macos-alias@0.2.12": true,
+      "uiohook-napi@1.5.5": true,
+    });
+    expect(ciWorkflow.match(/node-version: "24\.18\.0"/g)).toHaveLength(2);
+    expect(releaseWorkflow.match(/node-version: "24\.18\.0"/g)).toHaveLength(3);
+    expect(ciWorkflow.match(/npm ci --strict-allow-scripts/g)).toHaveLength(2);
+    expect(releaseWorkflow.match(/npm ci --strict-allow-scripts/g)).toHaveLength(3);
+    for (const workflow of [ciWorkflow, releaseWorkflow]) {
+      const actions = [...workflow.matchAll(/^\s*uses:\s*(\S+)/gmu)]
+        .map((match) => match[1]);
+      expect(actions.length).toBeGreaterThan(0);
+      for (const action of actions) {
+        expect(action).toMatch(/@[a-f0-9]{40}$/u);
+      }
+    }
+  });
+
   it("uses narrow macOS entitlements and strips Electron's unused permission declarations", () => {
     const mainEntitlements = projectFile("resources/entitlements.mac.plist");
     const helperEntitlements = projectFile("resources/entitlements.mac.helper.plist");

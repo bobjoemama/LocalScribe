@@ -97,14 +97,14 @@ CPU-only, AMD, Intel, DirectML, and Windows arm64 are not advertised. See
 
 Common requirements:
 
-- Node.js 24 and npm 11
+- Node.js 24.18.0 and npm 11.16.0 (see `.nvmrc` and `packageManager`)
 - `uv` 0.11.11
 - the committed `package-lock.json` and all three committed `uv.lock` files
 
 Install JavaScript dependencies and run source verification:
 
 ```sh
-npm ci
+npm ci --strict-allow-scripts
 npm run typecheck
 npm test
 npm run worker:check-locks
