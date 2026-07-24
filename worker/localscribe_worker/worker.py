@@ -179,6 +179,17 @@ TIER_SPECS = {
 if any(_catalog_selection(spec) != selection for selection, spec in TIER_SPECS.items()):
     raise RuntimeError("invalid_model_catalog")
 MANIFEST_FILENAMES = frozenset(spec.manifest_filename for spec in TIER_SPECS.values())
+MODEL_REQUEST_FIELDS = frozenset(
+    {
+        "type",
+        "id",
+        "tier",
+        "modelId",
+        "computeType",
+        "modelRoot",
+        "allowDownload",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -749,7 +760,7 @@ class MLXWhisperRuntime:
         except Exception as error:
             raise WorkerError(
                 "model_load_failed",
-                "Whisper large-v3 could not be loaded with MLX",
+                "The selected Whisper model could not be loaded with MLX",
             ) from error
         # mlx-whisper's public transcribe entrypoint owns this single-process
         # holder. Pre-populating it makes load_model an actual load boundary and
@@ -861,6 +872,61 @@ def _close_runtime(runtime: InferenceRuntime | None) -> None:
         pass
 
 
+def _parse_model_request(
+    message: dict[str, Any],
+    *,
+    operation: str,
+    platform_name: str,
+    machine_name: str,
+) -> tuple[TierSpec, ModelManifest, bool, Path]:
+    """Validate the fixed catalog selection shared by model operations."""
+    _strict_fields(message, MODEL_REQUEST_FIELDS)
+    if platform_name != "darwin" or machine_name != "arm64":
+        raise WorkerError(
+            "apple_silicon_only",
+            "MLX Whisper worker requires Apple silicon",
+        )
+    tier = _string_field(message, "tier", max_chars=16)
+    model_id = _string_field(message, "modelId", max_chars=200)
+    compute_type = _string_field(message, "computeType", max_chars=16)
+    selection = (model_id, tier, compute_type)
+    spec = TIER_SPECS.get(selection)
+    if spec is None:
+        raise WorkerError(
+            "model_not_allowed",
+            "modelId, tier, and computeType must match the model catalog",
+        )
+    allow_download = message.get("allowDownload")
+    if not isinstance(allow_download, bool):
+        raise WorkerError(
+            "allow_download_required",
+            f"{operation} must explicitly allow or forbid model download",
+        )
+    model_root_raw = _string_field(message, "modelRoot", max_chars=MAX_PATH_CHARS)
+    model_root = _bounded_absolute_directory(model_root_raw, create=True)
+    return spec, MODEL_MANIFESTS[selection], allow_download, model_root
+
+
+def _approved_installed_model_path(
+    local_model: Path,
+    model_root: Path,
+    manifest: ModelManifest,
+) -> Path:
+    expected_local_model = (model_root / manifest.storage_directory).resolve(
+        strict=False
+    )
+    if (
+        not isinstance(local_model, Path)
+        or not local_model.is_absolute()
+        or local_model.resolve(strict=False) != expected_local_model
+    ):
+        raise WorkerError(
+            "unsafe_model_path",
+            "model installer returned an unapproved path",
+        )
+    return local_model
+
+
 def run_worker(
     *,
     input_stream: BinaryIO,
@@ -921,55 +987,17 @@ def run_worker(
                 message_type = _string_field(message, "type", max_chars=64)
 
                 if message_type == "load_model":
-                    _strict_fields(
+                    spec, manifest, allow_download, model_root = _parse_model_request(
                         message,
-                        frozenset(
-                            {
-                                "type",
-                                "id",
-                                "tier",
-                                "modelId",
-                                "computeType",
-                                "modelRoot",
-                                "allowDownload",
-                            }
-                        ),
+                        operation="load_model",
+                        platform_name=platform_name,
+                        machine_name=machine_name,
                     )
-                    if platform_name != "darwin" or machine_name != "arm64":
+                    if allow_download:
                         raise WorkerError(
-                            "apple_silicon_only",
-                            "MLX Whisper worker requires Apple silicon",
+                            "allow_download_not_allowed",
+                            "load_model must set allowDownload to false",
                         )
-                    tier = _string_field(message, "tier", max_chars=16)
-                    model_id = _string_field(message, "modelId", max_chars=200)
-                    compute_type = _string_field(
-                        message,
-                        "computeType",
-                        max_chars=16,
-                    )
-                    selection = (model_id, tier, compute_type)
-                    spec = TIER_SPECS.get(selection)
-                    if spec is None:
-                        raise WorkerError(
-                            "model_not_allowed",
-                            "modelId, tier, and computeType must match the model catalog",
-                        )
-                    allow_download = message.get("allowDownload")
-                    if not isinstance(allow_download, bool):
-                        raise WorkerError(
-                            "allow_download_required",
-                            "load_model must explicitly allow or forbid model download",
-                        )
-                    model_root_raw = _string_field(
-                        message,
-                        "modelRoot",
-                        max_chars=MAX_PATH_CHARS,
-                    )
-                    model_root = _bounded_absolute_directory(
-                        model_root_raw,
-                        create=True,
-                    )
-                    manifest = MODEL_MANIFESTS[selection]
                     if (
                         runtime is not None
                         and active_spec == spec
@@ -1006,17 +1034,11 @@ def run_worker(
                         manifest,
                         allow_download,
                     )
-                    expected_local_model = (
-                        model_root / manifest.storage_directory
-                    ).resolve(strict=False)
-                    if (
-                        not local_model.is_absolute()
-                        or local_model.resolve(strict=False) != expected_local_model
-                    ):
-                        raise WorkerError(
-                            "unsafe_model_path",
-                            "model installer returned an unapproved path",
-                        )
+                    local_model = _approved_installed_model_path(
+                        local_model,
+                        model_root,
+                        manifest,
+                    )
                     runtime = runtime_factory(local_model, spec)
                     active_spec = spec
                     active_model_root = model_root
@@ -1029,6 +1051,46 @@ def run_worker(
                             "modelId": spec.model_id,
                             "computeType": spec.compute_type,
                             "loadMs": round((time.perf_counter() - started) * 1000),
+                        },
+                    )
+                elif message_type == "install_model":
+                    spec, manifest, allow_download, model_root = _parse_model_request(
+                        message,
+                        operation="install_model",
+                        platform_name=platform_name,
+                        machine_name=machine_name,
+                    )
+                    if not allow_download:
+                        raise WorkerError(
+                            "allow_download_required",
+                            "install_model must set allowDownload to true",
+                        )
+                    started = time.perf_counter()
+                    local_model = model_installer(model_root, manifest, True)
+                    local_model = _approved_installed_model_path(
+                        local_model,
+                        model_root,
+                        manifest,
+                    )
+                    if not _valid_model_directory(local_model, manifest):
+                        raise WorkerError(
+                            "model_checksum_failed",
+                            "installed model verification failed",
+                        )
+                    # Installation is storage-only.  In particular, it must not
+                    # construct a runtime or replace a currently dictating model;
+                    # only load_model changes the active runtime.
+                    _send(
+                        output_stream,
+                        {
+                            "type": "model_installed",
+                            "id": request_id,
+                            "tier": spec.tier,
+                            "modelId": spec.model_id,
+                            "computeType": spec.compute_type,
+                            "installMs": round(
+                                (time.perf_counter() - started) * 1000
+                            ),
                         },
                     )
                 elif message_type == "health":

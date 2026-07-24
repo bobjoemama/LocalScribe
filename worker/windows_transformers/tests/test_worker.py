@@ -76,8 +76,11 @@ class FakeNumpyModule:
 
 
 def request(message_type: str, **fields: Any) -> dict[str, Any]:
-    if message_type == "load_model":
+    if message_type == "install_model":
         fields.setdefault("allowDownload", True)
+    elif message_type == "load_model":
+        fields.setdefault("allowDownload", False)
+    if message_type in {"install_model", "load_model"}:
         fields.setdefault("tier", "medium")
         fields.setdefault("computeType", "int8_float16")
     return {"type": message_type, "id": str(uuid.uuid4()), **fields}
@@ -353,19 +356,19 @@ class WorkerProtocolTests(unittest.TestCase):
             self.assertTrue(runtimes[0].closed)
             self.assertTrue(runtimes[1].closed)
 
-    def test_rejects_installer_path_for_a_different_catalog_model(self) -> None:
+    def test_load_rejects_missing_different_catalog_model_without_installing(self) -> None:
         v2 = "Systran/faster-whisper-large-v2"
         with tempfile.TemporaryDirectory() as temporary:
             model_root = Path(temporary) / "models"
             model_root.mkdir()
-            v3_directory = write_installed_test_model(model_root, MODEL_ID)
+            write_installed_test_model(model_root, MODEL_ID)
             load = request("load_model", modelId=v2, modelRoot=str(model_root))
             messages, _errors, _exit_code = self.run_protocol(
                 encode_requests(load, request("shutdown")),
-                installer=lambda _path, _manifest: v3_directory,
+                installer=lambda *_args: self.fail("installer must not run"),
                 factory=lambda *_args: self.fail("factory must not run"),
             )
-            self.assertEqual(messages[1]["code"], "unsafe_model_path")
+            self.assertEqual(messages[1]["code"], "model_not_installed")
 
     def test_rejects_invalid_tier_compute_pairs_without_loading(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -523,6 +526,185 @@ class WorkerProtocolTests(unittest.TestCase):
             self.assertEqual(messages[2]["code"], "windows_only")
             self.assertEqual(errors.count("windows_only"), 2)
 
+    def test_installs_without_constructing_runtime_or_querying_cuda(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            model_root = Path(temporary) / "models"
+            model_root.mkdir()
+            installer_calls: list[tuple[Path, ModelManifest]] = []
+
+            def installer(path: Path, manifest: ModelManifest) -> Path:
+                installer_calls.append((path, manifest))
+                return write_installed_test_model(path, manifest.model_id)
+
+            install = request("install_model", modelId=MODEL_ID, modelRoot=str(model_root))
+            messages, errors, exit_code = self.run_protocol(
+                encode_requests(install, request("shutdown")),
+                installer=installer,
+                factory=lambda *_args: self.fail("runtime factory must not run"),
+                device_info_provider=lambda: self.fail("CUDA telemetry must not run"),
+            )
+
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(errors, "")
+            self.assertEqual(
+                {key: value for key, value in messages[1].items() if key != "installMs"},
+                {
+                    "type": "model_installed",
+                    "id": install["id"],
+                    "modelId": MODEL_ID,
+                    "tier": "medium",
+                    "computeType": "int8_float16",
+                },
+            )
+            self.assertIsInstance(messages[1]["installMs"], int)
+            self.assertEqual(
+                [(path, manifest.model_id) for path, manifest in installer_calls],
+                [(model_root.resolve(), MODEL_ID)],
+            )
+
+    def test_installs_each_catalog_model_with_its_exact_manifest(self) -> None:
+        v2 = "Systran/faster-whisper-large-v2"
+        with tempfile.TemporaryDirectory() as temporary:
+            model_root = Path(temporary) / "models"
+            model_root.mkdir()
+            routed: list[tuple[str, str, Path]] = []
+
+            def installer(path: Path, manifest: ModelManifest) -> Path:
+                routed.append((manifest.model_id, manifest.revision, path))
+                return write_installed_test_model(path, manifest.model_id)
+
+            installs = (
+                request("install_model", modelId=MODEL_ID, modelRoot=str(model_root)),
+                request("install_model", modelId=v2, modelRoot=str(model_root)),
+                request("shutdown"),
+            )
+            messages, errors, exit_code = self.run_protocol(
+                encode_requests(*installs),
+                installer=installer,
+                factory=lambda *_args: self.fail("runtime factory must not run"),
+                device_info_provider=lambda: self.fail("CUDA telemetry must not run"),
+            )
+
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(errors, "")
+            self.assertEqual(
+                [message["modelId"] for message in messages[1:3]],
+                [MODEL_ID, v2],
+            )
+            self.assertEqual(
+                [(model_id, revision) for model_id, revision, _path in routed],
+                [
+                    (MODEL_ID, "edaa852ec7e145841d8ffdb056a99866b5f0a478"),
+                    (v2, "f0fe81560cb8b68660e564f55dd99207059c092e"),
+                ],
+            )
+            self.assertTrue(all(path == model_root.resolve() for _id, _revision, path in routed))
+
+    def test_install_rejects_installer_path_for_a_different_catalog_model(self) -> None:
+        v2 = "Systran/faster-whisper-large-v2"
+        with tempfile.TemporaryDirectory() as temporary:
+            model_root = Path(temporary) / "models"
+            model_root.mkdir()
+            v3_directory = write_installed_test_model(model_root, MODEL_ID)
+            install = request("install_model", modelId=v2, modelRoot=str(model_root))
+            messages, _errors, _exit_code = self.run_protocol(
+                encode_requests(install, request("shutdown")),
+                installer=lambda _path, _manifest: v3_directory,
+                factory=lambda *_args: self.fail("runtime factory must not run"),
+            )
+
+            self.assertEqual(messages[1]["code"], "unsafe_model_path")
+
+    def test_install_rejects_mismatched_or_unapproved_requests_before_installing(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            installer_called = False
+
+            def installer(_path: Path, _manifest: ModelManifest) -> Path:
+                nonlocal installer_called
+                installer_called = True
+                return Path(temporary) / "must-not-run"
+
+            invalid_tier = request(
+                "install_model",
+                modelId=MODEL_ID,
+                modelRoot=temporary,
+                tier="high",
+                computeType="int8",
+            )
+            forbidden_download = request(
+                "install_model",
+                modelId=MODEL_ID,
+                modelRoot=temporary,
+                allowDownload=False,
+            )
+            unapproved = request(
+                "install_model",
+                modelId="other/model",
+                modelRoot=temporary,
+            )
+            messages, _errors, _exit_code = self.run_protocol(
+                encode_requests(
+                    invalid_tier,
+                    forbidden_download,
+                    unapproved,
+                    request("shutdown"),
+                ),
+                installer=installer,
+                factory=lambda *_args: self.fail("runtime factory must not run"),
+            )
+
+            self.assertEqual(
+                [message["code"] for message in messages[1:4]],
+                ["invalid_compute_type", "allow_download_required", "model_not_allowed"],
+            )
+            self.assertFalse(installer_called)
+
+    def test_install_requires_exact_fields_and_rejects_duplicate_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            missing_allow_download = request(
+                "install_model",
+                modelId=MODEL_ID,
+                modelRoot=temporary,
+            )
+            del missing_allow_download["allowDownload"]
+            extra_field = request(
+                "install_model",
+                modelId=MODEL_ID,
+                modelRoot=temporary,
+                unexpected=True,
+            )
+            request_id = str(uuid.uuid4())
+            duplicate = (
+                '{"type":"install_model","id":"'
+                + request_id
+                + '","modelId":"'
+                + MODEL_ID
+                + '","tier":"medium","computeType":"int8_float16","modelRoot":"'
+                + temporary.replace("\\", "\\\\")
+                + '","allowDownload":true,"allowDownload":true}\n'
+            ).encode("utf-8")
+            stream = io.BytesIO(
+                json.dumps(missing_allow_download).encode("utf-8")
+                + b"\n"
+                + json.dumps(extra_field).encode("utf-8")
+                + b"\n"
+                + duplicate
+                + json.dumps(request("shutdown")).encode("utf-8")
+                + b"\n"
+            )
+
+            messages, errors, exit_code = self.run_protocol(
+                stream,
+                installer=lambda *_args: self.fail("installer must not run"),
+            )
+
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(
+                [message["code"] for message in messages[1:4]],
+                ["invalid_request", "invalid_request", "invalid_json"],
+            )
+            self.assertNotIn("Traceback", errors)
+
     def test_rejects_unapproved_model(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             load = request("load_model", modelId="other/model", modelRoot=temporary)
@@ -566,6 +748,22 @@ class WorkerProtocolTests(unittest.TestCase):
             )
             self.assertEqual(messages[1]["code"], "model_not_installed")
             self.assertFalse(installer_called)
+
+    def test_load_rejects_download_permission_before_installer_or_runtime(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            load = request(
+                "load_model",
+                modelId=MODEL_ID,
+                modelRoot=temporary,
+                allowDownload=True,
+            )
+            messages, _errors, _exit_code = self.run_protocol(
+                encode_requests(load, request("shutdown")),
+                installer=lambda *_args: self.fail("installer must not run"),
+                factory=lambda *_args: self.fail("runtime factory must not run"),
+            )
+
+            self.assertEqual(messages[1]["code"], "allow_download_forbidden")
 
     def test_rejects_audio_outside_allowed_root_and_remains_healthy(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

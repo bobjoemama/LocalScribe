@@ -60,6 +60,17 @@ EXPECTED_MANIFEST_FIELDS = frozenset(
         "files",
     }
 )
+MODEL_OPERATION_FIELDS = frozenset(
+    {
+        "type",
+        "id",
+        "modelId",
+        "tier",
+        "computeType",
+        "modelRoot",
+        "allowDownload",
+    }
+)
 
 # faster-whisper accepts Whisper ISO 639-1 language codes. The name aliases
 # preserve LocalScribe's existing human-readable settings while keeping the
@@ -933,21 +944,65 @@ def run_worker(
                 request_id = _request_id(message)
                 message_type = _string_field(message, "type", max_chars=64)
 
-                if message_type == "load_model":
-                    _strict_fields(
+                if message_type == "install_model":
+                    _strict_fields(message, MODEL_OPERATION_FIELDS)
+                    if platform_name != "win32":
+                        raise WorkerError(
+                            "windows_only",
+                            "faster-whisper CUDA worker requires Windows",
+                        )
+                    model_id = _string_field(message, "modelId", max_chars=200)
+                    manifest = MODEL_MANIFESTS.get(model_id)
+                    if manifest is None:
+                        raise WorkerError("model_not_allowed", "requested model is not allowed")
+                    tier, compute_type = _validated_tier_compute_type(message)
+                    if message.get("allowDownload") is not True:
+                        raise WorkerError(
+                            "allow_download_required",
+                            "install_model requires allowDownload to be true",
+                        )
+                    model_root_raw = _string_field(
                         message,
-                        frozenset(
-                            {
-                                "type",
-                                "id",
-                                "modelId",
-                                "tier",
-                                "computeType",
-                                "modelRoot",
-                                "allowDownload",
-                            }
-                        ),
+                        "modelRoot",
+                        max_chars=MAX_PATH_CHARS,
                     )
+                    model_root = _bounded_absolute_directory(model_root_raw, create=True)
+
+                    # Installation is a deliberately separate boundary from
+                    # loading: it only stages, verifies, and activates the
+                    # pinned catalog artifact. Do not touch CUDA capability
+                    # checks or construct a CTranslate2 runtime here.
+                    started = time.perf_counter()
+                    local_model = model_installer(model_root, manifest)
+                    expected_local_model = (
+                        model_root / manifest.storage_directory
+                    ).resolve(strict=False)
+                    if (
+                        not local_model.is_absolute()
+                        or local_model.resolve(strict=False) != expected_local_model
+                    ):
+                        raise WorkerError(
+                            "unsafe_model_path",
+                            "model installer returned an unapproved path",
+                        )
+                    if not _valid_model_directory(local_model, manifest):
+                        raise WorkerError(
+                            "model_checksum_failed",
+                            "installed model verification failed",
+                        )
+                    _send(
+                        output_stream,
+                        {
+                            "type": "model_installed",
+                            "id": request_id,
+                            "modelId": model_id,
+                            "tier": tier,
+                            "computeType": compute_type,
+                            "installMs": round((time.perf_counter() - started) * 1000),
+                        },
+                    )
+                elif message_type == "load_model":
+                    _strict_fields(message, MODEL_OPERATION_FIELDS)
                     if platform_name != "win32":
                         raise WorkerError(
                             "windows_only",
@@ -959,10 +1014,10 @@ def run_worker(
                         raise WorkerError("model_not_allowed", "requested model is not allowed")
                     tier, compute_type = _validated_tier_compute_type(message)
                     allow_download = message.get("allowDownload")
-                    if not isinstance(allow_download, bool):
+                    if allow_download is not False:
                         raise WorkerError(
-                            "allow_download_required",
-                            "load_model must explicitly allow or forbid model download",
+                            "allow_download_forbidden",
+                            "load_model requires allowDownload to be false",
                         )
                     model_root_raw = _string_field(
                         message,
@@ -989,7 +1044,7 @@ def run_worker(
                             },
                         )
                         continue
-                    if not allow_download and not _valid_model_directory(
+                    if not _valid_model_directory(
                         model_root / manifest.storage_directory,
                         manifest,
                     ):

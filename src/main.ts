@@ -1114,22 +1114,13 @@ function registerIpc(): void {
     return runExclusiveModelOperation(async () => {
       assertModelSwitchAllowed();
       assertFamilyInLibrary(request.familyId);
-      if (session.state === "idle") await refreshModelResolution();
       const catalog = modelCatalog(request.familyId);
       const tier = catalog.tiers[request.tier];
-      const requestedResolution = resolveModelPerformance({
-        preference: request.tier,
-        catalog,
-        memory: memorySnapshot(),
-      });
-      assertResolutionFitsMemory(requestedResolution);
-      if (request.replaceExisting) {
-        // Repair intentionally does not delete the current artifact. The
-        // worker stages and verifies a replacement before it swaps an invalid
-        // directory, so an interrupted repair cannot discard the only copy.
-        await worker.shutdown();
-      }
-      await worker.ensureReady(workerSelection(tier), { allowDownload: true });
+      // Installation is a disk/network data operation, not model activation.
+      // It remains available when accelerator telemetry is missing or the
+      // requested tier cannot currently fit in memory. The worker stages and
+      // verifies repairs before promotion; do not delete the current artifact.
+      await worker.installModel(workerSelection(tier));
       return collectDiagnostics();
     });
   });

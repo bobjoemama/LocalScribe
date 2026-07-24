@@ -29,6 +29,16 @@ class FakeWorkerProcess extends EventEmitter {
       requests.push(request);
       queueMicrotask(() => {
         switch (request.type) {
+          case "install_model":
+            this.respond({
+              type: "model_installed",
+              id: request.id,
+              modelId: request.modelId,
+              tier: request.tier,
+              computeType: request.computeType,
+              installMs: 1,
+            });
+            break;
           case "load_model":
             this.respond({
               type: "model_ready",
@@ -141,8 +151,8 @@ describe("WorkerSupervisor model lifecycle", () => {
     const worker = supervisor();
 
     await Promise.all([
-      worker.ensureReady(medium, { allowDownload: false }),
-      worker.ensureReady(medium, { allowDownload: false }),
+      worker.ensureReady(medium),
+      worker.ensureReady(medium),
     ]);
 
     expect(requests.filter((request) => request.type === "load_model")).toHaveLength(1);
@@ -181,7 +191,7 @@ describe("WorkerSupervisor model lifecycle", () => {
     writeFileSync(path.join(executableDirectory, executable), "");
     const worker = new WorkerSupervisor("/worker", "/models", "/environment", runtimeRoot);
 
-    await worker.ensureReady(medium, { allowDownload: false });
+    await worker.ensureReady(medium);
 
     const spawnOptions = spawnMock.mock.calls[0]?.[2];
     expect(spawnOptions?.env).not.toHaveProperty("PATH");
@@ -197,7 +207,7 @@ describe("WorkerSupervisor model lifecycle", () => {
       language: "auto",
       context: "",
     });
-    const switched = worker.ensureReady(high, { allowDownload: false });
+    const switched = worker.ensureReady(high);
 
     await expect(transcription).resolves.toMatchObject({ text: "local result" });
     await expect(switched).resolves.toBeUndefined();
@@ -254,5 +264,57 @@ describe("WorkerSupervisor model lifecycle", () => {
     worker.abort("cancelled by test");
 
     await expect(transcription).rejects.toThrow("cancelled by test");
+  });
+
+  it("installs through the data-only protocol without loading a runtime", async () => {
+    const worker = supervisor();
+
+    await worker.installModel(medium);
+
+    expect(requests.map((request) => request.type)).toEqual(["install_model", "shutdown"]);
+    expect(requests).toContainEqual(expect.objectContaining({
+      type: "install_model",
+      modelId: medium.modelId,
+      tier: medium.tier,
+      computeType: medium.computeType,
+      modelRoot: "/models",
+      allowDownload: true,
+    }));
+    expect(requests.some((request) => request.type === "load_model")).toBe(false);
+    expect(spawnMock).toHaveBeenCalledOnce();
+  });
+
+  it("unloads an active runtime before a serialized installation", async () => {
+    const worker = supervisor();
+
+    await worker.ensureReady(medium);
+    await worker.installModel(high);
+
+    expect(requests.map((request) => request.type)).toEqual([
+      "load_model",
+      "shutdown",
+      "install_model",
+      "shutdown",
+    ]);
+    expect(requests.some((request) => (
+      request.type === "load_model" && request.modelId === high.modelId
+    ))).toBe(false);
+    expect(spawnMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps load_model download-disabled after an explicit install", async () => {
+    const worker = supervisor();
+
+    await worker.installModel(medium);
+    await worker.ensureReady(medium);
+
+    expect(requests.filter((request) => request.type === "load_model")).toEqual([
+      expect.objectContaining({
+        modelId: medium.modelId,
+        tier: medium.tier,
+        computeType: medium.computeType,
+        allowDownload: false,
+      }),
+    ]);
   });
 });

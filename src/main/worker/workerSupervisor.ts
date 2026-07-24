@@ -29,6 +29,15 @@ const modelReadyMessageSchema = z.object({
   loadMs: z.number().nonnegative(),
 }).strict();
 
+const modelInstalledMessageSchema = z.object({
+  type: z.literal("model_installed"),
+  id: z.string().uuid(),
+  tier: modelPerformanceTierSchema,
+  modelId: z.string().min(1).max(200),
+  computeType: computeTypeSchema,
+  installMs: z.number().nonnegative(),
+}).strict();
+
 const macDeviceInfoMessageSchema = z.object({
   type: z.literal("device_info"),
   id: z.string().uuid(),
@@ -58,6 +67,7 @@ const windowsDeviceInfoMessageSchema = z.object({
 const workerMessageSchema = z.union([
   helloMessageSchema,
   modelReadyMessageSchema,
+  modelInstalledMessageSchema,
   z.object({
     type: z.literal("health"),
     id: z.string().uuid(),
@@ -133,11 +143,49 @@ export class WorkerSupervisor {
     private readonly workerModule = "localscribe_worker",
   ) {}
 
-  ensureReady(
-    selection: WorkerModelSelection,
-    options: { allowDownload: boolean },
-  ): Promise<void> {
-    return this.serialize(() => this.ensureReadyUnlocked(selection, options));
+  ensureReady(selection: WorkerModelSelection): Promise<void> {
+    return this.serialize(() => this.ensureReadyUnlocked(selection));
+  }
+
+  /**
+   * Installs and verifies model data without constructing an inference
+   * runtime. A new worker process provides the unload boundary before an
+   * installation or repair, and is stopped again afterward so the next
+   * dictation must explicitly load its selected model.
+   */
+  installModel(selection: WorkerModelSelection): Promise<void> {
+    return this.serialize(async () => {
+      await this.stopProcessUnlocked();
+      try {
+        await this.ensureStarted();
+        const response = await this.request(
+          {
+            type: "install_model",
+            modelId: selection.modelId,
+            tier: selection.tier,
+            computeType: selection.computeType,
+            modelRoot: this.modelRoot,
+            allowDownload: true,
+          },
+          20 * 60_000,
+        );
+        const installed = modelInstalledMessageSchema.safeParse(response);
+        if (!installed.success) {
+          throw new Error(`Unexpected worker response: ${response.type}`);
+        }
+        if (
+          installed.data.modelId !== selection.modelId
+          || installed.data.tier !== selection.tier
+          || installed.data.computeType !== selection.computeType
+        ) {
+          throw new Error("ASR worker acknowledged installation for a model selection other than the validated catalog tier");
+        }
+      } finally {
+        // `install_model` is intentionally data-only. Stopping here also
+        // makes repair safe when the preceding process had a runtime loaded.
+        await this.stopProcessUnlocked();
+      }
+    });
   }
 
   transcribe(input: {
@@ -150,7 +198,7 @@ export class WorkerSupervisor {
     return this.serialize(async () => {
       // Dictation is deliberately incapable of downloading. Installation is
       // an explicit, separately validated main-process operation.
-      await this.ensureReadyUnlocked(input.model, { allowDownload: false });
+      await this.ensureReadyUnlocked(input.model);
       const response = await this.request(
         {
           type: "transcribe",
@@ -228,10 +276,7 @@ export class WorkerSupervisor {
     return result;
   }
 
-  private async ensureReadyUnlocked(
-    selection: WorkerModelSelection,
-    options: { allowDownload: boolean },
-  ): Promise<void> {
+  private async ensureReadyUnlocked(selection: WorkerModelSelection): Promise<void> {
     if (sameSelection(this.activeModel, selection)) return;
     if (this.activeModel) {
       // A fresh process is the narrowest cross-backend unload guarantee. It
@@ -248,12 +293,14 @@ export class WorkerSupervisor {
           tier: selection.tier,
           computeType: selection.computeType,
           modelRoot: this.modelRoot,
-          allowDownload: options.allowDownload,
+          // Normal inference must never fetch weights. Model data is only
+          // acquired through the explicit `install_model` operation above.
+          allowDownload: false,
         },
         20 * 60_000,
       );
     } catch (error) {
-      if (!options.allowDownload && error instanceof Error && error.message.includes("model_not_installed")) {
+      if (error instanceof Error && error.message.includes("model_not_installed")) {
         throw new Error(
           "Local speech model is not installed. Open LocalScribe Settings > Model & Performance to install it before dictating.",
         );

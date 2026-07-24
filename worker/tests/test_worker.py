@@ -48,7 +48,7 @@ def load_request(
     tier: str,
     model_root: Path,
     *,
-    allow_download: bool = True,
+    allow_download: bool = False,
     family: str = "v3",
     **overrides: Any,
 ) -> dict[str, Any]:
@@ -62,6 +62,26 @@ def load_request(
     }
     fields.update(overrides)
     return request("load_model", **fields)
+
+
+def install_request(
+    tier: str,
+    model_root: Path,
+    *,
+    allow_download: bool = True,
+    family: str = "v3",
+    **overrides: Any,
+) -> dict[str, Any]:
+    spec = tier_spec(tier, family=family)
+    fields: dict[str, Any] = {
+        "tier": tier,
+        "modelId": spec.model_id,
+        "computeType": spec.compute_type,
+        "modelRoot": str(model_root),
+        "allowDownload": allow_download,
+    }
+    fields.update(overrides)
+    return request("install_model", **fields)
 
 
 def encode_requests(*messages: dict[str, Any]) -> io.BytesIO:
@@ -165,7 +185,25 @@ class WorkerProtocolTests(unittest.TestCase):
             kwargs["runtime_factory"] = factory
         if hardware_probe is not None:
             kwargs["hardware_probe"] = hardware_probe
-        exit_code = run_worker(**kwargs)
+        if installer is None:
+            exit_code = run_worker(**kwargs)
+        else:
+            # Runtime-flow tests inject a lightweight installer rather than a
+            # real model archive. Exact file/hash verification is separately
+            # covered by ModelInstallationTests and install_model protocol tests.
+            actual_validation = worker_module._valid_model_directory
+
+            def model_is_available(path: Path, manifest: ModelManifest) -> bool:
+                if manifest.model_id == "example/whisper":
+                    return actual_validation(path, manifest)
+                return True
+
+            with patch.object(
+                worker_module,
+                "_valid_model_directory",
+                side_effect=model_is_available,
+            ):
+                exit_code = run_worker(**kwargs)
         return parse_output(output), errors.getvalue(), exit_code
 
     def test_hello_health_device_info_and_shutdown_without_loading(self) -> None:
@@ -266,7 +304,7 @@ class WorkerProtocolTests(unittest.TestCase):
 
             self.assertEqual(exit_code, 0)
             self.assertEqual(errors, "")
-            self.assertEqual(installer_calls, [("low", True), ("medium", True)])
+            self.assertEqual(installer_calls, [("low", False), ("medium", False)])
             self.assertEqual(
                 messages[1],
                 {
@@ -447,11 +485,16 @@ class WorkerProtocolTests(unittest.TestCase):
             self.assertTrue(runtimes[v3_low.model_id].closed)
             self.assertTrue(runtimes[v2_low.model_id].closed)
 
-    def test_requires_explicit_download_policy_and_forbids_implicit_download(self) -> None:
+    def test_load_model_requires_explicit_no_download_policy(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             model_root = Path(temporary)
             missing_policy = load_request("low", model_root)
             del missing_policy["allowDownload"]
+            requested_download = load_request(
+                "low",
+                model_root,
+                allow_download=True,
+            )
             no_download = load_request(
                 "low",
                 model_root,
@@ -459,12 +502,226 @@ class WorkerProtocolTests(unittest.TestCase):
             )
             shutdown = request("shutdown")
             messages, _errors, _exit_code = self.run_protocol(
-                encode_requests(missing_policy, no_download, shutdown),
-                installer=lambda *_args: self.fail("installer must not run"),
+                encode_requests(missing_policy, requested_download, no_download, shutdown),
                 factory=lambda *_args: self.fail("factory must not run"),
             )
             self.assertEqual(messages[1]["code"], "invalid_request")
-            self.assertEqual(messages[2]["code"], "model_not_installed")
+            self.assertEqual(messages[2]["code"], "allow_download_not_allowed")
+            self.assertEqual(messages[3]["code"], "model_not_installed")
+
+    def test_load_model_uses_preinstalled_verified_model_without_download(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            model_root = Path(temporary) / "models"
+            spec = tier_spec("low")
+            selection = (spec.model_id, spec.tier, spec.compute_type)
+            manifest = tiny_manifest()
+            write_tiny_model(model_root / manifest.storage_directory, manifest)
+            load = load_request("low", model_root, allow_download=False)
+            runtime = FakeRuntime()
+
+            with (
+                patch.dict(worker_module.MODEL_MANIFESTS, {selection: manifest}),
+                patch.object(worker_module, "ensure_model", wraps=ensure_model) as ensured,
+            ):
+                messages, errors, exit_code = self.run_protocol(
+                    encode_requests(load, request("shutdown")),
+                    factory=lambda _path, _spec: runtime,
+                )
+
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(errors, "")
+            ensured.assert_called_once_with(model_root.resolve(), manifest, False)
+            self.assertEqual(messages[1]["type"], "model_ready")
+            self.assertEqual(messages[1]["modelId"], spec.model_id)
+            self.assertTrue(runtime.closed)
+
+    def test_install_model_transactionally_verifies_without_constructing_runtime(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            model_root = Path(temporary) / "models"
+            spec = tier_spec("low")
+            selection = (spec.model_id, spec.tier, spec.compute_type)
+            manifest = tiny_manifest()
+            install = install_request("low", model_root)
+            health = request("health")
+            downloaded: list[dict[str, Any]] = []
+            runtime_factory_calls: list[tuple[Path, TierSpec]] = []
+
+            def downloader(**kwargs: Any) -> None:
+                downloaded.append(kwargs)
+                write_tiny_model(Path(kwargs["local_dir"]), manifest)
+
+            def transactional_ensure(
+                path: Path,
+                supplied_manifest: ModelManifest,
+                allow_download: bool,
+            ) -> Path:
+                return ensure_model(
+                    path,
+                    supplied_manifest,
+                    allow_download,
+                    snapshot_downloader=downloader,
+                )
+
+            def factory(path: Path, supplied_spec: TierSpec) -> FakeRuntime:
+                runtime_factory_calls.append((path, supplied_spec))
+                self.fail("install_model must not construct an inference runtime")
+
+            with (
+                patch.dict(worker_module.MODEL_MANIFESTS, {selection: manifest}),
+                patch.object(
+                    worker_module,
+                    "ensure_model",
+                    side_effect=transactional_ensure,
+                ) as ensured,
+            ):
+                messages, errors, exit_code = self.run_protocol(
+                    encode_requests(install, health, request("shutdown")),
+                    factory=factory,
+                )
+
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(errors, "")
+            ensured.assert_called_once_with(model_root.resolve(), manifest, True)
+            self.assertEqual(len(downloaded), 1)
+            self.assertEqual(
+                messages[1],
+                {
+                    "type": "model_installed",
+                    "id": install["id"],
+                    "tier": spec.tier,
+                    "modelId": spec.model_id,
+                    "computeType": spec.compute_type,
+                    "installMs": messages[1]["installMs"],
+                },
+            )
+            self.assertIsInstance(messages[1]["installMs"], int)
+            self.assertGreaterEqual(messages[1]["installMs"], 0)
+            self.assertEqual(messages[2], {"type": "health", "id": health["id"], "ready": False})
+            self.assertEqual(runtime_factory_calls, [])
+            self.assertTrue(
+                worker_module._valid_model_directory(
+                    model_root / manifest.storage_directory,
+                    manifest,
+                )
+            )
+
+    def test_install_model_rejects_missing_extra_disallowed_and_mismatched_fields(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            model_root = Path(temporary)
+            missing_policy = install_request("low", model_root)
+            del missing_policy["allowDownload"]
+            extra_field = install_request("low", model_root, unexpected=True)
+            disallowed_download = install_request(
+                "low",
+                model_root,
+                allow_download=False,
+            )
+            mismatched_selection = install_request(
+                "low",
+                model_root,
+                modelId=tier_spec("high").model_id,
+            )
+            messages, _errors, exit_code = self.run_protocol(
+                encode_requests(
+                    missing_policy,
+                    extra_field,
+                    disallowed_download,
+                    mismatched_selection,
+                    request("shutdown"),
+                ),
+                installer=lambda *_args: self.fail("invalid installs must not run"),
+                factory=lambda *_args: self.fail("invalid installs must not load"),
+            )
+
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(
+                [message["code"] for message in messages[1:5]],
+                [
+                    "invalid_request",
+                    "invalid_request",
+                    "allow_download_required",
+                    "model_not_allowed",
+                ],
+            )
+
+    def test_install_model_preserves_the_active_runtime(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            model_root = root / "models"
+            audio_root = root / "audio"
+            audio_root.mkdir()
+            audio_path = audio_root / "utterance.wav"
+            write_wav(audio_path)
+            active_spec = tier_spec("low")
+            install_spec = tier_spec("medium")
+            install_selection = (
+                install_spec.model_id,
+                install_spec.tier,
+                install_spec.compute_type,
+            )
+            install_manifest = tiny_manifest()
+            active_runtime = FakeRuntime("active")
+            factory_calls: list[TierSpec] = []
+            active_during_install: list[bool] = []
+
+            def downloader(**kwargs: Any) -> None:
+                write_tiny_model(Path(kwargs["local_dir"]), install_manifest)
+
+            def installer(
+                path: Path,
+                manifest: ModelManifest,
+                allow_download: bool,
+            ) -> Path:
+                if manifest is install_manifest:
+                    active_during_install.append(not active_runtime.closed)
+                    return ensure_model(
+                        path,
+                        manifest,
+                        allow_download,
+                        snapshot_downloader=downloader,
+                    )
+                installed = path / manifest.storage_directory
+                installed.mkdir(parents=True, exist_ok=True)
+                return installed
+
+            def factory(_path: Path, spec: TierSpec) -> FakeRuntime:
+                factory_calls.append(spec)
+                self.assertEqual(spec, active_spec)
+                return active_runtime
+
+            load = load_request("low", model_root)
+            install = install_request("medium", model_root)
+            health = request("health")
+            transcribe = request(
+                "transcribe",
+                audioPath=str(audio_path),
+                allowedRoot=str(audio_root),
+                language="auto",
+                context="",
+            )
+            with patch.dict(
+                worker_module.MODEL_MANIFESTS,
+                {install_selection: install_manifest},
+            ):
+                messages, errors, exit_code = self.run_protocol(
+                    encode_requests(load, install, health, transcribe, request("shutdown")),
+                    installer=installer,
+                    factory=factory,
+                )
+
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(errors, "")
+            self.assertEqual(factory_calls, [active_spec])
+            self.assertEqual(active_during_install, [True])
+            self.assertEqual(messages[2]["type"], "model_installed")
+            self.assertEqual(messages[2]["modelId"], install_spec.model_id)
+            self.assertEqual(messages[3], {"type": "health", "id": health["id"], "ready": True})
+            self.assertEqual(messages[4]["text"], "Hello from active.")
+            self.assertTrue(active_runtime.closed)
 
     def test_transcribe_rejects_symlink_and_outside_root(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

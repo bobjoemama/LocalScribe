@@ -165,7 +165,7 @@ describe("ModelPerformanceSettings", () => {
     expect(html).toContain("Add to library");
   });
 
-  it("shows the default Windows family and safe model action when memory telemetry is unavailable", () => {
+  it("permits the default Windows family data install when memory telemetry is unavailable", () => {
     const windowsCatalog = catalog({ platform: "win32-x64-cuda", sharedV3Artifact: true });
     const html = renderModelSettings({
       catalog: windowsCatalog,
@@ -189,7 +189,7 @@ describe("ModelPerformanceSettings", () => {
     expect(html).toContain("Whisper large-v3");
     expect(html).toContain("faster-whisper/CTranslate2 CUDA");
     expect(html).toContain("Run eligibility is unknown");
-    expect(html).toContain('aria-label="Download High profile for whisper-large-v3"');
+    expect(html).toContain('<button type="button" class="ls-small-button" aria-label="Download High profile for whisper-large-v3">Download</button>');
     expect(html).toContain("Shared artifact · managed from High");
     expect(html).not.toContain("Checking the local model catalog");
   });
