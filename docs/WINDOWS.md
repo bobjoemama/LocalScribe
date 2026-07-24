@@ -1,10 +1,11 @@
 # Windows x64 faster-whisper runtime
 
-LocalScribe’s Windows inference path uses
-`Systran/faster-whisper-large-v3` through faster-whisper and CTranslate2 CUDA.
-It is deliberately separate from the macOS MLX worker while preserving the same
-bounded NDJSON protocol, Electron UI, persistence model, and explicit model
-installation flow.
+LocalScribe’s Windows inference path uses the default
+`Systran/faster-whisper-large-v3` family, with
+`Systran/faster-whisper-large-v2` available as a curated user-addable family,
+through faster-whisper and CTranslate2 CUDA. It is deliberately separate from
+the macOS MLX worker while preserving the same bounded NDJSON protocol,
+Electron UI, persistence model, and explicit model-installation flow.
 
 ## Supported boundary
 
@@ -20,7 +21,8 @@ CPU-only, AMD, Intel, DirectML, Windows arm64, and Linux are not advertised.
 CTranslate2 makes the final compute-type capability check on the actual GPU and
 fails before loading an unsupported profile.
 
-The three user tiers share one immutable model artifact:
+For each Windows family, the three user tiers share one immutable model
+artifact:
 
 | Tier | CTranslate2 compute type | Estimated accelerator memory |
 | --- | --- | --- |
@@ -30,7 +32,8 @@ The three user tiers share one immutable model artifact:
 
 Those ranges are conservative estimates, not physical benchmark results. Auto
 uses current NVML total/free VRAM plus fixed headroom and hysteresis policy; it
-does not download a different Windows model.
+does not download a different Windows model. The four available choices are
+Auto, High, Medium, and Low; Auto is policy rather than a fourth artifact.
 
 ## Pinned worker and model
 
@@ -47,8 +50,12 @@ Important direct pins in its committed lock include:
 - cuDNN 9.25
 - pynvml 13.610.43
 
-The immutable model authority is
-[`resources/model-manifest/faster-whisper-large-v3.json`](../resources/model-manifest/faster-whisper-large-v3.json):
+The immutable model authorities are
+[`faster-whisper-large-v3.json`](../resources/model-manifest/faster-whisper-large-v3.json)
+and [`faster-whisper-large-v2.json`](../resources/model-manifest/faster-whisper-large-v2.json).
+Large-v3 is the default; large-v2 can be added through the curated library.
+The corresponding Systran manifest metadata says MIT for both Windows
+artifacts. For example, the default v3 authority is:
 
 ```text
 model:    Systran/faster-whisper-large-v3
@@ -60,7 +67,8 @@ license:  MIT
 Every listed file has an exact byte count and SHA-256 digest. The worker stages
 downloads, rejects symlinks and unexpected file types, verifies every required
 file, and atomically activates only the complete directory. Runtime loading is
-`local_files_only=True`.
+`local_files_only=True`. Weights are never bundled in the installer and only an
+explicit install action may download an approved, revision-pinned artifact.
 
 ## Narrow media and process boundary
 
@@ -82,7 +90,8 @@ Each `load_model` request must provide a mutually consistent allowlisted
 `tier`, `modelId`, and `computeType`. Downloads require an explicit
 `allowDownload: true`; normal dictation sends false. stdout is protocol-only,
 stderr is diagnostic, messages are bounded to 16 KiB, and there is no local
-HTTP server.
+HTTP server. The family/tier catalog is packaged: no plugin, arbitrary URL,
+arbitrary code, or custom model loader is accepted.
 
 ## Build on Windows
 

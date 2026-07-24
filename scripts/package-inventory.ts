@@ -47,9 +47,15 @@ const MAC_MANIFESTS = [
   "whisper-large-v3-mlx.json",
   "whisper-large-v3-mlx-8bit.json",
   "whisper-large-v3-mlx-4bit.json",
+  "whisper-large-v2-mlx.json",
+  "whisper-large-v2-mlx-8bit.json",
+  "whisper-large-v2-mlx-4bit.json",
 ] as const;
 
-const WINDOWS_MANIFESTS = ["faster-whisper-large-v3.json"] as const;
+const WINDOWS_MANIFESTS = [
+  "faster-whisper-large-v3.json",
+  "faster-whisper-large-v2.json",
+] as const;
 
 const FORBIDDEN_PATH_PATTERNS: readonly RegExp[] = [
   /(?:^|\/)(?:test|tests|__tests__)(?:\/|$)/i,

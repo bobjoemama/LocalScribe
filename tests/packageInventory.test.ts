@@ -1,4 +1,12 @@
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -126,17 +134,52 @@ describe("packaged dependency inventory", () => {
       "model-manifest/whisper-large-v3-mlx.json",
       "model-manifest/whisper-large-v3-mlx-8bit.json",
       "model-manifest/whisper-large-v3-mlx-4bit.json",
+      "model-manifest/whisper-large-v2-mlx.json",
+      "model-manifest/whisper-large-v2-mlx-8bit.json",
+      "model-manifest/whisper-large-v2-mlx-4bit.json",
     ]);
     expect(mac.workerDirectory).toBe("worker/localscribe_worker");
     expect(mac.runtimeDirectory).toBe("python-runtime");
     expect(mac.helperFiles).toEqual(["native/macos/active-target"]);
     expect(mac.brandingFiles).toEqual([]);
 
-    expect(windows.manifestFiles).toEqual(["model-manifest/faster-whisper-large-v3.json"]);
+    expect(windows.manifestFiles).toEqual([
+      "model-manifest/faster-whisper-large-v3.json",
+      "model-manifest/faster-whisper-large-v2.json",
+    ]);
     expect(windows.workerDirectory).toBe("worker/windows_transformers/localscribe_windows_worker");
     expect(windows.runtimeDirectory).toBe("python-runtime-windows");
     expect(windows.helperFiles).toEqual(["native/windows/active-target.exe"]);
     expect(windows.brandingFiles).toEqual(["branding/LocalScribe.ico"]);
+  });
+
+  it("keeps the source inventory and each platform allowlist to the exact curated manifests", () => {
+    const sourceManifests = readdirSync(path.resolve("resources/model-manifest"))
+      .filter((entry) => entry.endsWith(".json"))
+      .sort();
+
+    expect(sourceManifests).toEqual([
+      "faster-whisper-large-v2.json",
+      "faster-whisper-large-v3.json",
+      "whisper-large-v2-mlx-4bit.json",
+      "whisper-large-v2-mlx-8bit.json",
+      "whisper-large-v2-mlx.json",
+      "whisper-large-v3-mlx-4bit.json",
+      "whisper-large-v3-mlx-8bit.json",
+      "whisper-large-v3-mlx.json",
+    ]);
+    expect(resourcePolicyFor("darwin", "arm64").manifestFiles).toEqual([
+      "model-manifest/whisper-large-v3-mlx.json",
+      "model-manifest/whisper-large-v3-mlx-8bit.json",
+      "model-manifest/whisper-large-v3-mlx-4bit.json",
+      "model-manifest/whisper-large-v2-mlx.json",
+      "model-manifest/whisper-large-v2-mlx-8bit.json",
+      "model-manifest/whisper-large-v2-mlx-4bit.json",
+    ]);
+    expect(resourcePolicyFor("win32", "x64").manifestFiles).toEqual([
+      "model-manifest/faster-whisper-large-v3.json",
+      "model-manifest/faster-whisper-large-v2.json",
+    ]);
   });
 
   it("accepts a complete Mac allowlist and rejects Windows or development resources", () => {
@@ -148,15 +191,23 @@ describe("packaged dependency inventory", () => {
       "model-manifest/whisper-large-v3-mlx.json",
       "model-manifest/whisper-large-v3-mlx-8bit.json",
       "model-manifest/whisper-large-v3-mlx-4bit.json",
+      "model-manifest/whisper-large-v2-mlx.json",
+      "model-manifest/whisper-large-v2-mlx-8bit.json",
+      "model-manifest/whisper-large-v2-mlx-4bit.json",
     ];
     expect(() => assertPlatformResourceEntries(valid, "darwin", "arm64")).not.toThrow();
     expect(() =>
       assertPlatformResourceEntries(
-        [...valid, "worker/windows_transformers/tests/test_worker.py", "native/windows/build.ps1"],
+        [
+          ...valid,
+          "model-manifest/faster-whisper-large-v2.json",
+          "worker/windows_transformers/tests/test_worker.py",
+          "native/windows/build.ps1",
+        ],
         "darwin",
         "arm64",
       ),
-    ).toThrow(/opposite-platform/);
+    ).toThrow(/model-manifest inventory|opposite-platform/);
   });
 
   it("accepts a complete Windows allowlist and rejects missing helpers and source maps", () => {
@@ -166,6 +217,7 @@ describe("packaged dependency inventory", () => {
       "python-runtime-windows/venv/Scripts/python.exe",
       "native/windows/active-target.exe",
       "model-manifest/faster-whisper-large-v3.json",
+      "model-manifest/faster-whisper-large-v2.json",
       "branding/LocalScribe.ico",
     ];
     expect(() => assertPlatformResourceEntries(valid, "win32", "x64")).not.toThrow();
@@ -190,7 +242,11 @@ describe("packaged dependency inventory", () => {
       "model-manifest/whisper-large-v3-mlx.json",
       "model-manifest/whisper-large-v3-mlx-8bit.json",
       "model-manifest/whisper-large-v3-mlx-4bit.json",
+      "model-manifest/whisper-large-v2-mlx.json",
+      "model-manifest/whisper-large-v2-mlx-8bit.json",
+      "model-manifest/whisper-large-v2-mlx-4bit.json",
       "model-manifest/faster-whisper-large-v3.json",
+      "model-manifest/faster-whisper-large-v2.json",
       "native/macos/active-target",
       "native/macos/active-target.swift",
       "native/windows/active-target.exe",
@@ -208,9 +264,55 @@ describe("packaged dependency inventory", () => {
 
     expect(existsSync(path.join(resources, "worker", "windows_transformers"))).toBe(false);
     expect(existsSync(path.join(resources, "model-manifest", "faster-whisper-large-v3.json"))).toBe(false);
+    expect(existsSync(path.join(resources, "model-manifest", "faster-whisper-large-v2.json"))).toBe(false);
+    expect(readdirSync(path.join(resources, "model-manifest")).sort()).toEqual([
+      "whisper-large-v2-mlx-4bit.json",
+      "whisper-large-v2-mlx-8bit.json",
+      "whisper-large-v2-mlx.json",
+      "whisper-large-v3-mlx-4bit.json",
+      "whisper-large-v3-mlx-8bit.json",
+      "whisper-large-v3-mlx.json",
+    ]);
     expect(existsSync(path.join(resources, "native", "macos", "active-target.swift"))).toBe(false);
     expect(existsSync(path.join(resources, "native", "windows"))).toBe(false);
     expect(existsSync(path.join(resources, "python-runtime", "venv", "lib", "pkg", "tests"))).toBe(false);
     expect(existsSync(path.join(resources, "python-runtime-windows"))).toBe(false);
+  });
+
+  it("prunes every Mac manifest when preparing a Windows package", () => {
+    const resources = makeTemporaryProject();
+    const files = [
+      "worker/localscribe_worker/__init__.py",
+      "worker/localscribe_worker/__main__.py",
+      "worker/windows_transformers/localscribe_windows_worker/__init__.py",
+      "worker/windows_transformers/localscribe_windows_worker/__main__.py",
+      "model-manifest/whisper-large-v3-mlx.json",
+      "model-manifest/whisper-large-v3-mlx-8bit.json",
+      "model-manifest/whisper-large-v3-mlx-4bit.json",
+      "model-manifest/whisper-large-v2-mlx.json",
+      "model-manifest/whisper-large-v2-mlx-8bit.json",
+      "model-manifest/whisper-large-v2-mlx-4bit.json",
+      "model-manifest/faster-whisper-large-v3.json",
+      "model-manifest/faster-whisper-large-v2.json",
+      "native/macos/active-target",
+      "native/windows/active-target.exe",
+      "python-runtime/venv/bin/python3",
+      "python-runtime-windows/venv/Scripts/python.exe",
+      "branding/LocalScribe.ico",
+    ];
+    for (const file of files) {
+      mkdirSync(path.dirname(path.join(resources, file)), { recursive: true });
+      writeFileSync(path.join(resources, file), "fixture");
+    }
+
+    prunePackagedResources(resources, "win32", "x64");
+
+    expect(existsSync(path.join(resources, "worker", "localscribe_worker"))).toBe(false);
+    expect(existsSync(path.join(resources, "python-runtime"))).toBe(false);
+    expect(existsSync(path.join(resources, "native", "macos"))).toBe(false);
+    expect(readdirSync(path.join(resources, "model-manifest")).sort()).toEqual([
+      "faster-whisper-large-v2.json",
+      "faster-whisper-large-v3.json",
+    ]);
   });
 });

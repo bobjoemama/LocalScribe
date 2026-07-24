@@ -4,16 +4,25 @@
 
 Source implementation:
 
-- Apple Silicon: MLX Whisper large-v3 FP16, 8-bit, and 4-bit artifacts
-- Windows x64 NVIDIA: one faster-whisper/CTranslate2 large-v3 artifact with
+- Apple Silicon: fixed MLX Whisper engine, with default large-v3 and curated
+  addable large-v2 FP16, 8-bit, and 4-bit artifacts
+- Windows x64 NVIDIA: fixed faster-whisper/CTranslate2 CUDA engine, with one
+  shared artifact per family—default large-v3 and curated addable large-v2—and
   `float16`, `int8_float16`, and `int8` profiles
 - exactly Auto, High, Medium, and Low user modes
 - deterministic, main-owned Auto resolution with worker-side allowlist checks
 - revision-, size-, and SHA-256-pinned model installation
 - no implicit model download during dictation
+- no plugins, arbitrary URLs/code, or custom model loaders
 
-Remaining product evidence: real large-v3 accuracy/latency/memory benchmarks for
-all Mac tiers and all Windows compute profiles.
+Whisper large-v3 remains the default family; large-v2 is curated and can be
+added locally. Model weights are not bundled. Turbo is not enabled: enabling it
+requires a complete, validated three-tier Mac contract, including pinned MLX
+artifacts, installation verification, resource evidence, and real-device
+coverage. See [MODEL_CATALOG.md](MODEL_CATALOG.md).
+
+Remaining product evidence: real accuracy/latency/memory benchmarks for every
+supported family, all Mac tiers, and all Windows compute profiles.
 
 ## 2. Desktop workflow
 

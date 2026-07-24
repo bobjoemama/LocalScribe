@@ -11,13 +11,21 @@ inference engines are deliberately platform-specific:
 
 | Platform | Backend | Physical model artifacts |
 | --- | --- | --- |
-| macOS arm64 | MLX Whisper | Whisper large-v3 FP16, 8-bit, and 4-bit manifests |
-| Windows x64 | faster-whisper / CTranslate2 CUDA | One verified Whisper large-v3 artifact with trusted FP16, INT8-FP16, and INT8 compute profiles |
+| macOS arm64 | MLX Whisper | Separate large-v3 and curated-addable large-v2 FP16, 8-bit, and 4-bit artifacts |
+| Windows x64 | faster-whisper / CTranslate2 CUDA | One shared artifact per family—large-v3 by default, curated-addable large-v2—with trusted `float16`, `int8_float16`, and `int8` compute profiles |
 
 Model weights are not embedded in the installer. An explicit install action
 downloads the selected, revision-pinned files to a staging directory and
 activates them only after full size and SHA-256 verification. Dictation never
 turns a missing model into an implicit download.
+
+Whisper large-v3 is the default family. Whisper large-v2 is a curated family
+that a user may add to the local library; it is not a plugin mechanism. The
+packaged catalog fixes the platform engine, exact family/tier profiles,
+repository IDs, revisions, and expected hashes. It accepts no arbitrary URLs,
+code, custom loaders, or unreviewed model families. See
+[docs/MODEL_CATALOG.md](docs/MODEL_CATALOG.md) for the complete catalog,
+license boundary, and Turbo status.
 
 ## Performance modes
 
@@ -76,7 +84,7 @@ build.
 
 - Apple Silicon (`arm64`)
 - macOS 14 or newer
-- enough free disk for the selected Whisper large-v3 artifact and its staging
+- enough free disk for the selected Whisper family artifact and its staging
   copy during installation
 - Microphone permission; Accessibility permission for global hold/paste
 
@@ -88,7 +96,7 @@ Intel Macs and Linux are not packaged.
 - NVIDIA GPU supported by the pinned CTranslate2/CUDA runtime
 - current NVIDIA driver
 - sufficient free VRAM and disk for the selected compute profile and the
-  verified large-v3 install transaction
+  verified selected-family install transaction
 
 CPU-only, AMD, Intel, DirectML, and Windows arm64 are not advertised. See
 [docs/WINDOWS.md](docs/WINDOWS.md) for the exact evidence boundary.
@@ -164,7 +172,7 @@ The macOS app may contain only:
 - `worker/localscribe_worker`
 - `python-runtime`
 - `native/macos/active-target`
-- the three MLX model manifests
+- exactly six MLX model manifests: three large-v3 and three large-v2
 
 The Windows app may contain only:
 
@@ -172,7 +180,8 @@ The Windows app may contain only:
 - `python-runtime-windows`
 - `native/windows/active-target.exe`
 - `branding/LocalScribe.ico`
-- `faster-whisper-large-v3.json`
+- exactly two faster-whisper manifests: `faster-whisper-large-v3.json` and
+  `faster-whisper-large-v2.json`
 
 The gate rejects missing helpers/runtimes, opposite-platform payloads,
 unapproved manifests, tests, source maps, caches, lock/build files, environment

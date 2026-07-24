@@ -10,21 +10,34 @@ import uuid
 from pathlib import Path
 
 
-MACOS_TIER_MANIFESTS = {
-    "high": ("whisper-large-v3-mlx.json", "float16"),
-    "medium": ("whisper-large-v3-mlx-8bit.json", "int8"),
-    "low": ("whisper-large-v3-mlx-4bit.json", "int4"),
+MACOS_FAMILY_TIER_MANIFESTS = {
+    "whisper-large-v3": {
+        "high": ("whisper-large-v3-mlx.json", "float16"),
+        "medium": ("whisper-large-v3-mlx-8bit.json", "int8"),
+        "low": ("whisper-large-v3-mlx-4bit.json", "int4"),
+    },
+    "whisper-large-v2": {
+        "high": ("whisper-large-v2-mlx.json", "float16"),
+        "medium": ("whisper-large-v2-mlx-8bit.json", "int8"),
+        "low": ("whisper-large-v2-mlx-4bit.json", "int4"),
+    },
 }
 
 
-def load_model_id(manifest_path: Path) -> str:
+def load_model_id(manifest_path: Path, family_id: str) -> str:
     try:
         raw = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
         raise RuntimeError(f"could not read model manifest: {manifest_path}") from error
     model_id = raw.get("modelId") if isinstance(raw, dict) else None
     platform = raw.get("platform") if isinstance(raw, dict) else None
-    if platform != "darwin-arm64" or not isinstance(model_id, str) or not model_id:
+    manifest_family_id = raw.get("familyId") if isinstance(raw, dict) else None
+    if (
+        platform != "darwin-arm64"
+        or manifest_family_id != family_id
+        or not isinstance(model_id, str)
+        or not model_id
+    ):
         raise RuntimeError(f"invalid macOS model manifest: {manifest_path}")
     return model_id
 
@@ -35,26 +48,27 @@ def main() -> int:
     parser.add_argument("--worker", required=True)
     parser.add_argument("--model-root", required=True)
     parser.add_argument("--audio", required=True)
-    parser.add_argument("--tier", choices=tuple(MACOS_TIER_MANIFESTS), default="medium")
+    parser.add_argument(
+        "--family",
+        choices=tuple(MACOS_FAMILY_TIER_MANIFESTS),
+        default="whisper-large-v3",
+        help="Curated MLX Whisper family to smoke; large-v3 is the default.",
+    )
+    parser.add_argument("--tier", choices=("high", "medium", "low"), default="medium")
     parser.add_argument(
         "--allow-download",
         action="store_true",
         help="Explicitly permit downloading the pinned tier before the smoke test.",
     )
-    parser.add_argument(
-        "--manifest",
-        type=Path,
-        default=None,
-    )
     args = parser.parse_args()
-    manifest_filename, compute_type = MACOS_TIER_MANIFESTS[args.tier]
-    manifest_path = args.manifest or (
+    manifest_filename, compute_type = MACOS_FAMILY_TIER_MANIFESTS[args.family][args.tier]
+    manifest_path = (
         Path(__file__).resolve().parents[1]
         / "resources"
         / "model-manifest"
         / manifest_filename
     )
-    model_id = load_model_id(manifest_path)
+    model_id = load_model_id(manifest_path, args.family)
 
     environment = {
         "HOME": str(Path.home()),

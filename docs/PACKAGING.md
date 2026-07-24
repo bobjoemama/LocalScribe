@@ -16,6 +16,9 @@ native/macos/active-target
 model-manifest/whisper-large-v3-mlx.json
 model-manifest/whisper-large-v3-mlx-8bit.json
 model-manifest/whisper-large-v3-mlx-4bit.json
+model-manifest/whisper-large-v2-mlx.json
+model-manifest/whisper-large-v2-mlx-8bit.json
+model-manifest/whisper-large-v2-mlx-4bit.json
 ```
 
 Windows x64:
@@ -26,10 +29,16 @@ python-runtime-windows/**
 native/windows/active-target.exe
 branding/LocalScribe.ico
 model-manifest/faster-whisper-large-v3.json
+model-manifest/faster-whisper-large-v2.json
 ```
 
-No `auto` manifest exists. Windows tiers share one physical manifest and use a
-trusted TypeScript/Python compute-profile allowlist.
+No `auto` manifest exists. Large-v3 is the default catalog family; large-v2 is
+curated and addable, not an extension point. Mac packages carry exactly three
+MLX manifests per family. Windows tiers share one physical manifest per family
+and use a trusted TypeScript/Python compute-profile allowlist. Packaging does
+not accept plugins, arbitrary model URLs, custom code/loaders, or extra
+manifest paths. The catalog's revision and per-file SHA-256 pins are described
+in [MODEL_CATALOG.md](MODEL_CATALOG.md).
 
 ## Gate order
 
