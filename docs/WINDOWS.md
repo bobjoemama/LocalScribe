@@ -89,8 +89,9 @@ Supported protocol messages are:
 Each `load_model` request must provide a mutually consistent allowlisted
 `tier`, `modelId`, and `computeType`. Downloads require an explicit
 `allowDownload: true`; normal dictation sends false. stdout is protocol-only,
-stderr is diagnostic, messages are bounded to 16 KiB, and there is no local
-HTTP server. The family/tier catalog is packaged: no plugin, arbitrary URL,
+stderr is diagnostic, main-to-worker request lines are bounded to 16 KiB, and
+worker-to-main response lines are bounded to 64 KiB. There is no local HTTP
+server. The family/tier catalog is packaged: no plugin, arbitrary URL,
 arbitrary code, or custom model loader is accepted.
 
 ## Build on Windows

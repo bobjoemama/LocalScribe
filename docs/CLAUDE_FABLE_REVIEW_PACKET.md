@@ -132,7 +132,7 @@ arbitrary model loading as implemented.
 | large-v2 | Low | 4-bit | 973,192,389 | 1.8–2.7 GiB | Undeclared |
 
 The five `Undeclared` entries are not represented as MIT. Public macOS
-packaging must fail unless the protected release environment supplies
+packaging must fail unless the tag-restricted release environment supplies
 `LOCALSCRIBE_UNDECLARED_MLX_LICENSE_APPROVED=1`. That boolean is only a gate;
 it is not itself a legal-review record.
 
@@ -347,7 +347,8 @@ Required boundary:
 - bounded byte count, duration, frames, and path length;
 - temporary file under a main-process-owned permitted root;
 - deletion in a `finally` path;
-- protocol messages capped at 16 KiB;
+- main-to-worker requests capped at 16 KiB and worker-to-main response lines
+  capped at 64 KiB;
 - stdout protocol-only, stderr diagnostic-only;
 - no arbitrary media/container parsing from renderer-controlled input.
 
@@ -472,10 +473,11 @@ Assess:
 - runtime and installer size reductions that do not weaken supportability;
 - M4 Max 48 GiB behavior and a lower supported Apple Silicon tier.
 
-Existing evidence is narrow: large-v3 FP16 was loaded from source on an Apple
-Silicon machine in about 5.8 seconds and one real inference completed in about
-1.1 seconds. That is not packaged-app, multi-tier, accuracy, or sustained-use
-proof. Reproduce before citing it.
+Existing evidence is narrow: on July 24, 2026, the final packaged Python worker
+runtime loaded large-v3 FP16 on this Apple Silicon machine in about 3.7 seconds
+and transcribed one generated utterance in about 0.5 seconds. That is a direct
+packaged-worker smoke, not end-to-end GUI dictation, multi-tier, accuracy,
+microphone, or sustained-use proof. Reproduce before citing it.
 
 ### Windows
 
@@ -528,6 +530,7 @@ npm run worker:check-locks
 npm run audit:production
 npm run audit:all
 npm run audit:python
+npm run lint:all
 npm run typecheck
 npm test -- --reporter=dot
 npm run test:packaging -- --reporter=dot
@@ -578,7 +581,7 @@ At handoff, none of these should be rounded up:
 3. The five `Undeclared` MLX model revisions require real legal review. A
    protected boolean gate is not the review itself.
 4. Not every model family/tier has completed real inference or accuracy
-   testing. Existing Mac evidence is narrow and source-run.
+   testing. Existing Mac evidence is one direct packaged-worker FP16 smoke.
 5. Local validation DMGs may carry Apple Development or ad-hoc signatures and
    are not public release artifacts.
 6. SQLite sensitive text is encrypted, but some settings, dictionary,

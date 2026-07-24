@@ -8,6 +8,7 @@ import {
   AUDIO_MAX_FILE_BYTES,
   AUDIO_PROTOCOL_VERSION,
   AUDIO_SAMPLE_RATE_HZ,
+  ASR_MAX_CONTEXT_CHARS,
   isAudioProtocolWav,
 } from "../src/shared/audioProtocol";
 import { transcribeAudioSchema } from "../src/shared/contracts";
@@ -77,6 +78,7 @@ describe("audio protocol", () => {
       `AUDIO_PROTOCOL_VERSION = ${AUDIO_PROTOCOL_VERSION}`,
       `MAX_AUDIO_BYTES = ${AUDIO_MAX_FILE_BYTES.toLocaleString("en-US").replaceAll(",", "_")}`,
       `MAX_AUDIO_DURATION_MS = ${AUDIO_MAX_DURATION_MS.toLocaleString("en-US").replaceAll(",", "_")}`,
+      `MAX_CONTEXT_CHARS = ${ASR_MAX_CONTEXT_CHARS.toLocaleString("en-US").replaceAll(",", "_")}`,
       `REQUIRED_SAMPLE_RATE = ${AUDIO_SAMPLE_RATE_HZ.toLocaleString("en-US").replaceAll(",", "_")}`,
       `REQUIRED_CHANNELS = ${AUDIO_CHANNELS}`,
       `REQUIRED_SAMPLE_WIDTH_BYTES = ${AUDIO_BITS_PER_SAMPLE / 8}`,

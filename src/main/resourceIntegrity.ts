@@ -25,7 +25,7 @@ const MAX_RESOURCE_TREE_ENTRIES = 100_000;
 const MAX_RESOURCE_TREE_BYTES = 4 * 1024 * 1024 * 1024;
 const MAX_SYMLINK_TARGET_BYTES = 4 * 1024;
 const HASH_BUFFER_BYTES = 1024 * 1024;
-const GENERATED_MODULE_PLACEHOLDER = `// This committed placeholder is replaced only while Forge prepares a package.\n// The generated value is bundled into app.asar, then this exact file is restored.\nexport const generatedResourceIntegrity = {\n  root: \"\",\n  entryCount: 0,\n  coveredRoots: [],\n  platform: \"\",\n} as const;\n`;
+const GENERATED_MODULE_PLACEHOLDER = `// This committed placeholder is replaced only while Forge prepares a package.\n// The generated value is bundled into app.asar, then this exact file is restored.\nexport const generatedResourceIntegrity = {\n  root: "",\n  entryCount: 0,\n  coveredRoots: [],\n  platform: "",\n} as const;\n`;
 
 type TreeEntryType = "directory" | "file" | "symlink";
 type ResourceIntegrityPlatform = "darwin-arm64" | "win32-x64";

@@ -248,7 +248,11 @@ export function HistoryScreen() {
               <h2>{query ? "Search results" : "Recent dictations"}</h2>
               <p>{query ? `${filtered.length} ${filtered.length === 1 ? "match" : "matches"}` : "Saved locally"}</p>
             </div>
-            {!loading && items.length > 0 && <span>{items.length} total</span>}
+            {!loading && items.length > 0 && (
+              <span>
+                {items.length >= MAX_HISTORY_ITEMS ? `Latest ${MAX_HISTORY_ITEMS}` : `${items.length} total`}
+              </span>
+            )}
           </div>
 
           {loading && <HistoryLoading />}
@@ -552,7 +556,7 @@ function MetricCard({ icon, value, label, detail }: { icon: React.ReactNode; val
 function RangeControl({ range, onChange }: { range: InsightRange; onChange(range: InsightRange): void }) {
   return (
     <div className="hi-range-control" aria-label="Insight period">
-      {(["7d", "30d", "all"] as const).map((option) => (
+      {(["7d", "30d", "recent"] as const).map((option) => (
         <button
           key={option}
           type="button"

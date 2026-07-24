@@ -18,15 +18,17 @@ The helper never receives transcript text or clipboard contents.
 
 ## Build and verify
 
-Install Visual Studio 2022 Build Tools with **Desktop development with C++**.
-From PowerShell at the repository root, run:
+To build only this independent helper, install Visual Studio 2022 or newer
+Build Tools with **Desktop development with C++**. The complete Electron app
+currently pins Visual Studio 2026 through `@electron/rebuild`. From PowerShell
+at the repository root, run:
 
 ```powershell
 & .\resources\native\windows\build.ps1
 ```
 
-The script discovers an installed Visual Studio 2022 x64 C++ toolchain (or uses
-an already configured x64 developer environment), compiles with MSVC security
+The script discovers an installed Visual Studio x64 C++ toolchain (or uses an
+already configured x64 developer environment), compiles with MSVC security
 hardening enabled, creates:
 
 `resources/native/windows/active-target.exe`

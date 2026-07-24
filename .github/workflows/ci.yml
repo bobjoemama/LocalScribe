@@ -51,6 +51,7 @@ jobs:
           npm run audit:all
           npm run worker:check-locks
           npm run audit:python
+          npm run lint:all
           npm run typecheck
           npm test -- --reporter=dot
 
@@ -139,6 +140,7 @@ jobs:
           npm run audit:all
           npm run worker:check-locks
           npm run audit:python
+          npm run lint
           npm run typecheck
           npm test -- --reporter=dot
 

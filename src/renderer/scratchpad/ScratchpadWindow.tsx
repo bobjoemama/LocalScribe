@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ScratchpadNote } from "../../shared/contracts";
 import "./scratchpad-window.css";
 
@@ -85,12 +85,12 @@ export function ScratchpadWindow() {
     notesRef.current = notes;
   }, [notes]);
 
-  const selectNote = (id: string) => {
+  const selectNote = useCallback((id: string) => {
     selectedIdRef.current = id;
     setSelectedId(id);
     setSaveState("saved");
     window.setTimeout(() => textareaRef.current?.focus(), 0);
-  };
+  }, []);
 
   const replaceSavedNote = (saved: ScratchpadNote) => {
     setNotes((current) => [saved, ...current.filter((note) => note.id !== saved.id)]);
@@ -137,7 +137,7 @@ export function ScratchpadWindow() {
     saveTimersRef.current.set(id, timer);
   };
 
-  const addNewNote = async () => {
+  const addNewNote = useCallback(async () => {
     setSaveState("loading");
     try {
       const note = await window.localScribe.scratchpad.create();
@@ -148,7 +148,7 @@ export function ScratchpadWindow() {
     } catch {
       setSaveState("error");
     }
-  };
+  }, [selectNote]);
 
   useEffect(() => {
     let active = true;
@@ -170,7 +170,7 @@ export function ScratchpadWindow() {
       },
     );
     return () => { active = false; };
-  }, []);
+  }, [addNewNote, selectNote]);
 
   useEffect(() => () => {
     for (const timer of saveTimersRef.current.values()) window.clearTimeout(timer);

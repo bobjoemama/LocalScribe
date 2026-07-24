@@ -38,6 +38,14 @@ function componentReference(component) {
   return `${component.name}@${component.version}`;
 }
 
+function npmPackageLockPath(name) {
+  return `node_modules/${name}`;
+}
+
+function npmPackagePurl(name, version) {
+  return `pkg:npm/${encodeURIComponent(name).replaceAll("%2F", "/")}@${version}`;
+}
+
 export function resolveRuntimeVersions({
   packageJson,
   packageLock,
@@ -159,8 +167,47 @@ const supplementalComponents = [
   },
 ];
 
+// npm can mark a direct production package as `peer: true` when a development
+// tool also peers on the same package. `npm sbom --omit=dev` then omits that
+// shipped direct dependency. Recover only exact root production pins from the
+// committed lock and fail closed if declaration and lock disagree.
+const recoveredProductionComponents = Object.entries(packageJson.dependencies)
+  .filter(([name, version]) =>
+    !productionBom.components.some(
+      (component) => component.name === name && component.version === version,
+    ))
+  .map(([name, declaredVersion]) => {
+    const version = exactVersion(declaredVersion, `${name} declaration`);
+    const lockEntry = packageLock.packages?.[npmPackageLockPath(name)];
+    const lockedVersion = exactVersion(lockEntry?.version, `${name} installed lock`);
+    if (version !== lockedVersion) {
+      throw new Error(`${name} declaration and lock pins disagree.`);
+    }
+    return {
+      type: "library",
+      "bom-ref": `${name}@${version}`,
+      name,
+      version,
+      scope: "required",
+      purl: npmPackagePurl(name, version),
+      properties: [
+        {
+          name: "com.localscribe.sbom-source",
+          value: "root-production-dependency-recovered-from-package-lock",
+        },
+      ],
+      ...(typeof lockEntry.license === "string"
+        ? { licenses: [{ license: { id: lockEntry.license } }] }
+        : {}),
+    };
+  });
+
 const componentsByReference = new Map();
-for (const component of [...productionBom.components, ...supplementalComponents]) {
+for (const component of [
+  ...productionBom.components,
+  ...recoveredProductionComponents,
+  ...supplementalComponents,
+]) {
   const reference = componentReference(component);
   if (componentsByReference.has(reference)) {
     throw new Error(`Runtime SBOM rejected duplicate component reference: ${reference}`);
@@ -179,10 +226,11 @@ if (!rootDependency || !Array.isArray(rootDependency.dependsOn)) {
 rootDependency.dependsOn = [
   ...new Set([
     ...rootDependency.dependsOn,
+    ...recoveredProductionComponents.map(componentReference),
     ...supplementalComponents.map(componentReference),
   ]),
 ].sort();
-for (const component of supplementalComponents) {
+for (const component of [...recoveredProductionComponents, ...supplementalComponents]) {
   productionBom.dependencies.push({
     ref: componentReference(component),
     dependsOn: [],

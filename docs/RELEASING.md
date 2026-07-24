@@ -6,9 +6,16 @@ LocalScribe has two intentionally different artifact classes.
   `UNSIGNED-VALIDATION`, retained briefly, and never represented as public
   releases.
 - **Production release candidates** are built only by the manual signed
-  workflow in the protected `release` environment.
+  workflow in the `release` environment, which accepts only `v*` tags. The
+  current private-repository plan does not provide required environment
+  reviewers.
 
 The workflows never publish a GitHub Release or update feed automatically.
+
+`main` is protected, including for administrators. Changes require a pull
+request, an up-to-date branch, the macOS and Windows validation jobs, resolved
+review conversations, and linear history. Force pushes and branch deletion are
+disabled.
 
 ## Common gates
 
@@ -23,6 +30,7 @@ npm run audit:production
 npm run audit:all
 npm run worker:check-locks
 npm run audit:python
+npm run lint:all
 npm run typecheck
 npm test -- --reporter=dot
 ```
@@ -53,14 +61,14 @@ they never trust a same-version worker wheel left in uv's global cache.
 The release workflow uses `permissions: contents: read`, disables checkout
 credential persistence, pins actions to immutable commits, and does not use
 `pull_request_target`. Its `release-verify` job has no environment or secret
-references. Both protected signing jobs depend on that job, and each signing
-secret is exposed only to the certificate-import or signed-build step that
-consumes it.
+references. Both environment-gated signing jobs depend on that job, and each
+signing secret is exposed only to the certificate-import or signed-build step
+that consumes it.
 
 Manual dispatch must select the tag `v<package.json version>`. A credential-free
 gate rejects every other ref and completes all common gates before either
-protected signing job starts. All release jobs check out the event's exact
-commit SHA rather than a mutable branch or tag name.
+environment-gated signing job starts. All release jobs check out the event's
+exact commit SHA rather than a mutable branch or tag name.
 
 ## macOS credentials
 
@@ -74,10 +82,10 @@ Required protected secrets:
 - `APPLE_APP_SPECIFIC_PASSWORD`
 - `APPLE_TEAM_ID`
 
-The protected `release` environment must also define the environment variable
-`LOCALSCRIBE_UNDECLARED_MLX_LICENSE_APPROVED=1`. It records the explicit legal
-approval required for the pinned upstream MLX model artifacts whose exact
-revisions do not declare a license. The validation workflow must not set this
+The tag-restricted `release` environment must also define the environment
+variable `LOCALSCRIBE_UNDECLARED_MLX_LICENSE_APPROVED=1`. It records the
+explicit legal approval required for the pinned upstream MLX model artifacts
+whose exact revisions do not declare a license. The validation workflow must not set this
 variable, and the signed workflow passes it only to the macOS `make:mac` step.
 
 The workflow imports the certificate into an ephemeral keychain. With
