@@ -72,6 +72,7 @@ import {
   type RuntimePlatformModelCatalog,
   type RuntimeModelTierSpec,
 } from "./main/modelSpec";
+import { verifyPackagedResourceIntegrity } from "./main/resourceIntegrity";
 import {
   permissionSettingsUrl,
   permissionSnapshotForPlatform,
@@ -1238,6 +1239,7 @@ async function cleanStaleAudio(): Promise<void> {
 
 app.whenReady().then(async () => {
   if (!hasSingleInstanceLock) return;
+  verifyPackagedResourceIntegrity({ isPackaged: app.isPackaged });
   app.setName("LocalScribe");
   installRendererProtocol();
   runtimeModelPlatformCatalog = loadRuntimePlatformModelCatalog(runtimeModelManifestDirectory());

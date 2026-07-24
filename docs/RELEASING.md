@@ -34,8 +34,10 @@ dynamically. Platform markers are removed only in the temporary audit input so
 a Linux runner checks both target graphs; uv's package hashes are retained and
 required, and dependency resolution remains disabled.
 
-Runtime build, native helper build, Forge make, whole-package inventory, SBOM,
-and SHA-256 manifest must then pass on the target OS.
+Runtime build, native helper build, Forge make, whole-package inventory,
+separate Node-production and locked platform-Python CycloneDX SBOM generation,
+and a SHA-256 manifest covering both SBOMs and the install artifacts must then
+pass on the target OS.
 
 The release workflow uses `permissions: contents: read`, disables checkout
 credential persistence, pins actions to immutable commits, and does not use
@@ -106,7 +108,8 @@ Get-AuthenticodeSignature LocalScribe-Setup.exe
 Before publication, verify:
 
 1. package version matches the intended immutable source tag;
-2. SBOM and `SHA256SUMS.txt` match the downloaded workflow artifacts;
+2. both platform SBOMs are present and their entries in `SHA256SUMS.txt` match
+   the downloaded workflow artifacts;
 3. macOS notarization or Windows Authenticode checks pass on the downloaded
    artifact, not only inside CI;
 4. no model weights are embedded in the installer;

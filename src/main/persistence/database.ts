@@ -1,5 +1,13 @@
-import { chmodSync, existsSync } from "node:fs";
 import { randomUUID } from "node:crypto";
+import {
+  closeSync,
+  constants,
+  fchmodSync,
+  fstatSync,
+  openSync,
+} from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import path from "node:path";
 import Database from "better-sqlite3";
 import { safeStorage } from "electron";
 import {
@@ -55,18 +63,74 @@ interface ScratchpadNoteRow {
   updated_at: number;
 }
 
+const USER_ONLY_DIRECTORY_MODE = 0o700;
+const USER_ONLY_FILE_MODE = 0o600;
+
+function bestEffortSetMode(targetPath: string, mode: number, expectedType: "directory" | "file"): void {
+  let descriptor: number | undefined;
+  try {
+    const typeFlag = expectedType === "directory" ? constants.O_DIRECTORY : 0;
+    descriptor = openSync(
+      targetPath,
+      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK | typeFlag,
+    );
+    const stats = fstatSync(descriptor);
+    const matchesExpectedType =
+      expectedType === "directory" ? stats.isDirectory() : stats.isFile();
+    if (matchesExpectedType) fchmodSync(descriptor, mode);
+  } catch {
+    // Permission hardening is best-effort: an unsupported mode operation must not block startup.
+  } finally {
+    if (descriptor !== undefined) {
+      try {
+        closeSync(descriptor);
+      } catch {
+        // The descriptor is only used for best-effort hardening.
+      }
+    }
+  }
+}
+
+function isSafeDatabaseParent(databasePath: string, parentPath: string): boolean {
+  if (!path.isAbsolute(databasePath)) return false;
+  const resolvedParent = path.resolve(parentPath);
+  const broadDirectories = new Set([
+    path.parse(resolvedParent).root,
+    path.resolve(process.cwd()),
+    path.resolve(homedir()),
+    path.resolve(tmpdir()),
+  ]);
+  return !broadDirectories.has(resolvedParent);
+}
+
+function hardenDatabasePermissions(databasePath: string): void {
+  if (process.platform === "win32" || databasePath === ":memory:") return;
+
+  const resolvedDatabasePath = path.resolve(databasePath);
+  const parentPath = path.dirname(resolvedDatabasePath);
+  if (isSafeDatabaseParent(databasePath, parentPath)) {
+    bestEffortSetMode(parentPath, USER_ONLY_DIRECTORY_MODE, "directory");
+  }
+  for (const targetPath of [
+    resolvedDatabasePath,
+    `${resolvedDatabasePath}-wal`,
+    `${resolvedDatabasePath}-shm`,
+  ]) {
+    bestEffortSetMode(targetPath, USER_ONLY_FILE_MODE, "file");
+  }
+}
+
 export class LocalDatabase {
   private readonly db: Database.Database;
 
   constructor(path: string) {
-    const isNew = !existsSync(path);
     this.db = new Database(path);
     this.db.pragma("journal_mode = WAL");
     this.db.pragma("foreign_keys = ON");
     this.db.pragma("busy_timeout = 5000");
     this.db.pragma("synchronous = NORMAL");
     this.migrate();
-    if (isNew) chmodSync(path, 0o600);
+    hardenDatabasePermissions(path);
   }
 
   close(): void {

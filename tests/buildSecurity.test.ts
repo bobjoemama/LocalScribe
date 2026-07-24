@@ -85,6 +85,21 @@ describe("release hardening configuration", () => {
     expect(forgeConfig).toContain("[FuseV1Options.OnlyLoadAppFromAsar]: true");
   });
 
+  it("binds every platform-pruned loose resource to an expectation bundled in app.asar", () => {
+    const forgeConfig = projectFile("forge.config.ts");
+    const integrity = projectFile("src/main/resourceIntegrity.ts");
+    const generated = projectFile("src/main/generatedResourceIntegrity.ts");
+
+    expect(forgeConfig).toContain("prepareGeneratedResourceIntegrity");
+    expect(forgeConfig).toContain("assertPackagedResourceIntegrity(");
+    expect(forgeConfig).toContain("resourceIntegrityPreparation?.restore()");
+    expect(integrity).toContain("verifyPackagedResourceIntegrity");
+    expect(integrity).toContain("Resource integrity found an unexpected loose resource");
+    expect(integrity).toContain("process.once(\"exit\"");
+    expect(generated).toContain("generatedResourceIntegrity");
+    expect(generated).not.toContain("sha256");
+  });
+
   it("prunes and verifies the packaged dependency inventory", () => {
     const forgeConfig = projectFile("forge.config.ts");
 
@@ -276,8 +291,8 @@ describe("release hardening configuration", () => {
     const ciWorkflow = projectFile(".github/workflows/ci.yml");
     const releaseWorkflow = projectFile(".github/workflows/release.yml");
 
-    expect(ciWorkflow.match(/npm run --silent sbom/g)).toHaveLength(2);
-    expect(releaseWorkflow.match(/npm run --silent sbom/g)).toHaveLength(2);
+    expect(ciWorkflow.match(/npm run --silent sbom/g)).toHaveLength(4);
+    expect(releaseWorkflow.match(/npm run --silent sbom/g)).toHaveLength(4);
     expect(`${ciWorkflow}\n${releaseWorkflow}`).not.toMatch(/npm run sbom/);
   });
 });

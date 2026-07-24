@@ -63,8 +63,15 @@ jobs:
 
       - name: Generate SBOM and checksums
         run: |
-          npm run --silent sbom > out/localscribe-sbom.cdx.json
-          find out/make -type f \( -name '*.dmg' -o -name '*.zip' \) -print0 |
+          set -euo pipefail
+          npm run --silent sbom:node > out/localscribe-node-sbom.cdx.json
+          npm run --silent sbom:python:macos > out/localscribe-python-macos-sbom.cdx.json
+          {
+            find out/make -type f \( -name '*.dmg' -o -name '*.zip' \) -print0
+            printf '%s\0' \
+              out/localscribe-node-sbom.cdx.json \
+              out/localscribe-python-macos-sbom.cdx.json
+          } |
             xargs -0 shasum -a 256 > out/SHA256SUMS.txt
 
       - name: Upload unsigned validation artifacts
@@ -74,7 +81,8 @@ jobs:
           path: |
             out/make/**/*.dmg
             out/make/**/*.zip
-            out/localscribe-sbom.cdx.json
+            out/localscribe-node-sbom.cdx.json
+            out/localscribe-python-macos-sbom.cdx.json
             out/SHA256SUMS.txt
           if-no-files-found: error
           retention-days: 3
@@ -158,9 +166,20 @@ jobs:
       - name: Generate SBOM and checksums
         shell: pwsh
         run: |
-          npm run --silent sbom | Out-File -Encoding utf8 out/localscribe-sbom.cdx.json
-          Get-ChildItem out/make -Recurse -File |
-            Where-Object { $_.Extension -in @(".exe", ".nupkg") -or $_.Name -eq "RELEASES" } |
+          $ErrorActionPreference = "Stop"
+          npm run --silent sbom:node |
+            Out-File -Encoding utf8 out/localscribe-node-sbom.cdx.json
+          if ($LASTEXITCODE -ne 0) { throw "Node SBOM generation failed." }
+          npm run --silent sbom:python:windows |
+            Out-File -Encoding utf8 out/localscribe-python-windows-sbom.cdx.json
+          if ($LASTEXITCODE -ne 0) { throw "Windows Python SBOM generation failed." }
+          $ChecksumTargets = @(
+            Get-ChildItem out/make -Recurse -File |
+              Where-Object { $_.Extension -in @(".exe", ".nupkg") -or $_.Name -eq "RELEASES" }
+            Get-Item out/localscribe-node-sbom.cdx.json
+            Get-Item out/localscribe-python-windows-sbom.cdx.json
+          )
+          $ChecksumTargets |
             Get-FileHash -Algorithm SHA256 |
             ForEach-Object { "$($_.Hash.ToLowerInvariant())  $($_.Path)" } |
             Out-File -Encoding ascii out/SHA256SUMS.txt
@@ -173,7 +192,8 @@ jobs:
             out/make/**/LocalScribe-Setup.exe
             out/make/**/*.nupkg
             out/make/**/RELEASES
-            out/localscribe-sbom.cdx.json
+            out/localscribe-node-sbom.cdx.json
+            out/localscribe-python-windows-sbom.cdx.json
             out/SHA256SUMS.txt
           if-no-files-found: error
           retention-days: 3

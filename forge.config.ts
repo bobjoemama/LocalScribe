@@ -16,6 +16,11 @@ import {
   resourcePolicyFor,
   type PackagedPlatform,
 } from "./scripts/package-inventory";
+import {
+  assertPackagedResourceIntegrity,
+  prepareGeneratedResourceIntegrity,
+  type PreparedResourceIntegrity,
+} from "./src/main/resourceIntegrity";
 
 const APP_BUNDLE_ID = "com.localscribe.desktop";
 const MAC_ENTITLEMENTS = path.resolve("resources/entitlements.mac.plist");
@@ -50,6 +55,7 @@ function resolveSigningIdentity(): string {
 }
 
 const MAC_SIGNING_IDENTITY = resolveSigningIdentity();
+let resourceIntegrityPreparation: PreparedResourceIntegrity | null = null;
 
 function validatePublicReleaseConfiguration(): void {
   if (!PUBLIC_RELEASE) return;
@@ -269,6 +275,18 @@ const config: ForgeConfig = {
           }
 
           assertPackagedAppInventory(resourcesPath, platform, arch);
+          if (!resourceIntegrityPreparation) {
+            throw new Error("Resource integrity expectation was not prepared before package staging.");
+          }
+          // This runs after platform pruning but before Packager's signing step.
+          // It independently compares the staged loose tree to the root Vite
+          // already bundled into app.asar.
+          assertPackagedResourceIntegrity(
+            resourcesPath,
+            platform,
+            arch,
+            resourceIntegrityPreparation.expectation,
+          );
           callback();
         } catch (error) {
           callback(error instanceof Error ? error : new Error(String(error)));
@@ -334,35 +352,57 @@ const config: ForgeConfig = {
         throw new Error(`LocalScribe cannot be packaged for ${platform}.`);
       }
       assertSourceResources(platform, arch);
+      resourceIntegrityPreparation?.restore();
+      resourceIntegrityPreparation = prepareGeneratedResourceIntegrity({
+        resourcesPath: path.resolve("resources"),
+        sourceProjectPath: path.resolve("."),
+        platform,
+        arch,
+        generatedModulePath: path.resolve("src/main/generatedResourceIntegrity.ts"),
+      });
     },
     postPackage: async (_config, result) => {
-      if (result.platform !== "darwin" && result.platform !== "win32") {
-        throw new Error(`Unsupported package platform: ${result.platform}`);
-      }
-      for (const outputPath of result.outputPaths) {
-        const resourcesPath = packagedResourcesPath(outputPath, result.platform);
-        assertPackagedAppInventory(resourcesPath, result.platform, result.arch);
+      try {
+        if (result.platform !== "darwin" && result.platform !== "win32") {
+          throw new Error(`Unsupported package platform: ${result.platform}`);
+        }
+        if (!resourceIntegrityPreparation) {
+          throw new Error("Resource integrity expectation was not prepared before package verification.");
+        }
+        for (const outputPath of result.outputPaths) {
+          const resourcesPath = packagedResourcesPath(outputPath, result.platform);
+          assertPackagedAppInventory(resourcesPath, result.platform, result.arch);
+          assertPackagedResourceIntegrity(
+            resourcesPath,
+            result.platform,
+            result.arch,
+            resourceIntegrityPreparation.expectation,
+          );
 
-        if (result.platform === "darwin") {
-          const appPath = outputPath.endsWith(".app")
-            ? outputPath
-            : path.join(outputPath, "LocalScribe.app");
-          execFileSync("codesign", ["--verify", "--deep", "--strict", "--verbose=4", appPath], {
-            stdio: "inherit",
-          });
-          if (PUBLIC_RELEASE) {
-            execFileSync("xcrun", ["stapler", "staple", appPath], { stdio: "inherit" });
-            execFileSync("xcrun", ["stapler", "validate", appPath], { stdio: "inherit" });
-            execFileSync("spctl", ["--assess", "--type", "execute", "--verbose=4", appPath], {
+          if (result.platform === "darwin") {
+            const appPath = outputPath.endsWith(".app")
+              ? outputPath
+              : path.join(outputPath, "LocalScribe.app");
+            execFileSync("codesign", ["--verify", "--deep", "--strict", "--verbose=4", appPath], {
               stdio: "inherit",
             });
+            if (PUBLIC_RELEASE) {
+              execFileSync("xcrun", ["stapler", "staple", appPath], { stdio: "inherit" });
+              execFileSync("xcrun", ["stapler", "validate", appPath], { stdio: "inherit" });
+              execFileSync("spctl", ["--assess", "--type", "execute", "--verbose=4", appPath], {
+                stdio: "inherit",
+              });
+            }
+          } else if (PUBLIC_RELEASE) {
+            verifyAuthenticode(path.join(outputPath, "LocalScribe.exe"));
+            verifyAuthenticode(
+              path.join(outputPath, "resources", "native", "windows", "active-target.exe"),
+            );
           }
-        } else if (PUBLIC_RELEASE) {
-          verifyAuthenticode(path.join(outputPath, "LocalScribe.exe"));
-          verifyAuthenticode(
-            path.join(outputPath, "resources", "native", "windows", "active-target.exe"),
-          );
         }
+      } finally {
+        resourceIntegrityPreparation?.restore();
+        resourceIntegrityPreparation = null;
       }
     },
     postMake: async (_config, makeResults: ForgeMakeResult[]) => {

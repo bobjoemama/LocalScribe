@@ -196,7 +196,10 @@ Normal CI builds clearly named `UNSIGNED-VALIDATION` artifacts on
 `macos-15` arm64 and `windows-latest`. It runs both audits, TypeScript,
 Vitest, lock checks, runtime assembly, worker tests, native-helper build/smoke,
 Forge make, the inventory gate, SBOM generation, and checksums. These artifacts
-are short-lived test evidence, not releases.
+are short-lived test evidence, not releases. Each platform artifact contains a
+CycloneDX SBOM for shipped Node production dependencies and a separate
+CycloneDX SBOM exported from that platform worker's committed `uv.lock`; both
+SBOM files are covered by `SHA256SUMS.txt`.
 
 The manual release workflow uses a protected `release` environment.
 `LOCALSCRIBE_RELEASE=1` fails before packaging unless:
@@ -248,9 +251,16 @@ platform model manifests.
 
 LocalScribe’s original source and assets are proprietary; see
 [LICENSE](LICENSE). Third-party components retain their own licenses; see
-[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). Generate the production npm
-CycloneDX SBOM with:
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). Generate the separate
+production Node and locked platform-worker CycloneDX SBOMs with:
 
 ```sh
-npm run --silent sbom > localscribe-sbom.cdx.json
+npm run --silent sbom:node > localscribe-node-sbom.cdx.json
+npm run --silent sbom:python:macos > localscribe-python-macos-sbom.cdx.json
+```
+
+On Windows, replace the second command with:
+
+```powershell
+npm run --silent sbom:python:windows > localscribe-python-windows-sbom.cdx.json
 ```

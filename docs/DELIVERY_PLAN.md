@@ -51,7 +51,8 @@ Implemented:
   files, environment/secrets, unexpected model manifests, and escaping symlinks
 - release sourcemaps disabled
 - compatible patched npm overrides; production and full build-tool audits
-- CycloneDX production SBOM and artifact SHA-256 generation in CI
+- separate CycloneDX SBOMs for Node production dependencies and each locked
+  platform Python runtime, with SBOM and artifact SHA-256 generation in CI
 
 The generated Mac Python runtime and Windows Python/CUDA runtime are ignored by
 Git. CI and release builds must recreate them from committed locks.
@@ -107,7 +108,8 @@ feed. Signed workflow artifacts remain release candidates until reviewed.
 
 Before publication:
 
-1. match source tag, package version, model manifests, SBOM, and checksums;
+1. match source tag, package version, model manifests, platform SBOMs, and
+   checksums;
 2. complete platform signing/notarization checks;
 3. scan the exact artifacts;
 4. complete clean-machine and real-hardware QA;

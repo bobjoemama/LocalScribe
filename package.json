@@ -28,12 +28,14 @@
     "native:build:windows": "powershell -NoProfile -ExecutionPolicy Bypass -File resources/native/windows/build.ps1",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:packaging": "vitest run tests/packageInventory.test.ts tests/buildSecurity.test.ts",
+    "test:packaging": "vitest run tests/packageInventory.test.ts tests/resourceIntegrity.test.ts tests/buildSecurity.test.ts",
     "test:watch": "vitest",
     "audit:production": "npm audit --omit=dev --audit-level=high",
     "audit:all": "npm audit --audit-level=high",
     "audit:python": "node scripts/audit-python-deps.mjs",
-    "sbom": "npm sbom --sbom-format cyclonedx --omit=dev"
+    "sbom:node": "npm sbom --sbom-format cyclonedx --omit=dev",
+    "sbom:python:macos": "uv export --project worker --locked --no-dev --format cyclonedx1.5 --preview-features sbom-export",
+    "sbom:python:windows": "uv export --project worker/windows_transformers --locked --no-dev --format cyclonedx1.5 --preview-features sbom-export"
   },
   "dependencies": {
     "better-sqlite3": "13.0.1",
