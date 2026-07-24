@@ -1,9 +1,10 @@
 import type { ReactNode } from "react";
-import type {
-  ModelCatalog,
-  ModelFamilyId,
-  ModelPerformanceMode,
-  ModelPerformanceTier,
+import {
+  DEFAULT_MODEL_FAMILY_ID,
+  type ModelCatalog,
+  type ModelFamilyId,
+  type ModelPerformanceMode,
+  type ModelPerformanceTier,
 } from "../../../shared/contracts";
 
 export const MODEL_MODE_CHOICES = [
@@ -437,7 +438,7 @@ function ModelFamilyCard({
   for (const tier of tiers) {
     if (!firstTierForArtifact.has(tier.artifactId)) firstTierForArtifact.set(tier.artifactId, tier.tier);
   }
-  const isDefault = family.familyId === "whisper-large-v3";
+  const isDefault = family.familyId === DEFAULT_MODEL_FAMILY_ID;
 
   return (
     <article className={family.active ? "ls-model-family-card is-active" : "ls-model-family-card"}>
@@ -549,7 +550,7 @@ function ModelTierRow({
       <div className="ls-model-tier-footer">
         <p>{tier.qualityNote}{runEligibilityUnknown && activeFamily ? " Run eligibility is unknown until accelerator memory can be read." : ""}</p>
         {!activeFamily ? (
-          <span className="ls-model-shared-label">{tier.familyId === "whisper-large-v3" ? "Built-in family" : "Activate to manage"}</span>
+          <span className="ls-model-shared-label">{tier.familyId === DEFAULT_MODEL_FAMILY_ID ? "Built-in family" : "Activate to manage"}</span>
         ) : sharedArtifact && !isArtifactControl ? (
           <span className="ls-model-shared-label">{sharedWith} · managed from {tierLabelFor(artifactControlTier)}</span>
         ) : (

@@ -49,7 +49,6 @@ import { shortcutValidationRequestSchema } from "./shared/shortcuts";
 import {
   applySettingsPatchTransaction,
   applyShortcutUpdateTransaction,
-  persistSettingsTransaction,
 } from "./main/settings/settingsTransaction";
 import { LocalDatabase } from "./main/persistence/database";
 import {
@@ -991,26 +990,6 @@ function registerIpc(): void {
   );
 
   handle(IPC.settingsGet, () => database.getSettings());
-  handle(IPC.settingsSave, async (_event, input: unknown) => {
-    const previous = database.getSettings();
-    const next = appSettingsSchema.parse(input);
-    assertGenericSettingsPreserveModelLibrary(previous, next);
-    const modelPreferenceChanged = next.modelPerformanceMode !== previous.modelPerformanceMode;
-    if (modelPreferenceChanged) assertModelSwitchAllowed();
-    const settings = persistSettingsTransaction({ database, hotkeys }, next, previous);
-    if (modelPreferenceChanged) {
-      await worker.shutdown();
-      modelResolution = null;
-      await refreshModelResolution();
-    }
-    const purged = database.purgeExpiredTranscriptions(settings.historyRetentionDays);
-    if (purged > 0) notifyHistoryChanged();
-    app.setLoginItemSettings({ openAtLogin: settings.launchAtLogin });
-    syncPillVisibility();
-    installApplicationMenu();
-    notifySettingsChanged(settings);
-    return settings;
-  });
   handle(IPC.settingsPatch, async (_event, input: unknown) => {
     const patch = appSettingsPatchSchema.parse(input);
     const previous = database.getSettings();

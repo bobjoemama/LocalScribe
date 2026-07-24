@@ -80,7 +80,6 @@ const api: LocalScribeApi = {
   },
   settings: {
     get: async () => appSettingsSchema.parse(await ipcRenderer.invoke(IPC.settingsGet)),
-    save: async (input) => appSettingsSchema.parse(await ipcRenderer.invoke(IPC.settingsSave, input)),
     patch: async (input) => {
       const patch = appSettingsPatchSchema.parse(input);
       return appSettingsSchema.parse(await ipcRenderer.invoke(IPC.settingsPatch, patch));

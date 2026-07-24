@@ -1305,6 +1305,9 @@ function shortcutHelpText(permissions: PermissionSnapshot | null, holdShortcut: 
     return `Shortcut changes apply immediately. Hold ${label} to dictate from any app.`;
   }
   if (permissions.platform === "darwin") {
+    if (permissions.accessibility.granted) {
+      return `The current push-to-talk key is ${label}. Accessibility is granted, but the global keyboard hook is not running. Restart LocalScribe or use the toggle shortcut.`;
+    }
     return `The current push-to-talk key is ${label}. Grant Accessibility to use it globally; until then, use the toggle shortcut and LocalScribe will copy completed dictation.`;
   }
   return `The current push-to-talk key is ${label}. Global push-to-talk is unavailable on this platform; the toggle shortcut still works.`;

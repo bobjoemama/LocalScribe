@@ -45,6 +45,7 @@ describe("shortcut helpers", () => {
     expect(shortcutsUseSamePhysicalKeys("CommandOrControl", "Command", "darwin")).toBe(true);
     expect(shortcutsUseSamePhysicalKeys("CommandOrControl", "Control", "win32")).toBe(true);
     expect(shortcutsUseSamePhysicalKeys("Plus", "Shift+Equal", "darwin")).toBe(true);
+    expect(shortcutsUseSamePhysicalKeys("Alt+F13", "AltGr+F13", "win32")).toBe(true);
     expect(toggleUsesHoldKey("AltGr+Space", "Alt", "win32")).toBe(true);
     expect(toggleUsesHoldKey("Command+Space", "Control", "darwin")).toBe(false);
   });

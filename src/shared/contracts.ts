@@ -424,7 +424,6 @@ export const IPC = {
   scratchpadUpdate: "scratchpad:update",
   scratchpadDelete: "scratchpad:delete",
   settingsGet: "settings:get",
-  settingsSave: "settings:save",
   settingsPatch: "settings:patch",
   shortcutsBeginCapture: "shortcuts:begin-capture",
   shortcutsEndCapture: "shortcuts:end-capture",
@@ -485,7 +484,6 @@ export interface LocalScribeApi {
   };
   settings: {
     get(): Promise<AppSettings>;
-    save(input: AppSettings): Promise<AppSettings>;
     patch(input: AppSettingsPatch): Promise<AppSettings>;
     onChanged(listener: (settings: AppSettings) => void): () => void;
   };

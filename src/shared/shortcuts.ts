@@ -296,11 +296,33 @@ export function shortcutPhysicalKeyGroups(
     });
 }
 
-function samePhysicalKeyGroup(left: PhysicalKeyGroup, right: PhysicalKeyGroup): boolean {
-  return left.length === right.length && left.every((key) => right.includes(key));
+function physicalGroupsCanUseSameKey(left: PhysicalKeyGroup, right: PhysicalKeyGroup): boolean {
+  return left.some((key) => right.includes(key));
 }
 
-/** True when two accelerators require the same physical keys on this platform. */
+function physicalGroupsCanMatch(
+  left: readonly PhysicalKeyGroup[],
+  right: readonly PhysicalKeyGroup[],
+  leftIndex = 0,
+  usedRight = new Set<number>(),
+): boolean {
+  if (leftIndex === left.length) return true;
+  const leftGroup = left[leftIndex];
+  if (!leftGroup) return false;
+  for (const [rightIndex, rightGroup] of right.entries()) {
+    if (usedRight.has(rightIndex) || !physicalGroupsCanUseSameKey(leftGroup, rightGroup)) continue;
+    const nextUsed = new Set(usedRight);
+    nextUsed.add(rightIndex);
+    if (physicalGroupsCanMatch(left, right, leftIndex + 1, nextUsed)) return true;
+  }
+  return false;
+}
+
+/**
+ * True when both accelerators can resolve to the same physical chord on this
+ * platform. Groups can overlap without being textually identical: Windows
+ * Alt accepts either Alt key while AltGr is specifically right Alt.
+ */
 export function shortcutsUseSamePhysicalKeys(
   left: string,
   right: string,
@@ -309,7 +331,7 @@ export function shortcutsUseSamePhysicalKeys(
   const leftGroups = shortcutPhysicalKeyGroups(left, platform);
   const rightGroups = shortcutPhysicalKeyGroups(right, platform);
   return leftGroups.length === rightGroups.length
-    && leftGroups.every((group) => rightGroups.some((other) => samePhysicalKeyGroup(group, other)));
+    && physicalGroupsCanMatch(leftGroups, rightGroups);
 }
 
 /** True if a toggle shares any physical key/modifier with the hold shortcut. */

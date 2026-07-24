@@ -27,6 +27,8 @@ describe("validated settings-change delivery", () => {
 
   it("uses the field patch path for stale-prone settings writers and direct commit for recording", () => {
     expect(source("src/renderer/pill/Pill.tsx")).toContain("settings.patch({ microphoneId: nextMicrophoneId })");
+    expect(IPC).not.toHaveProperty("settingsSave");
+    expect(source("src/preload.ts")).not.toContain("settings.save");
     const settings = source("src/renderer/settings/screens/StyleSettings.tsx");
     expect(settings).toContain("settings.patch({");
     expect(settings).toContain("shortcuts.update({ kind, shortcut })");
