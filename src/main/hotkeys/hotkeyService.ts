@@ -205,10 +205,15 @@ export class HotkeyService {
         this.fallbackMonitorStarted = this.fallbackMonitor?.start(this.handleMonitorEvent) ?? false;
       } catch (error) {
         this.fallbackMonitorStarted = false;
-        console.warn("Hold-Control is unavailable because the native key-state monitor could not start", error);
+        console.warn(
+          `${this.holdShortcut} push-to-talk is unavailable because the native key-state monitor could not start`,
+          error,
+        );
       }
       if (!this.fallbackMonitorStarted) {
-        console.warn("Hold-Control is unavailable because the native key-state monitor could not start");
+        console.warn(
+          `${this.holdShortcut} push-to-talk is unavailable because the native key-state monitor could not start`,
+        );
       }
     } else if (this.holdShortcut !== "Control") {
       console.warn(`${this.holdShortcut} push-to-talk requires Accessibility on macOS`);
@@ -488,7 +493,7 @@ export class HotkeyService {
       if (!temporarilyRegistered) throw new Error(this.toggleUnavailableMessage(shortcut));
     } catch (error) {
       if (error instanceof Error && error.message.startsWith("Toggle dictation is unavailable")) throw error;
-      throw new Error(this.toggleUnavailableMessage(shortcut, error));
+      throw new Error(this.toggleUnavailableMessage(shortcut, error), { cause: error });
     } finally {
       if (temporarilyRegistered) globalShortcut.unregister(shortcut);
     }

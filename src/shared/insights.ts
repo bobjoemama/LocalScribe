@@ -1,6 +1,6 @@
 import type { Transcription } from "./contracts";
 
-export type InsightRange = "7d" | "30d" | "all";
+export type InsightRange = "7d" | "30d" | "recent";
 export type AppCategoryKey =
   | "personal"
   | "work"
@@ -134,7 +134,7 @@ export function categoryBreakdown(items: Transcription[]): AppCategoryBreakdown[
 }
 
 export function filterByRange(items: Transcription[], range: InsightRange, now = Date.now()): Transcription[] {
-  if (range === "all") return items;
+  if (range === "recent") return items;
   const days = range === "7d" ? 7 : 30;
   const cutoff = startOfLocalDay(now) - ((days - 1) * DAY_MS);
   return items.filter((item) => item.createdAt >= cutoff);
@@ -143,7 +143,7 @@ export function filterByRange(items: Transcription[], range: InsightRange, now =
 export function rangeLabel(range: InsightRange): string {
   if (range === "7d") return "7 days";
   if (range === "30d") return "30 days";
-  return "All history";
+  return "Recent 500";
 }
 
 export function recentActivity(items: Transcription[], days: number, now = Date.now()): ActivityPoint[] {

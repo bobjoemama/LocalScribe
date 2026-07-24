@@ -11,17 +11,16 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
-import numpy as np
-
 import localscribe_worker.worker as worker_module
+import numpy as np
 from localscribe_worker.worker import (
     MAX_REQUEST_BYTES,
+    TIER_SPECS,
     HardwareInfo,
     MLXWhisperRuntime,
     ModelFile,
     ModelManifest,
     TierSpec,
-    TIER_SPECS,
     TranscriptionResult,
     WorkerError,
     ensure_model,

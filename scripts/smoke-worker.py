@@ -5,10 +5,8 @@ import argparse
 import json
 import os
 import subprocess
-import sys
 import uuid
 from pathlib import Path
-
 
 MACOS_FAMILY_TIER_MANIFESTS = {
     "whisper-large-v3": {
@@ -61,6 +59,14 @@ def main() -> int:
         help="Explicitly permit downloading the pinned tier before the smoke test.",
     )
     args = parser.parse_args()
+    # Preserve the venv launcher path. Resolving its symlink would bypass the
+    # venv and make the packaged runtime's site-packages unavailable.
+    python_executable = Path(os.path.abspath(args.python))
+    if not python_executable.is_file():
+        raise RuntimeError(f"packaged Python executable not found: {python_executable}")
+    worker_directory = Path(args.worker).resolve(strict=True)
+    model_root = Path(args.model_root).resolve(strict=True)
+    audio_path = Path(args.audio).resolve(strict=True)
     manifest_filename, compute_type = MACOS_FAMILY_TIER_MANIFESTS[args.family][args.tier]
     manifest_path = (
         Path(__file__).resolve().parents[1]
@@ -74,15 +80,15 @@ def main() -> int:
         "HOME": str(Path.home()),
         "PATH": os.environ.get("PATH", "/usr/bin:/bin:/usr/sbin:/sbin"),
         "TMPDIR": os.environ.get("TMPDIR", "/tmp"),
-        "PYTHONPATH": args.worker,
+        "PYTHONPATH": str(worker_directory),
         "PYTHONUNBUFFERED": "1",
         "PYTHONDONTWRITEBYTECODE": "1",
         "HF_HUB_DISABLE_TELEMETRY": "1",
         "HF_HUB_DISABLE_IMPLICIT_TOKEN": "1",
     }
     process = subprocess.Popen(
-        [args.python, "-B", "-m", "localscribe_worker"],
-        cwd=args.worker,
+        [str(python_executable), "-B", "-m", "localscribe_worker"],
+        cwd=worker_directory,
         env=environment,
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
@@ -112,13 +118,13 @@ def main() -> int:
         "tier": args.tier,
         "modelId": model_id,
         "computeType": compute_type,
-        "modelRoot": args.model_root,
+        "modelRoot": str(model_root),
         "allowDownload": args.allow_download,
     })
     final = request({
         "type": "transcribe",
-        "audioPath": args.audio,
-        "allowedRoot": os.path.dirname(args.audio),
+        "audioPath": str(audio_path),
+        "allowedRoot": str(audio_path.parent),
         "language": "English",
         "context": "LocalScribe",
     })

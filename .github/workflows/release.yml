@@ -63,6 +63,9 @@ jobs:
       - name: Audit locked Python worker dependencies
         run: npm run audit:python
 
+      - name: Lint shared and macOS source
+        run: npm run lint:all
+
       - name: Typecheck
         run: npm run typecheck
 

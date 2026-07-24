@@ -12,7 +12,7 @@ function capitalizeSentences(text: string): string {
         return character.toLocaleUpperCase();
       }
       if (/[.!?\n]/u.test(character)) atSentenceStart = true;
-      else if (!/\s|[\u201c"'(\[{]/u.test(character)) atSentenceStart = false;
+      else if (!/\s|[\u201c"'([{]/u.test(character)) atSentenceStart = false;
       return character;
     })
     .join("");

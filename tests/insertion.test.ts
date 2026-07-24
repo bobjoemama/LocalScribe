@@ -337,14 +337,13 @@ describe("safe insertion", () => {
   });
 
   it("does not paste if the clipboard changes between the write and paste", async () => {
-    let clipboard!: FakeClipboard;
     const bridge = new FakeBridge([TARGET_A, TARGET_A], (readNumber, activeBridge) => {
       if (readNumber === 4) {
         activeBridge.sequence += 1;
         clipboard.currentText = "new user clipboard";
       }
     });
-    clipboard = new FakeClipboard(bridge);
+    const clipboard = new FakeClipboard(bridge);
     const paste = vi.fn();
     const insertion = coordinator(bridge, clipboard, paste);
 

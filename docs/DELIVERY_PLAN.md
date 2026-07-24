@@ -34,7 +34,9 @@ Implemented and source-tested:
 - target-guarded paste with copy-only fallback
 - history, dictionary, snippets, app profiles, deterministic text cleanup, and
   scratchpad
-- encrypted SQLite persistence
+- SQLite persistence with OS-keystore encryption for transcript text, snippet
+  expansions, and scratchpad bodies; operational metadata and dictionary rules
+  remain plaintext inside permission-restricted database files
 - platform permission/status surfaces
 
 Remaining GUI evidence: fresh-user microphone flow, global shortcut behavior,
@@ -69,7 +71,7 @@ Validation path:
 
 Production path:
 
-- protected manual release environment
+- manual `release` environment restricted to version tags
 - Developer ID Application identity only
 - hardened runtime and narrow per-helper entitlements
 - app notarization/stapling, DMG signing/notarization/stapling
@@ -92,7 +94,7 @@ Validation path:
 
 Production path:
 
-- protected manual release environment
+- manual `release` environment restricted to version tags
 - Authenticode certificate or managed signing parameters
 - required HTTPS timestamp server
 - signatures on app, helper, and Squirrel installer

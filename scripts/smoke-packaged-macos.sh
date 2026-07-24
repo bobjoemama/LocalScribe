@@ -9,6 +9,7 @@ executable="$app_path/Contents/MacOS/LocalScribe"
 
 node scripts/verify-packaged-main.mjs "$asar_path"
 codesign --verify --deep --strict "$app_path"
+node scripts/verify-macos-entitlements.mjs "$app_path"
 
 smoke_root="$(mktemp -d "${TMPDIR:-/tmp}/localscribe-macos-smoke.XXXXXX")"
 profile_path="$smoke_root/profile"

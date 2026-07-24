@@ -49,14 +49,14 @@ export function wordSequenceAt(
 function isClosingPunctuation(token: TextToken): boolean {
   return (
     token.kind === "punctuation" &&
-    (token.role === "close" || /^[,.;:!?%\)\]\}]$/u.test(token.value))
+    (token.role === "close" || ",.;:!?%)]}".includes(token.value))
   );
 }
 
 function isOpeningPunctuation(token: TextToken): boolean {
   return (
     token.kind === "punctuation" &&
-    (token.role === "open" || /^[\(\[\{]$/u.test(token.value))
+    (token.role === "open" || "([{".includes(token.value))
   );
 }
 

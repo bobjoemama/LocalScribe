@@ -1,4 +1,3 @@
-import type { ReactNode } from "react";
 import {
   DEFAULT_MODEL_FAMILY_ID,
   type ModelCatalog,

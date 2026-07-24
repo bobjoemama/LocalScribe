@@ -15,9 +15,10 @@ import tempfile
 import time
 import uuid
 import wave
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, BinaryIO, Callable, Protocol, TextIO
+from typing import Any, BinaryIO, Protocol, TextIO
 
 PROTOCOL_VERSION = 1
 BACKEND_NAME = "mlx-whisper"
@@ -739,7 +740,7 @@ class MLXWhisperRuntime:
         self._model_path = model_path
 
     @classmethod
-    def load(cls, model_directory: Path, _spec: TierSpec) -> "MLXWhisperRuntime":
+    def load(cls, model_directory: Path, _spec: TierSpec) -> MLXWhisperRuntime:
         if not model_directory.is_absolute():
             raise WorkerError("model_load_failed", "local model path is invalid")
         try:

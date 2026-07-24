@@ -36,6 +36,7 @@ const MAC_PLUGIN_ENTITLEMENTS = path.resolve("resources/entitlements.mac.plugin.
 const MAC_ACTIVE_TARGET_ENTITLEMENTS = path.resolve(
   "resources/entitlements.mac.active-target.plist",
 );
+const MAC_RUNTIME_ENTITLEMENTS = path.resolve("resources/entitlements.mac.runtime.plist");
 const PUBLIC_RELEASE = process.env.LOCALSCRIBE_RELEASE === "1";
 
 function requireReleaseEnvironment(name: string): string {
@@ -55,7 +56,7 @@ function resolveSigningIdentity(): string {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
     });
-    return identities.match(/\"(Apple Development:[^\"]+)\"/)?.[1] ?? "-";
+    return identities.match(/"(Apple Development:[^"]+)"/)?.[1] ?? "-";
   } catch {
     return "-";
   }
@@ -101,13 +102,16 @@ validatePublicReleaseConfiguration();
 
 function signingEntitlementsFor(filePath: string): string {
   const normalizedPath = filePath.replaceAll("\\", "/");
-  if (normalizedPath.endsWith("/Contents/Resources/native/macos/active-target")) {
+  if (normalizedPath.endsWith("/native/macos/active-target")) {
     return MAC_ACTIVE_TARGET_ENTITLEMENTS;
   }
-  if (filePath.includes("LocalScribe Helper (Plugin).app")) {
+  if (normalizedPath.includes("/python-runtime/")) {
+    return MAC_RUNTIME_ENTITLEMENTS;
+  }
+  if (normalizedPath.includes("LocalScribe Helper (Plugin).app")) {
     return MAC_PLUGIN_ENTITLEMENTS;
   }
-  if (filePath.includes("LocalScribe Helper")) {
+  if (normalizedPath.includes("LocalScribe Helper")) {
     return MAC_HELPER_ENTITLEMENTS;
   }
   return MAC_ENTITLEMENTS;
@@ -473,6 +477,11 @@ const config: ForgeConfig = {
             execFileSync("codesign", ["--verify", "--deep", "--strict", "--verbose=4", appPath], {
               stdio: "inherit",
             });
+            execFileSync(
+              process.execPath,
+              [path.resolve("scripts/verify-macos-entitlements.mjs"), appPath],
+              { stdio: "inherit" },
+            );
             if (PUBLIC_RELEASE) {
               execFileSync("xcrun", ["stapler", "staple", appPath], { stdio: "inherit" });
               execFileSync("xcrun", ["stapler", "validate", appPath], { stdio: "inherit" });

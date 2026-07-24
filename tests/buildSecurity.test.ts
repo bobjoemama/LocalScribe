@@ -33,6 +33,8 @@ describe("release hardening configuration", () => {
     expect(releaseWorkflow.match(/npm install --global npm@11\.16\.0/g)).toHaveLength(3);
     expect(ciWorkflow.match(/npm run toolchain:verify:npm/g)).toHaveLength(2);
     expect(releaseWorkflow.match(/npm run toolchain:verify:npm/g)).toHaveLength(3);
+    expect(ciWorkflow.match(/npm run lint(?::all)?/g)).toHaveLength(2);
+    expect(releaseWorkflow).toContain("npm run lint:all");
     expect(projectFile("scripts/verify-npm-version.mjs")).toContain(
       "actualVersion !== expectedVersion",
     );
@@ -55,7 +57,9 @@ describe("release hardening configuration", () => {
     const activeTargetEntitlements = projectFile(
       "resources/entitlements.mac.active-target.plist",
     );
+    const runtimeEntitlements = projectFile("resources/entitlements.mac.runtime.plist");
     const forgeConfig = projectFile("forge.config.ts");
+    const entitlementVerifier = projectFile("scripts/verify-macos-entitlements.mjs");
 
     expect(mainEntitlements).toContain("com.apple.security.cs.allow-jit");
     expect(mainEntitlements).toContain("com.apple.security.device.audio-input");
@@ -71,15 +75,25 @@ describe("release hardening configuration", () => {
       expect(helperEntitlements).not.toContain(forbidden);
       expect(pluginEntitlements).not.toContain(forbidden);
       expect(activeTargetEntitlements).not.toContain(forbidden);
+      expect(runtimeEntitlements).not.toContain(forbidden);
     }
     expect(activeTargetEntitlements).toContain("<dict/>");
     expect(activeTargetEntitlements).not.toContain("<key>");
+    expect(runtimeEntitlements).toContain("<dict/>");
+    expect(runtimeEntitlements).not.toContain("<key>");
     expect(forgeConfig).toContain("MAC_ACTIVE_TARGET_ENTITLEMENTS");
+    expect(forgeConfig).toContain("MAC_RUNTIME_ENTITLEMENTS");
     expect(forgeConfig).toContain("signProtectedMacResources();");
     expect(forgeConfig).toContain("ignore: isPreSignedProtectedMacResource");
     expect(forgeConfig).toContain("codesign\", [\"--verify\", \"--strict\", binary]");
     expect(forgeConfig).toContain(
-      'normalizedPath.endsWith("/Contents/Resources/native/macos/active-target")',
+      'normalizedPath.endsWith("/native/macos/active-target")',
+    );
+    expect(forgeConfig).toContain('normalizedPath.includes("/python-runtime/")');
+    expect(forgeConfig).toContain("verify-macos-entitlements.mjs");
+    expect(entitlementVerifier).toContain("assertNoEntitlementKeys(activeTarget)");
+    expect(entitlementVerifier).toContain(
+      "for (const binary of runtimeMachOFiles) assertNoEntitlementKeys(binary)",
     );
 
     expect(forgeConfig).toContain('removeInfoPlistKeyIfPresent(infoPlist, "NSAppTransportSecurity.NSAllowsArbitraryLoads")');
@@ -201,6 +215,12 @@ describe("release hardening configuration", () => {
       expect(source).toContain('process.env.LOCALSCRIBE_PRIVATE_SOURCEMAPS === "1"');
       expect(source).not.toContain("sourcemap: true");
     }
+    expect(projectFile("vite.preload.config.ts")).toContain(
+      "delete outputOptions.inlineDynamicImports",
+    );
+    expect(projectFile("vite.preload.config.ts")).toContain(
+      "outputOptions.codeSplitting = false",
+    );
   });
 
   it("builds both worker runtimes from their committed uv locks", () => {
@@ -310,10 +330,10 @@ describe("release hardening configuration", () => {
       releaseWorkflow.indexOf("  windows:"),
     );
     const macJobHeader = releaseWorkflow.match(
-      /  macos:\n((?:    .*\n)*)    steps:/u,
+      / {2}macos:\n((?: {4}.*\n)*) {4}steps:/u,
     )?.[1];
     const windowsJobHeader = releaseWorkflow.match(
-      /  windows:\n((?:    .*\n)*)    steps:/u,
+      / {2}windows:\n((?: {4}.*\n)*) {4}steps:/u,
     )?.[1];
 
     expect(releaseWorkflow).toContain("expected_ref=\"refs/tags/v${release_version}\"");

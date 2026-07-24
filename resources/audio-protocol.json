@@ -6,5 +6,6 @@
   "channels": 1,
   "bitsPerSample": 16,
   "maxDurationMs": 600000,
-  "maxFileBytes": 20971520
+  "maxFileBytes": 20971520,
+  "maxAsrContextChars": 4000
 }

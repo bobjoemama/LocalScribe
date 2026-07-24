@@ -303,6 +303,7 @@ export class WorkerSupervisor {
       if (error instanceof Error && error.message.includes("model_not_installed")) {
         throw new Error(
           "Local speech model is not installed. Open LocalScribe Settings > Model & Performance to install it before dictating.",
+          { cause: error },
         );
       }
       throw error;

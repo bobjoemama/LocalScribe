@@ -60,6 +60,7 @@ import {
 import { HotkeyService } from "./main/hotkeys/hotkeyService";
 import { defaultMacControlMonitorPath, MacControlMonitor } from "./main/hotkeys/macControlMonitor";
 import { InsertionService } from "./main/insertion/insertionService";
+import { buildDictionaryAsrContext } from "./shared/dictionaryContext";
 import { applyLocalTextRules } from "./shared/textPipeline";
 import { transformDictation } from "./shared/text";
 import { ERROR_NOTICE_DURATION_MS, normalizeDictationErrorMessage } from "./shared/dictationErrors";
@@ -85,7 +86,6 @@ import {
   pillSizeFor,
 } from "./shared/pillLayout";
 import {
-  RENDERER_PROTOCOL_HOST,
   RENDERER_PROTOCOL_SCHEME,
   rendererUrlForSurface,
   resolvePackagedRendererPath,
@@ -839,10 +839,8 @@ function registerIpc(): void {
       const resolution = await currentModelResolution();
       assertResolutionFitsMemory(resolution);
       const concreteModel = resolution.tier.manifest;
-      const terms = database
-        .listDictionary()
-        .map((entry) => `${entry.phrase}=${entry.replacement}`)
-        .join(", ");
+      const dictionary = database.listDictionary();
+      const terms = buildDictionaryAsrContext(dictionary);
       const result = await worker.transcribe({
         model: workerSelection(resolution.tier),
         audioPath,
@@ -870,7 +868,7 @@ function registerIpc(): void {
       });
       const text = applyLocalTextRules(
         transformed.text,
-        database.listDictionary(),
+        dictionary,
         database.listSnippets(),
         { normalizeSpacing: cleanup.smartPunctuation },
       );
@@ -1346,6 +1344,8 @@ async function finishShutdown(): Promise<void> {
   } catch (error) {
     console.warn("LocalScribe database could not close cleanly", error);
   }
+  tray?.destroy();
+  tray = null;
   app.exit(0);
 }
 

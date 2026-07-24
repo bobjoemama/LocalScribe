@@ -13,12 +13,9 @@ import {
   isAudioProtocolWav,
 } from "./audioProtocol";
 import {
-  MODEL_PERFORMANCE_MODES,
   MODEL_PERFORMANCE_TIERS,
   modelPerformanceModeSchema,
   modelPerformanceTierSchema,
-  type ModelPerformanceMode,
-  type ModelPerformanceTier,
 } from "./modelPerformance";
 
 export {
