@@ -87,10 +87,12 @@ codesign --verify --deep --strict --verbose=4 \
 Windows app and installer must be produced on Windows:
 
 ```powershell
-npm run make:windows
-Get-AuthenticodeSignature `
-  out\make\squirrel.windows\x64\LocalScribe-Setup.exe
+npm run verify:local:windows
+npm run verify:local:windows -- -RequireCuda
 ```
 
-The Authenticode result is expected to be `NotSigned` for a normal validation
-build and `Valid` only in fail-closed public release mode.
+The complete gate builds and smokes the package, validates the target-native
+module inventory and both SBOMs, and checks every packaged `.exe`, `.dll`, and
+`.node` plus Setup.exe. The Authenticode result is expected to be `NotSigned`
+or an existing valid vendor signature for a normal validation build, and
+`Valid` for every checked file in fail-closed public release mode.

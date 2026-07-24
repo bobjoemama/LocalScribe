@@ -9,7 +9,9 @@ const checks = [
   ["run", "audit:all"],
   ["run", "worker:check-locks"],
   ["run", "audit:python"],
+  ["run", "verify:windows:source"],
   ["run", "lint:all"],
+  ["run", "worker:test:windows"],
   ["run", "typecheck"],
   ["test", "--", "--reporter=dot"],
 ];

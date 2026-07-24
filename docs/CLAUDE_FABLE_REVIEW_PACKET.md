@@ -397,6 +397,7 @@ control:
 - rejection of extra, missing, changed, unsupported, oversized, broken, or
   escaping-symlink entries;
 - cross-platform resource exclusion;
+- target-only pruning and validation for unpacked native Node binaries;
 - macOS pre-signing of protected Mach-O resources before the expected root is
   generated, preservation during outer app signing, and final deep signature
   verification;
@@ -544,9 +545,10 @@ sealed bundle and invalidate that local unpacked copy.
 On Windows x64:
 
 ```powershell
-npm run make:windows
-& resources\python-runtime-windows\venv\Scripts\python.exe `
-  -B -m unittest discover -s worker\windows_transformers\tests -v
+npm run verify:local:windows
+npm run verify:local:windows -- -RequireCuda
+npm run verify:local:windows -- -RequireCuda `
+  -CudaModelRoot "$env:APPDATA\LocalScribe\models"
 Get-AuthenticodeSignature <signed-artifact>
 ```
 

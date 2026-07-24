@@ -59,11 +59,11 @@ class FakeArray:
         self.dtype: Any = "<i2"
         self.shape = (len(raw) // 2,)
 
-    def astype(self, dtype: Any) -> "FakeArray":
+    def astype(self, dtype: Any) -> FakeArray:
         self.dtype = dtype
         return self
 
-    def __truediv__(self, _value: float) -> "FakeArray":
+    def __truediv__(self, _value: float) -> FakeArray:
         return self
 
 
@@ -205,12 +205,15 @@ class AudioValidationTests(unittest.TestCase):
                 with self.subTest(label=label):
                     fstat_calls = 0
 
-                    def changing_fstat(descriptor: int) -> os.stat_result:
+                    def changing_fstat(
+                        descriptor: int,
+                        changed_stat_index: int = stat_index,
+                    ) -> os.stat_result:
                         nonlocal fstat_calls
                         fstat_calls += 1
                         metadata_values = list(real_fstat(descriptor))
                         if fstat_calls == 2:
-                            metadata_values[stat_index] += 1
+                            metadata_values[changed_stat_index] += 1
                         return os.stat_result(metadata_values)
 
                     with (
@@ -1183,6 +1186,66 @@ class ModelIntegrityTests(unittest.TestCase):
 
 
 class FasterWhisperRuntimeTests(unittest.TestCase):
+    def test_cuda_dll_configuration_adds_only_bundled_directories_once(self) -> None:
+        with (
+            tempfile.TemporaryDirectory() as temporary,
+            tempfile.TemporaryDirectory() as outside,
+        ):
+            prefix = Path(temporary)
+            cublas_root = prefix / "Lib" / "site-packages" / "nvidia" / "cublas"
+            cudnn_root = prefix / "Lib" / "site-packages" / "nvidia" / "cudnn"
+            outside_root = Path(outside) / "nvidia" / "cuda_nvrtc"
+            for root in (cublas_root, cudnn_root, outside_root):
+                (root / "bin").mkdir(parents=True)
+
+            specs = {
+                "nvidia.cublas": types.SimpleNamespace(
+                    submodule_search_locations=[str(cublas_root)],
+                    origin=None,
+                ),
+                "nvidia.cuda_nvrtc": types.SimpleNamespace(
+                    submodule_search_locations=[str(outside_root)],
+                    origin=None,
+                ),
+                "nvidia.cudnn": types.SimpleNamespace(
+                    submodule_search_locations=[str(cudnn_root), str(cublas_root)],
+                    origin=None,
+                ),
+            }
+            added: list[str] = []
+            original_configured = worker_module._CUDA_DLLS_CONFIGURED
+            original_handles = list(worker_module._DLL_DIRECTORY_HANDLES)
+            try:
+                worker_module._CUDA_DLLS_CONFIGURED = False
+                worker_module._DLL_DIRECTORY_HANDLES.clear()
+                with (
+                    patch.object(worker_module.sys, "platform", "win32"),
+                    patch.object(worker_module.sys, "prefix", str(prefix)),
+                    patch.object(
+                        worker_module.importlib.util,
+                        "find_spec",
+                        side_effect=lambda name: specs[name],
+                    ),
+                    patch.object(
+                        worker_module.os,
+                        "add_dll_directory",
+                        side_effect=lambda directory: added.append(directory) or object(),
+                        create=True,
+                    ),
+                    patch.dict(worker_module.os.environ, {"PATH": "existing"}, clear=True),
+                ):
+                    worker_module._configure_windows_cuda_dlls()
+                    worker_module._configure_windows_cuda_dlls()
+                    configured_path = worker_module.os.environ["PATH"]
+            finally:
+                worker_module._CUDA_DLLS_CONFIGURED = original_configured
+                worker_module._DLL_DIRECTORY_HANDLES[:] = original_handles
+
+        expected = [str((cublas_root / "bin").resolve()), str((cudnn_root / "bin").resolve())]
+        self.assertCountEqual(added, expected)
+        self.assertTrue(all(configured_path.split(os.pathsep).count(entry) == 1 for entry in expected))
+        self.assertNotIn(str((outside_root / "bin").resolve()), configured_path)
+
     def test_load_is_local_only_cuda_and_validates_supported_compute_type(self) -> None:
         calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
 

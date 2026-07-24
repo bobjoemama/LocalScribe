@@ -12,7 +12,9 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   assertPlatformResourceEntries,
+  assertPackagedNativeModuleTargets,
   assertProductionPackageEntries,
+  prunePackagedNativeModules,
   prunePackagedResources,
   productionDependencyClosure,
   pruneStagedNodeModules,
@@ -328,5 +330,67 @@ describe("packaged dependency inventory", () => {
       "faster-whisper-large-v2.json",
       "faster-whisper-large-v3.json",
     ]);
+  });
+
+  it.each([
+    ["darwin", "arm64"],
+    ["win32", "x64"],
+  ] as const)("keeps only %s/%s native npm binaries", (platform, arch) => {
+    const resources = makeTemporaryProject();
+    const unpacked = path.join(resources, "app.asar.unpacked", "node_modules");
+    const files = [
+      "better-sqlite3/prebuilds/darwin-arm64.node",
+      "better-sqlite3/prebuilds/darwin-x64.node",
+      "better-sqlite3/prebuilds/linux-x64.node",
+      "better-sqlite3/prebuilds/win32-x64.node",
+      "uiohook-napi/bin/darwin-arm64-148/uiohook-napi.node",
+      "uiohook-napi/build/Release/uiohook_napi.node",
+      "uiohook-napi/prebuilds/darwin-arm64/uiohook-napi.node",
+      "uiohook-napi/prebuilds/linux-x64/uiohook-napi.node",
+      "uiohook-napi/prebuilds/win32-x64/uiohook-napi.node",
+    ];
+    for (const file of files) {
+      mkdirSync(path.dirname(path.join(unpacked, file)), { recursive: true });
+      writeFileSync(path.join(unpacked, file), "fixture");
+    }
+
+    prunePackagedNativeModules(resources, platform, arch);
+    expect(() =>
+      assertPackagedNativeModuleTargets(resources, platform, arch)
+    ).not.toThrow();
+
+    const remainingNativeBinaries = readdirSync(
+      path.join(unpacked, "better-sqlite3", "prebuilds"),
+    );
+    expect(remainingNativeBinaries).toEqual([`${platform}-${arch}.node`]);
+    expect(existsSync(path.join(unpacked, "uiohook-napi", "bin"))).toBe(false);
+    expect(
+      existsSync(
+        path.join(
+          unpacked,
+          "uiohook-napi",
+          "prebuilds",
+          `${platform}-${arch}`,
+          "uiohook-napi.node",
+        ),
+      ),
+    ).toBe(true);
+  });
+
+  it("rejects a Windows package containing a macOS native module", () => {
+    const resources = makeTemporaryProject();
+    const unpacked = path.join(resources, "app.asar.unpacked", "node_modules");
+    for (const file of [
+      "better-sqlite3/prebuilds/win32-x64.node",
+      "uiohook-napi/prebuilds/win32-x64/uiohook-napi.node",
+      "uiohook-napi/prebuilds/darwin-arm64/uiohook-napi.node",
+    ]) {
+      mkdirSync(path.dirname(path.join(unpacked, file)), { recursive: true });
+      writeFileSync(path.join(unpacked, file), "fixture");
+    }
+
+    expect(() =>
+      assertPackagedNativeModuleTargets(resources, "win32", "x64")
+    ).toThrow(/darwin-arm64/);
   });
 });

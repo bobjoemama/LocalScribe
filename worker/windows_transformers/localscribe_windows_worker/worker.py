@@ -14,9 +14,10 @@ import tempfile
 import time
 import uuid
 import wave
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, BinaryIO, Callable, Protocol, TextIO
+from typing import Any, BinaryIO, Protocol, TextIO
 
 PROTOCOL_VERSION = 1
 BACKEND_NAME = "faster-whisper-ctranslate2"
@@ -864,7 +865,7 @@ class FasterWhisperRuntime:
         model_directory: Path,
         compute_type: str,
         manifest: ModelManifest,
-    ) -> "FasterWhisperRuntime":
+    ) -> FasterWhisperRuntime:
         if compute_type not in TIER_COMPUTE_TYPES.values():
             raise WorkerError("invalid_compute_type", "compute type is not allowed")
         if not _valid_model_directory(model_directory, manifest):

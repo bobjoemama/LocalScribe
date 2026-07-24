@@ -103,10 +103,16 @@ Visual Studio 2026. Then run:
 
 ```powershell
 npm ci --strict-allow-scripts
-npm run worker:check-locks
-npm run worker:bundle:windows
-npm run native:build:windows
+npm run verify:local:windows
 ```
+
+`verify:local` first performs a Windows x64 npm clean-install simulation and a
+locked `uv sync --dry-run --no-build` against
+`x86_64-pc-windows-msvc`. This catches missing platform-specific lock records
+and missing binary wheels before target packaging. It also lints and runs the
+dependency-light Windows worker tests. The target-machine wrapper additionally
+requires the exact Node version pinned in `.nvmrc`; npm is checked against the
+exact `packageManager` pin.
 
 The runtime builder:
 
@@ -118,9 +124,10 @@ The runtime builder:
 - removes wheel tests, caches, bytecode, activation/build scripts, and
   developer console entrypoints.
 
-The native build compiles `active-target.cpp` for x64 with `/sdl`, `/GS`,
-Control Flow Guard, ASLR, DEP, CET compatibility, and strict warnings, then
-runs deterministic self-test and clipboard smoke commands.
+The native build compiles `active-target.cpp` for x64 with `/analyze`, `/sdl`,
+`/GS`, Control Flow Guard, high-entropy ASLR, DEP, CET compatibility,
+System32-only dependent DLL search, and warnings-as-errors, then runs
+deterministic self-test and clipboard smoke commands.
 
 Run the worker’s dependency-light mocked tests with the bundled interpreter:
 
@@ -132,12 +139,37 @@ Run the worker’s dependency-light mocked tests with the bundled interpreter:
 Create a complete Squirrel validation installer:
 
 ```powershell
-npm run make:windows
+npm run verify:local:windows
 ```
 
 This produces `LocalScribe-Setup.exe`, `RELEASES`, and a `.nupkg` under
-`out\make\`. Forge refuses to package when the runtime, helper, model manifest,
-worker entrypoints, or Windows tray icon are missing.
+`out\make\`, plus the two Windows CycloneDX SBOMs and
+`out\SHA256SUMS-windows.txt`. Forge refuses to package when the runtime,
+helper, model manifest, worker entrypoints, or Windows tray icon are missing.
+The complete gate also starts the packaged app with an isolated profile,
+re-runs the worker tests with the bundled interpreter, checks inference imports,
+and validates the expected Authenticode state.
+
+On an NVIDIA-equipped validation machine, require CUDA discovery and every
+advertised compute type:
+
+```powershell
+npm run verify:local:windows -- -RequireCuda
+```
+
+This verifies the pinned CTranslate2/faster-whisper/NumPy/NVML versions,
+CTranslate2 CUDA device discovery, current NVML memory telemetry, and support
+for `float16`, `int8_float16`, and `int8`. It does not by itself load the
+3.09 GB model or prove transcription accuracy.
+
+If the pinned model is already installed, add its parent model directory to
+perform a checksum-verified medium-tier CUDA load and a one-second local
+inference without any implicit download:
+
+```powershell
+npm run verify:local:windows -- -RequireCuda `
+  -CudaModelRoot "$env:APPDATA\LocalScribe\models"
+```
 
 ## Signing
 
@@ -148,9 +180,10 @@ is enabled only with `LOCALSCRIBE_RELEASE=1` and requires either:
 - `WINDOWS_CERTIFICATE_FILE` plus `WINDOWS_CERTIFICATE_PASSWORD`.
 
 `WINDOWS_TIMESTAMP_SERVER` is also required and must use HTTPS. Release mode
-signs the packaged app/helper and Squirrel artifacts, then checks
-`Get-AuthenticodeSignature` for the app, helper, and Setup.exe. Missing
-credentials fail before packaging.
+signs the complete packaged PE inventory and Squirrel artifacts, then checks
+`Get-AuthenticodeSignature` for every packaged `.exe`, `.dll`, and `.node`
+file plus Setup.exe. Opposite-platform native Node binaries are removed before
+signing. Missing credentials fail before packaging.
 
 ## Evidence boundary
 
@@ -163,6 +196,9 @@ Local verification on a Windows 11 x64 machine can establish:
 - MSVC x64 helper compile/self-test;
 - native Node rebuild and Squirrel artifact creation;
 - whole-package platform isolation;
+- packaged startup, bundled inference imports, SBOMs, and artifact checksums;
+- CUDA device/compute-profile discovery when `-RequireCuda` is used;
+- checksum-verified model load and inference when `-CudaModelRoot` is supplied;
 - Authenticode validity when local release credentials are configured.
 
 A build performed without a physical NVIDIA validation pass cannot establish:

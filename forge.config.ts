@@ -18,6 +18,7 @@ import { execFileSync } from "node:child_process";
 import path from "node:path";
 import {
   assertPackagedAppInventory,
+  prunePackagedNativeModules,
   prunePackagedResources,
   pruneStagedNodeModules,
   resourcePolicyFor,
@@ -354,6 +355,7 @@ const config: ForgeConfig = {
           }
           const resourcesPath = resourcesPathInStaging(stagingPath, platform);
           prunePackagedResources(resourcesPath, platform, arch);
+          prunePackagedNativeModules(resourcesPath, platform, arch);
 
           if (platform === "darwin") {
             const infoPlist = path.join(stagingPath, "LocalScribe.app", "Contents", "Info.plist");

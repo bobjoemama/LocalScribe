@@ -399,6 +399,93 @@ export function prunePackagedResources(
   removeForbiddenArtifacts(path.join(resourcesPath, policy.runtimeDirectory));
 }
 
+function targetNativeModulePaths(
+  platform: PackagedPlatform,
+  arch: string,
+): {
+  betterSqlite: string;
+  uiohookPrebuild: string;
+} {
+  // Validate the target against the same release policy used by the rest of
+  // the packager before deriving filesystem paths from it.
+  resourcePolicyFor(platform, arch);
+  return {
+    betterSqlite: `node_modules/better-sqlite3/prebuilds/${platform}-${arch}.node`,
+    uiohookPrebuild:
+      `node_modules/uiohook-napi/prebuilds/${platform}-${arch}/uiohook-napi.node`,
+  };
+}
+
+/**
+ * Native npm packages publish binaries for several operating systems in one
+ * tarball. Electron only needs the selected target. Keep the rebuilt
+ * uiohook Release binary plus its same-target prebuild fallback, while
+ * removing every opposite-platform binary before the signing pass.
+ */
+export function prunePackagedNativeModules(
+  resourcesPath: string,
+  platform: PackagedPlatform,
+  arch: string,
+): void {
+  const unpackedPath = path.join(resourcesPath, "app.asar.unpacked");
+  const targets = targetNativeModulePaths(platform, arch);
+
+  retainOnly(
+    path.join(unpackedPath, "node_modules", "better-sqlite3", "prebuilds"),
+    new Set([targets.betterSqlite.replace("node_modules/better-sqlite3/prebuilds/", "")]),
+  );
+  retainOnly(
+    path.join(unpackedPath, "node_modules", "uiohook-napi", "prebuilds"),
+    new Set([targets.uiohookPrebuild.replace("node_modules/uiohook-napi/prebuilds/", "")]),
+  );
+
+  // @electron/rebuild may leave a second ABI-labelled copy here. node-gyp-build
+  // resolves build/Release first and then prebuilds; it never reads bin/.
+  rmSync(
+    path.join(unpackedPath, "node_modules", "uiohook-napi", "bin"),
+    { recursive: true, force: true },
+  );
+}
+
+export function assertPackagedNativeModuleTargets(
+  resourcesPath: string,
+  platform: PackagedPlatform,
+  arch: string,
+): void {
+  const unpackedPath = path.join(resourcesPath, "app.asar.unpacked");
+  const targets = targetNativeModulePaths(platform, arch);
+  const nativeEntries = walkEntries(unpackedPath)
+    .map(normalizeEntry)
+    .filter((entry) => entry.endsWith(".node"))
+    .sort();
+
+  const allowedUiohookRelease =
+    /^node_modules\/uiohook-napi\/build\/Release\/[^/]+\.node$/;
+  const unexpected = nativeEntries.filter((entry) =>
+    entry !== targets.betterSqlite &&
+    entry !== targets.uiohookPrebuild &&
+    !allowedUiohookRelease.test(entry),
+  );
+  const missing = [
+    !nativeEntries.includes(targets.betterSqlite) ? targets.betterSqlite : null,
+    !nativeEntries.some((entry) =>
+      entry === targets.uiohookPrebuild || allowedUiohookRelease.test(entry)
+    )
+      ? `${targets.uiohookPrebuild} or a rebuilt uiohook Release binary`
+      : null,
+  ].filter((entry): entry is string => entry !== null);
+
+  if (unexpected.length > 0 || missing.length > 0) {
+    const problems = [
+      unexpected.length > 0
+        ? `opposite-platform or unexpected native modules: ${unexpected.join(", ")}`
+        : null,
+      missing.length > 0 ? `required target native modules missing: ${missing.join(", ")}` : null,
+    ].filter((problem): problem is string => problem !== null);
+    throw new Error(`Packaged native module check failed: ${problems.join("; ")}`);
+  }
+}
+
 /**
  * The release gate checks app.asar, app.asar.unpacked, and every copied runtime
  * resource. Native modules live outside ASAR, so an archive-only scan would
@@ -421,6 +508,7 @@ export function assertPackagedAppInventory(
     [...archiveEntries, ...unpackedEntries],
     productionDependencyClosure(projectPath),
   );
+  assertPackagedNativeModuleTargets(resourcesPath, platform, arch);
 
   assertContainedSymlinks(resourcesPath);
   assertPlatformResourceEntries(walkEntries(resourcesPath), platform, arch);

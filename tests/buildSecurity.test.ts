@@ -33,13 +33,21 @@ describe("release hardening configuration", () => {
     expect(packageJson.scripts?.["verify:local:macos"]).toBe(
       "bash scripts/verify-local-macos.sh",
     );
+    expect(packageJson.scripts?.["verify:windows:source"]).toBe(
+      "node scripts/verify-windows-source.mjs",
+    );
+    expect(packageJson.scripts?.["verify:local:windows"]).toBe(
+      "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify-local-windows.ps1",
+    );
     for (const command of [
       '["run", "toolchain:verify:npm"]',
       '["run", "audit:production"]',
       '["run", "audit:all"]',
       '["run", "worker:check-locks"]',
       '["run", "audit:python"]',
+      '["run", "verify:windows:source"]',
       '["run", "lint:all"]',
+      '["run", "worker:test:windows"]',
       '["run", "typecheck"]',
       '["test", "--", "--reporter=dot"]',
     ]) {
@@ -50,6 +58,67 @@ describe("release hardening configuration", () => {
     );
     expect(existsSync(resolve(root, ".github/workflows/ci.yml"))).toBe(false);
     expect(existsSync(resolve(root, ".github/workflows/release.yml"))).toBe(false);
+  });
+
+  it("cross-checks Windows npm and Python locks before target-machine packaging", () => {
+    const packageJson = JSON.parse(projectFile("package.json")) as {
+      scripts: Record<string, string>;
+    };
+    const windowsVerification = projectFile("scripts/verify-windows-source.mjs");
+    const packageLock = projectFile("package-lock.json");
+
+    expect(packageJson.scripts["worker:test:windows"]).toContain(
+      "uv run --project worker/windows_transformers --locked",
+    );
+    expect(packageJson.scripts["lint:python:windows"]).toContain(
+      "worker/windows_transformers/localscribe_windows_worker",
+    );
+    expect(packageJson.scripts["lint:all"]).toContain("lint:python:windows");
+    for (const expected of [
+      '"ci"',
+      '"--dry-run"',
+      '"--strict-allow-scripts"',
+      '"--os=win32"',
+      '"--cpu=x64"',
+      '"--python-platform"',
+      '"x86_64-pc-windows-msvc"',
+      '"--no-build"',
+      '"--locked"',
+    ]) {
+      expect(windowsVerification).toContain(expected);
+    }
+    expect(packageLock).toContain('"node_modules/@emnapi/core"');
+    expect(packageLock).toContain('"node_modules/@emnapi/runtime"');
+  });
+
+  it("provides a complete target-machine Windows and CUDA verification gate", () => {
+    const windowsVerification = projectFile("scripts/verify-local-windows.ps1");
+    const cudaSmoke = projectFile("scripts/smoke-windows-cuda.py");
+
+    for (const expected of [
+      "npm run verify:local",
+      '".nvmrc"',
+      "Node version mismatch",
+      "npm run make:windows",
+      "npm run smoke:packaged:windows",
+      "worker\\windows_transformers\\tests",
+      "sbom:runtime:windows",
+      "sbom:python:windows",
+      "SHA256SUMS-windows.txt",
+      "Get-AuthenticodeSignature",
+      "$RequireCuda",
+      "$CudaModelRoot",
+      "scripts\\smoke-windows-cuda.py",
+    ]) {
+      expect(windowsVerification).toContain(expected);
+    }
+    expect(cudaSmoke).toContain("get_cuda_device_count");
+    expect(cudaSmoke).toContain('get_supported_compute_types("cuda", 0)');
+    expect(cudaSmoke).toContain("query_device_info()");
+    expect(cudaSmoke).toContain("FasterWhisperRuntime.load");
+    expect(cudaSmoke).toContain('"--model-root"');
+    expect(cudaSmoke).toContain('"ctranslate2", "4.8.1"');
+    expect(cudaSmoke).toContain('"faster-whisper", "1.2.1"');
   });
 
   it("uses narrow macOS entitlements and strips Electron's unused permission declarations", () => {
@@ -170,6 +239,7 @@ describe("release hardening configuration", () => {
     expect(forgeConfig).toContain('file === "/package.json"');
     expect(forgeConfig).toContain("pruneStagedNodeModules(buildPath)");
     expect(forgeConfig).toContain("prunePackagedResources(resourcesPath, platform, arch)");
+    expect(forgeConfig).toContain("prunePackagedNativeModules(resourcesPath, platform, arch)");
     expect(forgeConfig).toContain("assertPackagedAppInventory(resourcesPath, platform, arch)");
     expect(forgeConfig).toContain("assertPackagedAppInventory(resourcesPath, result.platform, result.arch)");
   });
@@ -249,6 +319,9 @@ describe("release hardening configuration", () => {
     );
     expect(windowsHelperBuild).toContain("-prerelease");
     expect(windowsHelperBuild).toContain("VC\\Auxiliary\\Build\\vcvars64.bat");
+    expect(windowsHelperBuild).toContain('"/analyze"');
+    expect(windowsHelperBuild).toContain('"/HIGHENTROPYVA"');
+    expect(windowsHelperBuild).toContain('"/DEPENDENTLOADFLAG:0x800"');
     expect(windowsHelperBuild).not.toContain(
       "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
     );

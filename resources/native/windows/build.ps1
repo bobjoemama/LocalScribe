@@ -85,6 +85,7 @@ try {
     "/EHsc",
     "/W4",
     "/WX",
+    "/analyze",
     "/permissive-",
     "/sdl",
     "/GS",
@@ -103,9 +104,11 @@ try {
     "user32.lib",
     "/MACHINE:X64",
     "/DYNAMICBASE",
+    "/HIGHENTROPYVA",
     "/NXCOMPAT",
     "/guard:cf",
     "/CETCOMPAT",
+    "/DEPENDENTLOADFLAG:0x800",
     "/OPT:REF",
     "/OPT:ICF"
   )
