@@ -18,8 +18,11 @@ Major runtime components include:
 This summary is not an exhaustive dependency list. Every release candidate
 must include:
 
-1. a CycloneDX production npm SBOM generated with `npm run --silent sbom`;
-2. Python package metadata and license files preserved in the bundled runtime;
+1. the target platform's CycloneDX core-runtime SBOM, generated with
+   `npm run --silent sbom:runtime:macos` or
+   `npm run --silent sbom:runtime:windows`;
+2. the target platform's locked Python-dependency CycloneDX SBOM, with Python
+   package metadata and license files preserved in the bundled runtime;
 3. the exact model license recorded in each packaged model manifest; and
 4. an independent license review before public distribution.
 

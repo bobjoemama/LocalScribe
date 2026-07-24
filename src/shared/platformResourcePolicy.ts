@@ -33,6 +33,7 @@ const FORBIDDEN_PACKAGED_RESOURCE_PATH_PATTERNS: readonly RegExp[] = [
   /(?:^|\/)\.env(?:\.[^/]*)?$/i,
   /(?:^|\/)(?:secrets?|credentials?)(?:\/|$)/i,
   /(?:^|\/)[^/]*(?:private[-_.]?key|client[-_.]?secret)[^/]*$/i,
+  /(?:^|\/)(?:weights\.npz|model\.bin|model\.safetensors)$/i,
   /\.(?:map|py[co]|p12|pfx|mobileprovision)$/i,
   /\.(?:swift|c|cc|cpp|cxx|h|hpp|ps1|bat|cmd|sh)$/i,
 ];

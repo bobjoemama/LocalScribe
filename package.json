@@ -33,7 +33,8 @@
     "audit:production": "npm audit --omit=dev --audit-level=high",
     "audit:all": "npm audit --audit-level=high",
     "audit:python": "node scripts/audit-python-deps.mjs",
-    "sbom:node": "npm sbom --sbom-format cyclonedx --omit=dev",
+    "sbom:runtime:macos": "node scripts/generate-runtime-sbom.mjs --platform darwin",
+    "sbom:runtime:windows": "node scripts/generate-runtime-sbom.mjs --platform win32",
     "sbom:python:macos": "uv export --project worker --locked --no-dev --format cyclonedx1.5 --preview-features sbom-export",
     "sbom:python:windows": "uv export --project worker/windows_transformers --locked --no-dev --format cyclonedx1.5 --preview-features sbom-export"
   },

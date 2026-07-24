@@ -208,6 +208,13 @@ describe("packaged dependency inventory", () => {
         "arm64",
       ),
     ).toThrow(/model-manifest inventory|opposite-platform/);
+    expect(() =>
+      assertPlatformResourceEntries(
+        [...valid, "python-runtime/venv/lib/python3.12/site-packages/model/weights.npz"],
+        "darwin",
+        "arm64",
+      ),
+    ).toThrow(/weights\.npz/);
   });
 
   it("accepts a complete Windows allowlist and rejects missing helpers and source maps", () => {
@@ -231,6 +238,13 @@ describe("packaged dependency inventory", () => {
     expect(() =>
       assertPlatformResourceEntries([...valid, "worker/main.js.map"], "win32", "x64"),
     ).toThrow(/main\.js\.map/);
+    expect(() =>
+      assertPlatformResourceEntries(
+        [...valid, "python-runtime-windows/venv/Lib/site-packages/model/model.bin"],
+        "win32",
+        "x64",
+      ),
+    ).toThrow(/model\.bin/);
   });
 
   it("reduces copied resources to one operating system before signing", () => {

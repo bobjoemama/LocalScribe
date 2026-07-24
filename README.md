@@ -197,15 +197,17 @@ Normal CI builds clearly named `UNSIGNED-VALIDATION` artifacts on
 Vitest, lock checks, runtime assembly, worker tests, native-helper build/smoke,
 Forge make, the inventory gate, SBOM generation, and checksums. These artifacts
 are short-lived test evidence, not releases. Each platform artifact contains a
-CycloneDX SBOM for shipped Node production dependencies and a separate
-CycloneDX SBOM exported from that platform worker's committed `uv.lock`; both
-SBOM files are covered by `SHA256SUMS.txt`.
+CycloneDX core-runtime SBOM for shipped Node production dependencies, Electron,
+CPython, and the platform native helper, plus a separate CycloneDX SBOM
+exported from that platform worker's committed `uv.lock`; both SBOM files are
+covered by `SHA256SUMS.txt`.
 
 The manual release workflow uses a protected `release` environment.
 `LOCALSCRIBE_RELEASE=1` fails before packaging unless:
 
-- macOS has a Developer ID Application identity plus Apple notarization
-  credentials; or
+- macOS has a Developer ID Application identity, Apple notarization
+  credentials, and the protected environment variable
+  `LOCALSCRIBE_UNDECLARED_MLX_LICENSE_APPROVED=1`; or
 - Windows has certificate/signing parameters plus an HTTPS timestamp server.
 
 The workflow does not publish a GitHub Release or configure an update feed. It
@@ -252,15 +254,17 @@ platform model manifests.
 LocalScribe’s original source and assets are proprietary; see
 [LICENSE](LICENSE). Third-party components retain their own licenses; see
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). Generate the separate
-production Node and locked platform-worker CycloneDX SBOMs with:
+platform core-runtime and locked platform-worker CycloneDX SBOMs with:
 
 ```sh
-npm run --silent sbom:node > localscribe-node-sbom.cdx.json
+npm run --silent sbom:runtime:macos > localscribe-core-runtime-macos-sbom.cdx.json
 npm run --silent sbom:python:macos > localscribe-python-macos-sbom.cdx.json
 ```
 
-On Windows, replace the second command with:
+On Windows, use:
 
 ```powershell
+npm run --silent sbom:runtime:windows |
+  Out-File -Encoding utf8 localscribe-core-runtime-windows-sbom.cdx.json
 npm run --silent sbom:python:windows > localscribe-python-windows-sbom.cdx.json
 ```

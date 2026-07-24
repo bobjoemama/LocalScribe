@@ -68,6 +68,11 @@ function validatePublicReleaseConfiguration(): void {
     requireReleaseEnvironment("APPLE_ID");
     requireReleaseEnvironment("APPLE_APP_SPECIFIC_PASSWORD");
     requireReleaseEnvironment("APPLE_TEAM_ID");
+    if (process.env.LOCALSCRIBE_UNDECLARED_MLX_LICENSE_APPROVED !== "1") {
+      throw new Error(
+        "Public macOS releases require documented legal approval for every packaged MLX artifact with Undeclared license metadata.",
+      );
+    }
     return;
   }
   if (process.platform === "win32") {

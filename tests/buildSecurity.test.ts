@@ -295,4 +295,47 @@ describe("release hardening configuration", () => {
     expect(releaseWorkflow.match(/npm run --silent sbom/g)).toHaveLength(4);
     expect(`${ciWorkflow}\n${releaseWorkflow}`).not.toMatch(/npm run sbom/);
   });
+
+  it("tests the bundled macOS worker and writes portable checksum paths", () => {
+    const ciWorkflow = projectFile(".github/workflows/ci.yml");
+    const releaseWorkflow = projectFile(".github/workflows/release.yml");
+    const bundledMacWorkerTest =
+      "resources/python-runtime/venv/bin/python \\\n" +
+      "            -m unittest discover -s worker/tests -v";
+
+    expect(ciWorkflow.match(/Test macOS worker with bundled Python/g)).toHaveLength(1);
+    expect(releaseWorkflow.match(/Test macOS worker with bundled Python/g)).toHaveLength(1);
+    expect(ciWorkflow).toContain(bundledMacWorkerTest);
+    expect(releaseWorkflow).toContain(bundledMacWorkerTest);
+    for (const workflow of [ciWorkflow, releaseWorkflow]) {
+      expect(workflow).toContain("cd out");
+      expect(workflow).toContain(
+        "[IO.Path]::GetRelativePath($OutRoot, $_.Path)",
+      );
+      expect(workflow).not.toContain(
+        '"$($_.Hash.ToLowerInvariant())  $($_.Path)"',
+      );
+    }
+  });
+
+  it("scopes explicit MLX license approval to the signed macOS build", () => {
+    const ciWorkflow = projectFile(".github/workflows/ci.yml");
+    const releaseWorkflow = projectFile(".github/workflows/release.yml");
+    const forgeConfig = projectFile("forge.config.ts");
+    const approvalBinding =
+      "LOCALSCRIBE_UNDECLARED_MLX_LICENSE_APPROVED: " +
+      "${{ vars.LOCALSCRIBE_UNDECLARED_MLX_LICENSE_APPROVED }}";
+
+    expect(ciWorkflow).not.toContain("LOCALSCRIBE_UNDECLARED_MLX_LICENSE_APPROVED");
+    expect(releaseWorkflow.match(
+      /^\s+LOCALSCRIBE_UNDECLARED_MLX_LICENSE_APPROVED:/gmu,
+    )).toHaveLength(1);
+    expect(releaseWorkflow).toContain(approvalBinding);
+    expect(forgeConfig).toContain(
+      'process.env.LOCALSCRIBE_UNDECLARED_MLX_LICENSE_APPROVED !== "1"',
+    );
+    expect(forgeConfig).toContain(
+      "Public macOS releases require documented legal approval",
+    );
+  });
 });

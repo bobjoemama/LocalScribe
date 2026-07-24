@@ -9,13 +9,16 @@ function projectFile(relativePath: string): string {
 }
 
 describe("platform SBOM generation", () => {
-  it("exports separate Node and locked platform Python CycloneDX graphs", () => {
+  it("exports separate core-runtime and locked platform Python CycloneDX graphs", () => {
     const packageJson = JSON.parse(projectFile("package.json")) as {
       scripts: Record<string, string>;
     };
 
-    expect(packageJson.scripts["sbom:node"]).toBe(
-      "npm sbom --sbom-format cyclonedx --omit=dev",
+    expect(packageJson.scripts["sbom:runtime:macos"]).toBe(
+      "node scripts/generate-runtime-sbom.mjs --platform darwin",
+    );
+    expect(packageJson.scripts["sbom:runtime:windows"]).toBe(
+      "node scripts/generate-runtime-sbom.mjs --platform win32",
     );
     expect(packageJson.scripts["sbom:python:macos"]).toBe(
       "uv export --project worker --locked --no-dev --format cyclonedx1.5 --preview-features sbom-export",
@@ -30,7 +33,12 @@ describe("platform SBOM generation", () => {
     const releaseWorkflow = projectFile(".github/workflows/release.yml");
 
     for (const workflow of [ciWorkflow, releaseWorkflow]) {
-      expect(workflow.match(/npm run --silent sbom:node/g)).toHaveLength(2);
+      expect(
+        workflow.match(/npm run --silent sbom:runtime:macos/g),
+      ).toHaveLength(1);
+      expect(
+        workflow.match(/npm run --silent sbom:runtime:windows/g),
+      ).toHaveLength(1);
       expect(
         workflow.match(/npm run --silent sbom:python:macos/g),
       ).toHaveLength(1);
@@ -38,17 +46,24 @@ describe("platform SBOM generation", () => {
         workflow.match(/npm run --silent sbom:python:windows/g),
       ).toHaveLength(1);
       expect(
-        workflow.match(/out\/localscribe-node-sbom\.cdx\.json/g),
-      ).toHaveLength(6);
-      expect(
-        workflow.match(/out\/localscribe-python-macos-sbom\.cdx\.json/g),
+        workflow.match(
+          /localscribe-core-runtime-macos-sbom\.cdx\.json/g,
+        ),
       ).toHaveLength(3);
       expect(
-        workflow.match(/out\/localscribe-python-windows-sbom\.cdx\.json/g),
+        workflow.match(
+          /localscribe-core-runtime-windows-sbom\.cdx\.json/g,
+        ),
+      ).toHaveLength(3);
+      expect(
+        workflow.match(/localscribe-python-macos-sbom\.cdx\.json/g),
+      ).toHaveLength(3);
+      expect(
+        workflow.match(/localscribe-python-windows-sbom\.cdx\.json/g),
       ).toHaveLength(3);
       expect(workflow).toContain("set -euo pipefail");
       expect(workflow).toContain(
-        'if ($LASTEXITCODE -ne 0) { throw "Node SBOM generation failed." }',
+        'if ($LASTEXITCODE -ne 0) { throw "Windows core-runtime SBOM generation failed." }',
       );
       expect(workflow).toContain(
         'if ($LASTEXITCODE -ne 0) { throw "Windows Python SBOM generation failed." }',

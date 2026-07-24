@@ -35,9 +35,12 @@ a Linux runner checks both target graphs; uv's package hashes are retained and
 required, and dependency resolution remains disabled.
 
 Runtime build, native helper build, Forge make, whole-package inventory,
-separate Node-production and locked platform-Python CycloneDX SBOM generation,
-and a SHA-256 manifest covering both SBOMs and the install artifacts must then
-pass on the target OS.
+separate platform core-runtime and locked platform-Python CycloneDX SBOM
+generation, and a SHA-256 manifest covering both SBOMs and the install
+artifacts must then pass on the target OS. The core-runtime graph includes the
+production npm graph plus the exact Electron, CPython, and first-party native
+helper shipped for that platform; it intentionally excludes build-only
+tooling. Checksum entries use portable paths relative to `out/`.
 
 The release workflow uses `permissions: contents: read`, disables checkout
 credential persistence, pins actions to immutable commits, and does not use
@@ -62,6 +65,12 @@ Required protected secrets:
 - `APPLE_ID`
 - `APPLE_APP_SPECIFIC_PASSWORD`
 - `APPLE_TEAM_ID`
+
+The protected `release` environment must also define the environment variable
+`LOCALSCRIBE_UNDECLARED_MLX_LICENSE_APPROVED=1`. It records the explicit legal
+approval required for the pinned upstream MLX model artifacts whose exact
+revisions do not declare a license. The validation workflow must not set this
+variable, and the signed workflow passes it only to the macOS `make:mac` step.
 
 The workflow imports the certificate into an ephemeral keychain. With
 `LOCALSCRIBE_RELEASE=1`, Forge refuses Apple Development or ad-hoc identities.
@@ -108,8 +117,9 @@ Get-AuthenticodeSignature LocalScribe-Setup.exe
 Before publication, verify:
 
 1. package version matches the intended immutable source tag;
-2. both platform SBOMs are present and their entries in `SHA256SUMS.txt` match
-   the downloaded workflow artifacts;
+2. both platform-specific SBOMs (core runtime and Python dependencies) are
+   present and their entries in `SHA256SUMS.txt` match the downloaded workflow
+   artifacts;
 3. macOS notarization or Windows Authenticode checks pass on the downloaded
    artifact, not only inside CI;
 4. no model weights are embedded in the installer;
