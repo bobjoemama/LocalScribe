@@ -26,6 +26,7 @@
     "worker:check-locks": "uv lock --check --project worker && uv lock --check --project worker/windows_transformers && uv lock --check --project tools/python-audit",
     "worker:test:windows": "python -m unittest discover -s worker/windows_transformers/tests -v",
     "native:build:windows": "powershell -NoProfile -ExecutionPolicy Bypass -File resources/native/windows/build.ps1",
+    "toolchain:verify:npm": "node scripts/verify-npm-version.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:packaging": "vitest run tests/packageInventory.test.ts tests/resourceIntegrity.test.ts tests/buildSecurity.test.ts",

@@ -29,6 +29,13 @@ describe("release hardening configuration", () => {
     });
     expect(ciWorkflow.match(/node-version: "24\.18\.0"/g)).toHaveLength(2);
     expect(releaseWorkflow.match(/node-version: "24\.18\.0"/g)).toHaveLength(3);
+    expect(ciWorkflow.match(/npm install --global npm@11\.16\.0/g)).toHaveLength(2);
+    expect(releaseWorkflow.match(/npm install --global npm@11\.16\.0/g)).toHaveLength(3);
+    expect(ciWorkflow.match(/npm run toolchain:verify:npm/g)).toHaveLength(2);
+    expect(releaseWorkflow.match(/npm run toolchain:verify:npm/g)).toHaveLength(3);
+    expect(projectFile("scripts/verify-npm-version.mjs")).toContain(
+      "actualVersion !== expectedVersion",
+    );
     expect(ciWorkflow.match(/npm ci --strict-allow-scripts/g)).toHaveLength(2);
     expect(releaseWorkflow.match(/npm ci --strict-allow-scripts/g)).toHaveLength(3);
     for (const workflow of [ciWorkflow, releaseWorkflow]) {

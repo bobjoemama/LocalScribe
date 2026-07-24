@@ -16,6 +16,8 @@ Every release first passes this credential-free verification gate on the exact
 tagged commit:
 
 ```sh
+npm install --global npm@11.16.0
+npm run toolchain:verify:npm
 npm ci --strict-allow-scripts
 npm run audit:production
 npm run audit:all
@@ -24,6 +26,10 @@ npm run audit:python
 npm run typecheck
 npm test -- --reporter=dot
 ```
+
+CI and release jobs install the exact `packageManager` version and fail closed
+if the executable does not report that version before dependency installation
+or SBOM generation.
 
 `audit:python` exports both committed worker locks, fails if any of the three uv
 locks would change, and audits every exact package/version in both platform

@@ -112,6 +112,8 @@ Common requirements:
 Install JavaScript dependencies and run source verification:
 
 ```sh
+npm install --global npm@11.16.0
+npm run toolchain:verify:npm
 npm ci --strict-allow-scripts
 npm run typecheck
 npm test
