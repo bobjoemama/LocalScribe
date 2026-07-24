@@ -216,6 +216,9 @@ The workflow does not publish a GitHub Release or configure an update feed. It
 only produces signed release candidates for review. Detailed credential and
 verification requirements are in [docs/RELEASING.md](docs/RELEASING.md).
 
+An independent reviewer can use the evidence-gated, multi-lane brief in
+[docs/CLAUDE_FABLE_REVIEW_PACKET.md](docs/CLAUDE_FABLE_REVIEW_PACKET.md).
+
 ## What verification does and does not prove
 
 | Evidence | Proves | Does not prove |
