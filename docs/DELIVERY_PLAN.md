@@ -55,23 +55,24 @@ Implemented:
 - compatible patched npm overrides; production and full build-tool audits
 - separate CycloneDX SBOMs for each platform core runtime (production Node
   graph, Electron, CPython, and native helper) and locked platform Python
-  dependencies, with SBOM and artifact SHA-256 generation in CI
+  dependencies, with local SBOM and artifact SHA-256 generation
 
 The generated Mac Python runtime and Windows Python/CUDA runtime are ignored by
-Git. CI and release builds must recreate them from committed locks.
+Git. Local verification and release builds must recreate them from committed
+locks.
 
 ## 4. macOS distribution
 
 Validation path:
 
-- `npm run make:mac`
+- `npm run verify:local:macos`
 - Apple Development or ad-hoc signature
 - strict code-signature verification
-- unsigned validation DMG/ZIP
+- local validation DMG/ZIP, SBOMs, and verified checksums
 
 Production path:
 
-- manual `release` environment restricted to version tags
+- explicit local `LOCALSCRIBE_RELEASE=1 npm run make:mac`
 - Developer ID Application identity only
 - hardened runtime and narrow per-helper entitlements
 - app notarization/stapling, DMG signing/notarization/stapling
@@ -87,14 +88,14 @@ download, offline dictation, update/uninstall policy, and signed artifact review
 
 Validation path:
 
-- locked faster-whisper runtime build on `windows-latest`
+- locked faster-whisper runtime build on a local Windows 11 x64 machine
 - hardened x64 helper build and deterministic smoke
 - native Node rebuild, worker tests, and Squirrel make
-- clearly named unsigned validation Setup.exe
+- locally reviewed unsigned validation Setup.exe
 
 Production path:
 
-- manual `release` environment restricted to version tags
+- explicit local `LOCALSCRIBE_RELEASE=1 npm run make:windows`
 - Authenticode certificate or managed signing parameters
 - required HTTPS timestamp server
 - signatures on app, helper, and Squirrel installer
@@ -107,7 +108,7 @@ behavior.
 ## 6. Publication
 
 The repository does not automatically create a public GitHub Release or update
-feed. Signed workflow artifacts remain release candidates until reviewed.
+feed. Locally signed artifacts remain release candidates until reviewed.
 
 Before publication:
 

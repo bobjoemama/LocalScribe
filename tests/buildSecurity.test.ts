@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
@@ -13,9 +13,9 @@ describe("release hardening configuration", () => {
     const packageJson = JSON.parse(projectFile("package.json")) as {
       packageManager?: string;
       allowScripts?: Record<string, boolean>;
+      scripts?: Record<string, string>;
     };
-    const ciWorkflow = projectFile(".github/workflows/ci.yml");
-    const releaseWorkflow = projectFile(".github/workflows/release.yml");
+    const localVerification = projectFile("scripts/verify-local-source.mjs");
 
     expect(packageJson.packageManager).toBe("npm@11.16.0");
     expect(projectFile("package.json")).toContain('"@electron/rebuild": "4.2.0"');
@@ -27,27 +27,29 @@ describe("release hardening configuration", () => {
       "macos-alias@0.2.12": true,
       "uiohook-napi@1.5.5": true,
     });
-    expect(ciWorkflow.match(/node-version: "24\.18\.0"/g)).toHaveLength(2);
-    expect(releaseWorkflow.match(/node-version: "24\.18\.0"/g)).toHaveLength(3);
-    expect(ciWorkflow.match(/npm install --global npm@11\.16\.0/g)).toHaveLength(2);
-    expect(releaseWorkflow.match(/npm install --global npm@11\.16\.0/g)).toHaveLength(3);
-    expect(ciWorkflow.match(/npm run toolchain:verify:npm/g)).toHaveLength(2);
-    expect(releaseWorkflow.match(/npm run toolchain:verify:npm/g)).toHaveLength(3);
-    expect(ciWorkflow.match(/npm run lint(?::all)?/g)).toHaveLength(2);
-    expect(releaseWorkflow).toContain("npm run lint:all");
+    expect(packageJson.scripts?.["verify:local"]).toBe(
+      "node scripts/verify-local-source.mjs",
+    );
+    expect(packageJson.scripts?.["verify:local:macos"]).toBe(
+      "bash scripts/verify-local-macos.sh",
+    );
+    for (const command of [
+      '["run", "toolchain:verify:npm"]',
+      '["run", "audit:production"]',
+      '["run", "audit:all"]',
+      '["run", "worker:check-locks"]',
+      '["run", "audit:python"]',
+      '["run", "lint:all"]',
+      '["run", "typecheck"]',
+      '["test", "--", "--reporter=dot"]',
+    ]) {
+      expect(localVerification).toContain(command);
+    }
     expect(projectFile("scripts/verify-npm-version.mjs")).toContain(
       "actualVersion !== expectedVersion",
     );
-    expect(ciWorkflow.match(/npm ci --strict-allow-scripts/g)).toHaveLength(2);
-    expect(releaseWorkflow.match(/npm ci --strict-allow-scripts/g)).toHaveLength(3);
-    for (const workflow of [ciWorkflow, releaseWorkflow]) {
-      const actions = [...workflow.matchAll(/^\s*uses:\s*(\S+)/gmu)]
-        .map((match) => match[1]);
-      expect(actions.length).toBeGreaterThan(0);
-      for (const action of actions) {
-        expect(action).toMatch(/@[a-f0-9]{40}$/u);
-      }
-    }
+    expect(existsSync(resolve(root, ".github/workflows/ci.yml"))).toBe(false);
+    expect(existsSync(resolve(root, ".github/workflows/release.yml"))).toBe(false);
   });
 
   it("uses narrow macOS entitlements and strips Electron's unused permission declarations", () => {
@@ -114,8 +116,6 @@ describe("release hardening configuration", () => {
     const verifier = projectFile("scripts/verify-packaged-main.mjs");
     const macSmoke = projectFile("scripts/smoke-packaged-macos.sh");
     const windowsSmoke = projectFile("scripts/smoke-packaged-windows.ps1");
-    const ciWorkflow = projectFile(".github/workflows/ci.yml");
-    const releaseWorkflow = projectFile(".github/workflows/release.yml");
 
     expect(main).not.toMatch(/createRequire\s*\(\s*import\.meta\.url\s*\)/u);
     expect(main).toContain(
@@ -135,16 +135,6 @@ describe("release hardening configuration", () => {
     expect(windowsSmoke).toContain('"/T", "/F"');
     expect(windowsSmoke).toContain("Remove-SmokeDirectory");
     expect(windowsSmoke).toContain("$Attempt -le 10");
-    expect(ciWorkflow.match(/npm run smoke:packaged:(?:macos|windows)/gu)).toHaveLength(2);
-    expect(releaseWorkflow.match(/npm run smoke:packaged:(?:macos|windows)/gu)).toHaveLength(2);
-    for (const workflow of [ciWorkflow, releaseWorkflow]) {
-      const windowsSmokeIndex = workflow.indexOf("npm run smoke:packaged:windows");
-      const skipPackageIndex = workflow.indexOf(
-        "electron-forge make --skip-package --platform=win32 --arch=x64",
-      );
-      expect(windowsSmokeIndex).toBeGreaterThan(-1);
-      expect(skipPackageIndex).toBeGreaterThan(windowsSmokeIndex);
-    }
   });
 
   it("waits for interrupted startup before closing the local database", () => {
@@ -186,7 +176,6 @@ describe("release hardening configuration", () => {
 
   it("keeps public signing fail-closed while permitting clearly non-release local builds", () => {
     const forgeConfig = projectFile("forge.config.ts");
-    const ciWorkflow = projectFile(".github/workflows/ci.yml");
 
     expect(forgeConfig).toContain('process.env.LOCALSCRIBE_RELEASE === "1"');
     expect(forgeConfig).toContain('startsWith("Developer ID Application:")');
@@ -195,14 +184,6 @@ describe("release hardening configuration", () => {
     expect(forgeConfig).toContain('execFileSync("codesign", ["--verify"');
     expect(forgeConfig).toContain('execFileSync("spctl", ["--assess"');
     expect(forgeConfig).toContain("verifyAuthenticode");
-    expect(ciWorkflow).toContain('$releaseExitCode = $LASTEXITCODE');
-    expect(ciWorkflow).toContain(
-      '$releaseOutput -notmatch "Public release mode requires WINDOWS_CERTIFICATE_FILE"',
-    );
-    expect(ciWorkflow).toContain(
-      'Write-Host "Public Windows release correctly failed closed without signing credentials."\n' +
-        "          exit 0",
-    );
   });
 
   it("does not emit source maps unless a private diagnostic build opts in", () => {
@@ -284,8 +265,7 @@ describe("release hardening configuration", () => {
     const auditScript = projectFile("scripts/audit-python-deps.mjs");
     const auditToolProject = projectFile("tools/python-audit/pyproject.toml");
     const auditToolLock = projectFile("tools/python-audit/uv.lock");
-    const ciWorkflow = projectFile(".github/workflows/ci.yml");
-    const releaseWorkflow = projectFile(".github/workflows/release.yml");
+    const localVerification = projectFile("scripts/verify-local-source.mjs");
 
     expect(packageJson).toContain('"audit:python": "node scripts/audit-python-deps.mjs"');
     expect(packageJson).toContain("uv lock --check --project tools/python-audit");
@@ -312,114 +292,36 @@ describe("release hardening configuration", () => {
     ]) {
       expect(auditScript).toContain(requiredFlag);
     }
-    expect(ciWorkflow.match(/npm run audit:python/g)).toHaveLength(2);
-    expect(releaseWorkflow.match(/npm run audit:python/g)).toHaveLength(1);
+    expect(localVerification.match(/"audit:python"/g)).toHaveLength(1);
   });
 
-  it("verifies the exact tagged source without secrets before either signed build", () => {
-    const releaseWorkflow = projectFile(".github/workflows/release.yml");
-    const verifyJob = releaseWorkflow.slice(
-      releaseWorkflow.indexOf("  release-verify:"),
-      releaseWorkflow.indexOf("\n  macos:"),
-    );
-    const macJob = releaseWorkflow.slice(
-      releaseWorkflow.indexOf("  macos:"),
-      releaseWorkflow.indexOf("\n  windows:"),
-    );
-    const windowsJob = releaseWorkflow.slice(
-      releaseWorkflow.indexOf("  windows:"),
-    );
-    const macJobHeader = releaseWorkflow.match(
-      / {2}macos:\n((?: {4}.*\n)*) {4}steps:/u,
-    )?.[1];
-    const windowsJobHeader = releaseWorkflow.match(
-      / {2}windows:\n((?: {4}.*\n)*) {4}steps:/u,
-    )?.[1];
+  it("runs every local macOS gate in fail-fast order and verifies its artifacts", () => {
+    const localMacVerification = projectFile("scripts/verify-local-macos.sh");
+    const sourceIndex = localMacVerification.indexOf("npm run verify:local");
+    const makeIndex = localMacVerification.indexOf("npm run make:mac");
+    const smokeIndex = localMacVerification.indexOf("npm run smoke:packaged:macos");
 
-    expect(releaseWorkflow).toContain("expected_ref=\"refs/tags/v${release_version}\"");
-    expect(releaseWorkflow).toContain('if [[ "$GITHUB_REF" != "$expected_ref" ]]');
-    expect(releaseWorkflow.split("ref: ${{ github.sha }}")).toHaveLength(4);
-    expect(releaseWorkflow.match(/needs: release-verify/g)).toHaveLength(2);
-    expect(verifyJob).not.toContain("secrets.");
-    expect(verifyJob).not.toContain("environment: release");
-    for (const command of [
-      "npm ci",
-      "npm run audit:production",
-      "npm run audit:all",
-      "npm run worker:check-locks",
-      "npm run audit:python",
-      "npm run typecheck",
-      "npm test -- --reporter=dot",
-    ]) {
-      expect(verifyJob).toContain(command);
-    }
-    expect(macJobHeader).toBeDefined();
-    expect(macJobHeader).not.toContain("secrets.");
-    expect(windowsJobHeader).toBeDefined();
-    expect(windowsJobHeader).not.toContain("secrets.");
-    expect(macJob.indexOf("- name: Install dependencies")).toBeLessThan(
-      macJob.indexOf("- name: Import Developer ID certificate"),
-    );
-    expect(windowsJob.indexOf("- name: Install dependencies")).toBeLessThan(
-      windowsJob.indexOf("- name: Materialize signing certificate"),
-    );
-    expect(releaseWorkflow).toContain(
-      "MACOS_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}",
-    );
-    expect(releaseWorkflow).toContain(
-      "WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}",
-    );
-  });
-
-  it("writes parseable SBOM streams without npm lifecycle banners", () => {
-    const ciWorkflow = projectFile(".github/workflows/ci.yml");
-    const releaseWorkflow = projectFile(".github/workflows/release.yml");
-
-    expect(ciWorkflow.match(/npm run --silent sbom/g)).toHaveLength(4);
-    expect(releaseWorkflow.match(/npm run --silent sbom/g)).toHaveLength(4);
-    expect(`${ciWorkflow}\n${releaseWorkflow}`).not.toMatch(/npm run sbom/);
-  });
-
-  it("tests the bundled macOS worker and writes portable checksum paths", () => {
-    const ciWorkflow = projectFile(".github/workflows/ci.yml");
-    const releaseWorkflow = projectFile(".github/workflows/release.yml");
-    const bundledMacWorkerTest =
-      "resources/python-runtime/venv/bin/python \\\n" +
-      "            -m unittest discover -s worker/tests -v";
-
-    expect(ciWorkflow.match(/Test macOS worker with bundled Python/g)).toHaveLength(1);
-    expect(releaseWorkflow.match(/Test macOS worker with bundled Python/g)).toHaveLength(1);
-    expect(ciWorkflow).toContain(bundledMacWorkerTest);
-    expect(releaseWorkflow).toContain(bundledMacWorkerTest);
-    for (const workflow of [ciWorkflow, releaseWorkflow]) {
-      expect(workflow).toContain("cd out");
-      expect(workflow).toContain(
-        "[IO.Path]::GetRelativePath($OutRoot, $_.Path)",
-      );
-      expect(workflow).toContain("[IO.File]::WriteAllText(");
-      expect(workflow).toContain('(($ChecksumLines -join "`n") + "`n")');
-      expect(workflow).not.toContain(
-        "Out-File -Encoding ascii out/SHA256SUMS.txt",
-      );
-      expect(workflow).not.toContain(
-        '"$($_.Hash.ToLowerInvariant())  $($_.Path)"',
-      );
-    }
+    expect(sourceIndex).toBeGreaterThan(-1);
+    expect(makeIndex).toBeGreaterThan(sourceIndex);
+    expect(smokeIndex).toBeGreaterThan(makeIndex);
+    expect(localMacVerification).toContain("PYTHONDONTWRITEBYTECODE=1");
+    expect(localMacVerification).toContain("-m unittest discover -s worker/tests -v");
+    expect(localMacVerification).toContain("npm run --silent sbom:runtime:macos");
+    expect(localMacVerification).toContain("npm run --silent sbom:python:macos");
+    expect(localMacVerification).toContain("SHA256SUMS.txt");
+    expect(localMacVerification).toContain("shasum -a 256 -c SHA256SUMS.txt");
+    expect(localMacVerification).toContain("codesign --verify --deep --strict");
+    expect(localMacVerification).toContain("verify-macos-entitlements.mjs");
+    expect(localMacVerification).not.toMatch(/npm run sbom/u);
   });
 
   it("scopes explicit MLX license approval to the signed macOS build", () => {
-    const ciWorkflow = projectFile(".github/workflows/ci.yml");
-    const releaseWorkflow = projectFile(".github/workflows/release.yml");
+    const localMacVerification = projectFile("scripts/verify-local-macos.sh");
     const forgeConfig = projectFile("forge.config.ts");
-    const approvalBinding =
-      "LOCALSCRIBE_UNDECLARED_MLX_LICENSE_APPROVED: " +
-      "${{ vars.LOCALSCRIBE_UNDECLARED_MLX_LICENSE_APPROVED }}";
 
-    expect(ciWorkflow).not.toContain("LOCALSCRIBE_UNDECLARED_MLX_LICENSE_APPROVED");
-    expect(releaseWorkflow.match(
-      /^\s+LOCALSCRIBE_UNDECLARED_MLX_LICENSE_APPROVED:/gmu,
-    )).toHaveLength(1);
-    expect(releaseWorkflow).toContain(approvalBinding);
+    expect(localMacVerification).not.toContain(
+      "LOCALSCRIBE_UNDECLARED_MLX_LICENSE_APPROVED",
+    );
     expect(forgeConfig).toContain(
       'process.env.LOCALSCRIBE_UNDECLARED_MLX_LICENSE_APPROVED !== "1"',
     );

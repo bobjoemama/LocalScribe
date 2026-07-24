@@ -154,7 +154,7 @@ credentials fail before packaging.
 
 ## Evidence boundary
 
-Windows hosted CI can establish:
+Local verification on a Windows 11 x64 machine can establish:
 
 - lock and JavaScript dependency integrity;
 - TypeScript and Vitest behavior;
@@ -163,9 +163,9 @@ Windows hosted CI can establish:
 - MSVC x64 helper compile/self-test;
 - native Node rebuild and Squirrel artifact creation;
 - whole-package platform isolation;
-- Authenticode validity when release secrets are configured.
+- Authenticode validity when local release credentials are configured.
 
-Hosted CI does not have an NVIDIA GPU and cannot establish:
+A build performed without a physical NVIDIA validation pass cannot establish:
 
 - real CUDA model load or inference;
 - accuracy, latency, or peak VRAM for any tier;

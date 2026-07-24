@@ -116,19 +116,14 @@ Install JavaScript dependencies and run source verification:
 npm install --global npm@11.16.0
 npm run toolchain:verify:npm
 npm ci --strict-allow-scripts
-npm run lint:all
-npm run typecheck
-npm test
-npm run worker:check-locks
-npm run audit:python
-npm run audit:production
-npm run audit:all
+npm run verify:local
 ```
 
 The Python audit uses a separately locked `pip-audit==2.10.1` toolchain under
 `tools/python-audit`. npm's dependency install scripts are denied by default
-unless their exact package version appears in `allowScripts`; CI makes any new
-unreviewed script a hard failure. Both npm audits are required. The full
+unless their exact package version appears in `allowScripts`; local
+verification makes any new unreviewed script a hard failure. Both npm audits
+are required. The full
 build-tool audit is currently clean because compatible overrides pin patched
 `tar` and `tmp` releases. The `@electron/rebuild` override uses its supported
 Node 24/Visual Studio 2026 toolchain. Removing these overrides reopens known
@@ -194,36 +189,38 @@ missing native runtime modules. Release sourcemaps are disabled; a private
 diagnostic build must opt in with `LOCALSCRIBE_PRIVATE_SOURCEMAPS=1` and must
 not be distributed.
 
-## Signing and CI
+## Signing and local verification
 
-Normal CI builds clearly named `UNSIGNED-VALIDATION` artifacts on
-`macos-15` arm64 and `windows-latest`. It runs both audits, ESLint, macOS-worker
-Ruff checks, TypeScript,
-Vitest, lock checks, runtime assembly, worker tests, native-helper build/smoke,
-Forge make, the inventory gate, SBOM generation, and checksums. These artifacts
-are short-lived test evidence, not releases. Each platform artifact contains a
-CycloneDX core-runtime SBOM for shipped Node production dependencies, Electron,
-CPython, and the platform native helper, plus a separate CycloneDX SBOM
-exported from that platform worker's committed `uv.lock`; both SBOM files are
-covered by `SHA256SUMS.txt`.
+This repository intentionally has no GitHub Actions or paid CI/CD pipeline.
+Run the complete Apple Silicon verification locally:
 
-The manual release workflow uses a `release` environment restricted to `v*`
-tags. The current private-repository plan does not support required deployment
-reviewers, so the workflow's immutable-tag and credential checks remain
-mandatory. `main` is protected for administrators and other contributors:
-changes require a pull request, an up-to-date branch, both macOS and Windows CI
-jobs, resolved review conversations, and linear history; force pushes and
-deletion are disabled.
+```sh
+npm run verify:local:macos
+```
+
+That fail-fast command runs both dependency audits, lock checks, ESLint, Ruff,
+TypeScript, Vitest, runtime assembly, worker tests, native-helper and packaged
+app smoke tests, Forge make, package inventory and entitlement gates, SBOM
+generation, checksums, and strict code-signature verification. It leaves the
+DMG, ZIP, two CycloneDX SBOMs, and `SHA256SUMS.txt` under `out/` for review.
+
+Windows artifacts must be built and verified locally on a real Windows system;
+they are never inferred from the Mac verification result. `main` remains
+protected for administrators and other contributors: changes require a pull
+request, resolved review conversations, and linear history; force pushes and
+deletion are disabled. No hosted status check is required.
+
 `LOCALSCRIBE_RELEASE=1` fails before packaging unless:
 
 - macOS has a Developer ID Application identity, Apple notarization
-  credentials, and the release-environment variable
+  credentials, and the local environment variable
   `LOCALSCRIBE_UNDECLARED_MLX_LICENSE_APPROVED=1`; or
 - Windows has certificate/signing parameters plus an HTTPS timestamp server.
 
-The workflow does not publish a GitHub Release or configure an update feed. It
-only produces signed release candidates for review. Detailed credential and
-verification requirements are in [docs/RELEASING.md](docs/RELEASING.md).
+No command automatically publishes a GitHub Release or configures an update
+feed. Local signed builds remain release candidates until manually reviewed.
+Detailed credential and verification requirements are in
+[docs/RELEASING.md](docs/RELEASING.md).
 
 An independent reviewer can use the evidence-gated, multi-lane brief in
 [docs/CLAUDE_FABLE_REVIEW_PACKET.md](docs/CLAUDE_FABLE_REVIEW_PACKET.md).
@@ -239,11 +236,10 @@ An independent reviewer can use the evidence-gated, multi-lane brief in
 | Windows Authenticode check | Publisher signature and timestamp for that exact binary | SmartScreen reputation or NVIDIA compatibility |
 | Packaged-worker real-audio smoke | The bundled runtime can load the tested model/tier and transcribe the test WAV on that machine | Microphone, shortcut, paste, other machines, tiers, apps, or languages |
 
-Windows hosted CI has no NVIDIA GPU. A successful Windows CI installer remains
-hardware-unvalidated until it passes packaged real-audio tests on the claimed
-minimum NVIDIA tier and at least one current RTX generation. A macOS build made
-without production credentials remains unsigned/dev evidence even if all
-source and inventory checks pass.
+A Windows installer remains hardware-unvalidated until it passes packaged
+real-audio tests on the claimed minimum NVIDIA tier and at least one current
+RTX generation. A macOS build made without production credentials remains
+unsigned/development evidence even if all source and inventory checks pass.
 
 ## Data and process boundaries
 

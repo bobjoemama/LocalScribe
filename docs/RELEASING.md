@@ -1,97 +1,89 @@
-# Release procedure
+# Local verification and release procedure
 
-LocalScribe has two intentionally different artifact classes.
+LocalScribe intentionally has no GitHub Actions or paid CI/CD pipeline.
+Verification and release-candidate creation happen on the target machine. A
+successful local command is evidence only for the exact source checkout,
+machine, operating system, and artifact it exercised.
 
-- **Validation artifacts** are built by normal CI, named
-  `UNSIGNED-VALIDATION`, retained briefly, and never represented as public
-  releases.
-- **Production release candidates** are built only by the manual signed
-  workflow in the `release` environment, which accepts only `v*` tags. The
-  current private-repository plan does not provide required environment
-  reviewers.
+`main` remains protected, including for administrators. Changes require a pull
+request, resolved review conversations, and linear history. Force pushes and
+branch deletion are disabled. No hosted status checks are required.
 
-The workflows never publish a GitHub Release or update feed automatically.
+## Clean checkout
 
-`main` is protected, including for administrators. Changes require a pull
-request, an up-to-date branch, the macOS and Windows validation jobs, resolved
-review conversations, and linear history. Force pushes and branch deletion are
-disabled.
-
-## Common gates
-
-Every release first passes this credential-free verification gate on the exact
-tagged commit:
+Install the exact toolchain and dependency graph before verification:
 
 ```sh
 npm install --global npm@11.16.0
 npm run toolchain:verify:npm
 npm ci --strict-allow-scripts
-npm run audit:production
-npm run audit:all
-npm run worker:check-locks
-npm run audit:python
-npm run lint:all
-npm run typecheck
-npm test -- --reporter=dot
 ```
 
-CI and release jobs install the exact `packageManager` version and fail closed
-if the executable does not report that version before dependency installation
-or SBOM generation.
+npm dependency install scripts are denied unless their exact reviewed package
+version appears in `allowScripts`. All Python dependency graphs and the
+separately locked `pip-audit==2.10.1` toolchain come from committed `uv.lock`
+files.
 
-`audit:python` exports both committed worker locks, fails if any of the three uv
-locks would change, and audits every exact package/version in both platform
-graphs with `pip-audit==2.10.1`. The audit tool and its own dependencies come
-from `tools/python-audit/uv.lock` via
-`uv run --project tools/python-audit --locked`; CI never resolves the audit tool
-dynamically. Platform markers are removed only in the temporary audit input so
-a Linux runner checks both target graphs; uv's package hashes are retained and
-required, and dependency resolution remains disabled.
+## Source verification
 
-Runtime build, native helper build, Forge make, whole-package inventory,
-separate platform core-runtime and locked platform-Python CycloneDX SBOM
-generation, and a SHA-256 manifest covering both SBOMs and the install
-artifacts must then pass on the target OS. The core-runtime graph includes the
-production npm graph plus the exact Electron, CPython, and first-party native
-helper shipped for that platform; it intentionally excludes build-only
-tooling. Checksum entries use portable paths relative to `out/`.
-Both runtime builders force-reinstall the local first-party worker package;
-they never trust a same-version worker wheel left in uv's global cache.
+Run the platform-independent source gates:
 
-The release workflow uses `permissions: contents: read`, disables checkout
-credential persistence, pins actions to immutable commits, and does not use
-`pull_request_target`. Its `release-verify` job has no environment or secret
-references. Both environment-gated signing jobs depend on that job, and each
-signing secret is exposed only to the certificate-import or signed-build step
-that consumes it.
+```sh
+npm run verify:local
+```
 
-Manual dispatch must select the tag `v<package.json version>`. A credential-free
-gate rejects every other ref and completes all common gates before either
-environment-gated signing job starts. All release jobs check out the event's
-exact commit SHA rather than a mutable branch or tag name.
+This fail-fast script verifies the npm version, production and complete npm
+graphs, all committed Python locks, exact Python packages, ESLint, macOS-worker
+Ruff rules, TypeScript, and the complete Vitest suite.
 
-## macOS credentials
+## Complete macOS verification
 
-Required protected secrets:
+On an Apple Silicon Mac:
 
-- `MACOS_CERTIFICATE_P12_BASE64`
-- `MACOS_CERTIFICATE_PASSWORD`
-- `LOCALSCRIBE_CODESIGN_IDENTITY` beginning with
-  `Developer ID Application:`
-- `APPLE_ID`
-- `APPLE_APP_SPECIFIC_PASSWORD`
-- `APPLE_TEAM_ID`
+```sh
+npm run verify:local:macos
+```
 
-The tag-restricted `release` environment must also define the environment
-variable `LOCALSCRIBE_UNDECLARED_MLX_LICENSE_APPROVED=1`. It records the
-explicit legal approval required for the pinned upstream MLX model artifacts
-whose exact revisions do not declare a license. The validation workflow must not set this
-variable, and the signed workflow passes it only to the macOS `make:mac` step.
+The command first runs every source gate, then:
 
-The workflow imports the certificate into an ephemeral keychain. With
-`LOCALSCRIBE_RELEASE=1`, Forge refuses Apple Development or ad-hoc identities.
-The app uses hardened runtime and narrow entitlements, is notarized and
-stapled, and is assessed with:
+1. rebuilds the pinned relocatable Python/MLX runtime;
+2. builds the native helper and Forge DMG/ZIP;
+3. runs packaged-main, inventory, entitlement, and startup smoke checks;
+4. runs the macOS worker tests with the bundled Python and bytecode disabled;
+5. emits the core-runtime and locked-Python CycloneDX SBOMs;
+6. writes and verifies `out/SHA256SUMS.txt`;
+7. performs strict deep code-signature and entitlement verification.
+
+The output remains under `out/` for manual inspection. A normal build uses an
+available Apple Development identity or an ad-hoc signature and is a local
+validation artifact, not a public release.
+
+The verification script never sets release credentials or model-license
+approval. Do not add secrets to the script, repository, npm configuration, or
+shell history.
+
+## Local macOS production candidate
+
+Public mode is explicit:
+
+```sh
+LOCALSCRIBE_RELEASE=1 npm run make:mac
+```
+
+Before running it, the local operator must securely provide:
+
+- a `Developer ID Application:` identity through
+  `LOCALSCRIBE_CODESIGN_IDENTITY`;
+- `APPLE_ID`;
+- `APPLE_APP_SPECIFIC_PASSWORD`;
+- `APPLE_TEAM_ID`;
+- `LOCALSCRIBE_UNDECLARED_MLX_LICENSE_APPROVED=1` only after documented legal
+  approval for the pinned MLX artifacts whose revisions do not declare a
+  license.
+
+Forge fails before packaging when a required value is absent or malformed.
+Release mode signs the hardened app and DMG, submits both for notarization,
+staples them, and runs:
 
 ```sh
 codesign --verify --deep --strict --verbose=4 LocalScribe.app
@@ -99,53 +91,44 @@ xcrun stapler validate LocalScribe.app
 spctl --assess --type execute --verbose=4 LocalScribe.app
 ```
 
-The standalone `native/macos/active-target` accessibility helper is signed
-with its own empty entitlement profile. It does not inherit the Electron main
-process microphone or JIT grants.
+The standalone macOS accessibility helper and bundled Python runtime carry
+empty entitlement profiles instead of inheriting the Electron main process
+microphone or JIT grants.
 
-The DMG is signed, submitted to Apple, stapled, and validated separately. The
-ZIP contains the already stapled app.
+## Local Windows verification and signing
 
-## Windows credentials
+Windows work must be performed on a Windows 11 x64 machine. From PowerShell,
+install the pinned Node/npm/uv toolchain and dependencies, then run the source
+checks and local build commands documented in [WINDOWS.md](WINDOWS.md).
 
-For a file-backed certificate:
+An ordinary `npm run make:windows` creates an unsigned validation installer.
+Public mode additionally requires:
 
-- `WINDOWS_CERTIFICATE_PFX_BASE64`
-- `WINDOWS_CERTIFICATE_PASSWORD`
-- `WINDOWS_TIMESTAMP_SERVER` using HTTPS
+- `WINDOWS_TIMESTAMP_SERVER` using HTTPS;
+- either `WINDOWS_SIGN_WITH_PARAMS` for a managed signing flow, or
+  `WINDOWS_CERTIFICATE_FILE` plus `WINDOWS_CERTIFICATE_PASSWORD`.
 
-The workflow materializes the PFX only under `RUNNER_TEMP` and passes its path
-to Forge. For an EV, HSM, or managed signing flow, a trusted operator may
-instead configure `WINDOWS_SIGN_WITH_PARAMS` plus the HTTPS timestamp server.
-Never commit a PFX, password, token, or generated signing command.
-
-Release mode signs the packaged `LocalScribe.exe`, Win32 helper, and Squirrel
-artifacts. It fails unless these checks return `Valid`:
-
-```powershell
-Get-AuthenticodeSignature LocalScribe.exe
-Get-AuthenticodeSignature resources\native\windows\active-target.exe
-Get-AuthenticodeSignature LocalScribe-Setup.exe
-```
+Release mode signs the packaged app, helper, and Squirrel artifacts. Verify
+each final file locally with `Get-AuthenticodeSignature`. Never commit a PFX,
+password, token, generated signing command, or decrypted certificate.
 
 ## Release-candidate review
 
-Before publication, verify:
+Before publication:
 
-1. package version matches the intended immutable source tag;
-2. both platform-specific SBOMs (core runtime and Python dependencies) are
-   present and their entries in `SHA256SUMS.txt` match the downloaded workflow
-   artifacts;
-3. macOS notarization or Windows Authenticode checks pass on the downloaded
-   artifact, not only inside CI;
-4. no model weights are embedded in the installer;
-5. explicit model download, offline dictation, and tamper rejection work;
-6. fresh-user permissions, hotkeys, paste fallback, tray, login, and local data
-   paths work on the target OS;
-7. Windows real inference passes on physical NVIDIA hardware;
-8. installer update/uninstall behavior is tested before any update feed is
-   enabled.
+1. record `git rev-parse HEAD` and match it to the intended immutable source
+   tag and package version;
+2. run the complete local verification command on the target platform;
+3. verify both platform-specific SBOMs and every entry in
+   `out/SHA256SUMS.txt`;
+4. re-run notarization or Authenticode checks against the exact candidate;
+5. confirm no model weights are embedded in the installer;
+6. test model download, offline dictation, tamper rejection, permissions,
+   hotkeys, paste fallback, tray, login, and local data paths;
+7. on Windows, run real inference on the claimed NVIDIA hardware;
+8. test clean install, update, and uninstall before enabling any update feed.
 
-If any credential is absent, `LOCALSCRIBE_RELEASE=1` fails before packaging.
-Do not remove that gate to obtain an artifact; use the validation workflow
-instead.
+No local command automatically creates a GitHub Release or update feed. Signed
+artifacts remain release candidates until a human reviews and publishes them.
+If release credentials are unavailable, use the normal local validation build;
+never weaken the fail-closed release gates.

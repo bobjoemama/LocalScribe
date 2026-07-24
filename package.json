@@ -31,6 +31,8 @@
     "verify:macos-entitlements": "node scripts/verify-macos-entitlements.mjs",
     "smoke:packaged:macos": "bash scripts/smoke-packaged-macos.sh",
     "smoke:packaged:windows": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/smoke-packaged-windows.ps1",
+    "verify:local": "node scripts/verify-local-source.mjs",
+    "verify:local:macos": "bash scripts/verify-local-macos.sh",
     "lint": "eslint . --max-warnings 0",
     "lint:python:macos": "uv run --project worker --locked --only-dev ruff check --config worker/pyproject.toml worker/localscribe_worker worker/tests scripts/smoke-worker.py",
     "lint:all": "npm run lint && npm run lint:python:macos",
