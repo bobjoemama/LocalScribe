@@ -82,16 +82,47 @@ function parseTarget(raw: string): ActiveTarget | null {
   return target;
 }
 
+function pasteArguments(target: ActiveTarget): string[] | null {
+  if (!target || typeof target !== "object") return null;
+  const maximumProcessId = target.platform === "darwin"
+    ? 2_147_483_647
+    : target.platform === "win32"
+      ? 4_294_967_295
+      : 0;
+  if (
+    maximumProcessId === 0 ||
+    !Number.isSafeInteger(target.processId) ||
+    target.processId <= 0 ||
+    target.processId > maximumProcessId ||
+    typeof target.applicationId !== "string" ||
+    target.applicationId.length === 0 ||
+    Buffer.byteLength(target.applicationId, "utf8") > 1_024 ||
+    target.applicationId.includes("\0") ||
+    typeof target.windowFingerprint !== "string" ||
+    !/^[a-f0-9]{64}$/.test(target.windowFingerprint)
+  ) {
+    return null;
+  }
+
+  return [
+    "paste",
+    target.platform,
+    String(target.processId),
+    target.applicationId,
+    target.windowFingerprint,
+  ];
+}
+
 export class NativeExecutableInsertionBridge implements PlatformInsertionBridge {
   constructor(private readonly executablePath: string) {}
 
   async captureActiveTarget(): Promise<ActiveTarget | null> {
-    const output = await this.run("target");
+    const output = await this.run(["target"]);
     return output === null ? null : parseTarget(output);
   }
 
   async clipboardSequence(): Promise<number | null> {
-    const output = await this.run("clipboard-sequence");
+    const output = await this.run(["clipboard-sequence"]);
     if (output === null) return null;
     let payload: { sequence?: unknown };
     try {
@@ -104,8 +135,10 @@ export class NativeExecutableInsertionBridge implements PlatformInsertionBridge 
       : null;
   }
 
-  async paste(): Promise<PasteInjectionResult> {
-    const output = await this.run("paste");
+  async paste(expectedTarget: ActiveTarget): Promise<PasteInjectionResult> {
+    const arguments_ = pasteArguments(expectedTarget);
+    if (arguments_ === null) return { status: "failed" };
+    const output = await this.run(arguments_);
     if (output === null) return { status: "failed" };
     return parsePaste(output);
   }
@@ -122,23 +155,18 @@ export class NativeExecutableInsertionBridge implements PlatformInsertionBridge 
     command: "accessibility-status" | "request-accessibility",
     timeout = 1_000,
   ): Promise<boolean> {
-    const output = await this.run(command, timeout);
+    const output = await this.run([command], timeout);
     if (output === null) return false;
     return parseAccessibility(output);
   }
 
   private async run(
-    command:
-      | "target"
-      | "clipboard-sequence"
-      | "paste"
-      | "accessibility-status"
-      | "request-accessibility",
+    arguments_: readonly string[],
     timeout = 1_000,
   ): Promise<string | null> {
     if (!existsSync(this.executablePath)) return null;
     try {
-      const { stdout } = await execFileAsync(this.executablePath, [command], {
+      const { stdout } = await execFileAsync(this.executablePath, arguments_, {
         encoding: "utf8",
         timeout,
         maxBuffer: 16 * 1024,
@@ -173,6 +201,7 @@ export function createDefaultInsertionBridge(
 
 export const nativeBridgeInternals = {
   parseAccessibility,
+  pasteArguments,
   parsePaste,
   parseTarget,
   defaultHelperPath: resolveNativeActiveTargetHelperPath,

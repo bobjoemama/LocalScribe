@@ -1,4 +1,3 @@
-import { uIOhook, UiohookKey } from "uiohook-napi";
 import { ElectronClipboardPort } from "./electronClipboard";
 import { createDefaultInsertionBridge } from "./nativePlatformBridge";
 import { SafeInsertionCoordinator } from "./safeInsertion";
@@ -30,21 +29,10 @@ export class InsertionService {
       allowEnvironmentOverride: dependencies.allowNativeHelperEnvironmentOverride,
     });
     const pasteInjector: PasteInjector = dependencies.pasteInjector ?? {
-      paste: async () => {
-        if (this.platformBridge.paste) return this.platformBridge.paste();
-        // Windows auto-paste is owned by the helper because it rechecks UI
-        // Automation focus immediately before SendInput. Never bypass that
-        // guard with a lower-level key tap when the helper is unavailable.
-        if (this.platform === "win32") return { status: "failed" };
-        try {
-          const modifier = this.platform === "darwin" ? UiohookKey.Meta : UiohookKey.Ctrl;
-          uIOhook.keyTap(UiohookKey.V, [modifier]);
-          // uiohook only confirms dispatch of the key event; it cannot
-          // acknowledge that the focused application consumed clipboard data.
-          return { status: "injected" };
-        } catch {
-          return { status: "failed" };
-        }
+      paste: async (expectedTarget) => {
+        // Native auto-paste owns the final editable-target recheck on both
+        // platforms. A missing helper deliberately degrades to copy-only.
+        return this.platformBridge.paste?.(expectedTarget) ?? { status: "failed" };
       },
     };
     this.coordinator = new SafeInsertionCoordinator(

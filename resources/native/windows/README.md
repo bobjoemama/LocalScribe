@@ -50,11 +50,14 @@ The commands return:
   `windowFingerprint`, and a boolean `focusedEditable`.
 - `clipboard-sequence` writes `{ "sequence": number }`, backed by `GetClipboardSequenceNumber`.
 
-`paste` is intentionally omitted from manual smoke commands because it injects
-Ctrl+V into the current editable target. LocalScribe invokes it with no
-transcript argument. It returns `{ "injected": boolean }`; a false result keeps
-the dictated text copied for manual paste. Windows UIPI intentionally prevents
-injection into higher-integrity applications.
+`paste` is intentionally omitted from manual smoke commands because it may
+inject Ctrl+V. LocalScribe invokes it as
+`paste win32 <pid> <application-id> <window-fingerprint>`. The helper recaptures
+the editable target immediately before `SendInput` and injects only when all
+identity fields match. It never receives transcript or clipboard content and
+returns `{ "injected": boolean }`; a false result keeps the dictated text copied
+for manual paste. Windows UIPI intentionally prevents injection into
+higher-integrity applications.
 
 The generated executable must be added to the packaged app's resources at
 `resources/native/windows/active-target.exe` and Authenticode-signed before

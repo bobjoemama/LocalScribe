@@ -192,7 +192,10 @@ export class SafeInsertionCoordinator {
       let injection: PasteInjectionResult;
       try {
         if (!this.isCurrentSession(insertionGeneration)) return "copied";
-        injection = await this.pasteInjector.paste();
+        // Carry the target captured at dictation start across the final native
+        // boundary. The helper recaptures and compares it immediately before
+        // dispatch, closing the focus-change gap after this TypeScript check.
+        injection = await this.pasteInjector.paste(expectedTarget);
       } catch {
         return "copied";
       }

@@ -55,6 +55,17 @@ private struct PastePayload: Encodable {
     let injected: Bool
 }
 
+private struct SelfTestPayload: Encodable {
+    let platform = "darwin"
+    let selfTest: Bool
+}
+
+private struct PasteExpectation {
+    let processId: Int32
+    let applicationId: String
+    let windowFingerprint: String
+}
+
 private enum HelperError: Error {
     case invalidCommand
     case noFrontmostApplication
@@ -77,6 +88,50 @@ private func attributeString(_ element: AXUIElement, _ attribute: CFString) -> S
 private func hashFingerprint(_ descriptor: String) -> String {
     let digest = SHA256.hash(data: Data(descriptor.utf8))
     return digest.map { String(format: "%02x", $0) }.joined()
+}
+
+private func parseProcessId(_ argument: String) -> Int32? {
+    let bytes = Array(argument.utf8)
+    guard
+        !bytes.isEmpty,
+        bytes.count <= 10,
+        bytes[0] >= 0x31,
+        bytes[0] <= 0x39,
+        bytes.allSatisfy({ $0 >= 0x30 && $0 <= 0x39 }),
+        let processId = Int32(argument),
+        processId > 0
+    else {
+        return nil
+    }
+    return processId
+}
+
+private func parsePasteExpectation(_ arguments: [String]) -> PasteExpectation? {
+    guard
+        arguments.count == 4,
+        arguments[0] == "darwin",
+        let processId = parseProcessId(arguments[1]),
+        !arguments[2].isEmpty,
+        arguments[2].utf8.count <= 1_024
+    else {
+        return nil
+    }
+
+    let fingerprintBytes = Array(arguments[3].utf8)
+    guard
+        fingerprintBytes.count == 64,
+        fingerprintBytes.allSatisfy({
+            ($0 >= 0x30 && $0 <= 0x39) || ($0 >= 0x61 && $0 <= 0x66)
+        })
+    else {
+        return nil
+    }
+
+    return PasteExpectation(
+        processId: processId,
+        applicationId: arguments[2],
+        windowFingerprint: arguments[3]
+    )
 }
 
 private func coreGraphicsWindowFingerprint(for processId: pid_t) -> String? {
@@ -193,13 +248,25 @@ private func captureTarget() throws -> TargetPayload {
     let applicationId = application.bundleIdentifier
         ?? application.executableURL?.path
         ?? "pid:\(application.processIdentifier)"
-    return TargetPayload(
+    let payload = TargetPayload(
         processId: application.processIdentifier,
         applicationId: applicationId,
         windowFingerprint: focusedWindowFingerprint(for: application.processIdentifier)
             ?? coreGraphicsWindowFingerprint(for: application.processIdentifier),
         focusedEditable: focusedElementIsEditable(for: application.processIdentifier)
     )
+    guard
+        let confirmedApplication = NSWorkspace.shared.frontmostApplication,
+        confirmedApplication.processIdentifier == payload.processId,
+        (
+            confirmedApplication.bundleIdentifier
+                ?? confirmedApplication.executableURL?.path
+                ?? "pid:\(confirmedApplication.processIdentifier)"
+        ) == payload.applicationId
+    else {
+        throw HelperError.noFrontmostApplication
+    }
+    return payload
 }
 
 private func accessibilityStatus(prompt: Bool) -> AccessibilityPayload {
@@ -216,10 +283,28 @@ private func accessibilityStatus(prompt: Bool) -> AccessibilityPayload {
     )
 }
 
-private func pasteIntoFocusedControl() -> PastePayload {
+private func targetMatches(_ target: TargetPayload, expectation: PasteExpectation) -> Bool {
+    target.platform == "darwin"
+        && target.processId == expectation.processId
+        && target.applicationId == expectation.applicationId
+        && target.windowFingerprint == expectation.windowFingerprint
+        && target.focusedEditable == true
+}
+
+private func pasteIntoFocusedControl(expectation: PasteExpectation) -> PastePayload {
     guard CGPreflightPostEventAccess() else {
         return PastePayload(injected: false)
     }
+    guard
+        let currentTarget = try? captureTarget(),
+        targetMatches(currentTarget, expectation: expectation)
+    else {
+        return PastePayload(injected: false)
+    }
+
+    // Focus can still change in the irreducible handoff between this native
+    // recapture and the OS event post. Keep that interval free of asynchronous
+    // work and fail closed on every identity or editability mismatch.
     let source = CGEventSource(stateID: .hidSystemState)
     guard
         let keyDown = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: true),
@@ -233,6 +318,53 @@ private func pasteIntoFocusedControl() -> PastePayload {
     Thread.sleep(forTimeInterval: 0.012)
     keyUp.post(tap: .cghidEventTap)
     return PastePayload(injected: true)
+}
+
+private func selfTest() -> Bool {
+    let fingerprint = String(repeating: "a", count: 64)
+    guard
+        let expectation = parsePasteExpectation([
+            "darwin",
+            "42",
+            "com.example.Editor",
+            fingerprint,
+        ]),
+        parsePasteExpectation([
+            "win32",
+            "42",
+            "com.example.Editor",
+            fingerprint,
+        ]) == nil,
+        parsePasteExpectation([
+            "darwin",
+            "042",
+            "com.example.Editor",
+            fingerprint,
+        ]) == nil,
+        parsePasteExpectation([
+            "darwin",
+            "42",
+            "com.example.Editor",
+            String(repeating: "A", count: 64),
+        ]) == nil
+    else {
+        return false
+    }
+
+    let matchingTarget = TargetPayload(
+        processId: 42,
+        applicationId: "com.example.Editor",
+        windowFingerprint: fingerprint,
+        focusedEditable: true
+    )
+    let nonEditableTarget = TargetPayload(
+        processId: 42,
+        applicationId: "com.example.Editor",
+        windowFingerprint: fingerprint,
+        focusedEditable: false
+    )
+    return targetMatches(matchingTarget, expectation: expectation)
+        && !targetMatches(nonEditableTarget, expectation: expectation)
 }
 
 private let controlKeyCodes: Set<CGKeyCode> = [59, 62]
@@ -291,19 +423,35 @@ private func monitorControlKey() throws -> Never {
 }
 
 do {
-    guard CommandLine.arguments.count == 2 else { throw HelperError.invalidCommand }
+    guard CommandLine.arguments.count >= 2 else { throw HelperError.invalidCommand }
     switch CommandLine.arguments[1] {
     case "target":
+        guard CommandLine.arguments.count == 2 else { throw HelperError.invalidCommand }
         try writeJSON(captureTarget())
     case "clipboard-sequence":
+        guard CommandLine.arguments.count == 2 else { throw HelperError.invalidCommand }
         try writeJSON(ClipboardSequencePayload(sequence: NSPasteboard.general.changeCount))
     case "accessibility-status":
+        guard CommandLine.arguments.count == 2 else { throw HelperError.invalidCommand }
         try writeJSON(accessibilityStatus(prompt: false))
     case "request-accessibility":
+        guard CommandLine.arguments.count == 2 else { throw HelperError.invalidCommand }
         try writeJSON(accessibilityStatus(prompt: true))
     case "paste":
-        try writeJSON(pasteIntoFocusedControl())
+        guard
+            CommandLine.arguments.count == 6,
+            let expectation = parsePasteExpectation(Array(CommandLine.arguments[2...5]))
+        else {
+            throw HelperError.invalidCommand
+        }
+        try writeJSON(pasteIntoFocusedControl(expectation: expectation))
+    case "self-test":
+        guard CommandLine.arguments.count == 2, selfTest() else {
+            throw HelperError.invalidCommand
+        }
+        try writeJSON(SelfTestPayload(selfTest: true))
     case "control-monitor":
+        guard CommandLine.arguments.count == 2 else { throw HelperError.invalidCommand }
         try monitorControlKey()
     default:
         throw HelperError.invalidCommand

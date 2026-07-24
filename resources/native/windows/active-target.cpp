@@ -36,6 +36,12 @@ struct TargetPayload {
   HWND foreground_window;
 };
 
+struct PasteExpectation {
+  DWORD process_id;
+  std::string application_id;
+  std::string window_fingerprint;
+};
+
 bool WriteStdout(std::string_view value) {
   HANDLE output = GetStdHandle(STD_OUTPUT_HANDLE);
   if (output == nullptr || output == INVALID_HANDLE_VALUE) return false;
@@ -105,6 +111,48 @@ bool WideToUtf8(const std::wstring& wide, std::string* utf8) {
       required,
       nullptr,
       nullptr) == required;
+}
+
+bool ParseProcessId(std::wstring_view argument, DWORD* process_id) {
+  if (argument.empty() || argument.size() > 10 ||
+      argument.front() < L'1' || argument.front() > L'9') {
+    return false;
+  }
+
+  std::uint64_t value = 0;
+  for (const wchar_t character : argument) {
+    if (character < L'0' || character > L'9') return false;
+    value = (value * 10) + static_cast<std::uint64_t>(character - L'0');
+    if (value > std::numeric_limits<DWORD>::max()) return false;
+  }
+  *process_id = static_cast<DWORD>(value);
+  return *process_id != 0;
+}
+
+bool ParsePasteExpectation(
+    std::wstring_view platform,
+    std::wstring_view process_id,
+    const std::wstring& application_id,
+    std::wstring_view window_fingerprint,
+    PasteExpectation* expectation) {
+  if (platform != L"win32" ||
+      !ParseProcessId(process_id, &expectation->process_id) ||
+      !WideToUtf8(application_id, &expectation->application_id) ||
+      expectation->application_id.size() > 1024 ||
+      window_fingerprint.size() != 64) {
+    return false;
+  }
+
+  expectation->window_fingerprint.clear();
+  expectation->window_fingerprint.reserve(window_fingerprint.size());
+  for (const wchar_t character : window_fingerprint) {
+    if (!((character >= L'0' && character <= L'9') ||
+          (character >= L'a' && character <= L'f'))) {
+      return false;
+    }
+    expectation->window_fingerprint.push_back(static_cast<char>(character));
+  }
+  return true;
 }
 
 bool Sha256(std::string_view input, std::string* hexadecimal) {
@@ -450,17 +498,32 @@ bool CaptureTarget(TargetPayload* payload) {
   return true;
 }
 
-bool InjectPaste() {
-  TargetPayload target{};
-  if (!CaptureTarget(&target) || !target.focused_editable) return false;
+bool TargetMatches(
+    const TargetPayload& target,
+    const PasteExpectation& expectation) {
+  return target.process_id == expectation.process_id &&
+      target.application_id == expectation.application_id &&
+      target.window_fingerprint == expectation.window_fingerprint &&
+      target.focused_editable;
+}
 
+bool InjectPaste(const PasteExpectation& expectation) {
   // Extra modifiers can turn Ctrl+V into another command (for example
   // Ctrl+Shift+V). Fail closed and leave the transcription on the clipboard.
   if (IsKeyPressed(VK_CONTROL) ||
       IsKeyPressed(VK_SHIFT) ||
       IsKeyPressed(VK_MENU) ||
       IsKeyPressed(VK_LWIN) ||
-      IsKeyPressed(VK_RWIN) ||
+      IsKeyPressed(VK_RWIN)) {
+    return false;
+  }
+
+  // Focus can still change in the irreducible handoff between this native
+  // recapture and SendInput. Keep that interval free of asynchronous work and
+  // fail closed on every identity or editability mismatch.
+  TargetPayload target{};
+  if (!CaptureTarget(&target) ||
+      !TargetMatches(target, expectation) ||
       GetForegroundWindow() != target.foreground_window) {
     return false;
   }
@@ -502,9 +565,53 @@ bool InjectPaste() {
 
 bool SelfTest() {
   std::string digest;
-  return Sha256("abc", &digest) &&
-      digest == "ba7816bf8f01cfea414140de5dae2223"
-                "b00361a396177a9cb410ff61f20015ad";
+  if (!Sha256("abc", &digest) ||
+      digest != "ba7816bf8f01cfea414140de5dae2223"
+                "b00361a396177a9cb410ff61f20015ad") {
+    return false;
+  }
+
+  const std::wstring fingerprint(64, L'a');
+  PasteExpectation expectation{};
+  PasteExpectation invalid{};
+  if (!ParsePasteExpectation(
+          L"win32",
+          L"42",
+          L"C:\\Program Files\\Editor\\editor.exe",
+          fingerprint,
+          &expectation) ||
+      ParsePasteExpectation(
+          L"darwin",
+          L"42",
+          L"C:\\Program Files\\Editor\\editor.exe",
+          fingerprint,
+          &invalid) ||
+      ParsePasteExpectation(
+          L"win32",
+          L"042",
+          L"C:\\Program Files\\Editor\\editor.exe",
+          fingerprint,
+          &invalid) ||
+      ParsePasteExpectation(
+          L"win32",
+          L"42",
+          L"C:\\Program Files\\Editor\\editor.exe",
+          std::wstring(64, L'A'),
+          &invalid)) {
+    return false;
+  }
+
+  TargetPayload matching{
+      42,
+      "C:\\Program Files\\Editor\\editor.exe",
+      std::string(64, 'a'),
+      true,
+      nullptr,
+  };
+  TargetPayload non_editable = matching;
+  non_editable.focused_editable = false;
+  return TargetMatches(matching, expectation) &&
+      !TargetMatches(non_editable, expectation);
 }
 
 int Fail() {
@@ -525,9 +632,10 @@ int Fail() {
 }  // namespace
 
 int wmain(int argument_count, wchar_t* arguments[]) {
-  if (argument_count != 2) return Fail();
+  if (argument_count < 2) return Fail();
 
   if (std::wstring_view(arguments[1]) == L"clipboard-sequence") {
+    if (argument_count != 2) return Fail();
     const DWORD sequence = GetClipboardSequenceNumber();
     return WriteStdout(
                "{\"sequence\":" + std::to_string(sequence) + "}\n")
@@ -536,6 +644,7 @@ int wmain(int argument_count, wchar_t* arguments[]) {
   }
 
   if (std::wstring_view(arguments[1]) == L"target") {
+    if (argument_count != 2) return Fail();
     TargetPayload target{};
     if (!CaptureTarget(&target)) return Fail();
     const std::string json =
@@ -549,8 +658,18 @@ int wmain(int argument_count, wchar_t* arguments[]) {
   }
 
   if (std::wstring_view(arguments[1]) == L"paste") {
+    if (argument_count != 6) return Fail();
+    PasteExpectation expectation{};
+    if (!ParsePasteExpectation(
+            arguments[2],
+            arguments[3],
+            arguments[4],
+            arguments[5],
+            &expectation)) {
+      return Fail();
+    }
     return WriteStdout(
-               InjectPaste()
+               InjectPaste(expectation)
                    ? "{\"injected\":true}\n"
                    : "{\"injected\":false}\n")
         ? 0
@@ -558,6 +677,7 @@ int wmain(int argument_count, wchar_t* arguments[]) {
   }
 
   if (std::wstring_view(arguments[1]) == L"self-test") {
+    if (argument_count != 2) return Fail();
     if (!SelfTest()) return Fail();
     return WriteStdout(
                "{\"platform\":\"win32\",\"architecture\":\"x64\","

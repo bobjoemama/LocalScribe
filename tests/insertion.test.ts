@@ -131,6 +131,7 @@ describe("safe insertion", () => {
     await expect(insertion.insert("dictated", true)).resolves.toBe("pasted");
 
     expect(paste).toHaveBeenCalledOnce();
+    expect(paste).toHaveBeenCalledWith(TARGET_A);
     expect(clipboard.restoreCalls).toHaveLength(1);
   });
 
@@ -605,7 +606,27 @@ describe("Windows insertion service", () => {
     insertion.beginSession();
     await expect(insertion.copyAndPaste("dictated", true)).resolves.toBe("pasted-with-copy");
     expect(bridge.paste).toHaveBeenCalledOnce();
+    expect(bridge.paste).toHaveBeenCalledWith(windowsTarget);
     expect(clipboard.currentText).toBe("dictated");
     expect(clipboard.restoreCalls).toHaveLength(0);
+  });
+});
+
+describe("macOS insertion service", () => {
+  it("degrades to copy-only instead of using a uiohook paste when the helper is unavailable", async () => {
+    const { InsertionService } = await import("../src/main/insertion/insertionService");
+    const bridge = new FakeBridge([TARGET_A, TARGET_A]);
+    const clipboard = new FakeClipboard(bridge);
+    const insertion = new InsertionService({
+      clipboard,
+      platformBridge: bridge,
+      platform: "darwin",
+      pasteSettleMs: 0,
+    });
+
+    insertion.beginSession();
+    await expect(insertion.copyAndPaste("dictated", true)).resolves.toBe("copied");
+    expect(inputMocks.keyTap).not.toHaveBeenCalled();
+    expect(clipboard.currentText).toBe("dictated");
   });
 });

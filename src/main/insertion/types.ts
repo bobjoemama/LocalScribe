@@ -26,7 +26,7 @@ export interface PlatformInsertionBridge {
   captureActiveTarget(): Promise<ActiveTarget | null>;
   clipboardSequence(): Promise<number | null>;
   /** Optional native path used when the helper owns macOS input permission. */
-  paste?(): Promise<PasteInjectionResult>;
+  paste?(expectedTarget: ActiveTarget): Promise<PasteInjectionResult>;
   accessibilityReady?(): Promise<boolean>;
   requestAccessibility?(): Promise<boolean>;
 }
@@ -48,7 +48,7 @@ export type PasteInjectionResult =
     };
 
 export interface PasteInjector {
-  paste(): PasteInjectionResult | Promise<PasteInjectionResult>;
+  paste(expectedTarget: ActiveTarget): PasteInjectionResult | Promise<PasteInjectionResult>;
 }
 
 export type InsertionOutcome = "pasted" | "pasted-with-copy" | "copied";
