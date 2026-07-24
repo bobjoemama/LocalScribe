@@ -1,6 +1,5 @@
-import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 
 const packageJson = JSON.parse(
   readFileSync(resolve(process.cwd(), "package.json"), "utf8"),
@@ -17,10 +16,32 @@ if (
 }
 
 const expectedVersion = packageManager.slice("npm@".length);
-const npmExecutable = process.platform === "win32" ? "npm.cmd" : "npm";
-const actualVersion = execFileSync(npmExecutable, ["--version"], {
-  encoding: "utf8",
-}).trim();
+const npmExecPath = process.env.npm_execpath;
+if (!npmExecPath || !isAbsolute(npmExecPath) || !existsSync(npmExecPath)) {
+  throw new Error(
+    "npm_execpath must identify the npm CLI that launched this verification script.",
+  );
+}
+
+let searchDirectory = dirname(realpathSync(npmExecPath));
+let actualVersion;
+for (let depth = 0; depth < 8; depth += 1) {
+  const candidate = join(searchDirectory, "package.json");
+  if (existsSync(candidate)) {
+    const manifest = JSON.parse(readFileSync(candidate, "utf8"));
+    if (manifest.name === "npm" && typeof manifest.version === "string") {
+      actualVersion = manifest.version;
+      break;
+    }
+  }
+  const parent = dirname(searchDirectory);
+  if (parent === searchDirectory) break;
+  searchDirectory = parent;
+}
+
+if (!actualVersion) {
+  throw new Error("Unable to resolve the invoking npm package version.");
+}
 
 if (actualVersion !== expectedVersion) {
   throw new Error(
