@@ -1,7 +1,9 @@
 import { z } from "zod";
 import {
   holdShortcutSchema,
+  shortcutsUseSamePhysicalKeys,
   toggleShortcutSchema,
+  type ShortcutUpdateRequest,
   type ShortcutValidationRequest,
   type ShortcutValidationResult,
 } from "./shortcuts";
@@ -117,7 +119,7 @@ export function historyRetentionLabel(days: HistoryRetentionDays): string {
   return days === 0 ? "Forever" : `${days} days`;
 }
 
-export const appSettingsSchema = z.object({
+const appSettingsFieldsSchema = z.object({
   launchAtLogin: z.boolean(),
   showPillWhenIdle: z.boolean(),
   autoPaste: z.boolean(),
@@ -131,8 +133,10 @@ export const appSettingsSchema = z.object({
   smartPunctuation: z.boolean(),
   holdShortcut: holdShortcutSchema,
   toggleShortcut: toggleShortcutSchema,
-}).superRefine((settings, context) => {
-  if (settings.holdShortcut !== settings.toggleShortcut) return;
+});
+
+export const appSettingsSchema = appSettingsFieldsSchema.superRefine((settings, context) => {
+  if (!shortcutsUseSamePhysicalKeys(settings.holdShortcut, settings.toggleShortcut)) return;
   context.addIssue({
     code: "custom",
     path: ["toggleShortcut"],
@@ -140,6 +144,13 @@ export const appSettingsSchema = z.object({
   });
 });
 export type AppSettings = z.infer<typeof appSettingsSchema>;
+
+/** A field-level update merged against current persisted settings in main. */
+export const appSettingsPatchSchema = appSettingsFieldsSchema.partial().strict().refine(
+  (patch) => Object.keys(patch).length > 0,
+  "Choose at least one setting to update.",
+);
+export type AppSettingsPatch = z.infer<typeof appSettingsPatchSchema>;
 
 export const runtimePlatformSchema = z.enum(["darwin", "win32", "linux", "unsupported"]);
 export type RuntimePlatform = z.infer<typeof runtimePlatformSchema>;
@@ -312,9 +323,11 @@ export const IPC = {
   scratchpadDelete: "scratchpad:delete",
   settingsGet: "settings:get",
   settingsSave: "settings:save",
+  settingsPatch: "settings:patch",
   shortcutsBeginCapture: "shortcuts:begin-capture",
   shortcutsEndCapture: "shortcuts:end-capture",
   shortcutsValidate: "shortcuts:validate",
+  shortcutsUpdate: "shortcuts:update",
   windowShowSettings: "window:show-settings",
   windowSetPillMode: "window:set-pill-mode",
   windowCloseScratchpad: "window:close-scratchpad",
@@ -368,12 +381,14 @@ export interface LocalScribeApi {
   settings: {
     get(): Promise<AppSettings>;
     save(input: AppSettings): Promise<AppSettings>;
+    patch(input: AppSettingsPatch): Promise<AppSettings>;
     onChanged(listener: (settings: AppSettings) => void): () => void;
   };
   shortcuts: {
     beginCapture(): Promise<void>;
     endCapture(): Promise<void>;
     validate(input: ShortcutValidationRequest): Promise<ShortcutValidationResult>;
+    update(input: ShortcutUpdateRequest): Promise<AppSettings>;
   };
   windows: {
     showSettings(target?: NavigationTarget): Promise<void>;

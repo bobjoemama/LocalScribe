@@ -18,8 +18,8 @@ type ShortcutRecorderProps = {
   label: string;
   detail: string;
   value: string;
-  onValidate(shortcut: string): Promise<ShortcutValidationOutcome>;
-  onChange(shortcut: string): void;
+  /** Commits through main; accepted values are already live and persisted. */
+  onAccept(shortcut: string): Promise<ShortcutValidationOutcome>;
 };
 
 const modifierCodes: Record<string, string> = {
@@ -78,8 +78,7 @@ export function ShortcutRecorder({
   label,
   detail,
   value,
-  onValidate,
-  onChange,
+  onAccept,
 }: ShortcutRecorderProps) {
   const [capturing, setCapturing] = useState(false);
   const [validating, setValidating] = useState(false);
@@ -138,7 +137,7 @@ export function ShortcutRecorder({
     }
 
     try {
-      const result = await onValidate(shortcut);
+      const result = await onAccept(shortcut);
       if (attempt !== captureId.current) return;
       if (!result.accepted) {
         setError(result.error ?? "That shortcut is unavailable. Choose another key combination.");
@@ -150,15 +149,14 @@ export function ShortcutRecorder({
       setError("");
       setWarning(result.warning ?? "");
       setLiveShortcut(acceptedShortcut);
-      onChange(acceptedShortcut);
       setValidating(false);
     } catch (validationError) {
       if (attempt !== captureId.current) return;
       setWarning("");
-      setError(readableError(validationError, "The shortcut could not be checked. Try again."));
+      setError(readableError(validationError, "The shortcut could not be applied. Try again."));
       setValidating(false);
     }
-  }, [endNativeCapture, onChange, onValidate]);
+  }, [endNativeCapture, onAccept]);
 
   useEffect(() => {
     if (!capturing) return;
@@ -260,7 +258,7 @@ export function ShortcutRecorder({
           : `${label}: ${readableShortcutLabel(value)}. Activate to record a new shortcut.`}
       >
         <span className="ls-shortcut-recorder__key">{displayedShortcut ? readableShortcutLabel(displayedShortcut) : "Press a shortcut"}</span>
-        <span className="ls-shortcut-recorder__action">{validating ? "Checking…" : capturing ? "Cancel" : "Record"}</span>
+        <span className="ls-shortcut-recorder__action">{validating ? "Applying…" : capturing ? "Cancel" : "Record"}</span>
       </button>
     </div>
   );

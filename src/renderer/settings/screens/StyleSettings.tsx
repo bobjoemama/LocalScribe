@@ -2,6 +2,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type FormEvent,
   type ReactNode,
@@ -12,17 +13,14 @@ import {
   historyRetentionLabel,
   type AppProfile,
   type AppSettings,
+  type AppSettingsPatch,
   type DictionaryEntry,
   type Diagnostics,
   type ModelPerformanceTier,
   type PermissionSnapshot,
 } from "../../../shared/contracts";
-import {
-  shortcutDisplayLabel,
-  type HoldShortcut,
-  type ToggleShortcut,
-} from "../../../shared/shortcuts";
-import { ShortcutRecorder, type ShortcutKind, type ShortcutValidationOutcome } from "../components/ShortcutRecorder";
+import { shortcutDisplayLabel } from "../../../shared/shortcuts";
+import { ShortcutRecorder, type ShortcutValidationOutcome } from "../components/ShortcutRecorder";
 import {
   ModelPerformanceSettings,
   type ModelActionState,
@@ -182,7 +180,8 @@ export function StyleScreen() {
   const loadProfiles = useCallback(() => window.localScribe.profiles.list().then(setProfiles), []);
 
   useEffect(() => {
-    void window.localScribe.settings.get().then(setSettings).catch((error: unknown) => {
+    const applySettings = (next: AppSettings) => setSettings(next);
+    void window.localScribe.settings.get().then(applySettings).catch((error: unknown) => {
       setMessageIsError(true);
       setMessage(`Could not load cleanup settings: ${errorDetail(error)}`);
     });
@@ -190,6 +189,7 @@ export function StyleScreen() {
       setProfileMessageIsError(true);
       setProfileMessage(`Could not load app profiles: ${errorDetail(error)}`);
     });
+    return window.localScribe.settings.onChanged(applySettings);
   }, [loadProfiles]);
 
   const cleanupLevel = useMemo<CleanupSelection>(() => cleanupSelectionForSettings(settings), [settings]);
@@ -208,7 +208,11 @@ export function StyleScreen() {
 
   const saveCleanup = async () => {
     try {
-      const saved = await window.localScribe.settings.save(settings);
+      const saved = await window.localScribe.settings.patch({
+        removeFillers: settings.removeFillers,
+        spokenCommands: settings.spokenCommands,
+        smartPunctuation: settings.smartPunctuation,
+      });
       setSettings(saved);
       setMessageIsError(false);
       setMessage("Cleanup saved");
@@ -424,7 +428,8 @@ export function TransformsScreen() {
   const loadRules = useCallback(() => window.localScribe.dictionary.list().then(setRules), []);
 
   useEffect(() => {
-    void window.localScribe.settings.get().then(setSettings).catch((error: unknown) => {
+    const applySettings = (next: AppSettings) => setSettings(next);
+    void window.localScribe.settings.get().then(applySettings).catch((error: unknown) => {
       setMessageIsError(true);
       setMessage(`Could not load transform settings: ${errorDetail(error)}`);
     });
@@ -432,12 +437,13 @@ export function TransformsScreen() {
       setMessageIsError(true);
       setMessage(`Could not load replacement rules: ${errorDetail(error)}`);
     });
+    return window.localScribe.settings.onChanged(applySettings);
   }, [loadRules]);
 
   const setTransform = async (key: "smartPunctuation" | "spokenCommands", enabled: boolean) => {
     setBusy(true);
     try {
-      const saved = await window.localScribe.settings.save({ ...settings, [key]: enabled });
+      const saved = await window.localScribe.settings.patch({ [key]: enabled });
       setSettings(saved);
       setMessageIsError(false);
       setMessage(enabled ? "Transform enabled" : "Transform disabled");
@@ -586,6 +592,7 @@ export function SettingsModal({ onClose }: { onClose(): void }) {
   const [profiles, setProfiles] = useState<AppProfile[]>([]);
   const [status, setStatus] = useState("");
   const [busy, setBusy] = useState(false);
+  const dirtySettings = useRef<AppSettingsPatch>({});
   const [modelAction, setModelAction] = useState<ModelActionState>(null);
   const [modelFeedback, setModelFeedback] = useState<{ message: string; isError: boolean } | null>(null);
 
@@ -600,8 +607,14 @@ export function SettingsModal({ onClose }: { onClose(): void }) {
     setProfiles(profileResult);
   }, []);
 
+  const applyPersistedSettings = useCallback((next: AppSettings) => {
+    // Keep only local edits pending for a field-level patch. A shortcut that
+    // just committed in another surface otherwise must replace this stale copy.
+    setSettings({ ...next, ...dirtySettings.current });
+  }, []);
+
   useEffect(() => {
-    void window.localScribe.settings.get().then(setSettings).catch((error: unknown) => {
+    void window.localScribe.settings.get().then(applyPersistedSettings).catch((error: unknown) => {
       setStatus(`Could not load settings: ${errorDetail(error)}`);
     });
     void refresh().catch((error: unknown) => {
@@ -612,8 +625,8 @@ export function SettingsModal({ onClose }: { onClose(): void }) {
     }).catch((error: unknown) => {
       setStatus(`Could not list microphones: ${errorDetail(error)}`);
     });
-    return window.localScribe.settings.onChanged(setSettings);
-  }, [refresh]);
+    return window.localScribe.settings.onChanged(applyPersistedSettings);
+  }, [applyPersistedSettings, refresh]);
 
   useEffect(() => {
     let disposed = false;
@@ -643,39 +656,42 @@ export function SettingsModal({ onClose }: { onClose(): void }) {
 
   const update = <K extends keyof AppSettings>(key: K, value: AppSettings[K]) => {
     setStatus("");
+    dirtySettings.current = { ...dirtySettings.current, [key]: value };
     setSettings((current) => ({ ...current, [key]: value }));
   };
 
-  const validateShortcut = async (
-    kind: ShortcutKind,
+  const commitShortcut = async (
+    kind: "hold" | "toggle",
     shortcut: string,
-    otherShortcut: string,
   ): Promise<ShortcutValidationOutcome> => {
     try {
-      const result = await window.localScribe.shortcuts.validate({ kind, shortcut, otherShortcut });
-      if (!result.available) {
-        return {
-          accepted: false,
-          error: result.error ?? "That shortcut is already used by macOS or another app. Choose another combination.",
-        };
-      }
+      const saved = await window.localScribe.shortcuts.update({ kind, shortcut });
+      const field = kind === "hold" ? "holdShortcut" : "toggleShortcut";
+      delete dirtySettings.current[field];
+      setSettings({ ...saved, ...dirtySettings.current });
+      setStatus("Shortcut applied");
       return {
         accepted: true,
-        shortcut: result.shortcut,
-        warning: result.warning,
+        shortcut: saved[field],
       };
     } catch (error) {
       return {
         accepted: false,
-        error: `Could not check that shortcut: ${errorDetail(error)}`,
+        error: `Could not apply that shortcut: ${errorDetail(error)}`,
       };
     }
   };
 
   const save = async () => {
+    const patch = dirtySettings.current;
+    if (Object.keys(patch).length === 0) {
+      setStatus("No settings changes to save");
+      return;
+    }
     setBusy(true);
     try {
-      const saved = await window.localScribe.settings.save(settings);
+      const saved = await window.localScribe.settings.patch(patch);
+      dirtySettings.current = {};
       setSettings(saved);
       setStatus("Settings saved");
       if (saved.modelPerformanceMode !== diagnostics?.performance.preference) {
@@ -834,16 +850,14 @@ export function SettingsModal({ onClose }: { onClose(): void }) {
                     label="Push-to-talk shortcut"
                     detail="Hold this key while speaking, then release it to transcribe."
                     value={settings.holdShortcut}
-                    onValidate={(shortcut) => validateShortcut("hold", shortcut, settings.toggleShortcut)}
-                    onChange={(shortcut) => update("holdShortcut", shortcut as HoldShortcut)}
+                    onAccept={(shortcut) => commitShortcut("hold", shortcut)}
                   />
                   <ShortcutRecorder
                     kind="toggle"
                     label="Toggle dictation shortcut"
                     detail="Press once to start listening and once again to stop."
                     value={settings.toggleShortcut}
-                    onValidate={(shortcut) => validateShortcut("toggle", shortcut, settings.holdShortcut)}
-                    onChange={(shortcut) => update("toggleShortcut", shortcut as ToggleShortcut)}
+                    onAccept={(shortcut) => commitShortcut("toggle", shortcut)}
                   />
                   <SettingsSelect
                     label="Microphone"
@@ -1115,9 +1129,9 @@ function resolvedModelEngine(diagnostics: Diagnostics | null): string {
 
 function shortcutHelpText(permissions: PermissionSnapshot | null, holdShortcut: string): string {
   const label = shortcutDisplayLabel(holdShortcut);
-  if (!permissions) return `Shortcut changes apply after saving. The current push-to-talk key is ${label}.`;
+  if (!permissions) return `Shortcut changes apply immediately. The current push-to-talk key is ${label}.`;
   if (permissions.globalHold.ready) {
-    return `Shortcut changes apply after saving. Hold ${label} to dictate from any app.`;
+    return `Shortcut changes apply immediately. Hold ${label} to dictate from any app.`;
   }
   if (permissions.platform === "darwin") {
     return `The current push-to-talk key is ${label}. Grant Accessibility to use it globally; until then, use the toggle shortcut and LocalScribe will copy completed dictation.`;

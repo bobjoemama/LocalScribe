@@ -23,6 +23,7 @@ import {
 import { z } from "zod";
 import {
   appSettingsSchema,
+  appSettingsPatchSchema,
   appProfileSchema,
   dictionaryEntrySchema,
   IPC,
@@ -41,6 +42,11 @@ import {
   type SessionSnapshot,
 } from "./shared/contracts";
 import { shortcutValidationRequestSchema } from "./shared/shortcuts";
+import {
+  applySettingsPatchTransaction,
+  applyShortcutUpdateTransaction,
+  persistSettingsTransaction,
+} from "./main/settings/settingsTransaction";
 import { LocalDatabase } from "./main/persistence/database";
 import {
   WorkerSupervisor,
@@ -886,14 +892,27 @@ function registerIpc(): void {
     const next = appSettingsSchema.parse(input);
     const modelPreferenceChanged = next.modelPerformanceMode !== previous.modelPerformanceMode;
     if (modelPreferenceChanged) assertModelSwitchAllowed();
-    hotkeys.reconfigure(next.holdShortcut, next.toggleShortcut);
-    let settings = next;
-    try {
-      settings = database.saveSettings(next);
-    } catch (error) {
-      hotkeys.reconfigure(previous.holdShortcut, previous.toggleShortcut);
-      throw error;
+    const settings = persistSettingsTransaction({ database, hotkeys }, next, previous);
+    if (modelPreferenceChanged) {
+      await worker.shutdown();
+      modelResolution = null;
+      await refreshModelResolution();
     }
+    const purged = database.purgeExpiredTranscriptions(settings.historyRetentionDays);
+    if (purged > 0) notifyHistoryChanged();
+    app.setLoginItemSettings({ openAtLogin: settings.launchAtLogin });
+    syncPillVisibility();
+    installApplicationMenu();
+    notifySettingsChanged(settings);
+    return settings;
+  });
+  handle(IPC.settingsPatch, async (_event, input: unknown) => {
+    const patch = appSettingsPatchSchema.parse(input);
+    const previous = database.getSettings();
+    const preview = appSettingsSchema.parse({ ...previous, ...patch });
+    const modelPreferenceChanged = preview.modelPerformanceMode !== previous.modelPerformanceMode;
+    if (modelPreferenceChanged) assertModelSwitchAllowed();
+    const settings = applySettingsPatchTransaction({ database, hotkeys }, patch);
     if (modelPreferenceChanged) {
       await worker.shutdown();
       modelResolution = null;
@@ -912,6 +931,14 @@ function registerIpc(): void {
   handle(IPC.shortcutsValidate, (_event, input: unknown) =>
     hotkeys.validateShortcut(shortcutValidationRequestSchema.parse(input)),
   );
+  handle(IPC.shortcutsUpdate, (_event, input: unknown) => {
+    const settings = applyShortcutUpdateTransaction({ database, hotkeys }, input);
+    // The transaction only returns after the new hotkeys are active and the
+    // settings row is durable. Every surface receives that same value now.
+    notifySettingsChanged(settings);
+    installApplicationMenu();
+    return settings;
+  });
   handle(IPC.windowShowSettings, (_event, rawTarget: unknown) => {
     showHub(rawTarget === undefined ? "dictation" : navigationTargetSchema.parse(rawTarget));
   });

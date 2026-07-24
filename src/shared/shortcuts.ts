@@ -248,10 +248,80 @@ export function shortcutCompactLabel(
   return shortcutTokens(shortcut).map((token) => compactTokenDisplayLabel(token, platform)).join(" + ");
 }
 
-/** True if a toggle shares a physical key/modifier with the hold shortcut. */
-export function toggleUsesHoldKey(toggle: string, hold: string): boolean {
-  const holdTokens = new Set(shortcutTokens(hold));
-  return shortcutTokens(toggle).some((token) => holdTokens.has(token));
+type PhysicalKeyGroup = readonly string[];
+
+/**
+ * Groups the logical accelerator tokens by the physical keys that can produce
+ * them. This keeps Command/Super/Meta aliases, CommandOrControl, AltGr, and
+ * the physical Shift+Equal form of Plus from drifting apart in comparisons.
+ */
+function physicalKeyGroupsForToken(
+  token: string,
+  platform: string,
+): readonly PhysicalKeyGroup[] {
+  switch (token) {
+    case "Control": return [["control-left", "control-right"]];
+    case "Command":
+    case "Super":
+    case "Meta": return [["meta-left", "meta-right"]];
+    case "CommandOrControl":
+      return platform === "darwin"
+        ? [["meta-left", "meta-right"]]
+        : [["control-left", "control-right"]];
+    case "Alt": return [["alt-left", "alt-right"]];
+    case "AltGr": return [["alt-right"]];
+    case "Shift": return [["shift-left", "shift-right"]];
+    // uiohook observes a physical Plus as Shift+Equal on common layouts.
+    case "Plus": return [["shift-left", "shift-right"], ["key:Equal"]];
+    // Electron accepts both spellings, but the keyboard has one Enter key.
+    case "Return":
+    case "Enter": return [["key:Enter"]];
+    default: return [[`key:${token}`]];
+  }
+}
+
+/** Physical key groups required by a shortcut on the current platform. */
+export function shortcutPhysicalKeyGroups(
+  shortcut: string,
+  platform: string = shortcutDisplayPlatform(),
+): readonly PhysicalKeyGroup[] {
+  const seen = new Set<string>();
+  return shortcutTokens(shortcut)
+    .flatMap((token) => physicalKeyGroupsForToken(token, platform))
+    .filter((group) => {
+      const identity = [...group].sort().join(",");
+      if (seen.has(identity)) return false;
+      seen.add(identity);
+      return true;
+    });
+}
+
+function samePhysicalKeyGroup(left: PhysicalKeyGroup, right: PhysicalKeyGroup): boolean {
+  return left.length === right.length && left.every((key) => right.includes(key));
+}
+
+/** True when two accelerators require the same physical keys on this platform. */
+export function shortcutsUseSamePhysicalKeys(
+  left: string,
+  right: string,
+  platform: string = shortcutDisplayPlatform(),
+): boolean {
+  const leftGroups = shortcutPhysicalKeyGroups(left, platform);
+  const rightGroups = shortcutPhysicalKeyGroups(right, platform);
+  return leftGroups.length === rightGroups.length
+    && leftGroups.every((group) => rightGroups.some((other) => samePhysicalKeyGroup(group, other)));
+}
+
+/** True if a toggle shares any physical key/modifier with the hold shortcut. */
+export function toggleUsesHoldKey(
+  toggle: string,
+  hold: string,
+  platform: string = shortcutDisplayPlatform(),
+): boolean {
+  const holdGroups = shortcutPhysicalKeyGroups(hold, platform);
+  return shortcutPhysicalKeyGroups(toggle, platform).some((toggleGroup) =>
+    holdGroups.some((holdGroup) => toggleGroup.some((key) => holdGroup.includes(key))),
+  );
 }
 
 function shortcutSchemaFor(kind: ShortcutKind) {
@@ -285,6 +355,13 @@ export const shortcutValidationRequestSchema = z.object({
   otherShortcut: z.string().trim().min(1).max(120).optional(),
 });
 export type ShortcutValidationRequest = z.infer<typeof shortcutValidationRequestSchema>;
+
+/** A committed recorder value. The main process supplies the other shortcut. */
+export const shortcutUpdateRequestSchema = z.object({
+  kind: z.enum(["hold", "toggle"]),
+  shortcut: z.string().trim().min(1).max(120),
+}).strict();
+export type ShortcutUpdateRequest = z.infer<typeof shortcutUpdateRequestSchema>;
 
 export const shortcutValidationResultSchema = z.object({
   shortcut: z.string(),

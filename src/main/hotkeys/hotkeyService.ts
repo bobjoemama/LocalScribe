@@ -3,6 +3,7 @@ import { uIOhook, UiohookKey, type UiohookKeyboardEvent, type UiohookMouseEvent 
 import {
   isModifierOnlyShortcut,
   parseShortcut,
+  shortcutsUseSamePhysicalKeys,
   shortcutTokens,
   toggleUsesHoldKey,
   type HoldShortcut,
@@ -10,6 +11,7 @@ import {
   type ShortcutValidationResult,
   type ToggleShortcut,
 } from "../../shared/shortcuts";
+import { DEFAULT_SETTINGS } from "../../shared/contracts";
 import { HoldChordMatcher } from "./holdChordMatcher";
 import { HoldShortcutGesture } from "./holdShortcutGesture";
 import type { ControlMonitor, ControlMonitorEvent } from "./macControlMonitor";
@@ -140,8 +142,8 @@ export class HotkeyService {
     onRelease: () => void,
     private readonly onToggle: () => void,
     private readonly fallbackMonitor: ControlMonitor | null = null,
-    private holdShortcut: HoldShortcut = "Control",
-    private toggleShortcut: ToggleShortcut = "Control+Space",
+    private holdShortcut: HoldShortcut = DEFAULT_SETTINGS.holdShortcut,
+    private toggleShortcut: ToggleShortcut = DEFAULT_SETTINGS.toggleShortcut,
     private readonly platform: NodeJS.Platform = process.platform,
   ) {
     this.gesture = new HoldShortcutGesture({
@@ -210,6 +212,9 @@ export class HotkeyService {
     const canonicalHold = parseShortcut(holdShortcut).canonical;
     const canonicalToggle = parseShortcut(toggleShortcut).canonical;
     if (this.captureActive) throw new Error("Finish recording the shortcut before saving it.");
+    if (shortcutsUseSamePhysicalKeys(canonicalHold, canonicalToggle, this.platform)) {
+      throw new Error("Push-to-talk and toggle dictation must use different shortcuts.");
+    }
 
     if (canonicalHold === this.holdShortcut && canonicalToggle === this.toggleShortcut) {
       // A user deliberately saving an unchanged shortcut is the one safe time
@@ -306,7 +311,7 @@ export class HotkeyService {
       };
     }
 
-    if (shortcut === otherShortcut) {
+    if (otherShortcut && shortcutsUseSamePhysicalKeys(shortcut, otherShortcut, this.platform)) {
       return {
         shortcut,
         available: false,
@@ -327,13 +332,10 @@ export class HotkeyService {
         error: "Finish recording the shortcut before checking availability.",
       };
     }
-    if (input.kind === "hold" && isModifierOnlyShortcut(shortcut)) {
-      return {
-        shortcut,
-        available: true,
-        warning: `Modifier-only push-to-talk shortcuts cannot be fully checked against ${this.platformLabel()} or other apps.`,
-      };
-    }
+    // Modifier-only hold chords are handled by the keyboard hook. Unlike an
+    // Electron global accelerator, there is no reliable system-wide probe to
+    // perform, so do not turn a valid choice into an error-like warning.
+    if (input.kind === "hold" && isModifierOnlyShortcut(shortcut)) return { shortcut, available: true };
     // The currently registered LocalScribe toggle is already known to be ours.
     if (this.toggleRegistered && shortcut === this.toggleShortcut) {
       return { shortcut, available: true };
@@ -409,7 +411,7 @@ export class HotkeyService {
 
   private readonly handleToggle = (): void => {
     if (this.captureActive) return;
-    if (!this.gesture.prepareToggle(toggleUsesHoldKey(this.toggleShortcut, this.holdShortcut))) return;
+    if (!this.gesture.prepareToggle(toggleUsesHoldKey(this.toggleShortcut, this.holdShortcut, this.platform))) return;
     if (this.toggleLocked) return;
     this.toggleLocked = true;
     this.onToggle();

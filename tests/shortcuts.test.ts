@@ -5,6 +5,7 @@ import {
   parseShortcut,
   shortcutCompactLabel,
   shortcutDisplayLabel,
+  shortcutsUseSamePhysicalKeys,
   toggleUsesHoldKey,
 } from "../src/shared/shortcuts";
 
@@ -38,5 +39,13 @@ describe("shortcut helpers", () => {
 
   it("recognizes an overlap anywhere in a multi-key hold chord", () => {
     expect(toggleUsesHoldKey("Shift+Space", "Control+Shift")).toBe(true);
+  });
+
+  it("compares platform-resolved physical key groups rather than accelerator spelling", () => {
+    expect(shortcutsUseSamePhysicalKeys("CommandOrControl", "Command", "darwin")).toBe(true);
+    expect(shortcutsUseSamePhysicalKeys("CommandOrControl", "Control", "win32")).toBe(true);
+    expect(shortcutsUseSamePhysicalKeys("Plus", "Shift+Equal", "darwin")).toBe(true);
+    expect(toggleUsesHoldKey("AltGr+Space", "Alt", "win32")).toBe(true);
+    expect(toggleUsesHoldKey("Command+Space", "Control", "darwin")).toBe(false);
   });
 });

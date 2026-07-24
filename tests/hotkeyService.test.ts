@@ -111,7 +111,7 @@ describe("HotkeyService capture and validation", () => {
     expect(service.validateShortcut({ kind: "hold", shortcut: "Control", otherShortcut: "Control" }))
       .toMatchObject({ available: false, error: expect.stringContaining("different") });
     expect(service.validateShortcut({ kind: "hold", shortcut: "Shift" }))
-      .toMatchObject({ available: true, warning: expect.stringContaining("cannot be fully checked") });
+      .toEqual({ shortcut: "Shift", available: true });
   });
 
   it("keeps the live shortcut config intact when the OS preflight rejects a new toggle", () => {
@@ -259,7 +259,7 @@ describe("HotkeyService capture and validation", () => {
     expect(service.validateShortcut({ kind: "toggle", shortcut: "Control" }))
       .toMatchObject({ available: false, error: expect.stringContaining("Windows") });
     expect(service.validateShortcut({ kind: "hold", shortcut: "Shift" }))
-      .toMatchObject({ available: true, warning: expect.stringContaining("Windows") });
+      .toEqual({ shortcut: "Shift", available: true });
 
     mocks.uIOhook.start.mockImplementationOnce(() => {
       throw new Error("Windows hook unavailable");
@@ -269,6 +269,36 @@ describe("HotkeyService capture and validation", () => {
     expect(warning).toHaveBeenCalledWith(
       expect.stringContaining("Windows global keyboard hook could not start"),
     );
+    warning.mockRestore();
+  });
+
+  it("uses macOS physical aliases for equality while retaining the Control-only fallback", () => {
+    const monitor = { start: vi.fn(() => true), stop: vi.fn() };
+    const service = new HotkeyService(
+      vi.fn(),
+      vi.fn(),
+      vi.fn(),
+      monitor,
+      "CommandOrControl",
+      "Control+Space",
+      "darwin",
+    );
+
+    expect(service.validateShortcut({
+      kind: "hold",
+      shortcut: "CommandOrControl",
+      otherShortcut: "Command",
+    })).toMatchObject({ available: false, error: expect.stringContaining("different") });
+    expect(service.validateShortcut({
+      kind: "hold",
+      shortcut: "Command+Control",
+      otherShortcut: "Control",
+    })).toEqual({ shortcut: "Command+Control", available: true });
+
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    service.startFallback();
+    expect(monitor.start).not.toHaveBeenCalled();
+    expect(warning).toHaveBeenCalledWith("CommandOrControl push-to-talk requires Accessibility on macOS");
     warning.mockRestore();
   });
 });

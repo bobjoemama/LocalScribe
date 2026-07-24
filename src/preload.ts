@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer } from "electron";
 import {
   appInfoSchema,
+  appSettingsPatchSchema,
   appSettingsSchema,
   appProfileSchema,
   diagnosticsSchema,
@@ -18,7 +19,11 @@ import {
   type LocalScribeApi,
   type NavigationTarget,
 } from "./shared/contracts";
-import { shortcutValidationRequestSchema, shortcutValidationResultSchema } from "./shared/shortcuts";
+import {
+  shortcutUpdateRequestSchema,
+  shortcutValidationRequestSchema,
+  shortcutValidationResultSchema,
+} from "./shared/shortcuts";
 
 const api: LocalScribeApi = {
   session: {
@@ -74,6 +79,10 @@ const api: LocalScribeApi = {
   settings: {
     get: async () => appSettingsSchema.parse(await ipcRenderer.invoke(IPC.settingsGet)),
     save: async (input) => appSettingsSchema.parse(await ipcRenderer.invoke(IPC.settingsSave, input)),
+    patch: async (input) => {
+      const patch = appSettingsPatchSchema.parse(input);
+      return appSettingsSchema.parse(await ipcRenderer.invoke(IPC.settingsPatch, patch));
+    },
     onChanged: (listener) => {
       const wrapped = (_event: Electron.IpcRendererEvent, value: unknown) =>
         listener(appSettingsSchema.parse(value));
@@ -87,6 +96,10 @@ const api: LocalScribeApi = {
     validate: async (input) => {
       const request = shortcutValidationRequestSchema.parse(input);
       return shortcutValidationResultSchema.parse(await ipcRenderer.invoke(IPC.shortcutsValidate, request));
+    },
+    update: async (input) => {
+      const request = shortcutUpdateRequestSchema.parse(input);
+      return appSettingsSchema.parse(await ipcRenderer.invoke(IPC.shortcutsUpdate, request));
     },
   },
   windows: {

@@ -98,10 +98,9 @@ export function Pill() {
   }, []);
 
   const selectMicrophone = async (nextMicrophoneId: string | null) => {
-    const settings = await window.localScribe.settings.get();
-    await window.localScribe.settings.save({ ...settings, microphoneId: nextMicrophoneId });
-    microphoneIdRef.current = nextMicrophoneId;
-    setMicrophoneId(nextMicrophoneId);
+    const settings = await window.localScribe.settings.patch({ microphoneId: nextMicrophoneId });
+    microphoneIdRef.current = settings.microphoneId;
+    setMicrophoneId(settings.microphoneId);
   };
 
   return (
