@@ -22,6 +22,10 @@ import {
 import { shortcutDisplayLabel } from "../../../shared/shortcuts";
 import { ShortcutRecorder, type ShortcutValidationOutcome } from "../components/ShortcutRecorder";
 import {
+  DICTATION_LANGUAGE_DETAIL,
+  DICTATION_LANGUAGE_OPTIONS,
+} from "../dictationLanguages";
+import {
   ModelPerformanceSettings,
   type ModelActionState,
 } from "./ModelPerformanceSettings";
@@ -33,6 +37,29 @@ type CleanupLevel = "none" | "light" | "medium";
 export type CleanupSelection = CleanupLevel | "custom";
 export const GENERATIVE_TEXT_MODEL_REQUIRED_NOTICE = "Additional generative text model required — not installed";
 export const UNAVAILABLE_IN_THIS_BUILD_NOTICE = "Unavailable in this build";
+
+export function settingsLoadPresentation(
+  settings: AppSettings | null,
+  error: unknown | null,
+): { title: string; detail: string; isError: boolean } | null {
+  if (settings) return null;
+  if (error) {
+    return {
+      title: "Settings unavailable",
+      detail: `Could not load saved settings: ${errorDetail(error)}`,
+      isError: true,
+    };
+  }
+  return {
+    title: "Loading settings",
+    detail: "Your saved settings are loading. Controls will be available when that finishes.",
+    isError: false,
+  };
+}
+
+export function shortcutCommitErrorMessage(): string {
+  return "Could not apply that shortcut. Choose another key combination or try again.";
+}
 
 export function cleanupSelectionForSettings(
   settings: Pick<AppSettings, "removeFillers" | "spokenCommands" | "smartPunctuation">,
@@ -585,7 +612,8 @@ export function TransformsScreen() {
 
 export function SettingsModal({ onClose }: { onClose(): void }) {
   const [tab, setTab] = useState<SettingsTab>("general");
-  const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
+  const [settings, setSettings] = useState<AppSettings | null>(null);
+  const [settingsLoadError, setSettingsLoadError] = useState<unknown | null>(null);
   const [permissions, setPermissions] = useState<PermissionSnapshot | null>(null);
   const [diagnostics, setDiagnostics] = useState<Diagnostics | null>(null);
   const [microphones, setMicrophones] = useState<MediaDeviceInfo[]>([]);
@@ -611,11 +639,12 @@ export function SettingsModal({ onClose }: { onClose(): void }) {
     // Keep only local edits pending for a field-level patch. A shortcut that
     // just committed in another surface otherwise must replace this stale copy.
     setSettings({ ...next, ...dirtySettings.current });
+    setSettingsLoadError(null);
   }, []);
 
   useEffect(() => {
     void window.localScribe.settings.get().then(applyPersistedSettings).catch((error: unknown) => {
-      setStatus(`Could not load settings: ${errorDetail(error)}`);
+      setSettingsLoadError(error);
     });
     void refresh().catch((error: unknown) => {
       setStatus(`Could not refresh system information: ${errorDetail(error)}`);
@@ -655,15 +684,24 @@ export function SettingsModal({ onClose }: { onClose(): void }) {
   }, [onClose]);
 
   const update = <K extends keyof AppSettings>(key: K, value: AppSettings[K]) => {
+    if (!settings) return;
     setStatus("");
     dirtySettings.current = { ...dirtySettings.current, [key]: value };
-    setSettings((current) => ({ ...current, [key]: value }));
+    setSettings((current) => current ? { ...current, [key]: value } as AppSettings : current);
   };
 
   const commitShortcut = async (
     kind: "hold" | "toggle",
     shortcut: string,
   ): Promise<ShortcutValidationOutcome> => {
+    if (!settings) {
+      return {
+        accepted: false,
+        error: settingsLoadError
+          ? "Settings are unavailable. Reopen Settings and try again."
+          : "Settings are still loading. Try again when they are ready.",
+      };
+    }
     try {
       const saved = await window.localScribe.shortcuts.update({ kind, shortcut });
       const field = kind === "hold" ? "holdShortcut" : "toggleShortcut";
@@ -674,15 +712,16 @@ export function SettingsModal({ onClose }: { onClose(): void }) {
         accepted: true,
         shortcut: saved[field],
       };
-    } catch (error) {
+    } catch {
       return {
         accepted: false,
-        error: `Could not apply that shortcut: ${errorDetail(error)}`,
+        error: shortcutCommitErrorMessage(),
       };
     }
   };
 
   const save = async () => {
+    if (!settings) return;
     const patch = dirtySettings.current;
     if (Object.keys(patch).length === 0) {
       setStatus("No settings changes to save");
@@ -816,6 +855,9 @@ export function SettingsModal({ onClose }: { onClose(): void }) {
     }
   };
 
+  const loadPresentation = settingsLoadPresentation(settings, settingsLoadError);
+  const loadingPresentation = settingsLoadPresentation(null, settingsLoadError)!;
+
   return (
     <div
       className="ls-modal-backdrop"
@@ -841,7 +883,13 @@ export function SettingsModal({ onClose }: { onClose(): void }) {
             <button type="button" className="ls-close-button" onClick={onClose} aria-label="Close settings"><CloseIcon /></button>
           </header>
 
-          <div className="ls-settings-scroll">
+          <div className="ls-settings-scroll" aria-busy={loadPresentation && !loadPresentation.isError ? true : undefined}>
+            {!settings ? (
+              <div className={loadingPresentation.isError ? "ls-action-feedback is-error" : "ls-action-feedback"} role={loadingPresentation.isError ? "alert" : "status"} aria-live="polite">
+                <strong>{loadingPresentation.title}</strong><br />{loadingPresentation.detail}
+              </div>
+            ) : (
+              <>
             {tab === "general" && (
               <>
                 <SettingsGroup title="Dictation">
@@ -868,13 +916,8 @@ export function SettingsModal({ onClose }: { onClose(): void }) {
                     <option value="">System default</option>
                     {microphones.map((device, index) => <option value={device.deviceId} key={device.deviceId}>{device.label || `Microphone ${index + 1}`}</option>)}
                   </SettingsSelect>
-                  <SettingsSelect label="Dictation language" detail="Auto-detect or bias speech recognition." value={settings.language} onChange={(value) => update("language", value)}>
-                    <option value="auto">Auto-detect</option>
-                    <option value="English">English</option>
-                    <option value="Spanish">Spanish</option>
-                    <option value="French">French</option>
-                    <option value="German">German</option>
-                    <option value="Hindi">Hindi</option>
+                  <SettingsSelect label="Dictation language" detail={DICTATION_LANGUAGE_DETAIL} value={settings.language} onChange={(value) => update("language", value)}>
+                    {DICTATION_LANGUAGE_OPTIONS.map((language) => <option value={language.value} key={language.value}>{language.label}</option>)}
                   </SettingsSelect>
                   <SettingsReadOnly label="App language" detail="The LocalScribe interface is currently available in English." value="English" />
                 </SettingsGroup>
@@ -1024,12 +1067,14 @@ export function SettingsModal({ onClose }: { onClose(): void }) {
                 <div className="ls-settings-note"><InfoIcon /><span>Automatic paste reads the active app identity and hashes limited focused-window metadata to confirm the dictation target. LocalScribe does not read field or document contents from other applications.</span></div>
               </>
             )}
+              </>
+            )}
           </div>
 
           <footer className="ls-settings-footer">
-            <span className={status.startsWith("Could not") || status.startsWith("Model removed, but") ? "is-error" : ""} role="status" aria-live="polite">{status}</span>
+            <span className={settingsLoadError || status.startsWith("Could not") || status.startsWith("Model removed, but") ? "is-error" : ""} role="status" aria-live="polite">{settingsLoadError ? "Saved settings could not be loaded." : status}</span>
             <button type="button" className="ls-secondary-button" onClick={onClose}>Cancel</button>
-            <button type="button" className="ls-primary-button" disabled={busy} onClick={() => void save()}>{busy ? "Saving…" : "Save changes"}</button>
+            <button type="button" className="ls-primary-button" disabled={busy || !settings} onClick={() => void save()}>{busy ? "Saving…" : "Save changes"}</button>
           </footer>
         </div>
       </section>

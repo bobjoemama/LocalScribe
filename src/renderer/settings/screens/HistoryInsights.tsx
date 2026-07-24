@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  DEFAULT_SETTINGS,
   MAX_HISTORY_ITEMS,
   type AppSettings,
   type Transcription,
@@ -26,6 +25,26 @@ type HistoryState = {
 };
 
 type InsightTab = "usage" | "voice";
+type ShortcutSettingsStatus = "loading" | "unavailable" | "ready";
+
+export function historyShortcutPresentation(
+  shortcuts: Pick<AppSettings, "holdShortcut" | "toggleShortcut"> | null,
+  status: ShortcutSettingsStatus,
+): { ariaLabel: string; holdLabel: string; toggleLabel: string | null } {
+  if (status === "ready" && shortcuts) {
+    const holdLabel = shortcutCompactLabel(shortcuts.holdShortcut);
+    const toggleLabel = shortcutCompactLabel(shortcuts.toggleShortcut);
+    return {
+      ariaLabel: `Hold ${holdLabel} to dictate; ${toggleLabel} toggles dictation`,
+      holdLabel: `Hold ${holdLabel}`,
+      toggleLabel,
+    };
+  }
+  const label = status === "loading"
+    ? "Shortcut settings are loading"
+    : "Shortcut settings are unavailable";
+  return { ariaLabel: label, holdLabel: label, toggleLabel: null };
+}
 
 const SENTENCE_PATTERN = /[^.!?]+[.!?]+|[^.!?]+$/g;
 const WORD_PATTERN = /[\p{L}\p{N}]+(?:['’][\p{L}\p{N}]+)*/gu;
@@ -48,10 +67,8 @@ export function HistoryScreen() {
   const [query, setQuery] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
   const [notice, setNotice] = useState("");
-  const [shortcuts, setShortcuts] = useState<Pick<AppSettings, "holdShortcut" | "toggleShortcut">>({
-    holdShortcut: DEFAULT_SETTINGS.holdShortcut,
-    toggleShortcut: DEFAULT_SETTINGS.toggleShortcut,
-  });
+  const [shortcuts, setShortcuts] = useState<Pick<AppSettings, "holdShortcut" | "toggleShortcut"> | null>(null);
+  const [shortcutSettingsStatus, setShortcutSettingsStatus] = useState<ShortcutSettingsStatus>("loading");
 
   const load = useCallback(async () => {
     setHistory((current) => ({ ...current, loading: true, error: null }));
@@ -78,10 +95,22 @@ export function HistoryScreen() {
         holdShortcut: settings.holdShortcut,
         toggleShortcut: settings.toggleShortcut,
       });
+      setShortcutSettingsStatus("ready");
     };
-    void window.localScribe.settings.get().then(setShortcutSettings).catch(() => undefined);
-    return window.localScribe.settings.onChanged(setShortcutSettings);
+    let sawSettingsChange = false;
+    const unsubscribe = window.localScribe.settings.onChanged((settings) => {
+      sawSettingsChange = true;
+      setShortcutSettings(settings);
+    });
+    void window.localScribe.settings.get().then((settings) => {
+      if (!sawSettingsChange) setShortcutSettings(settings);
+    }).catch(() => {
+      if (!sawSettingsChange) setShortcutSettingsStatus("unavailable");
+    });
+    return unsubscribe;
   }, []);
+
+  const shortcutPresentation = historyShortcutPresentation(shortcuts, shortcutSettingsStatus);
 
   const filtered = useMemo(() => {
     const normalizedQuery = query.trim().toLocaleLowerCase();
@@ -202,13 +231,12 @@ export function HistoryScreen() {
         </div>
         <div
           className="hi-shortcut-card"
-          aria-label={`Hold ${shortcutCompactLabel(shortcuts.holdShortcut)} to dictate; ${shortcutCompactLabel(shortcuts.toggleShortcut)} toggles dictation`}
+          aria-label={shortcutPresentation.ariaLabel}
         >
           <span>Start dictating anywhere</span>
           <div>
-            <kbd>Hold {shortcutCompactLabel(shortcuts.holdShortcut)}</kbd>
-            <span>or</span>
-            <kbd>{shortcutCompactLabel(shortcuts.toggleShortcut)}</kbd>
+            <kbd>{shortcutPresentation.holdLabel}</kbd>
+            {shortcutPresentation.toggleLabel && <><span>or</span><kbd>{shortcutPresentation.toggleLabel}</kbd></>}
           </div>
         </div>
       </section>

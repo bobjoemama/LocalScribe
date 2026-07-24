@@ -5,6 +5,8 @@ export interface DictationErrorPresentation {
   detail: string;
 }
 
+export type DictationErrorPlatform = "darwin" | "win32" | "linux" | "unsupported";
+
 const FALLBACK_MESSAGE = "Dictation could not finish";
 
 export function normalizeDictationErrorMessage(error: unknown): string {
@@ -17,7 +19,10 @@ export function normalizeDictationErrorMessage(error: unknown): string {
   return (compact || FALLBACK_MESSAGE).slice(0, 240);
 }
 
-export function presentDictationError(error: unknown): DictationErrorPresentation {
+export function presentDictationError(
+  error: unknown,
+  platform?: DictationErrorPlatform,
+): DictationErrorPresentation {
   const message = normalizeDictationErrorMessage(error);
   const normalized = message.toLowerCase();
 
@@ -36,7 +41,7 @@ export function presentDictationError(error: unknown): DictationErrorPresentatio
   if (/notallowederror|permission denied|microphone.*(denied|permission)|media access/.test(normalized)) {
     return {
       title: "Microphone access is off",
-      detail: "Allow LocalScribe in System Settings > Privacy & Security > Microphone.",
+      detail: microphonePermissionRecovery(platform),
     };
   }
   if (/notfounderror|no microphone|audio input.*not found|requested device not found/.test(normalized)) {
@@ -104,6 +109,16 @@ export function presentDictationError(error: unknown): DictationErrorPresentatio
     title: "Dictation could not finish",
     detail: safeDetail(message),
   };
+}
+
+export function microphonePermissionRecovery(platform?: DictationErrorPlatform): string {
+  if (platform === "darwin") {
+    return "Allow LocalScribe in System Settings > Privacy & Security > Microphone.";
+  }
+  if (platform === "win32") {
+    return "Allow LocalScribe in Windows Settings > Privacy & security > Microphone.";
+  }
+  return "Allow LocalScribe in your operating system's microphone privacy settings, then try again.";
 }
 
 function safeDetail(message: string): string {

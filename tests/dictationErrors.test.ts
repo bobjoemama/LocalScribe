@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  microphonePermissionRecovery,
   normalizeDictationErrorMessage,
   presentDictationError,
 } from "../src/shared/dictationErrors";
@@ -17,6 +18,20 @@ describe("dictation error presentation", () => {
     expect(presentDictationError("NotAllowedError: Permission denied").title).toBe("Microphone access is off");
     expect(presentDictationError("NotFoundError: Requested device not found").title).toBe("Microphone unavailable");
     expect(presentDictationError("NotReadableError: Could not start audio source").title).toBe("Microphone is busy");
+  });
+
+  it("uses the matching operating-system permission path when known and neutral recovery otherwise", () => {
+    expect(microphonePermissionRecovery("darwin"))
+      .toBe("Allow LocalScribe in System Settings > Privacy & Security > Microphone.");
+    expect(microphonePermissionRecovery("win32"))
+      .toBe("Allow LocalScribe in Windows Settings > Privacy & security > Microphone.");
+    expect(microphonePermissionRecovery()).toBe(
+      "Allow LocalScribe in your operating system's microphone privacy settings, then try again.",
+    );
+    expect(presentDictationError("NotAllowedError: Permission denied", "win32").detail)
+      .toContain("Windows Settings");
+    expect(presentDictationError("NotAllowedError: Permission denied").detail)
+      .not.toContain("System Settings");
   });
 
   it("turns worker and invalid-response failures into plain language", () => {

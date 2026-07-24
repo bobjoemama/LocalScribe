@@ -1,11 +1,20 @@
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import {
   cleanupSelectionForSettings,
   GENERATIVE_TEXT_MODEL_REQUIRED_NOTICE,
   modelPerformanceSaveMessage,
+  SettingsModal,
   SETTINGS_TABS,
+  settingsLoadPresentation,
+  shortcutCommitErrorMessage,
   UNAVAILABLE_IN_THIS_BUILD_NOTICE,
 } from "../src/renderer/settings/screens/StyleSettings";
+import {
+  DICTATION_LANGUAGE_DETAIL,
+  DICTATION_LANGUAGE_OPTIONS,
+} from "../src/renderer/settings/dictationLanguages";
 import {
   formatAcceleratorBytes,
   formatMemoryRange,
@@ -21,6 +30,52 @@ describe("feature availability copy", () => {
       "Additional generative text model required — not installed",
     );
     expect(UNAVAILABLE_IN_THIS_BUILD_NOTICE).toBe("Unavailable in this build");
+  });
+});
+
+describe("settings loading truthfulness", () => {
+  it("keeps persisted settings unavailable rather than rendering writable defaults", () => {
+    expect(settingsLoadPresentation(null, null)).toEqual({
+      title: "Loading settings",
+      detail: "Your saved settings are loading. Controls will be available when that finishes.",
+      isError: false,
+    });
+    expect(settingsLoadPresentation(null, new Error("database unavailable"))).toEqual({
+      title: "Settings unavailable",
+      detail: "Could not load saved settings: database unavailable",
+      isError: true,
+    });
+
+    const html = renderToStaticMarkup(createElement(SettingsModal, { onClose: () => undefined }));
+    expect(html).toContain("Loading settings");
+    expect(html).toContain("Controls will be available when that finishes.");
+    expect(html).toContain('aria-busy="true"');
+    expect(html).toContain('disabled=""');
+    expect(html).not.toContain('value="Control"');
+    expect(html).not.toContain("Push-to-talk shortcut");
+  });
+
+  it("uses a platform-neutral shortcut commit fallback", () => {
+    expect(shortcutCommitErrorMessage()).toBe(
+      "Could not apply that shortcut. Choose another key combination or try again.",
+    );
+    expect(shortcutCommitErrorMessage()).not.toMatch(/macOS|Windows|System Settings/i);
+  });
+});
+
+describe("dictation language choices", () => {
+  it("keeps the common verified choices in one renderer list", () => {
+    expect(DICTATION_LANGUAGE_OPTIONS).toEqual([
+      { value: "auto", label: "Auto-detect" },
+      { value: "English", label: "English" },
+      { value: "Spanish", label: "Spanish" },
+      { value: "French", label: "French" },
+      { value: "German", label: "German" },
+      { value: "Hindi", label: "Hindi" },
+    ]);
+    expect(DICTATION_LANGUAGE_DETAIL).toBe(
+      "Auto-detect or select one of the languages supported in this build.",
+    );
   });
 });
 

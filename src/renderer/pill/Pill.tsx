@@ -1,6 +1,11 @@
 import { type CSSProperties, useEffect, useRef, useState } from "react";
 import { flushSync } from "react-dom";
-import { DEFAULT_SETTINGS, type PillMode, type SessionSnapshot } from "../../shared/contracts";
+import {
+  type AppSettings,
+  type PillMode,
+  type RuntimePlatform,
+  type SessionSnapshot,
+} from "../../shared/contracts";
 import { ERROR_NOTICE_DURATION_MS, presentDictationError } from "../../shared/dictationErrors";
 import {
   pillErrorCountdownCssProperties,
@@ -16,6 +21,28 @@ type PillStyle = CSSProperties & Record<PillLayoutCssVariable, string>;
 type ErrorNoticeStyle = CSSProperties & Record<"--pill-error-notice-duration", string>;
 const pillStageStyle = PILL_LAYOUT_CSS_PROPERTIES as PillStyle;
 
+type ShortcutSettingsStatus = "loading" | "unavailable" | "ready";
+
+export function holdShortcutPresentation(
+  holdShortcut: string | null,
+  status: ShortcutSettingsStatus,
+): { tooltip: string; dictateAriaLabel: string } {
+  if (status === "ready" && holdShortcut) {
+    const label = shortcutCompactLabel(holdShortcut);
+    return {
+      tooltip: `Dictate · hold ${label}`,
+      dictateAriaLabel: `Start dictating; hold ${label}`,
+    };
+  }
+  const detail = status === "loading"
+    ? "shortcut settings are loading"
+    : "shortcut settings are unavailable";
+  return {
+    tooltip: `Dictate · ${detail}`,
+    dictateAriaLabel: `Start dictating; ${detail}`,
+  };
+}
+
 export function isCurrentFinalization(
   snapshot: SessionSnapshot,
   sessionId: string | undefined,
@@ -26,7 +53,9 @@ export function isCurrentFinalization(
 export function Pill() {
   const [snapshot, setSnapshot] = useState<SessionSnapshot>({ state: "idle" });
   const [microphoneId, setMicrophoneId] = useState<string | null>(null);
-  const [holdShortcut, setHoldShortcut] = useState(DEFAULT_SETTINGS.holdShortcut);
+  const [holdShortcut, setHoldShortcut] = useState<string | null>(null);
+  const [shortcutSettingsStatus, setShortcutSettingsStatus] = useState<ShortcutSettingsStatus>("loading");
+  const [platform, setPlatform] = useState<RuntimePlatform | undefined>();
   const [waveform, setWaveform] = useState<number[]>(quietWave);
   const recorder = useRef(new AudioRecorder());
   const previousState = useRef<SessionSnapshot["state"]>("idle");
@@ -81,13 +110,25 @@ export function Pill() {
       sawLiveEvent = true;
       applySnapshot(next);
     });
-    const applySettings = (settings: typeof DEFAULT_SETTINGS) => {
+    let sawSettingsChange = false;
+    const applySettings = (settings: Pick<AppSettings, "microphoneId" | "holdShortcut">) => {
       microphoneIdRef.current = settings.microphoneId;
       setMicrophoneId(settings.microphoneId);
       setHoldShortcut(settings.holdShortcut);
+      setShortcutSettingsStatus("ready");
     };
-    void window.localScribe.settings.get().then(applySettings);
-    const unsubscribeSettings = window.localScribe.settings.onChanged(applySettings);
+    const unsubscribeSettings = window.localScribe.settings.onChanged((settings) => {
+      sawSettingsChange = true;
+      applySettings(settings);
+    });
+    void window.localScribe.settings.get().then((settings) => {
+      if (!sawSettingsChange) applySettings(settings);
+    }).catch(() => {
+      if (!sawSettingsChange) setShortcutSettingsStatus("unavailable");
+    });
+    void window.localScribe.system.getPermissions().then((next) => {
+      setPlatform(next.platform);
+    }).catch(() => undefined);
     void window.localScribe.session.get().then((initial) => {
       if (!sawLiveEvent) applySnapshot(initial);
     });
@@ -106,8 +147,13 @@ export function Pill() {
   return (
     <main className="pill-stage" style={pillStageStyle}>
       {snapshot.state === "idle"
-        ? <IdlePill microphoneId={microphoneId} holdShortcut={holdShortcut} onSelectMicrophone={selectMicrophone} />
-        : <ActivePill snapshot={snapshot} waveform={waveform} />}
+        ? <IdlePill
+            microphoneId={microphoneId}
+            holdShortcut={holdShortcut}
+            shortcutSettingsStatus={shortcutSettingsStatus}
+            onSelectMicrophone={selectMicrophone}
+          />
+        : <ActivePill snapshot={snapshot} waveform={waveform} platform={platform} />}
     </main>
   );
 }
@@ -115,10 +161,12 @@ export function Pill() {
 function IdlePill({
   microphoneId,
   holdShortcut,
+  shortcutSettingsStatus,
   onSelectMicrophone,
 }: {
   microphoneId: string | null;
-  holdShortcut: string;
+  holdShortcut: string | null;
+  shortcutSettingsStatus: ShortcutSettingsStatus;
   onSelectMicrophone: (microphoneId: string | null) => Promise<void>;
 }) {
   const [visualMode, setVisualMode] = useState<PillMode>("collapsed");
@@ -200,9 +248,8 @@ function IdlePill({
     void requestPillMode(nextMode);
   };
 
-  const tooltip = hoveredAction === "scratchpad"
-    ? "Scratchpad"
-    : `Dictate · hold ${shortcutCompactLabel(holdShortcut)}`;
+  const shortcutPresentation = holdShortcutPresentation(holdShortcut, shortcutSettingsStatus);
+  const tooltip = hoveredAction === "scratchpad" ? "Scratchpad" : shortcutPresentation.tooltip;
   const tooltipAction = hoveredAction ?? "dictate";
 
   return (
@@ -248,7 +295,7 @@ function IdlePill({
           <button
             className="pill__round pill__round--dictate"
             type="button"
-            aria-label={`Start dictating; hold ${shortcutCompactLabel(holdShortcut)}`}
+            aria-label={shortcutPresentation.dictateAriaLabel}
             onClick={toggle}
             onContextMenu={(event) => {
               event.preventDefault();
@@ -275,7 +322,15 @@ function IdlePill({
   );
 }
 
-function ActivePill({ snapshot, waveform }: { snapshot: SessionSnapshot; waveform: number[] }) {
+function ActivePill({
+  snapshot,
+  waveform,
+  platform,
+}: {
+  snapshot: SessionSnapshot;
+  waveform: number[];
+  platform: RuntimePlatform | undefined;
+}) {
   if (snapshot.state === "listening") {
     if (snapshot.activation === "hold") {
       return (
@@ -298,7 +353,7 @@ function ActivePill({ snapshot, waveform }: { snapshot: SessionSnapshot; wavefor
   }
 
   if (snapshot.state === "error") {
-    return <ErrorNotice message={snapshot.message} />;
+    return <ErrorNotice message={snapshot.message} platform={platform} />;
   }
 
   const canAct = snapshot.state === "success";
@@ -326,8 +381,8 @@ function ActivePill({ snapshot, waveform }: { snapshot: SessionSnapshot; wavefor
   );
 }
 
-function ErrorNotice({ message }: { message?: string }) {
-  const error = presentDictationError(message);
+function ErrorNotice({ message, platform }: { message?: string; platform: RuntimePlatform | undefined }) {
+  const error = presentDictationError(message, platform);
   const countdownStyle = pillErrorCountdownCssProperties() as ErrorNoticeStyle;
   return (
     <section className="pill-error-stack" role="alert" aria-label={`${error.title}. ${error.detail}`}>
