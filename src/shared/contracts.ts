@@ -119,6 +119,18 @@ export function historyRetentionLabel(days: HistoryRetentionDays): string {
   return days === 0 ? "Forever" : `${days} days`;
 }
 
+/** Curated local ASR families shipped with this application. */
+export const MODEL_FAMILY_IDS = ["whisper-large-v3", "whisper-large-v2"] as const;
+export const DEFAULT_MODEL_FAMILY_ID = "whisper-large-v3" as const;
+export const modelFamilyIdSchema = z.enum(MODEL_FAMILY_IDS);
+export type ModelFamilyId = z.infer<typeof modelFamilyIdSchema>;
+
+const modelLibraryFamilyIdsSchema = z.array(modelFamilyIdSchema)
+  .min(1)
+  .refine((familyIds) => new Set(familyIds).size === familyIds.length, {
+    message: "Each model family can appear in the library only once.",
+  });
+
 const appSettingsFieldsSchema = z.object({
   launchAtLogin: z.boolean(),
   showPillWhenIdle: z.boolean(),
@@ -127,6 +139,8 @@ const appSettingsFieldsSchema = z.object({
   language: z.string().min(1).max(80),
   microphoneId: z.string().max(500).nullable(),
   modelPerformanceMode: modelPerformanceModeSchema,
+  activeModelFamilyId: modelFamilyIdSchema,
+  modelLibraryFamilyIds: modelLibraryFamilyIdsSchema,
   historyRetentionDays: historyRetentionDaysSchema,
   removeFillers: z.boolean(),
   spokenCommands: z.boolean(),
@@ -136,12 +150,20 @@ const appSettingsFieldsSchema = z.object({
 });
 
 export const appSettingsSchema = appSettingsFieldsSchema.superRefine((settings, context) => {
-  if (!shortcutsUseSamePhysicalKeys(settings.holdShortcut, settings.toggleShortcut)) return;
-  context.addIssue({
-    code: "custom",
-    path: ["toggleShortcut"],
-    message: "Push-to-talk and toggle dictation must use different shortcuts.",
-  });
+  if (shortcutsUseSamePhysicalKeys(settings.holdShortcut, settings.toggleShortcut)) {
+    context.addIssue({
+      code: "custom",
+      path: ["toggleShortcut"],
+      message: "Push-to-talk and toggle dictation must use different shortcuts.",
+    });
+  }
+  if (!settings.modelLibraryFamilyIds.includes(settings.activeModelFamilyId)) {
+    context.addIssue({
+      code: "custom",
+      path: ["activeModelFamilyId"],
+      message: "The active model family must be in the local model library.",
+    });
+  }
 });
 export type AppSettings = z.infer<typeof appSettingsSchema>;
 
@@ -185,6 +207,9 @@ const acceleratorMemoryBasisSchema = z.enum(["measured", "estimated", "unavailab
 const modelMemoryBasisSchema = z.enum(["measured", "estimated"]);
 
 const modelDiagnosticsSchema = z.object({
+  familyId: modelFamilyIdSchema,
+  artifactId: z.string().regex(/^[a-z0-9][a-z0-9-]*$/),
+  profileId: z.string().regex(/^[a-z0-9][a-z0-9-]*$/),
   displayName: z.string(),
   modelId: z.string(),
   storageDirectory: z.string(),
@@ -199,6 +224,7 @@ const modelDiagnosticsSchema = z.object({
   verifiedFiles: z.number().int().nonnegative(),
   expectedFiles: z.number().int().positive(),
   revision: z.string(),
+  license: z.string(),
 });
 
 export const diagnosticsSchema = z.object({
@@ -219,9 +245,15 @@ export const diagnosticsSchema = z.object({
     resolvedTier: modelPerformanceTierSchema.nullable(),
     fitsMemoryBudget: z.boolean(),
     resolutionReason: z.string().nullable(),
+    // `requiredFreeMemoryBytes` is maximum model working memory plus the
+    // explicitly reported Auto headroom, never merely the download size.
+    reservedHeadroomBytes: z.number().int().nonnegative().nullable(),
+    requiredFreeMemoryBytes: z.number().int().nonnegative().nullable(),
     options: z.array(z.object({
       tier: modelPerformanceTierSchema,
       modelKey: z.string().min(1).max(200),
+      profileId: z.string().regex(/^[a-z0-9][a-z0-9-]*$/),
+      artifactId: z.string().regex(/^[a-z0-9][a-z0-9-]*$/),
       displayName: z.string(),
       engine: z.string(),
       precision: z.string(),
@@ -240,15 +272,83 @@ export const diagnosticsSchema = z.object({
 });
 export type Diagnostics = z.infer<typeof diagnosticsSchema>;
 
+const modelCatalogArtifactSchema = z.object({
+  artifactId: z.string().regex(/^[a-z0-9][a-z0-9-]*$/),
+  displayName: z.string().min(1).max(200),
+  backend: z.string().min(1).max(120),
+  modelId: z.string().min(1).max(200),
+  storageDirectory: z.string().regex(/^[a-z0-9][a-z0-9._-]*$/),
+  revision: z.string().regex(/^[a-f0-9]{40}$/),
+  license: z.string().min(1).max(120),
+  expectedDownloadBytes: z.number().int().positive(),
+}).strict();
+
+const modelCatalogProfileSchema = z.object({
+  profileId: z.string().regex(/^[a-z0-9][a-z0-9-]*$/),
+  tier: modelPerformanceTierSchema,
+  artifactId: z.string().regex(/^[a-z0-9][a-z0-9-]*$/),
+  engine: z.enum(["mlx-whisper", "faster-whisper"]),
+  precision: z.string().min(1).max(40),
+  expectedMemoryMinBytes: z.number().int().positive(),
+  expectedMemoryMaxBytes: z.number().int().positive(),
+  memoryBasis: modelMemoryBasisSchema,
+}).strict();
+
+const modelCatalogFamilySchema = z.object({
+  familyId: modelFamilyIdSchema,
+  displayName: z.string().min(1).max(200),
+  active: z.boolean(),
+  inLibrary: z.boolean(),
+  artifacts: z.array(modelCatalogArtifactSchema).min(1),
+  profiles: z.array(modelCatalogProfileSchema).length(MODEL_PERFORMANCE_TIERS.length),
+}).strict();
+
+/** A static curated platform catalog; it deliberately contains no hardware probe result. */
+export const modelCatalogSchema = z.object({
+  platform: z.enum(["darwin-arm64", "win32-x64-cuda"]),
+  activeModelFamilyId: modelFamilyIdSchema,
+  modelLibraryFamilyIds: modelLibraryFamilyIdsSchema,
+  families: z.array(modelCatalogFamilySchema).length(MODEL_FAMILY_IDS.length),
+}).strict().superRefine((catalog, context) => {
+  if (!catalog.modelLibraryFamilyIds.includes(catalog.activeModelFamilyId)) {
+    context.addIssue({
+      code: "custom",
+      path: ["activeModelFamilyId"],
+      message: "The active model family must be in the local model library.",
+    });
+  }
+  const seenFamilies = new Set<string>();
+  for (const [index, family] of catalog.families.entries()) {
+    if (seenFamilies.has(family.familyId)) {
+      context.addIssue({ code: "custom", path: ["families", index, "familyId"], message: "Duplicate family." });
+    }
+    seenFamilies.add(family.familyId);
+    if (family.active !== (family.familyId === catalog.activeModelFamilyId)) {
+      context.addIssue({ code: "custom", path: ["families", index, "active"], message: "Family active flag is inconsistent." });
+    }
+    if (family.inLibrary !== catalog.modelLibraryFamilyIds.includes(family.familyId)) {
+      context.addIssue({ code: "custom", path: ["families", index, "inLibrary"], message: "Family library flag is inconsistent." });
+    }
+  }
+});
+export type ModelCatalog = z.infer<typeof modelCatalogSchema>;
+
+export const modelFamilyLibraryRequestSchema = z.object({
+  familyId: modelFamilyIdSchema,
+}).strict();
+export type ModelFamilyLibraryRequest = z.infer<typeof modelFamilyLibraryRequestSchema>;
+
 export const modelInstallRequestSchema = z.object({
   confirmed: z.literal(true),
   replaceExisting: z.boolean(),
+  familyId: modelFamilyIdSchema,
   tier: modelPerformanceTierSchema,
 }).strict();
 export type ModelInstallRequest = z.infer<typeof modelInstallRequestSchema>;
 
 export const modelRemoveRequestSchema = z.object({
   confirmed: z.literal(true),
+  familyId: modelFamilyIdSchema,
   tier: modelPerformanceTierSchema,
 }).strict();
 export type ModelRemoveRequest = z.infer<typeof modelRemoveRequestSchema>;
@@ -278,6 +378,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   language: "auto",
   microphoneId: null,
   modelPerformanceMode: "auto",
+  activeModelFamilyId: DEFAULT_MODEL_FAMILY_ID,
+  modelLibraryFamilyIds: [DEFAULT_MODEL_FAMILY_ID],
   historyRetentionDays: 30,
   removeFillers: true,
   spokenCommands: true,
@@ -337,6 +439,9 @@ export const IPC = {
   systemOpenPermission: "system:open-permission",
   systemAppInfo: "system:app-info",
   systemDiagnostics: "system:diagnostics",
+  systemModelCatalog: "system:model-catalog",
+  systemAddModelFamily: "system:add-model-family",
+  systemActivateModelFamily: "system:activate-model-family",
   systemInstallModel: "system:install-model",
   systemRemoveModel: "system:remove-model",
 } as const;
@@ -402,6 +507,9 @@ export interface LocalScribeApi {
     openPermission(kind: "microphone" | "accessibility"): Promise<void>;
     appInfo(): Promise<AppInfo>;
     diagnostics(): Promise<Diagnostics>;
+    modelCatalog(): Promise<ModelCatalog>;
+    addModelFamily(request: ModelFamilyLibraryRequest): Promise<ModelCatalog>;
+    activateModelFamily(request: ModelFamilyLibraryRequest): Promise<ModelCatalog>;
     installModel(request: ModelInstallRequest): Promise<Diagnostics>;
     removeModel(request: ModelRemoveRequest): Promise<Diagnostics>;
   };

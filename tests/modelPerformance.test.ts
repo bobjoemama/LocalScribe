@@ -59,15 +59,22 @@ describe("automatic model performance resolution", () => {
   const catalog = loadRuntimeModelCatalog(manifestDirectory, "darwin", "arm64");
 
   it("uses both total and free memory with conservative headroom", () => {
-    expect(resolveModelPerformance({
+    const high = resolveModelPerformance({
       preference: "auto",
       catalog,
       memory: { totalBytes: 16 * GIBIBYTE, freeBytes: 12 * GIBIBYTE },
-    })).toMatchObject({
+    });
+    expect(high).toMatchObject({
       effectiveTier: "high",
       reason: "auto-highest-fit",
       fitsMemoryBudget: true,
     });
+    // Diagnostics must show the actual decision threshold: 5.5 GiB maximum
+    // working memory plus 20% of total memory (3.2 GiB) headroom.
+    expect(high.reservedHeadroomBytes).toBe(Math.ceil(3.2 * GIBIBYTE));
+    expect(high.requiredMemoryBytes).toBe(
+      catalog.tiers.high.acceleratorMemory.maximumBytes + Math.ceil(3.2 * GIBIBYTE),
+    );
 
     expect(resolveModelPerformance({
       preference: "auto",

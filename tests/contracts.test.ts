@@ -5,6 +5,7 @@ import {
   MODEL_PERFORMANCE_MODES,
   appSettingsSchema,
   diagnosticsSchema,
+  modelFamilyLibraryRequestSchema,
   modelInstallRequestSchema,
   modelRemoveRequestSchema,
   scratchpadNoteSchema,
@@ -40,6 +41,25 @@ describe("IPC contracts", () => {
       ...DEFAULT_SETTINGS,
       modelId: "renderer-controlled/model",
     })).not.toHaveProperty("modelId");
+  });
+
+  it("keeps active model selection inside a unique curated local library", () => {
+    expect(DEFAULT_SETTINGS).toMatchObject({
+      activeModelFamilyId: "whisper-large-v3",
+      modelLibraryFamilyIds: ["whisper-large-v3"],
+    });
+    expect(() => appSettingsSchema.parse({
+      ...DEFAULT_SETTINGS,
+      activeModelFamilyId: "whisper-large-v2",
+    })).toThrow("active model family must be in the local model library");
+    expect(() => appSettingsSchema.parse({
+      ...DEFAULT_SETTINGS,
+      modelLibraryFamilyIds: ["whisper-large-v3", "whisper-large-v3"],
+    })).toThrow("only once");
+    expect(() => appSettingsSchema.parse({
+      ...DEFAULT_SETTINGS,
+      modelLibraryFamilyIds: ["untrusted/model"],
+    })).toThrow();
   });
 
   it("requires diagnostics to state whether the resolved tier fits memory", () => {
@@ -86,32 +106,58 @@ describe("IPC contracts", () => {
     expect(modelInstallRequestSchema.parse({
       confirmed: true,
       replaceExisting: false,
+      familyId: "whisper-large-v3",
       tier: "medium",
     })).toEqual({
       confirmed: true,
       replaceExisting: false,
+      familyId: "whisper-large-v3",
       tier: "medium",
     });
-    expect(modelRemoveRequestSchema.parse({ confirmed: true, tier: "low" })).toEqual({
+    expect(modelRemoveRequestSchema.parse({
       confirmed: true,
+      familyId: "whisper-large-v2",
+      tier: "low",
+    })).toEqual({
+      confirmed: true,
+      familyId: "whisper-large-v2",
       tier: "low",
     });
     expect(() => modelInstallRequestSchema.parse({
       confirmed: false,
       replaceExisting: false,
+      familyId: "whisper-large-v3",
       tier: "medium",
     })).toThrow();
     expect(() => modelInstallRequestSchema.parse({
       confirmed: true,
       replaceExisting: false,
+      familyId: "whisper-large-v3",
       tier: "auto",
     })).toThrow();
-    expect(() => modelRemoveRequestSchema.parse({ confirmed: true, tier: "other" })).toThrow();
+    expect(() => modelRemoveRequestSchema.parse({
+      confirmed: true,
+      familyId: "whisper-large-v3",
+      tier: "other",
+    })).toThrow();
     expect(() => modelInstallRequestSchema.parse({
       confirmed: true,
       replaceExisting: false,
+      familyId: "whisper-large-v3",
       tier: "medium",
       extra: true,
+    })).toThrow();
+    expect(() => modelInstallRequestSchema.parse({
+      confirmed: true,
+      replaceExisting: false,
+      familyId: "untrusted/model",
+      tier: "medium",
+    })).toThrow();
+    expect(modelFamilyLibraryRequestSchema.parse({ familyId: "whisper-large-v2" })).toEqual({
+      familyId: "whisper-large-v2",
+    });
+    expect(() => modelFamilyLibraryRequestSchema.parse({
+      familyId: "https://untrusted.invalid/model",
     })).toThrow();
   });
 

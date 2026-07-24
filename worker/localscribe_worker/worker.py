@@ -48,6 +48,8 @@ EXPECTED_MANIFEST_FIELDS = frozenset(
         "backend",
         "displayName",
         "modelId",
+        "familyId",
+        "artifactId",
         "storageDirectory",
         "revision",
         "license",
@@ -70,37 +72,112 @@ class TierSpec:
     tier: str
     manifest_filename: str
     model_id: str
+    family_id: str
+    artifact_id: str
     revision: str
     storage_directory: str
     compute_type: str
 
 
+CatalogSelection = tuple[str, str, str]
+
+
+def _catalog_selection(spec: TierSpec) -> CatalogSelection:
+    """Return the protocol's complete, fixed model-selection identity."""
+    return (spec.model_id, spec.tier, spec.compute_type)
+
+
+# This is intentionally a static, data-only catalog.  A load request can name
+# only one of these exact (modelId, tier, computeType) triples; it cannot choose
+# a manifest filename, repo, revision, local path, loader, or runtime options.
 TIER_SPECS = {
-    "high": TierSpec(
+    (
+        "mlx-community/whisper-large-v3-mlx",
+        "high",
+        "float16",
+    ): TierSpec(
         tier="high",
         manifest_filename="whisper-large-v3-mlx.json",
         model_id="mlx-community/whisper-large-v3-mlx",
+        family_id="whisper-large-v3",
+        artifact_id="whisper-large-v3-mlx-fp16",
         revision="49e6aa286ad60c14352c404340ded53710378a11",
         storage_directory="whisper-large-v3-mlx-49e6aa2",
         compute_type="float16",
     ),
-    "medium": TierSpec(
+    (
+        "mlx-community/whisper-large-v3-mlx-8bit",
+        "medium",
+        "int8",
+    ): TierSpec(
         tier="medium",
         manifest_filename="whisper-large-v3-mlx-8bit.json",
         model_id="mlx-community/whisper-large-v3-mlx-8bit",
+        family_id="whisper-large-v3",
+        artifact_id="whisper-large-v3-mlx-int8",
         revision="04ca5b03c22d72ddf4f4b2d808a28bf9902fb71a",
         storage_directory="whisper-large-v3-mlx-8bit-04ca5b0",
         compute_type="int8",
     ),
-    "low": TierSpec(
+    (
+        "mlx-community/whisper-large-v3-mlx-4bit",
+        "low",
+        "int4",
+    ): TierSpec(
         tier="low",
         manifest_filename="whisper-large-v3-mlx-4bit.json",
         model_id="mlx-community/whisper-large-v3-mlx-4bit",
+        family_id="whisper-large-v3",
+        artifact_id="whisper-large-v3-mlx-int4",
         revision="d12b5d0043a6fe0c59af321617fba041d4e8e0c8",
         storage_directory="whisper-large-v3-mlx-4bit-d12b5d0",
         compute_type="int4",
     ),
+    (
+        "mlx-community/whisper-large-v2-mlx",
+        "high",
+        "float16",
+    ): TierSpec(
+        tier="high",
+        manifest_filename="whisper-large-v2-mlx.json",
+        model_id="mlx-community/whisper-large-v2-mlx",
+        family_id="whisper-large-v2",
+        artifact_id="whisper-large-v2-mlx-fp16",
+        revision="cce86229e2765266197fef869ce9f7e2550067ab",
+        storage_directory="whisper-large-v2-mlx-cce8622",
+        compute_type="float16",
+    ),
+    (
+        "mlx-community/whisper-large-v2-mlx-8bit",
+        "medium",
+        "int8",
+    ): TierSpec(
+        tier="medium",
+        manifest_filename="whisper-large-v2-mlx-8bit.json",
+        model_id="mlx-community/whisper-large-v2-mlx-8bit",
+        family_id="whisper-large-v2",
+        artifact_id="whisper-large-v2-mlx-int8",
+        revision="ee1ab587ec0827941f04d9bb0ff9c2005444ef80",
+        storage_directory="whisper-large-v2-mlx-8bit-ee1ab58",
+        compute_type="int8",
+    ),
+    (
+        "mlx-community/whisper-large-v2-mlx-4bit",
+        "low",
+        "int4",
+    ): TierSpec(
+        tier="low",
+        manifest_filename="whisper-large-v2-mlx-4bit.json",
+        model_id="mlx-community/whisper-large-v2-mlx-4bit",
+        family_id="whisper-large-v2",
+        artifact_id="whisper-large-v2-mlx-int4",
+        revision="79e71f0c4946290e517db80c7a5cba6f91bdfcaf",
+        storage_directory="whisper-large-v2-mlx-4bit-79e71f0",
+        compute_type="int4",
+    ),
 }
+if any(_catalog_selection(spec) != selection for selection, spec in TIER_SPECS.items()):
+    raise RuntimeError("invalid_model_catalog")
 MANIFEST_FILENAMES = frozenset(spec.manifest_filename for spec in TIER_SPECS.values())
 
 
@@ -116,6 +193,8 @@ class ModelManifest:
     backend: str
     display_name: str
     model_id: str
+    family_id: str
+    artifact_id: str
     storage_directory: str
     revision: str
     license: str
@@ -200,7 +279,12 @@ def _parse_manifest(path: Path, spec: TierSpec) -> ModelManifest:
         raise RuntimeError("packaged_model_manifest_invalid")
     if raw.get("schemaVersion") != 1 or raw.get("platform") != "darwin-arm64":
         raise RuntimeError("packaged_model_manifest_invalid")
-    if raw.get("modelId") != spec.model_id or raw.get("revision") != spec.revision:
+    if (
+        raw.get("modelId") != spec.model_id
+        or raw.get("familyId") != spec.family_id
+        or raw.get("artifactId") != spec.artifact_id
+        or raw.get("revision") != spec.revision
+    ):
         raise RuntimeError("packaged_model_manifest_identity_mismatch")
     if raw.get("storageDirectory") != spec.storage_directory:
         raise RuntimeError("packaged_model_manifest_identity_mismatch")
@@ -232,6 +316,8 @@ def _parse_manifest(path: Path, spec: TierSpec) -> ModelManifest:
         backend=raw["backend"],
         display_name=raw["displayName"],
         model_id=raw["modelId"],
+        family_id=raw["familyId"],
+        artifact_id=raw["artifactId"],
         storage_directory=raw["storageDirectory"],
         revision=raw["revision"],
         license=raw["license"],
@@ -240,8 +326,8 @@ def _parse_manifest(path: Path, spec: TierSpec) -> ModelManifest:
 
 
 MODEL_MANIFESTS = {
-    tier: _parse_manifest(_manifest_path(spec.manifest_filename), spec)
-    for tier, spec in TIER_SPECS.items()
+    selection: _parse_manifest(_manifest_path(spec.manifest_filename), spec)
+    for selection, spec in TIER_SPECS.items()
 }
 
 
@@ -855,22 +941,18 @@ def run_worker(
                             "MLX Whisper worker requires Apple silicon",
                         )
                     tier = _string_field(message, "tier", max_chars=16)
-                    spec = TIER_SPECS.get(tier)
-                    if spec is None:
-                        raise WorkerError("model_not_allowed", "requested tier is not allowed")
                     model_id = _string_field(message, "modelId", max_chars=200)
                     compute_type = _string_field(
                         message,
                         "computeType",
                         max_chars=16,
                     )
-                    if (
-                        model_id != spec.model_id
-                        or compute_type != spec.compute_type
-                    ):
+                    selection = (model_id, tier, compute_type)
+                    spec = TIER_SPECS.get(selection)
+                    if spec is None:
                         raise WorkerError(
                             "model_not_allowed",
-                            "tier, modelId, and computeType must match the model catalog",
+                            "modelId, tier, and computeType must match the model catalog",
                         )
                     allow_download = message.get("allowDownload")
                     if not isinstance(allow_download, bool):
@@ -887,7 +969,7 @@ def run_worker(
                         model_root_raw,
                         create=True,
                     )
-                    manifest = MODEL_MANIFESTS[tier]
+                    manifest = MODEL_MANIFESTS[selection]
                     if (
                         runtime is not None
                         and active_spec == spec

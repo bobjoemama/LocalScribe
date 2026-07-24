@@ -36,7 +36,12 @@ describe("model performance settings persistence", () => {
     initial.close();
 
     const legacy = new Database(filePath);
-    const { modelPerformanceMode: _mode, ...legacySettings } = DEFAULT_SETTINGS;
+    const {
+      modelPerformanceMode: _mode,
+      activeModelFamilyId: _activeFamily,
+      modelLibraryFamilyIds: _libraryFamilies,
+      ...legacySettings
+    } = DEFAULT_SETTINGS;
     legacy.prepare(
       "INSERT INTO settings (key, value_json, updated_at) VALUES ('app', ?, ?)",
     ).run(JSON.stringify({

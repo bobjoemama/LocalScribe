@@ -1,5 +1,7 @@
 {
   "schemaVersion": 1,
+  "familyId": "whisper-large-v3",
+  "artifactId": "whisper-large-v3-ctranslate2",
   "platform": "win32-x64-cuda",
   "backend": "faster-whisper/CTranslate2",
   "displayName": "Whisper large-v3 · faster-whisper CUDA",

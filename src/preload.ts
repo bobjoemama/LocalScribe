@@ -8,6 +8,8 @@ import {
   dictionaryEntrySchema,
   IPC,
   modelInstallRequestSchema,
+  modelCatalogSchema,
+  modelFamilyLibraryRequestSchema,
   modelRemoveRequestSchema,
   navigationTargetSchema,
   permissionSnapshotSchema,
@@ -123,6 +125,15 @@ const api: LocalScribeApi = {
     openPermission: async (kind) => ipcRenderer.invoke(IPC.systemOpenPermission, kind),
     appInfo: async () => appInfoSchema.parse(await ipcRenderer.invoke(IPC.systemAppInfo)),
     diagnostics: async () => diagnosticsSchema.parse(await ipcRenderer.invoke(IPC.systemDiagnostics)),
+    modelCatalog: async () => modelCatalogSchema.parse(await ipcRenderer.invoke(IPC.systemModelCatalog)),
+    addModelFamily: async (request) => {
+      const input = modelFamilyLibraryRequestSchema.parse(request);
+      return modelCatalogSchema.parse(await ipcRenderer.invoke(IPC.systemAddModelFamily, input));
+    },
+    activateModelFamily: async (request) => {
+      const input = modelFamilyLibraryRequestSchema.parse(request);
+      return modelCatalogSchema.parse(await ipcRenderer.invoke(IPC.systemActivateModelFamily, input));
+    },
     installModel: async (request) => {
       const input = modelInstallRequestSchema.parse(request);
       return diagnosticsSchema.parse(await ipcRenderer.invoke(IPC.systemInstallModel, input));

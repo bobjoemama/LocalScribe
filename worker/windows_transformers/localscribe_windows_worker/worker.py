@@ -5,6 +5,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import re
 import shutil
 import stat
 import sys
@@ -19,8 +20,6 @@ from typing import Any, BinaryIO, Callable, Protocol, TextIO
 PROTOCOL_VERSION = 1
 BACKEND_NAME = "faster-whisper-ctranslate2"
 BACKEND_VERSION = "1.2.1"
-
-MANIFEST_FILENAME = "faster-whisper-large-v3.json"
 
 MAX_REQUEST_BYTES = 16 * 1024
 # Keep these literals in sync with resources/audio-protocol.json. They are
@@ -45,6 +44,22 @@ TIER_COMPUTE_TYPES = {
     "medium": "int8_float16",
     "low": "int8",
 }
+
+EXPECTED_MANIFEST_FIELDS = frozenset(
+    {
+        "schemaVersion",
+        "platform",
+        "backend",
+        "displayName",
+        "familyId",
+        "artifactId",
+        "modelId",
+        "storageDirectory",
+        "revision",
+        "license",
+        "files",
+    }
+)
 
 # faster-whisper accepts Whisper ISO 639-1 language codes. The name aliases
 # preserve LocalScribe's existing human-readable settings while keeping the
@@ -168,55 +183,15 @@ LANGUAGE_NAME_TO_CODE.update(
     }
 )
 
+# large-v2's tokenizer has 99 language tokens. large-v3 adds Cantonese
+# (``yue``), so language selection must remain bound to the fixed model family
+# that is actually loaded rather than only to the shared worker vocabulary.
+UNSUPPORTED_LANGUAGE_CODES_BY_FAMILY = {
+    "whisper-large-v2": frozenset({"yue"}),
+}
+
 _DLL_DIRECTORY_HANDLES: list[Any] = []
 _CUDA_DLLS_CONFIGURED = False
-
-
-def _manifest_path() -> Path:
-    for parent in Path(__file__).resolve().parents:
-        for relative in (Path("resources") / "model-manifest", Path("model-manifest")):
-            candidate = parent / relative / MANIFEST_FILENAME
-            if candidate.is_file():
-                return candidate
-    raise RuntimeError("packaged_model_manifest_missing")
-
-
-def _load_model_manifest() -> dict[str, Any]:
-    try:
-        raw = json.loads(_manifest_path().read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
-        raise RuntimeError("packaged_model_manifest_invalid") from error
-    if not isinstance(raw, dict) or raw.get("schemaVersion") != 1:
-        raise RuntimeError("packaged_model_manifest_invalid")
-    if raw.get("platform") != "win32-x64-cuda":
-        raise RuntimeError("packaged_model_manifest_platform_mismatch")
-    for field in ("backend", "displayName", "modelId", "storageDirectory", "revision", "license"):
-        if not isinstance(raw.get(field), str) or not raw[field]:
-            raise RuntimeError("packaged_model_manifest_invalid")
-    files = raw.get("files")
-    if not isinstance(files, dict) or not files:
-        raise RuntimeError("packaged_model_manifest_invalid")
-    for filename, metadata in files.items():
-        if (
-            not isinstance(filename, str)
-            or Path(filename).name != filename
-            or not isinstance(metadata, dict)
-            or not isinstance(metadata.get("bytes"), int)
-            or isinstance(metadata["bytes"], bool)
-            or metadata["bytes"] <= 0
-            or not isinstance(metadata.get("sha256"), str)
-            or len(metadata["sha256"]) != 64
-            or any(character not in "0123456789abcdef" for character in metadata["sha256"])
-        ):
-            raise RuntimeError("packaged_model_manifest_invalid")
-    return raw
-
-
-MODEL_MANIFEST = _load_model_manifest()
-MODEL_ID = str(MODEL_MANIFEST["modelId"])
-MODEL_REVISION = str(MODEL_MANIFEST["revision"])
-MODEL_DIRECTORY_NAME = str(MODEL_MANIFEST["storageDirectory"])
-MODEL_FILES: dict[str, dict[str, Any]] = MODEL_MANIFEST["files"]
 
 
 class WorkerError(Exception):
@@ -224,6 +199,174 @@ class WorkerError(Exception):
         super().__init__(message)
         self.code = code
         self.public_message = message
+
+
+@dataclass(frozen=True)
+class ModelSpec:
+    manifest_filename: str
+    family_id: str
+    artifact_id: str
+    model_id: str
+    revision: str
+    storage_directory: str
+    expected_files: frozenset[str]
+
+
+@dataclass(frozen=True)
+class ModelFile:
+    bytes: int
+    sha256: str
+
+
+@dataclass(frozen=True)
+class ModelManifest:
+    backend: str
+    display_name: str
+    family_id: str
+    artifact_id: str
+    model_id: str
+    storage_directory: str
+    revision: str
+    license: str
+    files: dict[str, ModelFile]
+
+
+MODEL_SPECS = {
+    "Systran/faster-whisper-large-v3": ModelSpec(
+        manifest_filename="faster-whisper-large-v3.json",
+        family_id="whisper-large-v3",
+        artifact_id="whisper-large-v3-ctranslate2",
+        model_id="Systran/faster-whisper-large-v3",
+        revision="edaa852ec7e145841d8ffdb056a99866b5f0a478",
+        storage_directory="faster-whisper-large-v3-edaa852",
+        expected_files=frozenset(
+            {
+                "config.json",
+                "model.bin",
+                "preprocessor_config.json",
+                "tokenizer.json",
+                "vocabulary.json",
+            }
+        ),
+    ),
+    "Systran/faster-whisper-large-v2": ModelSpec(
+        manifest_filename="faster-whisper-large-v2.json",
+        family_id="whisper-large-v2",
+        artifact_id="whisper-large-v2-ctranslate2",
+        model_id="Systran/faster-whisper-large-v2",
+        revision="f0fe81560cb8b68660e564f55dd99207059c092e",
+        storage_directory="faster-whisper-large-v2-f0fe815",
+        expected_files=frozenset(
+            {
+                "config.json",
+                "model.bin",
+                "tokenizer.json",
+                "vocabulary.txt",
+            }
+        ),
+    ),
+}
+MANIFEST_FILENAMES = frozenset(spec.manifest_filename for spec in MODEL_SPECS.values())
+
+
+def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise WorkerError("invalid_json", "request contains duplicate fields")
+        result[key] = value
+    return result
+
+
+def _manifest_path(filename: str) -> Path:
+    if filename not in MANIFEST_FILENAMES:
+        raise RuntimeError("packaged_model_manifest_not_allowed")
+    for parent in Path(__file__).resolve().parents:
+        for relative in (Path("resources") / "model-manifest", Path("model-manifest")):
+            candidate = parent / relative / filename
+            try:
+                metadata = candidate.lstat()
+            except OSError:
+                continue
+            if stat.S_ISREG(metadata.st_mode) and not candidate.is_symlink():
+                return candidate
+    raise RuntimeError("packaged_model_manifest_missing")
+
+
+def _load_model_manifest(path: Path, spec: ModelSpec) -> ModelManifest:
+    try:
+        metadata = path.lstat()
+        if path.is_symlink() or not stat.S_ISREG(metadata.st_mode):
+            raise RuntimeError("packaged_model_manifest_invalid")
+        raw = json.loads(
+            path.read_text(encoding="utf-8"),
+            object_pairs_hook=_reject_duplicate_keys,
+        )
+    except WorkerError as error:
+        raise RuntimeError("packaged_model_manifest_invalid") from error
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise RuntimeError("packaged_model_manifest_invalid") from error
+    if not isinstance(raw, dict) or frozenset(raw) != EXPECTED_MANIFEST_FIELDS:
+        raise RuntimeError("packaged_model_manifest_invalid")
+    if raw.get("platform") != "win32-x64-cuda":
+        raise RuntimeError("packaged_model_manifest_platform_mismatch")
+    if raw.get("schemaVersion") != 1:
+        raise RuntimeError("packaged_model_manifest_invalid")
+    if (
+        raw.get("familyId") != spec.family_id
+        or raw.get("artifactId") != spec.artifact_id
+        or raw.get("modelId") != spec.model_id
+        or raw.get("revision") != spec.revision
+        or raw.get("storageDirectory") != spec.storage_directory
+    ):
+        raise RuntimeError("packaged_model_manifest_identity_mismatch")
+    for field in ("backend", "displayName", "license"):
+        if not isinstance(raw.get(field), str) or not raw[field] or len(raw[field]) > 200:
+            raise RuntimeError("packaged_model_manifest_invalid")
+    files = raw.get("files")
+    if not isinstance(files, dict) or frozenset(files) != spec.expected_files:
+        raise RuntimeError("packaged_model_manifest_invalid")
+    parsed_files: dict[str, ModelFile] = {}
+    for filename, metadata in files.items():
+        if (
+            not isinstance(metadata, dict)
+            or frozenset(metadata) != frozenset({"bytes", "sha256"})
+            or not isinstance(metadata.get("bytes"), int)
+            or isinstance(metadata["bytes"], bool)
+            or metadata["bytes"] <= 0
+            or not isinstance(metadata.get("sha256"), str)
+            or re.fullmatch(r"[a-f0-9]{64}", metadata["sha256"]) is None
+        ):
+            raise RuntimeError("packaged_model_manifest_invalid")
+        parsed_files[filename] = ModelFile(
+            bytes=metadata["bytes"],
+            sha256=metadata["sha256"],
+        )
+    return ModelManifest(
+        backend=raw["backend"],
+        display_name=raw["displayName"],
+        family_id=raw["familyId"],
+        artifact_id=raw["artifactId"],
+        model_id=raw["modelId"],
+        storage_directory=raw["storageDirectory"],
+        revision=raw["revision"],
+        license=raw["license"],
+        files=parsed_files,
+    )
+
+
+MODEL_MANIFESTS = {
+    model_id: _load_model_manifest(_manifest_path(spec.manifest_filename), spec)
+    for model_id, spec in MODEL_SPECS.items()
+}
+
+# Retained as compatibility aliases for callers that only use the original
+# large-v3 default. The request path always selects from MODEL_MANIFESTS.
+MODEL_ID = "Systran/faster-whisper-large-v3"
+MODEL_MANIFEST = MODEL_MANIFESTS[MODEL_ID]
+MODEL_REVISION = MODEL_MANIFEST.revision
+MODEL_DIRECTORY_NAME = MODEL_MANIFEST.storage_directory
+MODEL_FILES = MODEL_MANIFEST.files
 
 
 @dataclass(frozen=True)
@@ -251,8 +394,8 @@ class InferenceRuntime(Protocol):
     def close(self) -> None: ...
 
 
-RuntimeFactory = Callable[[Path, str], InferenceRuntime]
-ModelInstaller = Callable[[Path], Path]
+RuntimeFactory = Callable[[Path, str, ModelManifest], InferenceRuntime]
+ModelInstaller = Callable[[Path, ModelManifest], Path]
 DeviceInfoProvider = Callable[[], DeviceInfo]
 
 
@@ -313,6 +456,11 @@ def _validated_tier_compute_type(message: dict[str, Any]) -> tuple[str, str]:
     return tier, compute_type
 
 
+def _strict_fields(message: dict[str, Any], expected: frozenset[str]) -> None:
+    if frozenset(message) != expected:
+        raise WorkerError("invalid_request", "request fields do not match the protocol")
+
+
 def _string_field(
     message: dict[str, Any],
     field: str,
@@ -363,20 +511,20 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _valid_model_directory(model_directory: Path) -> bool:
+def _valid_model_directory(model_directory: Path, manifest: ModelManifest) -> bool:
     try:
         directory_metadata = model_directory.lstat()
         if not stat.S_ISDIR(directory_metadata.st_mode):
             return False
         entries = {entry.name: entry for entry in model_directory.iterdir()}
-        if set(entries) != set(MODEL_FILES):
+        if set(entries) != set(manifest.files):
             return False
-        for filename, expected in MODEL_FILES.items():
+        for filename, expected in manifest.files.items():
             candidate = entries[filename]
             metadata = candidate.lstat()
-            if not stat.S_ISREG(metadata.st_mode) or metadata.st_size != expected["bytes"]:
+            if not stat.S_ISREG(metadata.st_mode) or metadata.st_size != expected.bytes:
                 return False
-            if _sha256(candidate) != expected["sha256"]:
+            if _sha256(candidate) != expected.sha256:
                 return False
         return True
     except OSError:
@@ -418,10 +566,10 @@ def _activate_staged_model(staging: Path, final_directory: Path, model_root: Pat
         raise WorkerError("model_activation_failed", "model activation failed") from error
 
 
-def ensure_model(model_root: Path) -> Path:
+def ensure_model(model_root: Path, manifest: ModelManifest) -> Path:
     model_root = _bounded_absolute_directory(str(model_root), create=True)
-    final_directory = model_root / MODEL_DIRECTORY_NAME
-    if _valid_model_directory(final_directory):
+    final_directory = model_root / manifest.storage_directory
+    if _valid_model_directory(final_directory, manifest):
         return final_directory
 
     if shutil.disk_usage(model_root).free < MIN_FREE_DISK_BYTES:
@@ -433,10 +581,10 @@ def ensure_model(model_root: Path) -> Path:
             from huggingface_hub import snapshot_download
 
             snapshot_download(
-                repo_id=MODEL_ID,
-                revision=MODEL_REVISION,
+                repo_id=manifest.model_id,
+                revision=manifest.revision,
                 local_dir=staging,
-                allow_patterns=sorted(MODEL_FILES),
+                allow_patterns=sorted(manifest.files),
                 max_workers=4,
                 token=False,
             )
@@ -446,10 +594,10 @@ def ensure_model(model_root: Path) -> Path:
         # huggingface_hub may create local transfer metadata even when the
         # remote allowlist is exact. It is never part of the activated model.
         _safe_remove_entry(staging / ".cache", model_root)
-        if not _valid_model_directory(staging):
+        if not _valid_model_directory(staging, manifest):
             raise WorkerError("model_checksum_failed", "downloaded model verification failed")
         _activate_staged_model(staging, final_directory, model_root)
-        if not _valid_model_directory(final_directory):
+        if not _valid_model_directory(final_directory, manifest):
             raise WorkerError("model_activation_failed", "activated model verification failed")
         return final_directory
     finally:
@@ -583,10 +731,15 @@ class FasterWhisperRuntime:
         self._closed = False
 
     @classmethod
-    def load(cls, model_directory: Path, compute_type: str) -> "FasterWhisperRuntime":
+    def load(
+        cls,
+        model_directory: Path,
+        compute_type: str,
+        manifest: ModelManifest,
+    ) -> "FasterWhisperRuntime":
         if compute_type not in TIER_COMPUTE_TYPES.values():
             raise WorkerError("invalid_compute_type", "compute type is not allowed")
-        if not _valid_model_directory(model_directory):
+        if not _valid_model_directory(model_directory, manifest):
             raise WorkerError("model_checksum_failed", "local model verification failed")
 
         _configure_windows_cuda_dlls()
@@ -739,7 +892,9 @@ def run_worker(
     platform_name: str | None = None,
 ) -> int:
     runtime: InferenceRuntime | None = None
+    active_manifest: ModelManifest | None = None
     active_model_id: str | None = None
+    active_model_root: Path | None = None
     active_tier: str | None = None
     active_compute_type: str | None = None
     platform_name = platform_name or sys.platform
@@ -765,7 +920,12 @@ def run_worker(
             request_id: str | None = None
             try:
                 try:
-                    message = json.loads(raw_line.decode("utf-8"))
+                    message = json.loads(
+                        raw_line.decode("utf-8"),
+                        object_pairs_hook=_reject_duplicate_keys,
+                    )
+                except WorkerError:
+                    raise
                 except (UnicodeDecodeError, json.JSONDecodeError) as error:
                     raise WorkerError("invalid_json", "request must be one JSON object") from error
                 if not isinstance(message, dict):
@@ -774,13 +934,28 @@ def run_worker(
                 message_type = _string_field(message, "type", max_chars=64)
 
                 if message_type == "load_model":
+                    _strict_fields(
+                        message,
+                        frozenset(
+                            {
+                                "type",
+                                "id",
+                                "modelId",
+                                "tier",
+                                "computeType",
+                                "modelRoot",
+                                "allowDownload",
+                            }
+                        ),
+                    )
                     if platform_name != "win32":
                         raise WorkerError(
                             "windows_only",
                             "faster-whisper CUDA worker requires Windows",
                         )
-                    model_id = message.get("modelId", MODEL_ID)
-                    if model_id != MODEL_ID:
+                    model_id = _string_field(message, "modelId", max_chars=200)
+                    manifest = MODEL_MANIFESTS.get(model_id)
+                    if manifest is None:
                         raise WorkerError("model_not_allowed", "requested model is not allowed")
                     tier, compute_type = _validated_tier_compute_type(message)
                     allow_download = message.get("allowDownload")
@@ -789,9 +964,16 @@ def run_worker(
                             "allow_download_required",
                             "load_model must explicitly allow or forbid model download",
                         )
+                    model_root_raw = _string_field(
+                        message,
+                        "modelRoot",
+                        max_chars=MAX_PATH_CHARS,
+                    )
+                    model_root = _bounded_absolute_directory(model_root_raw, create=True)
                     if (
                         runtime is not None
                         and active_model_id == model_id
+                        and active_model_root == model_root
                         and active_tier == tier
                         and active_compute_type == compute_type
                     ):
@@ -807,14 +989,9 @@ def run_worker(
                             },
                         )
                         continue
-                    model_root_raw = _string_field(
-                        message,
-                        "modelRoot",
-                        max_chars=MAX_PATH_CHARS,
-                    )
-                    model_root = _bounded_absolute_directory(model_root_raw, create=True)
                     if not allow_download and not _valid_model_directory(
-                        model_root / MODEL_DIRECTORY_NAME
+                        model_root / manifest.storage_directory,
+                        manifest,
                     ):
                         raise WorkerError(
                             "model_not_installed",
@@ -822,8 +999,19 @@ def run_worker(
                         )
 
                     started = time.perf_counter()
-                    local_model = model_installer(model_root)
-                    if not _valid_model_directory(local_model):
+                    local_model = model_installer(model_root, manifest)
+                    expected_local_model = (
+                        model_root / manifest.storage_directory
+                    ).resolve(strict=False)
+                    if (
+                        not local_model.is_absolute()
+                        or local_model.resolve(strict=False) != expected_local_model
+                    ):
+                        raise WorkerError(
+                            "unsafe_model_path",
+                            "model installer returned an unapproved path",
+                        )
+                    if not _valid_model_directory(local_model, manifest):
                         raise WorkerError(
                             "model_checksum_failed",
                             "local model verification failed",
@@ -831,11 +1019,15 @@ def run_worker(
                     if runtime is not None:
                         runtime.close()
                         runtime = None
+                        active_manifest = None
                         active_model_id = None
+                        active_model_root = None
                         active_tier = None
                         active_compute_type = None
-                    runtime = runtime_factory(local_model, compute_type)
+                    runtime = runtime_factory(local_model, compute_type, manifest)
+                    active_manifest = manifest
                     active_model_id = model_id
+                    active_model_root = model_root
                     active_tier = tier
                     active_compute_type = compute_type
                     _send(
@@ -850,6 +1042,7 @@ def run_worker(
                         },
                     )
                 elif message_type == "device_info":
+                    _strict_fields(message, frozenset({"type", "id"}))
                     if platform_name != "win32":
                         raise WorkerError(
                             "windows_only",
@@ -869,11 +1062,25 @@ def run_worker(
                         },
                     )
                 elif message_type == "health":
+                    _strict_fields(message, frozenset({"type", "id"}))
                     _send(
                         output_stream,
                         {"type": "health", "id": request_id, "ready": runtime is not None},
                     )
                 elif message_type == "transcribe":
+                    _strict_fields(
+                        message,
+                        frozenset(
+                            {
+                                "type",
+                                "id",
+                                "audioPath",
+                                "allowedRoot",
+                                "language",
+                                "context",
+                            }
+                        ),
+                    )
                     if runtime is None:
                         raise WorkerError("model_not_loaded", "ASR model is not loaded")
                     audio_path_raw = _string_field(
@@ -887,10 +1094,23 @@ def run_worker(
                         max_chars=MAX_PATH_CHARS,
                     )
                     audio_path = validate_audio_path(audio_path_raw, allowed_root_raw)
-                    context = message.get("context", "")
+                    context = message.get("context")
                     if not isinstance(context, str) or len(context) > MAX_CONTEXT_CHARS:
                         raise WorkerError("invalid_context", "context must be at most 4000 characters")
-                    language = _normalize_language(message.get("language", "auto"))
+                    language = _normalize_language(message.get("language"))
+                    if (
+                        language is not None
+                        and active_manifest is not None
+                        and language
+                        in UNSUPPORTED_LANGUAGE_CODES_BY_FAMILY.get(
+                            active_manifest.family_id,
+                            frozenset(),
+                        )
+                    ):
+                        raise WorkerError(
+                            "invalid_language",
+                            "language is not supported by the selected Whisper model",
+                        )
                     started = time.perf_counter()
                     result = runtime.transcribe(
                         audio_path,
@@ -908,6 +1128,7 @@ def run_worker(
                         },
                     )
                 elif message_type == "shutdown":
+                    _strict_fields(message, frozenset({"type", "id"}))
                     _send(output_stream, {"type": "shutdown", "id": request_id})
                     return 0
                 else:

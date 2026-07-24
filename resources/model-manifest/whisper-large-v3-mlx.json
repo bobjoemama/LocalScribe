@@ -1,5 +1,7 @@
 {
   "schemaVersion": 1,
+  "familyId": "whisper-large-v3",
+  "artifactId": "whisper-large-v3-mlx-fp16",
   "platform": "darwin-arm64",
   "backend": "MLX Whisper",
   "displayName": "Whisper large-v3 · MLX float16",

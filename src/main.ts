@@ -28,6 +28,8 @@ import {
   dictionaryEntrySchema,
   IPC,
   MAX_HISTORY_ITEMS,
+  MODEL_FAMILY_IDS,
+  modelFamilyLibraryRequestSchema,
   modelInstallRequestSchema,
   modelRemoveRequestSchema,
   navigationTargetSchema,
@@ -36,6 +38,8 @@ import {
   snippetSchema,
   transcribeAudioSchema,
   type Diagnostics,
+  type ModelCatalog,
+  type ModelFamilyId,
   type ModelPerformanceTier,
   type NavigationTarget,
   type PillMode,
@@ -61,11 +65,12 @@ import { applyLocalTextRules } from "./shared/textPipeline";
 import { transformDictation } from "./shared/text";
 import { ERROR_NOTICE_DURATION_MS, normalizeDictationErrorMessage } from "./shared/dictationErrors";
 import {
-  loadRuntimeModelCatalog,
+  loadRuntimePlatformModelCatalog,
   resolveModelPerformance,
   verifyRuntimeModelCatalog,
   type ModelPerformanceResolution,
   type RuntimeModelCatalog,
+  type RuntimePlatformModelCatalog,
   type RuntimeModelTierSpec,
 } from "./main/modelSpec";
 import {
@@ -124,12 +129,14 @@ const insertion = new InsertionService({
 });
 let session: SessionSnapshot = { state: "idle" };
 let quitting = false;
-let runtimeModelCatalog: RuntimeModelCatalog | null = null;
+let runtimeModelPlatformCatalog: RuntimePlatformModelCatalog | null = null;
 let modelResolution: ModelPerformanceResolution | null = null;
 let previousAutoTier: ModelPerformanceTier | undefined;
 let activeDictationTier: ModelPerformanceTier | undefined;
 let activeSessionId: string | null = null;
 let acceleratorSnapshot: WorkerAcceleratorSnapshot | null = null;
+let modelOperationTail: Promise<void> = Promise.resolve();
+let modelOperationCount = 0;
 // Squirrel must process install/update/uninstall lifecycle events before the
 // app acquires its normal instance lock or creates any windows/tray state.
 const squirrelStartup = Boolean(createRequire(import.meta.url)("electron-squirrel-startup"));
@@ -143,9 +150,15 @@ const snippetInputSchema = snippetSchema.pick({ trigger: true, expansion: true }
 const profileInputSchema = appProfileSchema.omit({ id: true, createdAt: true });
 const scratchpadSchema = z.string().max(1_000_000);
 
-function modelCatalog(): RuntimeModelCatalog {
-  if (!runtimeModelCatalog) throw new Error("The packaged model catalog was not loaded");
-  return runtimeModelCatalog;
+function platformModelCatalog(): RuntimePlatformModelCatalog {
+  if (!runtimeModelPlatformCatalog) throw new Error("The packaged model catalog was not loaded");
+  return runtimeModelPlatformCatalog;
+}
+
+function modelCatalog(
+  familyId: ModelFamilyId = database.getSettings().activeModelFamilyId,
+): RuntimeModelCatalog {
+  return platformModelCatalog().families[familyId];
 }
 
 function runtimeModelManifestDirectory(): string {
@@ -162,6 +175,70 @@ function assertModelSwitchAllowed(): void {
   if (!canSwitchModelNow()) {
     throw new Error("Finish or cancel the active dictation before changing local speech models.");
   }
+}
+
+function assertFamilyInLibrary(familyId: ModelFamilyId): void {
+  if (!database.getSettings().modelLibraryFamilyIds.includes(familyId)) {
+    throw new Error("Add this curated model family to the local library before using its artifacts.");
+  }
+}
+
+function runExclusiveModelOperation<T>(operation: () => Promise<T>): Promise<T> {
+  modelOperationCount += 1;
+  const result = modelOperationTail.catch(() => undefined).then(operation);
+  modelOperationTail = result.then(
+    () => undefined,
+    () => undefined,
+  );
+  return result.finally(() => {
+    modelOperationCount -= 1;
+  });
+}
+
+function modelOperationInProgress(): boolean {
+  return modelOperationCount > 0;
+}
+
+/** Returns static packaged metadata only; it intentionally does not probe hardware or the worker. */
+function collectModelCatalog(): ModelCatalog {
+  const settings = database.getSettings();
+  const catalog = platformModelCatalog();
+  return {
+    platform: catalog.platform,
+    activeModelFamilyId: settings.activeModelFamilyId,
+    modelLibraryFamilyIds: settings.modelLibraryFamilyIds,
+    families: MODEL_FAMILY_IDS.map((familyId) => {
+      const family = catalog.families[familyId];
+      const artifacts = new Map<string, RuntimeModelTierSpec>();
+      for (const tier of Object.values(family.tiers)) artifacts.set(tier.artifactId, tier);
+      return {
+        familyId,
+        displayName: family.displayName,
+        active: familyId === settings.activeModelFamilyId,
+        inLibrary: settings.modelLibraryFamilyIds.includes(familyId),
+        artifacts: [...artifacts.values()].map((tier) => ({
+          artifactId: tier.artifactId,
+          displayName: tier.manifest.displayName,
+          backend: tier.manifest.backend,
+          modelId: tier.manifest.modelId,
+          storageDirectory: tier.manifest.storageDirectory,
+          revision: tier.manifest.revision,
+          license: tier.manifest.license,
+          expectedDownloadBytes: tier.expectedDownloadBytes,
+        })),
+        profiles: Object.values(family.tiers).map((tier) => ({
+          profileId: tier.profileId,
+          tier: tier.tier,
+          artifactId: tier.artifactId,
+          engine: tier.engine,
+          precision: tier.precision,
+          expectedMemoryMinBytes: tier.acceleratorMemory.minimumBytes,
+          expectedMemoryMaxBytes: tier.acceleratorMemory.maximumBytes,
+          memoryBasis: tier.acceleratorMemory.evidence.kind,
+        })),
+      };
+    }),
+  };
 }
 
 function unavailableAccelerator(): Diagnostics["accelerator"] {
@@ -277,13 +354,14 @@ function workerComputeType(tier: RuntimeModelTierSpec): WorkerComputeType {
 
 function assertResolutionFitsMemory(resolution: ModelPerformanceResolution): void {
   if (resolution.fitsMemoryBudget) return;
-  const required = resolution.tier.acceleratorMemory.minimumBytes;
+  const required = resolution.requiredMemoryBytes
+    ?? resolution.tier.acceleratorMemory.maximumBytes;
   const available = acceleratorSnapshot?.freeMemoryBytes;
   const detail = available === undefined || available === null
     ? "accelerator memory could not be measured"
     : `${Math.round(available / 1024 ** 3)} GiB is currently available`;
   throw new Error(
-    `${resolution.effectiveTier} mode needs at least ${Math.ceil(required / 1024 ** 3)} GiB of free accelerator memory; ${detail}. Choose a lower mode or free memory and refresh diagnostics.`,
+    `${resolution.effectiveTier} mode needs ${Math.ceil(required / 1024 ** 3)} GiB of free accelerator memory including reserved headroom; ${detail}. Choose a lower mode or free memory and refresh diagnostics.`,
   );
 }
 
@@ -315,6 +393,9 @@ async function collectDiagnostics(): Promise<Diagnostics> {
     backend: model.backend,
     databaseIntegrity: database.integrityCheck(),
     model: {
+      familyId: resolution.tier.familyId,
+      artifactId: resolution.tier.artifactId,
+      profileId: resolution.tier.profileId,
       displayName: model.displayName,
       modelId: model.modelId,
       storageDirectory: model.storageDirectory,
@@ -323,6 +404,7 @@ async function collectDiagnostics(): Promise<Diagnostics> {
       installed: verification.verified,
       ...verification,
       revision: model.revision,
+      license: model.license,
     },
     accelerator: acceleratorDiagnostics(),
     performance: {
@@ -330,11 +412,15 @@ async function collectDiagnostics(): Promise<Diagnostics> {
       resolvedTier: resolution.effectiveTier,
       fitsMemoryBudget: resolution.fitsMemoryBudget,
       resolutionReason: resolutionReasonMessage(resolution),
+      reservedHeadroomBytes: resolution.reservedHeadroomBytes,
+      requiredFreeMemoryBytes: resolution.requiredMemoryBytes,
       options: Object.values(catalog.tiers).map((tier) => {
         const tierVerification = verifications[tier.tier];
         return {
           tier: tier.tier,
           modelKey: tier.modelKey,
+          profileId: tier.profileId,
+          artifactId: tier.artifactId,
           displayName: tier.manifest.displayName,
           engine: tier.engine,
           precision: tier.precision,
@@ -635,8 +721,28 @@ function notifySettingsChanged(settings: ReturnType<LocalDatabase["getSettings"]
   }
 }
 
+/**
+ * Family membership and activation have dedicated main-owned operations so a
+ * renderer cannot repoint the runtime through an arbitrary whole-settings
+ * write. Performance preference remains an independent setting.
+ */
+function assertGenericSettingsPreserveModelLibrary(
+  previous: ReturnType<LocalDatabase["getSettings"]>,
+  next: Pick<ReturnType<LocalDatabase["getSettings"]>, "activeModelFamilyId" | "modelLibraryFamilyIds">,
+): void {
+  if (
+    next.activeModelFamilyId !== previous.activeModelFamilyId
+    || next.modelLibraryFamilyIds.join("\u0000") !== previous.modelLibraryFamilyIds.join("\u0000")
+  ) {
+    throw new Error("Use the model library operations to add or activate a local speech model family.");
+  }
+}
+
 function beginListening(activation: "hold" | "toggle" = "toggle"): SessionSnapshot {
   if (session.state !== "idle" && session.state !== "success" && session.state !== "error") return session;
+  if (modelOperationInProgress()) {
+    return failSession("Wait for the local model operation to finish before dictating.");
+  }
   if (!modelResolution) {
     return failSession("Local model selection is still initializing. Try dictating again in a moment.");
   }
@@ -890,6 +996,7 @@ function registerIpc(): void {
   handle(IPC.settingsSave, async (_event, input: unknown) => {
     const previous = database.getSettings();
     const next = appSettingsSchema.parse(input);
+    assertGenericSettingsPreserveModelLibrary(previous, next);
     const modelPreferenceChanged = next.modelPerformanceMode !== previous.modelPerformanceMode;
     if (modelPreferenceChanged) assertModelSwitchAllowed();
     const settings = persistSettingsTransaction({ database, hotkeys }, next, previous);
@@ -910,6 +1017,7 @@ function registerIpc(): void {
     const patch = appSettingsPatchSchema.parse(input);
     const previous = database.getSettings();
     const preview = appSettingsSchema.parse({ ...previous, ...patch });
+    assertGenericSettingsPreserveModelLibrary(previous, preview);
     const modelPreferenceChanged = preview.modelPerformanceMode !== previous.modelPerformanceMode;
     if (modelPreferenceChanged) assertModelSwitchAllowed();
     const settings = applySettingsPatchTransaction({ database, hotkeys }, patch);
@@ -990,37 +1098,83 @@ function registerIpc(): void {
     platform: runtimePlatformFor(process.platform),
   }));
   handle(IPC.systemDiagnostics, () => collectDiagnostics());
+  handle(IPC.systemModelCatalog, () => collectModelCatalog());
+  handle(IPC.systemAddModelFamily, (_event, rawRequest: unknown) => {
+    const request = modelFamilyLibraryRequestSchema.parse(rawRequest);
+    // The schema is an allowlist, and the packaged runtime catalog must also
+    // provide the family for this platform before it can be persisted.
+    if (!platformModelCatalog().families[request.familyId]) {
+      throw new Error("This LocalScribe build does not package that model family for this platform.");
+    }
+    const previous = database.getSettings();
+    if (previous.modelLibraryFamilyIds.includes(request.familyId)) return collectModelCatalog();
+    const settings = database.saveSettings(appSettingsSchema.parse({
+      ...previous,
+      modelLibraryFamilyIds: [...previous.modelLibraryFamilyIds, request.familyId],
+    }));
+    notifySettingsChanged(settings);
+    return collectModelCatalog();
+  });
+  handle(IPC.systemActivateModelFamily, async (_event, rawRequest: unknown) => {
+    const request = modelFamilyLibraryRequestSchema.parse(rawRequest);
+    return runExclusiveModelOperation(async () => {
+      assertModelSwitchAllowed();
+      assertFamilyInLibrary(request.familyId);
+      const previous = database.getSettings();
+      if (previous.activeModelFamilyId === request.familyId) return collectModelCatalog();
+      // A fresh worker process is our cross-engine unload boundary. Persist
+      // only after the old runtime has been shut down.
+      await worker.shutdown();
+      const settings = database.saveSettings(appSettingsSchema.parse({
+        ...previous,
+        activeModelFamilyId: request.familyId,
+      }));
+      previousAutoTier = undefined;
+      modelResolution = null;
+      await refreshModelResolution();
+      notifySettingsChanged(settings);
+      return collectModelCatalog();
+    });
+  });
   handle(IPC.systemInstallModel, async (_event, rawRequest: unknown) => {
     const request = modelInstallRequestSchema.parse(rawRequest);
-    assertModelSwitchAllowed();
-    if (session.state === "idle") await refreshModelResolution();
-    const tier = modelCatalog().tiers[request.tier];
-    const requestedResolution = resolveModelPerformance({
-      preference: request.tier,
-      catalog: modelCatalog(),
-      memory: memorySnapshot(),
+    return runExclusiveModelOperation(async () => {
+      assertModelSwitchAllowed();
+      assertFamilyInLibrary(request.familyId);
+      if (session.state === "idle") await refreshModelResolution();
+      const catalog = modelCatalog(request.familyId);
+      const tier = catalog.tiers[request.tier];
+      const requestedResolution = resolveModelPerformance({
+        preference: request.tier,
+        catalog,
+        memory: memorySnapshot(),
+      });
+      assertResolutionFitsMemory(requestedResolution);
+      if (request.replaceExisting) {
+        // Repair intentionally does not delete the current artifact. The
+        // worker stages and verifies a replacement before it swaps an invalid
+        // directory, so an interrupted repair cannot discard the only copy.
+        await worker.shutdown();
+      }
+      await worker.ensureReady(workerSelection(tier), { allowDownload: true });
+      return collectDiagnostics();
     });
-    assertResolutionFitsMemory(requestedResolution);
-    if (request.replaceExisting) {
+  });
+  handle(IPC.systemRemoveModel, async (_event, rawRequest: unknown) => {
+    const request = modelRemoveRequestSchema.parse(rawRequest);
+    return runExclusiveModelOperation(async () => {
+      assertModelSwitchAllowed();
+      assertFamilyInLibrary(request.familyId);
       await worker.shutdown();
+      const tier = modelCatalog(request.familyId).tiers[request.tier];
       await rm(path.join(app.getPath("userData"), "models", tier.manifest.storageDirectory), {
         recursive: true,
         force: true,
       });
-    }
-    await worker.ensureReady(workerSelection(tier), { allowDownload: true });
-    return collectDiagnostics();
-  });
-  handle(IPC.systemRemoveModel, async (_event, rawRequest: unknown) => {
-    const request = modelRemoveRequestSchema.parse(rawRequest);
-    assertModelSwitchAllowed();
-    await worker.shutdown();
-    const tier = modelCatalog().tiers[request.tier];
-    await rm(path.join(app.getPath("userData"), "models", tier.manifest.storageDirectory), {
-      recursive: true,
-      force: true,
+      modelResolution = null;
+      if (session.state === "idle") await refreshModelResolution();
+      return collectDiagnostics();
     });
-    return collectDiagnostics();
   });
 }
 
@@ -1122,7 +1276,7 @@ app.whenReady().then(async () => {
   if (!hasSingleInstanceLock) return;
   app.setName("LocalScribe");
   installRendererProtocol();
-  runtimeModelCatalog = loadRuntimeModelCatalog(runtimeModelManifestDirectory());
+  runtimeModelPlatformCatalog = loadRuntimePlatformModelCatalog(runtimeModelManifestDirectory());
   database = new LocalDatabase(path.join(app.getPath("userData"), "localscribe.db"));
   database.purgeExpiredTranscriptions(database.getSettings().historyRetentionDays);
   await cleanStaleAudio();

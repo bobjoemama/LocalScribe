@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "familyId": "whisper-large-v2",
+  "artifactId": "whisper-large-v2-ctranslate2",
+  "platform": "win32-x64-cuda",
+  "backend": "faster-whisper/CTranslate2",
+  "displayName": "Whisper large-v2 · faster-whisper CUDA",
+  "modelId": "Systran/faster-whisper-large-v2",
+  "storageDirectory": "faster-whisper-large-v2-f0fe815",
+  "revision": "f0fe81560cb8b68660e564f55dd99207059c092e",
+  "license": "MIT",
+  "files": {
+    "config.json": {
+      "bytes": 2796,
+      "sha256": "d86b7a7664a12559d644aa210a32ce9a7e03913e794b7ea4fb7182de69e273a7"
+    },
+    "model.bin": {
+      "bytes": 3086912962,
+      "sha256": "bf2a9746382e1aa7ffff6b3a0d137ed9edbd9670c3b87e5d35f5e85e70d0333a"
+    },
+    "tokenizer.json": {
+      "bytes": 2203239,
+      "sha256": "fb7b63191e9bb045082c79fd742a3106a12c99513ab30df4a0d47fa6cb6fd0ab"
+    },
+    "vocabulary.txt": {
+      "bytes": 459861,
+      "sha256": "34ce3fe1c5041027b3f8d42912270993f986dbc4bb34cf27f951e34a1e453913"
+    }
+  }
+}

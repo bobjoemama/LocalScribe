@@ -20,6 +20,7 @@ from localscribe_worker.worker import (
     MLXWhisperRuntime,
     ModelFile,
     ModelManifest,
+    TierSpec,
     TIER_SPECS,
     TranscriptionResult,
     WorkerError,
@@ -32,14 +33,26 @@ def request(message_type: str, **fields: Any) -> dict[str, Any]:
     return {"type": message_type, "id": str(uuid.uuid4()), **fields}
 
 
+def tier_spec(tier: str, *, family: str = "v3") -> TierSpec:
+    matches = [
+        spec
+        for spec in TIER_SPECS.values()
+        if spec.tier == tier and f"whisper-large-{family}-mlx" in spec.model_id
+    ]
+    if len(matches) != 1:
+        raise AssertionError(f"missing unique {family}/{tier} catalog selection")
+    return matches[0]
+
+
 def load_request(
     tier: str,
     model_root: Path,
     *,
     allow_download: bool = True,
+    family: str = "v3",
     **overrides: Any,
 ) -> dict[str, Any]:
-    spec = TIER_SPECS[tier]
+    spec = tier_spec(tier, family=family)
     fields: dict[str, Any] = {
         "tier": tier,
         "modelId": spec.model_id,
@@ -79,6 +92,8 @@ def tiny_manifest() -> ModelManifest:
         backend="MLX Whisper",
         display_name="Test Whisper",
         model_id="example/whisper",
+        family_id="example-whisper",
+        artifact_id="example-whisper-test",
         storage_directory="test-whisper",
         revision="a" * 40,
         license="MIT",
@@ -258,7 +273,7 @@ class WorkerProtocolTests(unittest.TestCase):
                     "type": "model_ready",
                     "id": load_low["id"],
                     "tier": "low",
-                    "modelId": TIER_SPECS["low"].model_id,
+                    "modelId": tier_spec("low").model_id,
                     "computeType": "int4",
                     "loadMs": messages[1]["loadMs"],
                 },
@@ -309,12 +324,17 @@ class WorkerProtocolTests(unittest.TestCase):
             wrong_model = load_request(
                 "low",
                 model_root,
-                modelId=TIER_SPECS["high"].model_id,
+                modelId=tier_spec("high").model_id,
             )
             wrong_compute = load_request(
                 "medium",
                 model_root,
                 computeType="float16",
+            )
+            wrong_v2_tier = load_request(
+                "low",
+                model_root,
+                modelId=tier_spec("high", family="v2").model_id,
             )
             unknown_tier = load_request("low", model_root)
             unknown_tier["tier"] = "ultra"
@@ -323,17 +343,109 @@ class WorkerProtocolTests(unittest.TestCase):
                 encode_requests(
                     wrong_model,
                     wrong_compute,
+                    wrong_v2_tier,
                     unknown_tier,
                     shutdown,
                 ),
                 installer=lambda *_args: self.fail("installer must not run"),
                 factory=lambda *_args: self.fail("factory must not run"),
             )
-            self.assertEqual([message["code"] for message in messages[1:4]], [
+            self.assertEqual([message["code"] for message in messages[1:5]], [
+                "model_not_allowed",
                 "model_not_allowed",
                 "model_not_allowed",
                 "model_not_allowed",
             ])
+
+    def test_loads_exact_large_v2_catalog_selection(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            model_root = Path(temporary) / "models"
+            model_root.mkdir()
+            v2_medium = tier_spec("medium", family="v2")
+            load = load_request("medium", model_root, family="v2")
+            shutdown = request("shutdown")
+            installed: list[ModelManifest] = []
+            runtimes: list[FakeRuntime] = []
+
+            def installer(
+                path: Path,
+                manifest: ModelManifest,
+                _allow_download: bool,
+            ) -> Path:
+                installed.append(manifest)
+                installed_path = path / manifest.storage_directory
+                installed_path.mkdir(exist_ok=True)
+                return installed_path
+
+            def factory(_path: Path, spec: TierSpec) -> FakeRuntime:
+                self.assertEqual(spec, v2_medium)
+                runtime = FakeRuntime("large-v2")
+                runtimes.append(runtime)
+                return runtime
+
+            messages, errors, exit_code = self.run_protocol(
+                encode_requests(load, shutdown),
+                installer=installer,
+                factory=factory,
+            )
+
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(errors, "")
+            expected_manifest = worker_module.MODEL_MANIFESTS[
+                (v2_medium.model_id, v2_medium.tier, v2_medium.compute_type)
+            ]
+            self.assertEqual(installed, [expected_manifest])
+            self.assertEqual(
+                messages[1],
+                {
+                    "type": "model_ready",
+                    "id": load["id"],
+                    "tier": "medium",
+                    "modelId": v2_medium.model_id,
+                    "computeType": "int8",
+                    "loadMs": messages[1]["loadMs"],
+                },
+            )
+            self.assertTrue(runtimes[0].closed)
+
+    def test_switching_model_families_unloads_previous_runtime(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            model_root = Path(temporary) / "models"
+            model_root.mkdir()
+            v3_low = tier_spec("low", family="v3")
+            v2_low = tier_spec("low", family="v2")
+            runtimes: dict[str, FakeRuntime] = {}
+
+            def installer(
+                path: Path,
+                manifest: ModelManifest,
+                _allow_download: bool,
+            ) -> Path:
+                if manifest.model_id == v2_low.model_id:
+                    self.assertTrue(runtimes[v3_low.model_id].closed)
+                installed_path = path / manifest.storage_directory
+                installed_path.mkdir(exist_ok=True)
+                return installed_path
+
+            def factory(_path: Path, spec: TierSpec) -> FakeRuntime:
+                runtime = FakeRuntime(spec.model_id)
+                runtimes[spec.model_id] = runtime
+                return runtime
+
+            load_v3 = load_request("low", model_root, family="v3")
+            load_v2 = load_request("low", model_root, family="v2")
+            messages, errors, exit_code = self.run_protocol(
+                encode_requests(load_v3, load_v2, request("shutdown")),
+                installer=installer,
+                factory=factory,
+            )
+
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(errors, "")
+            self.assertEqual(messages[1]["modelId"], v3_low.model_id)
+            self.assertEqual(messages[2]["modelId"], v2_low.model_id)
+            self.assertTrue(runtimes[v3_low.model_id].closed)
+            self.assertTrue(runtimes[v2_low.model_id].closed)
 
     def test_requires_explicit_download_policy_and_forbids_implicit_download(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -623,23 +735,47 @@ class ModelInstallationTests(unittest.TestCase):
             (model / "unexpected.bin").write_bytes(b"x")
             self.assertFalse(worker_module._valid_model_directory(model, manifest))
 
-    def test_packaged_catalog_has_exact_three_whisper_manifests_and_files(self) -> None:
-        self.assertEqual(set(TIER_SPECS), {"high", "medium", "low"})
+    def test_catalog_manifest_rejects_tampered_v2_identity_metadata(self) -> None:
+        spec = tier_spec("low", family="v2")
+        packaged_path = worker_module._manifest_path(spec.manifest_filename)
+        raw = json.loads(packaged_path.read_text(encoding="utf-8"))
+        raw["artifactId"] = "whisper-large-v2-mlx-fp16"
+        with tempfile.TemporaryDirectory() as temporary:
+            tampered = Path(temporary) / spec.manifest_filename
+            tampered.write_text(json.dumps(raw), encoding="utf-8")
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "packaged_model_manifest_identity_mismatch",
+            ):
+                worker_module._parse_manifest(tampered, spec)
+
+    def test_packaged_catalog_has_exact_six_whisper_manifests_and_files(self) -> None:
+        self.assertEqual(len(TIER_SPECS), 6)
         self.assertEqual(
             {spec.manifest_filename for spec in TIER_SPECS.values()},
             {
                 "whisper-large-v3-mlx.json",
                 "whisper-large-v3-mlx-8bit.json",
                 "whisper-large-v3-mlx-4bit.json",
+                "whisper-large-v2-mlx.json",
+                "whisper-large-v2-mlx-8bit.json",
+                "whisper-large-v2-mlx-4bit.json",
             },
         )
-        self.assertEqual(
-            [TIER_SPECS[tier].compute_type for tier in ("high", "medium", "low")],
-            ["float16", "int8", "int4"],
-        )
-        for tier, manifest in worker_module.MODEL_MANIFESTS.items():
-            spec = TIER_SPECS[tier]
+        for family in ("v3", "v2"):
+            self.assertEqual(
+                [
+                    tier_spec(tier, family=family).compute_type
+                    for tier in ("high", "medium", "low")
+                ],
+                ["float16", "int8", "int4"],
+            )
+        for selection, manifest in worker_module.MODEL_MANIFESTS.items():
+            spec = TIER_SPECS[selection]
+            self.assertEqual(selection, (spec.model_id, spec.tier, spec.compute_type))
             self.assertEqual(manifest.model_id, spec.model_id)
+            self.assertEqual(manifest.family_id, spec.family_id)
+            self.assertEqual(manifest.artifact_id, spec.artifact_id)
             self.assertEqual(manifest.revision, spec.revision)
             self.assertEqual(set(manifest.files), {"config.json", "weights.npz"})
             for model_file in manifest.files.values():
