@@ -338,7 +338,7 @@ export function ModelPerformanceSettings({
 
         {platform === "darwin" && (
           <p className="ls-model-compatibility-note">
-            Whisper large-v3 Turbo is compatibility-reviewed, but it is not addable yet: its complete three-tier MLX contract is not packaged.
+            Additional model families appear here only after their complete High, Medium, and Low MLX profiles have pinned manifests and package validation.
           </p>
         )}
       </section>

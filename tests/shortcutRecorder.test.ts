@@ -23,4 +23,21 @@ describe("shortcut recorder keyboard capture", () => {
     expect(shortcutFromKeyboardEvent(keyEvent("F16"))).toBe("F16");
     expect(shortcutFromKeyboardEvent(keyEvent("Numpad7", { altKey: true }))).toBe("Alt+num7");
   });
+
+  it("preserves Windows AltGr instead of recording its synthesized Control+Alt pair", () => {
+    expect(shortcutFromKeyboardEvent({
+      ...keyEvent("AltRight", { ctrlKey: true, altKey: true }),
+      getModifierState: (modifier) => modifier === "AltGraph",
+    })).toBe("AltGr");
+    expect(shortcutFromKeyboardEvent({
+      ...keyEvent("KeyQ", { ctrlKey: true, altKey: true }),
+      getModifierState: (modifier) => modifier === "AltGraph",
+    })).toBe("AltGr+Q");
+    expect(shortcutFromKeyboardEvent(
+      keyEvent("AltRight", { ctrlKey: true, altKey: true }),
+    )).toBe("AltGr");
+    expect(shortcutFromKeyboardEvent(
+      keyEvent("KeyQ", { ctrlKey: true, altKey: true }),
+    )).toBe("Control+Alt+Q");
+  });
 });

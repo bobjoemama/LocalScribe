@@ -35,17 +35,32 @@ const modifierCodes: Record<string, string> = {
 
 const modifierOrder = ["Control", "Alt", "Command", "Shift"] as const;
 
+type ShortcutKeyboardEvent = Pick<
+  KeyboardEvent,
+  "code" | "ctrlKey" | "altKey" | "metaKey" | "shiftKey"
+> & {
+  getModifierState?: (keyArg: string) => boolean;
+};
+
 /**
  * Creates an accelerator candidate from physical DOM key codes. Keeping this
  * based on `code` makes the recorded shortcut stable across keyboard layouts.
  */
-export function shortcutFromKeyboardEvent(event: Pick<KeyboardEvent, "code" | "ctrlKey" | "altKey" | "metaKey" | "shiftKey">): string | null {
-  const modifiers = modifierOrder.filter((modifier) => {
-    if (modifier === "Control") return event.ctrlKey;
-    if (modifier === "Alt") return event.altKey;
-    if (modifier === "Command") return event.metaKey;
-    return event.shiftKey;
-  });
+export function shortcutFromKeyboardEvent(event: ShortcutKeyboardEvent): string | null {
+  const altGraph = event.getModifierState?.("AltGraph") === true ||
+    (event.code === "AltRight" && event.ctrlKey && event.altKey);
+  const modifiers = altGraph
+    ? [
+        "AltGr",
+        ...(event.metaKey ? ["Command"] : []),
+        ...(event.shiftKey ? ["Shift"] : []),
+      ]
+    : modifierOrder.filter((modifier) => {
+        if (modifier === "Control") return event.ctrlKey;
+        if (modifier === "Alt") return event.altKey;
+        if (modifier === "Command") return event.metaKey;
+        return event.shiftKey;
+      });
   const key = shortcutTokenFromCode(event.code);
   const tokens = key && !modifierCodes[event.code] ? [...modifiers, key] : modifiers;
   return tokens.length ? tokens.join("+") : null;
