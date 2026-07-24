@@ -52,6 +52,7 @@ UV_PROJECT_ENVIRONMENT="$venv_root" uv sync \
   --locked \
   --no-dev \
   --no-editable \
+  --reinstall-package localscribe-worker \
   --link-mode copy \
   --python "$python_path"
 

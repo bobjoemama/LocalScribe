@@ -75,6 +75,9 @@ describe("release hardening configuration", () => {
     expect(activeTargetEntitlements).toContain("<dict/>");
     expect(activeTargetEntitlements).not.toContain("<key>");
     expect(forgeConfig).toContain("MAC_ACTIVE_TARGET_ENTITLEMENTS");
+    expect(forgeConfig).toContain("signProtectedMacResources();");
+    expect(forgeConfig).toContain("ignore: isPreSignedProtectedMacResource");
+    expect(forgeConfig).toContain("codesign\", [\"--verify\", \"--strict\", binary]");
     expect(forgeConfig).toContain(
       'normalizedPath.endsWith("/Contents/Resources/native/macos/active-target")',
     );
@@ -162,6 +165,10 @@ describe("release hardening configuration", () => {
       expect(buildScript).toContain("uv lock --check");
       expect(buildScript).not.toContain("uv pip install");
     }
+    expect(macBuild).toContain("--reinstall-package localscribe-worker");
+    expect(windowsBuild).toContain(
+      "--reinstall-package localscribe-windows-faster-whisper-worker",
+    );
     expect(windowsBuild).toContain(
       '"cpython-$PythonVersion-windows-x86_64-none"',
     );

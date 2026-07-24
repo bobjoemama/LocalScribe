@@ -47,6 +47,8 @@ artifacts must then pass on the target OS. The core-runtime graph includes the
 production npm graph plus the exact Electron, CPython, and first-party native
 helper shipped for that platform; it intentionally excludes build-only
 tooling. Checksum entries use portable paths relative to `out/`.
+Both runtime builders force-reinstall the local first-party worker package;
+they never trust a same-version worker wheel left in uv's global cache.
 
 The release workflow uses `permissions: contents: read`, disables checkout
 credential persistence, pins actions to immutable commits, and does not use

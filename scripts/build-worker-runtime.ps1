@@ -49,6 +49,7 @@ uv sync `
   --locked `
   --no-dev `
   --no-editable `
+  --reinstall-package localscribe-windows-faster-whisper-worker `
   --link-mode copy `
   --python $Python
 

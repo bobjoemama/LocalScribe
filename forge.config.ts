@@ -6,7 +6,14 @@ import { AutoUnpackNativesPlugin } from "@electron-forge/plugin-auto-unpack-nati
 import { FusesPlugin } from "@electron-forge/plugin-fuses";
 import { VitePlugin } from "@electron-forge/plugin-vite";
 import { FuseV1Options, FuseVersion } from "@electron/fuses";
-import { existsSync } from "node:fs";
+import {
+  closeSync,
+  existsSync,
+  lstatSync,
+  openSync,
+  readSync,
+  readdirSync,
+} from "node:fs";
 import { execFileSync } from "node:child_process";
 import path from "node:path";
 import {
@@ -104,6 +111,79 @@ function signingEntitlementsFor(filePath: string): string {
     return MAC_HELPER_ENTITLEMENTS;
   }
   return MAC_ENTITLEMENTS;
+}
+
+const MACH_O_MAGICS = new Set([
+  "feedface",
+  "feedfacf",
+  "cefaedfe",
+  "cffaedfe",
+  "cafebabe",
+  "cafebabf",
+  "bebafeca",
+  "bfbafeca",
+]);
+
+function isMachO(filePath: string): boolean {
+  const descriptor = openSync(filePath, "r");
+  try {
+    const magic = Buffer.alloc(4);
+    return readSync(descriptor, magic, 0, magic.length, 0) === magic.length &&
+      MACH_O_MAGICS.has(magic.toString("hex"));
+  } finally {
+    closeSync(descriptor);
+  }
+}
+
+function collectMachOFiles(directory: string): string[] {
+  const files: string[] = [];
+  const visit = (candidate: string): void => {
+    const stat = lstatSync(candidate);
+    if (stat.isSymbolicLink()) return;
+    if (stat.isDirectory()) {
+      for (const child of readdirSync(candidate).sort()) {
+        visit(path.join(candidate, child));
+      }
+      return;
+    }
+    if (stat.isFile() && isMachO(candidate)) files.push(candidate);
+  };
+  visit(directory);
+  return files;
+}
+
+/**
+ * Electron's signing pass changes Mach-O bytes after Vite embeds the resource
+ * root in app.asar. Sign protected loose code first, hash those final bytes,
+ * and ask the later app-bundle pass to preserve those already-signed children.
+ * The outer app signature still seals every resource in the bundle.
+ */
+function signProtectedMacResources(): void {
+  const runtimeRoot = path.resolve("resources/python-runtime");
+  const activeTarget = path.resolve("resources/native/macos/active-target");
+  const binaries = [...collectMachOFiles(runtimeRoot), activeTarget]
+    .sort((left, right) => right.split(path.sep).length - left.split(path.sep).length);
+
+  for (const binary of binaries) {
+    const arguments_ = [
+      "--sign",
+      MAC_SIGNING_IDENTITY,
+      "--force",
+      PUBLIC_RELEASE ? "--timestamp" : "--timestamp=none",
+      ...(PUBLIC_RELEASE ? ["--options", "runtime"] : []),
+      "--entitlements",
+      signingEntitlementsFor(binary),
+      binary,
+    ];
+    execFileSync("codesign", arguments_, { stdio: "ignore" });
+    execFileSync("codesign", ["--verify", "--strict", binary], { stdio: "ignore" });
+  }
+}
+
+function isPreSignedProtectedMacResource(filePath: string): boolean {
+  const normalizedPath = filePath.replaceAll("\\", "/");
+  return normalizedPath.includes("/Contents/Resources/python-runtime/") ||
+    normalizedPath.endsWith("/Contents/Resources/native/macos/active-target");
 }
 
 function removeInfoPlistKeyIfPresent(infoPlist: string, keyPath: string): void {
@@ -319,6 +399,7 @@ const config: ForgeConfig = {
           osxSign: {
             identity: MAC_SIGNING_IDENTITY,
             identityValidation: MAC_SIGNING_IDENTITY !== "-",
+            ignore: isPreSignedProtectedMacResource,
             optionsForFile: (filePath: string) => ({
               entitlements: signingEntitlementsFor(filePath),
               hardenedRuntime: PUBLIC_RELEASE,
@@ -352,6 +433,7 @@ const config: ForgeConfig = {
           "-o",
           path.resolve("resources/native/macos/active-target"),
         ], { stdio: "inherit" });
+        signProtectedMacResources();
       }
       if (platform !== "darwin" && platform !== "win32") {
         throw new Error(`LocalScribe cannot be packaged for ${platform}.`);

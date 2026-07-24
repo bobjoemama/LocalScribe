@@ -110,7 +110,9 @@ npm run native:build:windows
 The runtime builder:
 
 - installs the pinned CPython 3.12.13 runtime;
-- performs `uv sync --locked --no-dev --no-editable --link-mode copy`;
+- performs `uv sync --locked --no-dev --no-editable --link-mode copy` and
+  force-rebuilds LocalScribe's first-party worker so a same-version cached wheel
+  cannot enter a newer package;
 - imports CTranslate2, faster-whisper, and the worker from the generated venv;
 - removes wheel tests, caches, bytecode, activation/build scripts, and
   developer console entrypoints.
