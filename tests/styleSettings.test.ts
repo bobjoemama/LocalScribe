@@ -11,8 +11,11 @@ import {
   modelRuntimeTierStatuses,
   SettingsModal,
   SETTINGS_TABS,
+  settingsControlAvailability,
   settingsLoadPresentation,
   shortcutCommitErrorMessage,
+  StyleScreen,
+  TransformsScreen,
   UNAVAILABLE_IN_THIS_BUILD_NOTICE,
 } from "../src/renderer/settings/screens/StyleSettings";
 import {
@@ -38,6 +41,40 @@ describe("feature availability copy", () => {
 });
 
 describe("settings loading truthfulness", () => {
+  it("keeps settings-dependent controls disabled until persisted settings load", () => {
+    const loading = settingsControlAvailability(null, null);
+    expect(loading).toEqual({
+      enabled: false,
+      presentation: {
+        title: "Loading settings",
+        detail: "Your saved settings are loading. Controls will be available when that finishes.",
+        isError: false,
+      },
+    });
+
+    const rejected = settingsControlAvailability(null, new Error("database unavailable"));
+    expect(rejected).toEqual({
+      enabled: false,
+      presentation: {
+        title: "Settings unavailable",
+        detail: "Could not load saved settings: database unavailable",
+        isError: true,
+      },
+    });
+  });
+
+  it("renders loading truthfully while leaving profiles and dictionary rules independently available", () => {
+    const styleHtml = renderToStaticMarkup(createElement(StyleScreen));
+    expect(styleHtml).toContain("Loading settings");
+    expect(styleHtml).toContain("+ Add profile");
+
+    const transformsHtml = renderToStaticMarkup(createElement(TransformsScreen));
+    expect(transformsHtml).toContain("Loading settings");
+    expect(transformsHtml).toContain("Available when saved settings load");
+    expect(transformsHtml).toContain('disabled=""');
+    expect(transformsHtml).toContain('placeholder="road map"');
+  });
+
   it("keeps persisted settings unavailable rather than rendering writable defaults", () => {
     expect(settingsLoadPresentation(null, null)).toEqual({
       title: "Loading settings",

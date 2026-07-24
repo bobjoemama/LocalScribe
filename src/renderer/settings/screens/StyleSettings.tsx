@@ -8,7 +8,6 @@ import {
   type ReactNode,
 } from "react";
 import {
-  DEFAULT_SETTINGS,
   HISTORY_RETENTION_OPTIONS,
   historyRetentionLabel,
   type AppProfile,
@@ -57,6 +56,16 @@ export function settingsLoadPresentation(
     title: "Loading settings",
     detail: "Your saved settings are loading. Controls will be available when that finishes.",
     isError: false,
+  };
+}
+
+export function settingsControlAvailability(
+  settings: AppSettings | null,
+  error: unknown | null,
+): { enabled: boolean; presentation: ReturnType<typeof settingsLoadPresentation> } {
+  return {
+    enabled: settings !== null,
+    presentation: settingsLoadPresentation(settings, error),
   };
 }
 
@@ -198,7 +207,8 @@ const cleanupOptions: { id: CleanupLevel; title: string; description: string; bu
 
 export function StyleScreen() {
   const [tab, setTab] = useState<StyleTab>("personal");
-  const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
+  const [settings, setSettings] = useState<AppSettings | null>(null);
+  const [settingsLoadError, setSettingsLoadError] = useState<unknown | null>(null);
   const [profiles, setProfiles] = useState<AppProfile[]>([]);
   const [profileOpen, setProfileOpen] = useState(false);
   const [message, setMessage] = useState("");
@@ -210,10 +220,12 @@ export function StyleScreen() {
   const loadProfiles = useCallback(() => window.localScribe.profiles.list().then(setProfiles), []);
 
   useEffect(() => {
-    const applySettings = (next: AppSettings) => setSettings(next);
+    const applySettings = (next: AppSettings) => {
+      setSettings(next);
+      setSettingsLoadError(null);
+    };
     void window.localScribe.settings.get().then(applySettings).catch((error: unknown) => {
-      setMessageIsError(true);
-      setMessage(`Could not load cleanup settings: ${errorDetail(error)}`);
+      setSettingsLoadError(error);
     });
     void loadProfiles().catch((error: unknown) => {
       setProfileMessageIsError(true);
@@ -222,9 +234,14 @@ export function StyleScreen() {
     return window.localScribe.settings.onChanged(applySettings);
   }, [loadProfiles]);
 
-  const cleanupLevel = useMemo<CleanupSelection>(() => cleanupSelectionForSettings(settings), [settings]);
+  const cleanupLevel = useMemo<CleanupSelection | null>(
+    () => settings ? cleanupSelectionForSettings(settings) : null,
+    [settings],
+  );
+  const cleanupControls = settingsControlAvailability(settings, settingsLoadError);
 
   const chooseCleanup = (level: CleanupLevel) => {
+    if (!settings) return;
     const next: AppSettings = {
       ...settings,
       removeFillers: level === "medium",
@@ -237,6 +254,7 @@ export function StyleScreen() {
   };
 
   const saveCleanup = async () => {
+    if (!settings) return;
     try {
       const saved = await window.localScribe.settings.patch({
         removeFillers: settings.removeFillers,
@@ -314,6 +332,12 @@ export function StyleScreen() {
         ))}
       </nav>
 
+      {cleanupControls.presentation && (
+        <p className={cleanupControls.presentation.isError ? "ls-action-feedback is-error" : "ls-action-feedback"} role={cleanupControls.presentation.isError ? "alert" : "status"} aria-live="polite">
+          <strong>{cleanupControls.presentation.title}</strong><br />{cleanupControls.presentation.detail}
+        </p>
+      )}
+
       {tab !== "cleanup" ? (
         <section className="ls-section" aria-labelledby="tone-heading">
           <div className="ls-section-heading">
@@ -365,7 +389,8 @@ export function StyleScreen() {
                 key={option.id}
                 className={cleanupLevel === option.id ? "ls-cleanup-card is-selected" : "ls-cleanup-card"}
                 onClick={() => chooseCleanup(option.id)}
-                aria-pressed={cleanupLevel === option.id}
+                aria-pressed={cleanupControls.enabled ? cleanupLevel === option.id : undefined}
+                disabled={!cleanupControls.enabled}
               >
                 <span className="ls-radio-dot" />
                 <strong>{option.title}</strong>
@@ -377,7 +402,7 @@ export function StyleScreen() {
           {cleanupLevel === "custom" && (
             <p className="ls-honesty-note"><InfoIcon /> Individual cleanup switches are using a custom combination. Choose a level to replace it.</p>
           )}
-          <button type="button" className="ls-primary-button" onClick={() => void saveCleanup()}>Save cleanup</button>
+          <button type="button" className="ls-primary-button" disabled={!cleanupControls.enabled} onClick={() => void saveCleanup()}>Save cleanup</button>
         </section>
       )}
 
@@ -447,7 +472,8 @@ function ProfileForm({ onSubmit, busy }: { onSubmit(event: FormEvent<HTMLFormEle
 }
 
 export function TransformsScreen() {
-  const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
+  const [settings, setSettings] = useState<AppSettings | null>(null);
+  const [settingsLoadError, setSettingsLoadError] = useState<unknown | null>(null);
   const [rules, setRules] = useState<DictionaryEntry[]>([]);
   const [phrase, setPhrase] = useState("");
   const [replacement, setReplacement] = useState("");
@@ -458,10 +484,12 @@ export function TransformsScreen() {
   const loadRules = useCallback(() => window.localScribe.dictionary.list().then(setRules), []);
 
   useEffect(() => {
-    const applySettings = (next: AppSettings) => setSettings(next);
+    const applySettings = (next: AppSettings) => {
+      setSettings(next);
+      setSettingsLoadError(null);
+    };
     void window.localScribe.settings.get().then(applySettings).catch((error: unknown) => {
-      setMessageIsError(true);
-      setMessage(`Could not load transform settings: ${errorDetail(error)}`);
+      setSettingsLoadError(error);
     });
     void loadRules().catch((error: unknown) => {
       setMessageIsError(true);
@@ -470,7 +498,10 @@ export function TransformsScreen() {
     return window.localScribe.settings.onChanged(applySettings);
   }, [loadRules]);
 
+  const transformControls = settingsControlAvailability(settings, settingsLoadError);
+
   const setTransform = async (key: "smartPunctuation" | "spokenCommands", enabled: boolean) => {
+    if (!settings) return;
     setBusy(true);
     try {
       const saved = await window.localScribe.settings.patch({ [key]: enabled });
@@ -526,18 +557,20 @@ export function TransformsScreen() {
       icon: <SparkIcon />,
       title: "Polish",
       description: "Normalize spacing, capitalization, and terminal punctuation after every transcription.",
-      availability: settings.smartPunctuation ? "Enabled" : "Off",
-      enabled: settings.smartPunctuation,
-      toggle: () => setTransform("smartPunctuation", !settings.smartPunctuation),
+      availability: settings ? settings.smartPunctuation ? "Enabled" : "Off" : transformControls.presentation?.title ?? "Loading settings",
+      enabled: settings?.smartPunctuation ?? false,
+      toggle: settings ? () => setTransform("smartPunctuation", !settings.smartPunctuation) : null,
+      unavailable: !settings,
     },
     {
       id: "structured",
       icon: <ListIcon />,
       title: "Spoken structure",
       description: "Apply spoken punctuation, new-line, new-paragraph, and scratch-that commands.",
-      availability: settings.spokenCommands ? "Enabled" : "Off",
-      enabled: settings.spokenCommands,
-      toggle: () => setTransform("spokenCommands", !settings.spokenCommands),
+      availability: settings ? settings.spokenCommands ? "Enabled" : "Off" : transformControls.presentation?.title ?? "Loading settings",
+      enabled: settings?.spokenCommands ?? false,
+      toggle: settings ? () => setTransform("spokenCommands", !settings.spokenCommands) : null,
+      unavailable: !settings,
     },
     {
       id: "concise",
@@ -547,6 +580,7 @@ export function TransformsScreen() {
       availability: GENERATIVE_TEXT_MODEL_REQUIRED_NOTICE,
       enabled: false,
       toggle: null,
+      unavailable: true,
     },
   ];
 
@@ -562,22 +596,28 @@ export function TransformsScreen() {
         <div><strong>Current transforms run locally</strong><span>The installed ASR model handles speech. Generative rewriting needs an additional text model, which is not installed.</span></div>
       </div>
 
+      {transformControls.presentation && (
+        <p className={transformControls.presentation.isError ? "ls-action-feedback is-error" : "ls-action-feedback"} role={transformControls.presentation.isError ? "alert" : "status"} aria-live="polite">
+          <strong>{transformControls.presentation.title}</strong><br />{transformControls.presentation.detail}
+        </p>
+      )}
+
       <section className="ls-section">
         <div className="ls-transform-grid">
           {transforms.map((transform) => (
             <button
               type="button"
               key={transform.id}
-              className={transform.enabled ? "ls-transform-card is-selected" : transform.toggle ? "ls-transform-card" : "ls-transform-card is-unavailable"}
+              className={transform.enabled ? "ls-transform-card is-selected" : transform.unavailable ? "ls-transform-card is-unavailable" : "ls-transform-card"}
               onClick={() => void transform.toggle?.()}
               aria-pressed={transform.toggle ? transform.enabled : undefined}
               disabled={!transform.toggle || busy}
             >
               <span className="ls-transform-icon">{transform.icon}</span>
-              <span className={transform.toggle ? "ls-status-chip ls-status-chip--muted" : "ls-status-chip ls-status-chip--muted ls-status-chip--model-required"}>{transform.availability}</span>
+              <span className={transform.id === "concise" ? "ls-status-chip ls-status-chip--muted ls-status-chip--model-required" : "ls-status-chip ls-status-chip--muted"}>{transform.availability}</span>
               <strong>{transform.title}</strong>
               <p>{transform.description}</p>
-              <span className="ls-card-link">{transform.toggle ? transform.enabled ? "Click to turn off" : "Click to enable" : GENERATIVE_TEXT_MODEL_REQUIRED_NOTICE} <ArrowIcon /></span>
+              <span className="ls-card-link">{transform.toggle ? transform.enabled ? "Click to turn off" : "Click to enable" : transform.id === "concise" ? GENERATIVE_TEXT_MODEL_REQUIRED_NOTICE : "Available when saved settings load"} <ArrowIcon /></span>
             </button>
           ))}
         </div>
