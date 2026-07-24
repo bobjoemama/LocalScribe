@@ -5,10 +5,10 @@ LocalScribe may reproduce publicly observable dictation workflows, but it does n
 OpenWhispr was reviewed as a frozen MIT-licensed architectural reference. The current LocalScribe source was written as a smaller TypeScript implementation and does not contain copied OpenWhispr files. If future work copies or adapts MIT source, the originating copyright and license notice must be added to the file and `THIRD_PARTY_NOTICES.md`.
 
 Every model, runtime, native module, and packaged binary must be audited under
-its own license before distribution. The macOS large-v3 manifests and the
+its own license before distribution. The macOS large-v3 FP16 manifest and the
 Windows Systran faster-whisper large-v3 and large-v2 manifests declare MIT.
-The macOS
-`mlx-community/whisper-large-v2-mlx` family has `Undeclared` license metadata
-in its pinned manifests; that artifact needs distribution review and must not
-be treated as MIT by inference. All selected identities and per-file digests
-are recorded in `resources/model-manifest/`; see [MODEL_CATALOG.md](MODEL_CATALOG.md).
+The pinned macOS large-v3 8-bit and 4-bit artifacts and the macOS
+`mlx-community/whisper-large-v2-mlx` family have `Undeclared` license metadata;
+they need distribution review and must not be treated as MIT by inference. All
+selected identities and per-file digests are recorded in
+`resources/model-manifest/`; see [MODEL_CATALOG.md](MODEL_CATALOG.md).

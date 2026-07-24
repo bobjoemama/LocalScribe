@@ -54,6 +54,7 @@ describe("packaged model specifications", () => {
           manifest: {
             modelId: "mlx-community/whisper-large-v3-mlx-8bit",
             revision: "04ca5b03c22d72ddf4f4b2d808a28bf9902fb71a",
+            license: "Undeclared",
           },
         },
         low: {
@@ -62,6 +63,7 @@ describe("packaged model specifications", () => {
           manifest: {
             modelId: "mlx-community/whisper-large-v3-mlx-4bit",
             revision: "d12b5d0043a6fe0c59af321617fba041d4e8e0c8",
+            license: "Undeclared",
           },
         },
       },

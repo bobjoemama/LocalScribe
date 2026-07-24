@@ -53,12 +53,13 @@ or a new file list for those pins.
 
 ## License boundary
 
-The large-v3 MLX manifests declare MIT. The Windows Systran faster-whisper
-large-v3 and large-v2 manifests declare MIT. The macOS
-`mlx-community/whisper-large-v2-mlx` manifests carry `Undeclared` license
-metadata. That does not establish an MIT grant: distribution of the macOS v2
-artifact requires a separate license review before it is represented as
-distribution-ready.
+The macOS large-v3 FP16 manifest and the Windows Systran faster-whisper
+large-v3 and large-v2 manifests declare MIT. The pinned macOS large-v3 8-bit
+and 4-bit revisions, and all three pinned macOS
+`mlx-community/whisper-large-v2-mlx` revisions, carry `Undeclared` license
+metadata because no license declaration was found at those exact revisions.
+That does not establish an MIT grant: those artifacts require a separate
+license review before they are represented as distribution-ready.
 
 ## Turbo
 

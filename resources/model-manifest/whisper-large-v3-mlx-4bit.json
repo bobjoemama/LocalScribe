@@ -8,7 +8,7 @@
   "modelId": "mlx-community/whisper-large-v3-mlx-4bit",
   "storageDirectory": "whisper-large-v3-mlx-4bit-d12b5d0",
   "revision": "d12b5d0043a6fe0c59af321617fba041d4e8e0c8",
-  "license": "MIT",
+  "license": "Undeclared",
   "files": {
     "config.json": {
       "bytes": 342,
