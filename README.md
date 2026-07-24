@@ -123,7 +123,10 @@ The Python audit uses a separately locked `pip-audit==2.10.1` toolchain under
 `tools/python-audit`. npm's dependency install scripts are denied by default
 unless their exact package version appears in `allowScripts`; local
 verification makes any new unreviewed script a hard failure. Both npm audits
-are required. The full
+are required. The source gate also simulates a clean Windows x64 npm install,
+requires a complete binary-wheel resolution for the pinned Windows Python
+graph, lints both workers, and runs the dependency-light Windows worker tests
+even when invoked from macOS. The full
 build-tool audit is currently clean because compatible overrides pin patched
 `tar` and `tmp` releases. The `@electron/rebuild` override uses its supported
 Node 24/Visual Studio 2026 toolchain. Removing these overrides reopens known
@@ -205,7 +208,26 @@ generation, checksums, and strict code-signature verification. It leaves the
 DMG, ZIP, two CycloneDX SBOMs, and `SHA256SUMS.txt` under `out/` for review.
 
 Windows artifacts must be built and verified locally on a real Windows system;
-they are never inferred from the Mac verification result. `main` remains
+they are never inferred from the Mac verification result. The target-machine
+gate is:
+
+```powershell
+npm run verify:local:windows
+```
+
+Add `-- -RequireCuda` on a Windows machine with an NVIDIA GPU to require
+CTranslate2 device discovery, NVML telemetry, exact runtime versions, and
+support for every advertised compute profile. The command builds and smokes
+the packaged app, tests the bundled worker, emits both Windows SBOMs, checks
+the Squirrel artifact set, validates the expected Authenticode state, and
+writes `out\SHA256SUMS-windows.txt`.
+
+If the pinned large-v3 model is already present, add
+`-CudaModelRoot "$env:APPDATA\LocalScribe\models"` after `-RequireCuda` to
+include a checksum-verified CUDA model-load and local inference smoke. The
+verification command never downloads model weights implicitly.
+
+`main` remains
 protected for administrators and other contributors: changes require a pull
 request, resolved review conversations, and linear history; force pushes and
 deletion are disabled. No hosted status check is required.

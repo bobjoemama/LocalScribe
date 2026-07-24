@@ -33,8 +33,10 @@ npm run verify:local
 ```
 
 This fail-fast script verifies the npm version, production and complete npm
-graphs, all committed Python locks, exact Python packages, ESLint, macOS-worker
-Ruff rules, TypeScript, and the complete Vitest suite.
+graphs, all committed Python locks, exact Python packages, a clean Windows x64
+npm simulation, a locked Windows binary-wheel resolution, ESLint, Ruff for both
+workers, the dependency-light Windows worker suite, TypeScript, and the
+complete Vitest suite.
 
 ## Complete macOS verification
 
@@ -98,8 +100,28 @@ microphone or JIT grants.
 ## Local Windows verification and signing
 
 Windows work must be performed on a Windows 11 x64 machine. From PowerShell,
-install the pinned Node/npm/uv toolchain and dependencies, then run the source
-checks and local build commands documented in [WINDOWS.md](WINDOWS.md).
+install the pinned Node/npm/uv toolchain and dependencies, then run:
+
+```powershell
+npm run verify:local:windows
+```
+
+On a machine with the intended NVIDIA GPU, require CUDA discovery, NVML
+telemetry, pinned runtime versions, and all advertised compute profiles:
+
+```powershell
+npm run verify:local:windows -- -RequireCuda
+```
+
+When the pinned model is already installed, append
+`-CudaModelRoot "$env:APPDATA\LocalScribe\models"` to add a checksum-verified
+CUDA model-load and inference smoke without downloading weights.
+
+The command performs the source checks, runtime/helper build, Forge make,
+packaged startup smoke, bundled-worker tests and imports, Windows SBOM
+generation, Squirrel artifact checks, Authenticode-state checks, and verified
+SHA-256 manifest described in [WINDOWS.md](WINDOWS.md). It fails before the
+build when Node or npm differs from the exact committed pins.
 
 An ordinary `npm run make:windows` creates an unsigned validation installer.
 Public mode additionally requires:
@@ -108,8 +130,8 @@ Public mode additionally requires:
 - either `WINDOWS_SIGN_WITH_PARAMS` for a managed signing flow, or
   `WINDOWS_CERTIFICATE_FILE` plus `WINDOWS_CERTIFICATE_PASSWORD`.
 
-Release mode signs the packaged app, helper, and Squirrel artifacts. Verify
-each final file locally with `Get-AuthenticodeSignature`. Never commit a PFX,
+Release mode signs the complete packaged `.exe`/`.dll`/`.node` inventory and
+Squirrel artifacts; the target gate verifies every one. Never commit a PFX,
 password, token, generated signing command, or decrypted certificate.
 
 ## Release-candidate review

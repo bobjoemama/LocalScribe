@@ -90,7 +90,9 @@ Validation path:
 
 - locked faster-whisper runtime build on a local Windows 11 x64 machine
 - hardened x64 helper build and deterministic smoke
-- native Node rebuild, worker tests, and Squirrel make
+- native Node rebuild with target-only binary pruning, worker/CUDA checks, and
+  Squirrel make
+- packaged startup, SBOM, checksum, and complete PE-signature-state checks
 - locally reviewed unsigned validation Setup.exe
 
 Production path:
@@ -98,7 +100,8 @@ Production path:
 - explicit local `LOCALSCRIBE_RELEASE=1 npm run make:windows`
 - Authenticode certificate or managed signing parameters
 - required HTTPS timestamp server
-- signatures on app, helper, and Squirrel installer
+- signatures on every packaged `.exe`, `.dll`, and `.node` plus the Squirrel
+  installer
 
 Remaining release QA requires a physical NVIDIA system: packaged model install,
 real audio transcription for all profiles, VRAM/latency/accuracy measurement,

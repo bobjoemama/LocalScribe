@@ -47,4 +47,23 @@ describe("platform SBOM generation", () => {
     expect(localMacVerification).toContain("SHA256SUMS.txt");
     expect(localMacVerification).toContain("shasum -a 256 -c SHA256SUMS.txt");
   });
+
+  it("generates and checksums the Windows SBOM pair during local verification", () => {
+    const localWindowsVerification = projectFile("scripts/verify-local-windows.ps1");
+
+    expect(localWindowsVerification.match(
+      /sbom:runtime:windows/g,
+    )).toHaveLength(1);
+    expect(localWindowsVerification.match(
+      /sbom:python:windows/g,
+    )).toHaveLength(1);
+    expect(localWindowsVerification).toContain(
+      "out\\localscribe-core-runtime-windows-sbom.cdx.json",
+    );
+    expect(localWindowsVerification).toContain(
+      "out\\localscribe-python-windows-sbom.cdx.json",
+    );
+    expect(localWindowsVerification).toContain("SHA256SUMS-windows.txt");
+    expect(localWindowsVerification).toContain("Get-FileHash -Algorithm SHA256");
+  });
 });
