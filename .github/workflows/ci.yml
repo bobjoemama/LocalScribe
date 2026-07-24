@@ -181,12 +181,15 @@ jobs:
           Write-Host "Public Windows release correctly failed closed without signing credentials."
           exit 0
 
-      - name: Build unsigned Squirrel validation installer
-        run: npx electron-forge make --platform=win32 --arch=x64
+      - name: Build unsigned Windows validation package
+        run: npx electron-forge package --platform=win32 --arch=x64
 
       - name: Smoke packaged Windows main process
         shell: pwsh
         run: npm run smoke:packaged:windows
+
+      - name: Build unsigned Squirrel validation installer
+        run: npx electron-forge make --skip-package --platform=win32 --arch=x64
 
       - name: Generate SBOM and checksums
         shell: pwsh

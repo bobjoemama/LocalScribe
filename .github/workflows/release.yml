@@ -214,16 +214,23 @@ jobs:
           "WINDOWS_CERTIFICATE_FILE=$certificatePath" | Out-File `
             -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
-      - name: Build signed Squirrel Setup.exe
+      - name: Build signed Windows package
         env:
           LOCALSCRIBE_RELEASE: "1"
           WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
           WINDOWS_TIMESTAMP_SERVER: ${{ secrets.WINDOWS_TIMESTAMP_SERVER }}
-        run: npm run make:windows
+        run: npm run package:windows
 
       - name: Smoke packaged Windows main process
         shell: pwsh
         run: npm run smoke:packaged:windows
+
+      - name: Build signed Squirrel Setup.exe from smoke-tested package
+        env:
+          LOCALSCRIBE_RELEASE: "1"
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+          WINDOWS_TIMESTAMP_SERVER: ${{ secrets.WINDOWS_TIMESTAMP_SERVER }}
+        run: npx electron-forge make --skip-package --platform=win32 --arch=x64
 
       - name: Generate SBOM and checksums
         shell: pwsh

@@ -19,6 +19,50 @@ $StderrPath = Join-Path $SmokeRoot "stderr.log"
 [IO.Directory]::CreateDirectory($ProfilePath) | Out-Null
 $Candidate = $null
 
+function Stop-SmokeProcessTree {
+  param(
+    [System.Diagnostics.Process]$Process
+  )
+
+  $Process.Refresh()
+  if ($Process.HasExited) {
+    return
+  }
+
+  $TaskKill = Start-Process `
+    -FilePath "taskkill.exe" `
+    -ArgumentList @("/PID", $Process.Id.ToString(), "/T", "/F") `
+    -NoNewWindow `
+    -Wait `
+    -PassThru
+  if ($TaskKill.ExitCode -ne 0) {
+    $Process.Refresh()
+    if (-not $Process.HasExited) {
+      Stop-Process -Id $Process.Id -Force
+    }
+  }
+  Wait-Process -Id $Process.Id -ErrorAction SilentlyContinue
+}
+
+function Remove-SmokeDirectory {
+  param(
+    [string]$DirectoryPath
+  )
+
+  for ($Attempt = 1; $Attempt -le 10; $Attempt += 1) {
+    try {
+      [IO.Directory]::Delete($DirectoryPath, $true)
+      return
+    }
+    catch [IO.IOException] {
+      if ($Attempt -eq 10) {
+        throw
+      }
+      Start-Sleep -Milliseconds 250
+    }
+  }
+}
+
 try {
   $Candidate = Start-Process `
     -FilePath $ResolvedApp `
@@ -32,8 +76,7 @@ try {
     $Output = (Get-Content $StdoutPath, $StderrPath -Raw -ErrorAction SilentlyContinue) -join "`n"
     throw "Packaged Windows main process exited during startup.`n$Output"
   }
-  Stop-Process -Id $Candidate.Id
-  Wait-Process -Id $Candidate.Id -ErrorAction SilentlyContinue
+  Stop-SmokeProcessTree -Process $Candidate
   $Candidate = $null
 
   $Output = (Get-Content $StdoutPath, $StderrPath -Raw -ErrorAction SilentlyContinue) -join "`n"
@@ -45,9 +88,9 @@ try {
 }
 finally {
   if ($null -ne $Candidate -and -not $Candidate.HasExited) {
-    Stop-Process -Id $Candidate.Id -ErrorAction SilentlyContinue
+    Stop-SmokeProcessTree -Process $Candidate
   }
   if (Test-Path $SmokeRoot) {
-    [IO.Directory]::Delete($SmokeRoot, $true)
+    Remove-SmokeDirectory -DirectoryPath $SmokeRoot
   }
 }

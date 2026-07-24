@@ -117,8 +117,20 @@ describe("release hardening configuration", () => {
     expect(verifier).toContain("Packaged Electron main contains an import.meta.url");
     expect(macSmoke).toContain("verify-packaged-main.mjs");
     expect(windowsSmoke).toContain("verify-packaged-main.mjs");
+    expect(windowsSmoke).toContain("Stop-SmokeProcessTree");
+    expect(windowsSmoke).toContain('"/T", "/F"');
+    expect(windowsSmoke).toContain("Remove-SmokeDirectory");
+    expect(windowsSmoke).toContain("$Attempt -le 10");
     expect(ciWorkflow.match(/npm run smoke:packaged:(?:macos|windows)/gu)).toHaveLength(2);
     expect(releaseWorkflow.match(/npm run smoke:packaged:(?:macos|windows)/gu)).toHaveLength(2);
+    for (const workflow of [ciWorkflow, releaseWorkflow]) {
+      const windowsSmokeIndex = workflow.indexOf("npm run smoke:packaged:windows");
+      const skipPackageIndex = workflow.indexOf(
+        "electron-forge make --skip-package --platform=win32 --arch=x64",
+      );
+      expect(windowsSmokeIndex).toBeGreaterThan(-1);
+      expect(skipPackageIndex).toBeGreaterThan(windowsSmokeIndex);
+    }
   });
 
   it("waits for interrupted startup before closing the local database", () => {
