@@ -326,6 +326,11 @@ describe("release hardening configuration", () => {
       expect(workflow).toContain(
         "[IO.Path]::GetRelativePath($OutRoot, $_.Path)",
       );
+      expect(workflow).toContain("[IO.File]::WriteAllText(");
+      expect(workflow).toContain('(($ChecksumLines -join "`n") + "`n")');
+      expect(workflow).not.toContain(
+        "Out-File -Encoding ascii out/SHA256SUMS.txt",
+      );
       expect(workflow).not.toContain(
         '"$($_.Hash.ToLowerInvariant())  $($_.Path)"',
       );

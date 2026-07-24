@@ -198,13 +198,17 @@ jobs:
             Get-Item out/localscribe-python-windows-sbom.cdx.json
           )
           $OutRoot = (Resolve-Path out).Path
-          $ChecksumTargets |
+          $ChecksumLines = $ChecksumTargets |
             Get-FileHash -Algorithm SHA256 |
             ForEach-Object {
               $RelativePath = [IO.Path]::GetRelativePath($OutRoot, $_.Path).Replace("\", "/")
               "$($_.Hash.ToLowerInvariant())  $RelativePath"
-            } |
-            Out-File -Encoding ascii out/SHA256SUMS.txt
+            }
+          [IO.File]::WriteAllText(
+            (Join-Path $OutRoot "SHA256SUMS.txt"),
+            (($ChecksumLines -join "`n") + "`n"),
+            [Text.Encoding]::ASCII
+          )
 
       - name: Upload unsigned validation artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
