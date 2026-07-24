@@ -17,9 +17,11 @@ describe("validated settings-change delivery", () => {
     expect(source("src/main.ts")).toContain("notifySettingsChanged(settings);");
     expect(source("src/main.ts")).toContain("applyShortcutUpdateTransaction({ database, hotkeys }, input)");
     expect(source("src/preload.ts")).toContain("appSettingsSchema.parse(value)");
-    expect(source("src/renderer/pill/Pill.tsx")).toContain("settings.onChanged(applySettings)");
+    expect(source("src/renderer/pill/Pill.tsx")).toContain("settings.onChanged((settings) =>");
+    expect(source("src/renderer/pill/Pill.tsx")).toContain("applySettings(settings);");
     expect(source("src/renderer/pill/Pill.tsx")).not.toContain("setInterval(refreshSettings");
-    expect(source("src/renderer/settings/screens/HistoryInsights.tsx")).toContain("settings.onChanged(setShortcutSettings)");
+    expect(source("src/renderer/settings/screens/HistoryInsights.tsx")).toContain("settings.onChanged((settings) =>");
+    expect(source("src/renderer/settings/screens/HistoryInsights.tsx")).toContain("setShortcutSettings(settings);");
     expect(source("src/renderer/settings/screens/StyleSettings.tsx")).toContain("settings.onChanged(applyPersistedSettings)");
   });
 

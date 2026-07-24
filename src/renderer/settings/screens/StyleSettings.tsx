@@ -16,6 +16,8 @@ import {
   type AppSettingsPatch,
   type DictionaryEntry,
   type Diagnostics,
+  type ModelCatalog,
+  type ModelFamilyId,
   type ModelPerformanceTier,
   type PermissionSnapshot,
 } from "../../../shared/contracts";
@@ -28,6 +30,7 @@ import {
 import {
   ModelPerformanceSettings,
   type ModelActionState,
+  type ModelTierRuntimeStatus,
 } from "./ModelPerformanceSettings";
 import "./style-settings.css";
 
@@ -616,6 +619,8 @@ export function SettingsModal({ onClose }: { onClose(): void }) {
   const [settingsLoadError, setSettingsLoadError] = useState<unknown | null>(null);
   const [permissions, setPermissions] = useState<PermissionSnapshot | null>(null);
   const [diagnostics, setDiagnostics] = useState<Diagnostics | null>(null);
+  const [modelCatalog, setModelCatalog] = useState<ModelCatalog | null>(null);
+  const [modelCatalogError, setModelCatalogError] = useState<string | null>(null);
   const [microphones, setMicrophones] = useState<MediaDeviceInfo[]>([]);
   const [profiles, setProfiles] = useState<AppProfile[]>([]);
   const [status, setStatus] = useState("");
@@ -625,14 +630,31 @@ export function SettingsModal({ onClose }: { onClose(): void }) {
   const [modelFeedback, setModelFeedback] = useState<{ message: string; isError: boolean } | null>(null);
 
   const refresh = useCallback(async () => {
-    const [permissionResult, diagnosticsResult, profileResult] = await Promise.all([
+    const [permissionResult, diagnosticsResult, profileResult] = await Promise.allSettled([
       window.localScribe.system.getPermissions(),
       window.localScribe.system.diagnostics(),
       window.localScribe.profiles.list(),
     ]);
-    setPermissions(permissionResult);
-    setDiagnostics(diagnosticsResult);
-    setProfiles(profileResult);
+    if (permissionResult.status === "fulfilled") setPermissions(permissionResult.value);
+    if (diagnosticsResult.status === "fulfilled") setDiagnostics(diagnosticsResult.value);
+    if (profileResult.status === "fulfilled") setProfiles(profileResult.value);
+    const failures = [permissionResult, diagnosticsResult, profileResult]
+      .filter((result): result is PromiseRejectedResult => result.status === "rejected")
+      .map((result) => errorDetail(result.reason));
+    if (failures.length > 0) throw new Error(failures.join("; "));
+  }, []);
+
+  const refreshModelCatalog = useCallback(async () => {
+    try {
+      const next = await window.localScribe.system.modelCatalog();
+      setModelCatalog(next);
+      setModelCatalogError(null);
+      return next;
+    } catch (error) {
+      const detail = errorDetail(error);
+      setModelCatalogError(detail);
+      throw error;
+    }
   }, []);
 
   const applyPersistedSettings = useCallback((next: AppSettings) => {
@@ -649,13 +671,14 @@ export function SettingsModal({ onClose }: { onClose(): void }) {
     void refresh().catch((error: unknown) => {
       setStatus(`Could not refresh system information: ${errorDetail(error)}`);
     });
+    void refreshModelCatalog().catch(() => undefined);
     void navigator.mediaDevices?.enumerateDevices().then((devices) => {
       setMicrophones(devices.filter((device) => device.kind === "audioinput"));
     }).catch((error: unknown) => {
       setStatus(`Could not list microphones: ${errorDetail(error)}`);
     });
     return window.localScribe.settings.onChanged(applyPersistedSettings);
-  }, [applyPersistedSettings, refresh]);
+  }, [applyPersistedSettings, refresh, refreshModelCatalog]);
 
   useEffect(() => {
     let disposed = false;
@@ -777,37 +800,39 @@ export function SettingsModal({ onClose }: { onClose(): void }) {
     }
   };
 
-  const installModel = async (tier: ModelPerformanceTier, replaceExisting: boolean) => {
-    const option = diagnostics?.performance.options.find((candidate) => candidate.tier === tier);
-    if (!option) {
-      setModelFeedback({ message: "Model details are not available yet. Recheck memory and try again.", isError: true });
+  const installModel = async (
+    familyId: ModelFamilyId,
+    tier: ModelPerformanceTier,
+    replaceExisting: boolean,
+  ) => {
+    const model = catalogModelProfile(modelCatalog, familyId, tier);
+    if (!model) {
+      setModelFeedback({ message: "Curated model details are not available yet. Refresh model status and try again.", isError: true });
       return;
     }
-    const expectedSize = formatBytes(option.expectedDownloadBytes);
+    const expectedSize = formatBytes(model.artifact.expectedDownloadBytes);
     const action = replaceExisting ? "repair" : "install";
     if (!window.confirm(
-      `${replaceExisting ? "Repair" : "Install"} ${tierLabel(tier)} (${option.displayName})? `
-      + `LocalScribe will download and verify ${expectedSize}.`,
+      `${replaceExisting ? "Repair" : "Download"} ${model.family.displayName} ${tierLabel(tier)} profile? `
+      + `LocalScribe will use its fixed local runtime to download and verify ${expectedSize} of curated model data.`,
     )) return;
-    setModelAction({ action: replaceExisting ? "repairing" : "installing", tier });
+    setModelAction({ action: replaceExisting ? "repairing" : "installing", familyId, tier });
     setModelFeedback({
-      message: `${replaceExisting ? "Repairing" : "Installing"} ${tierLabel(tier)} and verifying ${expectedSize}…`,
+      message: `${replaceExisting ? "Repairing" : "Downloading"} ${model.family.displayName} ${tierLabel(tier)} and verifying ${expectedSize}…`,
       isError: false,
     });
     try {
       const nextDiagnostics = await window.localScribe.system.installModel({
-        confirmed: true,
-        replaceExisting,
-        tier,
+        ...modelInstallRequest(familyId, tier, replaceExisting),
       });
       setDiagnostics(nextDiagnostics);
       setModelFeedback({
-        message: `${tierLabel(tier)} model ${action === "repair" ? "repaired" : "installed"} and verified.`,
+        message: `${model.family.displayName} ${tierLabel(tier)} profile ${action === "repair" ? "repaired" : "downloaded"} and verified.`,
         isError: false,
       });
-    } catch {
+    } catch (error) {
       setModelFeedback({
-        message: `Could not ${action} the ${tierLabel(tier)} model. Check your connection and available storage, then try again.`,
+        message: modelActionFailureMessage(action, error, diagnostics),
         isError: true,
       });
     } finally {
@@ -815,17 +840,22 @@ export function SettingsModal({ onClose }: { onClose(): void }) {
     }
   };
 
-  const removeModel = async (tier: ModelPerformanceTier) => {
-    if (!window.confirm(`Remove the ${tierLabel(tier)} local speech model from this computer?`)) return;
-    setModelAction({ action: "removing", tier });
-    setModelFeedback({ message: `Removing the ${tierLabel(tier)} model…`, isError: false });
+  const removeModel = async (familyId: ModelFamilyId, tier: ModelPerformanceTier) => {
+    const model = catalogModelProfile(modelCatalog, familyId, tier);
+    if (!model) {
+      setModelFeedback({ message: "Curated model details are not available yet. Refresh model status and try again.", isError: true });
+      return;
+    }
+    if (!window.confirm(`Remove the ${model.family.displayName} ${tierLabel(tier)} local speech-model profile from this computer?`)) return;
+    setModelAction({ action: "removing", familyId, tier });
+    setModelFeedback({ message: `Removing the ${model.family.displayName} ${tierLabel(tier)} profile…`, isError: false });
     try {
-      const nextDiagnostics = await window.localScribe.system.removeModel({ confirmed: true, tier });
+      const nextDiagnostics = await window.localScribe.system.removeModel(modelRemoveRequest(familyId, tier));
       setDiagnostics(nextDiagnostics);
-      setModelFeedback({ message: `${tierLabel(tier)} model removed.`, isError: false });
-    } catch {
+      setModelFeedback({ message: `${model.family.displayName} ${tierLabel(tier)} profile removed.`, isError: false });
+    } catch (error) {
       setModelFeedback({
-        message: `Could not remove the ${tierLabel(tier)} model. Close any active dictation and try again.`,
+        message: `Could not remove the ${model.family.displayName} ${tierLabel(tier)} profile: ${errorDetail(error)}`,
         isError: true,
       });
     } finally {
@@ -835,14 +865,54 @@ export function SettingsModal({ onClose }: { onClose(): void }) {
 
   const refreshModelStatus = async () => {
     setModelFeedback({ message: "Rechecking platform memory and local models…", isError: false });
-    try {
-      await refresh();
-      setModelFeedback({ message: "Platform memory and model status refreshed.", isError: false });
-    } catch {
+    const [systemResult, catalogResult] = await Promise.allSettled([refresh(), refreshModelCatalog()]);
+    if (systemResult.status === "fulfilled" && catalogResult.status === "fulfilled") {
+      setModelFeedback({ message: "Platform memory and curated model status refreshed.", isError: false });
+    } else {
       setModelFeedback({
-        message: "Could not refresh model information. Close and reopen Settings, then try again.",
+        message: "Some model information could not be refreshed. The catalog and memory status are reported independently; try again after resolving the listed issue.",
         isError: true,
       });
+    }
+  };
+
+  const addModelFamily = async (familyId: ModelFamilyId) => {
+    const family = modelCatalog?.families.find((candidate) => candidate.familyId === familyId);
+    if (!family) {
+      setModelFeedback({ message: "The curated model catalog is unavailable. Refresh model status and try again.", isError: true });
+      return;
+    }
+    setModelFeedback({ message: `Adding ${family.displayName} to your local model library…`, isError: false });
+    try {
+      const nextCatalog = await window.localScribe.system.addModelFamily({ familyId });
+      setModelCatalog(nextCatalog);
+      setModelCatalogError(null);
+      setModelFeedback({ message: `${family.displayName} was added to your local library. Activate it when you are ready to use it for dictation.`, isError: false });
+    } catch (error) {
+      setModelFeedback({ message: `Could not add ${family.displayName}: ${errorDetail(error)}`, isError: true });
+    }
+  };
+
+  const activateModelFamily = async (familyId: ModelFamilyId) => {
+    const family = modelCatalog?.families.find((candidate) => candidate.familyId === familyId);
+    if (!family) {
+      setModelFeedback({ message: "The curated model catalog is unavailable. Refresh model status and try again.", isError: true });
+      return;
+    }
+    setModelFeedback({ message: `Activating ${family.displayName}…`, isError: false });
+    try {
+      const nextCatalog = await window.localScribe.system.activateModelFamily({ familyId });
+      setModelCatalog(nextCatalog);
+      setModelCatalogError(null);
+      try {
+        const nextDiagnostics = await window.localScribe.system.diagnostics();
+        setDiagnostics(nextDiagnostics);
+      } catch {
+        // Activation was successful even when memory telemetry cannot refresh.
+      }
+      setModelFeedback({ message: `${family.displayName} is now active. Performance mode applies within this family.`, isError: false });
+    } catch (error) {
+      setModelFeedback({ message: `Could not activate ${family.displayName}: ${errorDetail(error)}`, isError: true });
     }
   };
 
@@ -992,20 +1062,13 @@ export function SettingsModal({ onClose }: { onClose(): void }) {
                   availableMemoryBytes: diagnostics.accelerator.freeMemoryBytes,
                   memoryBasis: diagnostics.accelerator.memoryBasis,
                 } : null}
-                tiers={diagnostics?.performance.options.map((option) => ({
-                  tier: option.tier,
-                  displayName: option.displayName,
-                  backend: option.engine,
-                  precision: option.precision,
-                  downloadBytes: option.expectedDownloadBytes,
-                  acceleratorMemory: {
-                    minimumBytes: option.expectedMemoryMinBytes,
-                    maximumBytes: option.expectedMemoryMaxBytes,
-                    basis: option.memoryBasis,
-                  },
-                  qualityNote: option.qualityNote,
-                  verificationStatus: option.verificationStatus,
-                })) ?? []}
+                memoryRequirement={diagnostics ? {
+                  reservedHeadroomBytes: diagnostics.performance.reservedHeadroomBytes,
+                  requiredFreeMemoryBytes: diagnostics.performance.requiredFreeMemoryBytes,
+                } : null}
+                catalog={modelCatalog}
+                catalogError={modelCatalogError}
+                runtimeTierStatuses={modelRuntimeTierStatuses(diagnostics)}
                 action={modelAction}
                 feedback={modelFeedback}
                 onModeChange={(mode) => {
@@ -1015,9 +1078,11 @@ export function SettingsModal({ onClose }: { onClose(): void }) {
                     isError: false,
                   });
                 }}
-                onInstall={(tier) => void installModel(tier, false)}
-                onRepair={(tier) => void installModel(tier, true)}
-                onRemove={(tier) => void removeModel(tier)}
+                onInstall={(familyId, tier) => void installModel(familyId, tier, false)}
+                onRepair={(familyId, tier) => void installModel(familyId, tier, true)}
+                onRemove={(familyId, tier) => void removeModel(familyId, tier)}
+                onAddFamily={(familyId) => void addModelFamily(familyId)}
+                onActivateFamily={(familyId) => void activateModelFamily(familyId)}
                 onRefresh={() => void refreshModelStatus()}
               />
             )}
@@ -1148,6 +1213,67 @@ function PermissionRow({ label, detail, ready, value, onOpen }: { label: string;
 function formatBytes(bytes: number) {
   if (bytes <= 0) return "0 GB";
   return `${(bytes / 1_000_000_000).toFixed(2)} GB`;
+}
+
+export function modelRuntimeTierStatuses(
+  diagnostics: Diagnostics | null,
+): ModelTierRuntimeStatus[] {
+  if (!diagnostics) return [];
+  return diagnostics.performance.options.map((option) => ({
+    familyId: diagnostics.model.familyId,
+    tier: option.tier,
+    artifactId: option.artifactId,
+    qualityNote: option.qualityNote,
+    verificationStatus: option.verificationStatus,
+  }));
+}
+
+function catalogModelProfile(
+  catalog: ModelCatalog | null,
+  familyId: ModelFamilyId,
+  tier: ModelPerformanceTier,
+) {
+  const family = catalog?.families.find((candidate) => candidate.familyId === familyId);
+  const profile = family?.profiles.find((candidate) => candidate.tier === tier);
+  const artifact = profile && family?.artifacts.find((candidate) => candidate.artifactId === profile.artifactId);
+  return family && profile && artifact ? { family, profile, artifact } : null;
+}
+
+export function modelActionFailureMessage(
+  action: "install" | "repair",
+  error: unknown,
+  diagnostics: Diagnostics | null,
+): string {
+  const detail = errorDetail(error);
+  const verb = action === "install" ? "download" : "repair";
+  const requirement = diagnostics?.performance.requiredFreeMemoryBytes;
+  const headroom = diagnostics?.performance.reservedHeadroomBytes;
+  const available = diagnostics?.accelerator.freeMemoryBytes;
+  if (/free accelerator memory|reserved headroom|accelerator memory could not be measured/i.test(detail)) {
+    if (requirement !== null && requirement !== undefined && available !== null && available !== undefined) {
+      return `Could not ${verb} this profile. It requires ${formatAcceleratorBytesForMessage(requirement)} free accelerator memory${headroom === null || headroom === undefined ? "" : `, including ${formatAcceleratorBytesForMessage(headroom)} reserved headroom`}; LocalScribe currently reports ${formatAcceleratorBytesForMessage(available)} available. ${detail}`;
+    }
+    if (requirement !== null && requirement !== undefined) {
+      return `Could not ${verb} this profile because run eligibility cannot be measured. It requires ${formatAcceleratorBytesForMessage(requirement)} free accelerator memory${headroom === null || headroom === undefined ? "" : `, including ${formatAcceleratorBytesForMessage(headroom)} reserved headroom`}. ${detail}`;
+    }
+  }
+  return `Could not ${verb} this curated model profile: ${detail}`;
+}
+
+export function modelInstallRequest(
+  familyId: ModelFamilyId,
+  tier: ModelPerformanceTier,
+  replaceExisting: boolean,
+) {
+  return { confirmed: true as const, familyId, tier, replaceExisting };
+}
+
+export function modelRemoveRequest(familyId: ModelFamilyId, tier: ModelPerformanceTier) {
+  return { confirmed: true as const, familyId, tier };
+}
+
+function formatAcceleratorBytesForMessage(bytes: number): string {
+  return `${(bytes / 1_073_741_824).toFixed(bytes >= 10 * 1_073_741_824 ? 1 : 2)} GiB`;
 }
 
 function tierLabel(mode: AppSettings["modelPerformanceMode"]): string {

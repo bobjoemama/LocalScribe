@@ -4,7 +4,11 @@ import { describe, expect, it } from "vitest";
 import {
   cleanupSelectionForSettings,
   GENERATIVE_TEXT_MODEL_REQUIRED_NOTICE,
+  modelActionFailureMessage,
+  modelInstallRequest,
   modelPerformanceSaveMessage,
+  modelRemoveRequest,
+  modelRuntimeTierStatuses,
   SettingsModal,
   SETTINGS_TABS,
   settingsLoadPresentation,
@@ -185,5 +189,51 @@ describe("model and performance presentation", () => {
       fitsMemoryBudget: true,
       resolvedTier: "medium",
     })).toContain("resolved to Medium");
+  });
+
+  it("builds strict family-scoped install and remove requests", () => {
+    expect(modelInstallRequest("whisper-large-v2", "medium", true)).toEqual({
+      confirmed: true,
+      familyId: "whisper-large-v2",
+      tier: "medium",
+      replaceExisting: true,
+    });
+    expect(modelRemoveRequest("whisper-large-v3", "low")).toEqual({
+      confirmed: true,
+      familyId: "whisper-large-v3",
+      tier: "low",
+    });
+  });
+
+  it("tags runtime statuses with the diagnostic family instead of stale settings state", () => {
+    const statuses = modelRuntimeTierStatuses({
+      model: { familyId: "whisper-large-v2" },
+      performance: {
+        options: [{
+          tier: "high",
+          artifactId: "whisper-large-v2-mlx-fp16",
+          qualityNote: "Curated v2 profile.",
+          verificationStatus: "verified",
+        }],
+      },
+    } as never);
+    expect(statuses).toEqual([{
+      familyId: "whisper-large-v2",
+      tier: "high",
+      artifactId: "whisper-large-v2-mlx-fp16",
+      qualityNote: "Curated v2 profile.",
+      verificationStatus: "verified",
+    }]);
+  });
+
+  it("makes a known insufficient-memory failure show the reported requirement and reserve", () => {
+    expect(modelActionFailureMessage(
+      "install",
+      new Error("high mode needs 9 GiB of free accelerator memory including reserved headroom; 4 GiB is currently available."),
+      {
+        performance: { requiredFreeMemoryBytes: 9 * 1_073_741_824, reservedHeadroomBytes: 2 * 1_073_741_824 },
+        accelerator: { freeMemoryBytes: 4 * 1_073_741_824 },
+      } as never,
+    )).toContain("requires 9.00 GiB free accelerator memory, including 2.00 GiB reserved headroom; LocalScribe currently reports 4.00 GiB available");
   });
 });

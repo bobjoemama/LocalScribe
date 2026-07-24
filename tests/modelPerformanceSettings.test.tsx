@@ -1,11 +1,97 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
+import type { ModelCatalog } from "../src/shared/contracts";
 import {
   ModelPerformanceSettings,
   type ModelPerformanceSettingsProps,
 } from "../src/renderer/settings/screens/ModelPerformanceSettings";
 
 const GIBIBYTE = 1_073_741_824;
+
+function catalog({
+  platform = "darwin-arm64",
+  sharedV3Artifact = false,
+  v2InLibrary = false,
+}: {
+  platform?: ModelCatalog["platform"];
+  sharedV3Artifact?: boolean;
+  v2InLibrary?: boolean;
+} = {}): ModelCatalog {
+  const v3ArtifactId = sharedV3Artifact ? "whisper-large-v3-shared" : undefined;
+  const backend = platform === "darwin-arm64" ? "MLX Whisper" : "faster-whisper/CTranslate2";
+  const v3Artifacts = sharedV3Artifact
+    ? [{
+      artifactId: v3ArtifactId!,
+      displayName: "Whisper large-v3 curated artifact",
+      backend,
+      modelId: "curated/whisper-large-v3",
+      storageDirectory: "whisper-large-v3",
+      revision: "a".repeat(40),
+      license: "MIT",
+      expectedDownloadBytes: 3_000_000_000,
+    }]
+    : ["high", "medium", "low"].map((tier, index) => ({
+      artifactId: `whisper-large-v3-${tier}`,
+      displayName: `Whisper large-v3 ${tier}`,
+      backend,
+      modelId: `curated/whisper-large-v3-${tier}`,
+      storageDirectory: `whisper-large-v3-${tier}`,
+      revision: `${index + 1}`.repeat(40),
+      license: "MIT",
+      expectedDownloadBytes: (3 - index) * 1_000_000_000,
+    }));
+  const profiles = ["high", "medium", "low"] as const;
+  return {
+    platform,
+    activeModelFamilyId: "whisper-large-v3",
+    modelLibraryFamilyIds: v2InLibrary ? ["whisper-large-v3", "whisper-large-v2"] : ["whisper-large-v3"],
+    families: [
+      {
+        familyId: "whisper-large-v3",
+        displayName: "Whisper large-v3",
+        active: true,
+        inLibrary: true,
+        artifacts: v3Artifacts,
+        profiles: profiles.map((tier, index) => ({
+          profileId: `v3-${tier}`,
+          tier,
+          artifactId: v3ArtifactId ?? `whisper-large-v3-${tier}`,
+          engine: platform === "darwin-arm64" ? "mlx-whisper" : "faster-whisper",
+          precision: tier === "high" ? "float16" : tier === "medium" ? "int8_float16" : "int8",
+          expectedMemoryMinBytes: (3 - index) * GIBIBYTE,
+          expectedMemoryMaxBytes: (4 - index) * GIBIBYTE,
+          memoryBasis: "estimated",
+        })),
+      },
+      {
+        familyId: "whisper-large-v2",
+        displayName: "Whisper large-v2",
+        active: false,
+        inLibrary: v2InLibrary,
+        artifacts: [{
+          artifactId: "whisper-large-v2-mlx-fp16",
+          displayName: "Whisper large-v2 · MLX float16",
+          backend,
+          modelId: "curated/whisper-large-v2",
+          storageDirectory: "whisper-large-v2",
+          revision: "b".repeat(40),
+          license: "Undeclared",
+          expectedDownloadBytes: 3_000_000_000,
+        }],
+        profiles: profiles.map((tier, index) => ({
+          profileId: `v2-${tier}`,
+          tier,
+          artifactId: "whisper-large-v2-mlx-fp16",
+          engine: platform === "darwin-arm64" ? "mlx-whisper" : "faster-whisper",
+          precision: tier === "high" ? "float16" : tier === "medium" ? "8-bit" : "4-bit",
+          expectedMemoryMinBytes: (3 - index) * GIBIBYTE,
+          expectedMemoryMaxBytes: (4 - index) * GIBIBYTE,
+          memoryBasis: "estimated",
+        })),
+      },
+    ],
+  };
+}
 
 function renderModelSettings(overrides: Partial<ModelPerformanceSettingsProps> = {}) {
   const props: ModelPerformanceSettingsProps = {
@@ -20,46 +106,31 @@ function renderModelSettings(overrides: Partial<ModelPerformanceSettingsProps> =
       availableMemoryBytes: 31 * GIBIBYTE,
       memoryBasis: "measured",
     },
-    tiers: [
+    memoryRequirement: {
+      requiredFreeMemoryBytes: 9 * GIBIBYTE,
+      reservedHeadroomBytes: 2 * GIBIBYTE,
+    },
+    catalog: catalog(),
+    catalogError: null,
+    runtimeTierStatuses: [
       {
+        familyId: "whisper-large-v3",
         tier: "high",
-        displayName: "Large speech model",
-        backend: "MLX",
-        precision: "FP16",
-        downloadBytes: 6_000_000_000,
-        acceleratorMemory: {
-          minimumBytes: 10 * GIBIBYTE,
-          maximumBytes: 12 * GIBIBYTE,
-          basis: "measured",
-        },
+        artifactId: "whisper-large-v3-high",
         qualityNote: "Highest local transcription quality.",
         verificationStatus: "missing",
       },
       {
+        familyId: "whisper-large-v3",
         tier: "medium",
-        displayName: "Medium speech model",
-        backend: "MLX",
-        precision: "FP16",
-        downloadBytes: 3_000_000_000,
-        acceleratorMemory: {
-          minimumBytes: 6 * GIBIBYTE,
-          maximumBytes: 8 * GIBIBYTE,
-          basis: "measured",
-        },
+        artifactId: "whisper-large-v3-medium",
         qualityNote: "Balanced quality and memory use.",
         verificationStatus: "verified",
       },
       {
+        familyId: "whisper-large-v3",
         tier: "low",
-        displayName: "Compact speech model",
-        backend: "MLX",
-        precision: "FP16",
-        downloadBytes: 1_000_000_000,
-        acceleratorMemory: {
-          minimumBytes: 3 * GIBIBYTE,
-          maximumBytes: 4 * GIBIBYTE,
-          basis: "estimated",
-        },
+        artifactId: "whisper-large-v3-low",
         qualityNote: "Lowest memory use.",
         verificationStatus: "invalid",
       },
@@ -70,6 +141,8 @@ function renderModelSettings(overrides: Partial<ModelPerformanceSettingsProps> =
     onInstall: vi.fn(),
     onRepair: vi.fn(),
     onRemove: vi.fn(),
+    onAddFamily: vi.fn(),
+    onActivateFamily: vi.fn(),
     onRefresh: vi.fn(),
     ...overrides,
   };
@@ -77,7 +150,7 @@ function renderModelSettings(overrides: Partial<ModelPerformanceSettingsProps> =
 }
 
 describe("ModelPerformanceSettings", () => {
-  it("renders four accessible radio choices and the resolved Auto tier", () => {
+  it("keeps family selection separate from the four accessible performance choices", () => {
     const html = renderModelSettings();
 
     expect(html.match(/type="radio"/g)).toHaveLength(4);
@@ -85,74 +158,100 @@ describe("ModelPerformanceSettings", () => {
     expect(html).toContain('value="high"');
     expect(html).toContain('value="medium"');
     expect(html).toContain('value="low"');
-    expect(html).toContain("Auto resolves to");
-    expect(html).toContain("Currently Medium");
-    expect(html).toContain("Recheck memory");
+    expect(html).toContain("Family selection changes the speech model");
+    expect(html).toContain("Whisper large-v3");
+    expect(html).toContain("Built-in default");
+    expect(html).toContain("Whisper large-v2");
+    expect(html).toContain("Add to library");
   });
 
-  it("does not present Low as resolved or selected when Auto cannot fit any tier", () => {
+  it("shows the default Windows family and safe model action when memory telemetry is unavailable", () => {
+    const windowsCatalog = catalog({ platform: "win32-x64-cuda", sharedV3Artifact: true });
     const html = renderModelSettings({
-      mode: "auto",
-      resolvedTier: "low",
-      fitsMemoryBudget: false,
-      resolutionReason: "Auto could not verify enough free accelerator memory.",
-    });
-
-    expect(html).toContain("Auto resolves to <strong>No tier fits</strong>");
-    expect(html).toContain("<small>No tier fits</small>");
-    expect(html).not.toContain("Currently Low");
-    expect(html).not.toContain("ls-model-tier-row is-selected");
-    expect(html).not.toContain("<span>Selected</span>");
-  });
-
-  it("renders contract-supplied facts and one truthful action for each state", () => {
-    const html = renderModelSettings();
-
-    expect(html).toContain("Large speech model");
-    expect(html).toContain("MLX");
-    expect(html).toContain("FP16");
-    expect(html).toContain("10.0 GiB–12.0 GiB measured");
-    expect(html).toContain("Highest local transcription quality.");
-    expect(html).toContain("Verified");
-    expect(html).toContain("Missing");
-    expect(html).toContain("Repair required");
-    expect(html).toContain('aria-label="Install High model"');
-    expect(html).toContain('aria-label="Remove Medium model"');
-    expect(html).toContain('aria-label="Repair Low model"');
-    expect(html).not.toMatch(/fallback|whisper\.cpp|qwen/i);
-  });
-
-  it("keeps failures readable and announced beside the model controls", () => {
-    const html = renderModelSettings({
-      feedback: {
-        message: "Could not install the High model. Check your connection and available storage, then try again.",
-        isError: true,
-      },
-    });
-
-    expect(html).toContain('role="alert"');
-    expect(html).toContain("Could not install the High model.");
-    expect(html).toContain("available storage");
-  });
-
-  it("uses Windows-specific NVIDIA VRAM and faster-whisper copy", () => {
-    const html = renderModelSettings({
+      catalog: windowsCatalog,
       hardware: {
         platform: "win32",
-        displayName: "NVIDIA RTX GPU",
-        totalMemoryBytes: 16 * GIBIBYTE,
-        availableMemoryBytes: 12 * GIBIBYTE,
-        memoryBasis: "measured",
+        displayName: "NVIDIA GPU",
+        totalMemoryBytes: null,
+        availableMemoryBytes: null,
+        memoryBasis: "unavailable",
       },
+      memoryRequirement: null,
+      runtimeTierStatuses: [{
+        familyId: "whisper-large-v3",
+        tier: "high",
+        artifactId: "whisper-large-v3-shared",
+        qualityNote: "Curated Windows artifact.",
+        verificationStatus: "missing",
+      }],
     });
 
-    expect(html).toContain("NVIDIA VRAM");
-    expect(html).toContain("faster-whisper");
-    expect(html).toContain("NVIDIA RTX GPU");
-    expect(html).toContain("one verified large-v3 download for all three modes");
-    expect(html.match(/Shared download/g)).toHaveLength(2);
-    expect(html).not.toContain('aria-label="Install High model"');
-    expect(html).toContain('aria-label="Remove Medium model"');
-    expect(html).not.toContain('aria-label="Repair Low model"');
+    expect(html).toContain("Whisper large-v3");
+    expect(html).toContain("faster-whisper/CTranslate2 CUDA");
+    expect(html).toContain("Run eligibility is unknown");
+    expect(html).toContain('aria-label="Download High profile for whisper-large-v3"');
+    expect(html).toContain("Shared artifact · managed from High");
+    expect(html).not.toContain("Checking the local model catalog");
+  });
+
+  it("derives shared controls from artifact identity rather than the platform", () => {
+    const shared = renderModelSettings({
+      catalog: catalog({ platform: "darwin-arm64", sharedV3Artifact: true }),
+      runtimeTierStatuses: [{
+        familyId: "whisper-large-v3",
+        tier: "high",
+        artifactId: "whisper-large-v3-shared",
+        qualityNote: "One artifact.",
+        verificationStatus: "missing",
+      }],
+    });
+    const distinct = renderModelSettings({
+      catalog: catalog({ platform: "win32-x64-cuda", sharedV3Artifact: false }),
+      runtimeTierStatuses: (["high", "medium", "low"] as const).map((tier) => ({
+        familyId: "whisper-large-v3" as const,
+        tier,
+        artifactId: `whisper-large-v3-${tier}`,
+        qualityNote: "Distinct artifact.",
+        verificationStatus: "missing" as const,
+      })),
+    });
+
+    expect(shared.match(/aria-label="Download [^"]*profile for whisper-large-v3"/g)).toHaveLength(1);
+    expect(shared.match(/Shared artifact/g)).toHaveLength(2);
+    expect(distinct.match(/aria-label="Download [^"]*profile for whisper-large-v3"/g)).toHaveLength(3);
+    expect(distinct).not.toContain("Shared artifact");
+  });
+
+  it("shows an added v2 family as ready to activate and does not offer inactive artifact actions", () => {
+    const html = renderModelSettings({ catalog: catalog({ v2InLibrary: true }) });
+
+    expect(html).toContain("Added to library");
+    expect(html).toContain("Activate");
+    expect(html).toContain("Added locally and ready to activate");
+    expect(html).toContain("Undeclared — review required");
+    expect(html).toContain("Activate to manage");
+  });
+
+  it("renders friendly precision, memory evidence, and exact free-memory headroom", () => {
+    const html = renderModelSettings();
+
+    expect(html).toContain("FP16");
+    expect(html).toContain("INT8 weights + FP16 compute");
+    expect(html).toContain("3.00 GiB–4.00 GiB estimated");
+    expect(html).toContain("requires <strong>9.00 GiB</strong> free unified memory, including 2.00 GiB reserved headroom");
+  });
+
+  it("reports catalog failure directly instead of an endless checking state", () => {
+    const html = renderModelSettings({
+      catalog: null,
+      catalogError: "IPC unavailable",
+      hardware: null,
+      memoryRequirement: null,
+      runtimeTierStatuses: [],
+    });
+
+    expect(html).toContain("Could not load the curated model catalog: IPC unavailable");
+    expect(html).toContain("Run eligibility is unknown");
+    expect(html).not.toContain("Loading curated model catalog");
   });
 });
