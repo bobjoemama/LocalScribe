@@ -28,46 +28,23 @@ describe("platform SBOM generation", () => {
     );
   });
 
-  it("publishes and checksums the correct SBOM pair for each platform", () => {
-    const ciWorkflow = projectFile(".github/workflows/ci.yml");
-    const releaseWorkflow = projectFile(".github/workflows/release.yml");
+  it("generates and checksums the macOS SBOM pair during local verification", () => {
+    const localMacVerification = projectFile("scripts/verify-local-macos.sh");
 
-    for (const workflow of [ciWorkflow, releaseWorkflow]) {
-      expect(
-        workflow.match(/npm run --silent sbom:runtime:macos/g),
-      ).toHaveLength(1);
-      expect(
-        workflow.match(/npm run --silent sbom:runtime:windows/g),
-      ).toHaveLength(1);
-      expect(
-        workflow.match(/npm run --silent sbom:python:macos/g),
-      ).toHaveLength(1);
-      expect(
-        workflow.match(/npm run --silent sbom:python:windows/g),
-      ).toHaveLength(1);
-      expect(
-        workflow.match(
-          /localscribe-core-runtime-macos-sbom\.cdx\.json/g,
-        ),
-      ).toHaveLength(3);
-      expect(
-        workflow.match(
-          /localscribe-core-runtime-windows-sbom\.cdx\.json/g,
-        ),
-      ).toHaveLength(3);
-      expect(
-        workflow.match(/localscribe-python-macos-sbom\.cdx\.json/g),
-      ).toHaveLength(3);
-      expect(
-        workflow.match(/localscribe-python-windows-sbom\.cdx\.json/g),
-      ).toHaveLength(3);
-      expect(workflow).toContain("set -euo pipefail");
-      expect(workflow).toContain(
-        'if ($LASTEXITCODE -ne 0) { throw "Windows core-runtime SBOM generation failed." }',
-      );
-      expect(workflow).toContain(
-        'if ($LASTEXITCODE -ne 0) { throw "Windows Python SBOM generation failed." }',
-      );
-    }
+    expect(localMacVerification.match(
+      /npm run --silent sbom:runtime:macos/g,
+    )).toHaveLength(1);
+    expect(localMacVerification.match(
+      /npm run --silent sbom:python:macos/g,
+    )).toHaveLength(1);
+    expect(localMacVerification).toContain(
+      "out/localscribe-core-runtime-macos-sbom.cdx.json",
+    );
+    expect(localMacVerification).toContain(
+      "out/localscribe-python-macos-sbom.cdx.json",
+    );
+    expect(localMacVerification).toContain("set -euo pipefail");
+    expect(localMacVerification).toContain("SHA256SUMS.txt");
+    expect(localMacVerification).toContain("shasum -a 256 -c SHA256SUMS.txt");
   });
 });

@@ -14,7 +14,8 @@ https://github.com/bobjoemama/LocalScribe
 
 The repository is private. Review `origin/main` only after fetching it, record
 the exact commit with `git rev-parse origin/main`, and state that SHA in every
-report. Do not treat this packet’s commit as proof that GitHub CI passed.
+report. The repository has no hosted CI/CD pipeline; require fresh local command
+evidence from the target platform.
 
 This is a review request, not authorization to modify the repository, publish a
 release, rotate credentials, install an app, download model weights, or change
@@ -38,8 +39,8 @@ Classify every finding as exactly one of:
   not itself a security vulnerability.
 - **Hardening opportunity**: a defensible control can be improved without a
   presently demonstrated failure.
-- **Proof gap**: the claim cannot be established from source or available CI
-  evidence.
+- **Proof gap**: the claim cannot be established from source or available
+  command/runtime evidence.
 - **Not confirmed**: the review tested the suspected condition and did not
   establish it.
 
@@ -89,7 +90,7 @@ global shortcut
 Check these values against the reviewed commit rather than trusting this list:
 
 - Node.js 24.18.0
-- npm 11.16.0, exactly pinned and verified in CI/release workflows
+- npm 11.16.0, exactly pinned and verified by the local gate
 - Electron 43.2.0
 - React / React DOM 19.2.8
 - TypeScript 5.9.3
@@ -132,9 +133,9 @@ arbitrary model loading as implemented.
 | large-v2 | Low | 4-bit | 973,192,389 | 1.8–2.7 GiB | Undeclared |
 
 The five `Undeclared` entries are not represented as MIT. Public macOS
-packaging must fail unless the tag-restricted release environment supplies
-`LOCALSCRIBE_UNDECLARED_MLX_LICENSE_APPROVED=1`. That boolean is only a gate;
-it is not itself a legal-review record.
+packaging must fail unless the local signed-build environment supplies
+`LOCALSCRIBE_UNDECLARED_MLX_LICENSE_APPROVED=1`. That boolean is only a gate; it
+is not itself a legal-review record.
 
 ### Windows faster-whisper artifacts
 
@@ -413,15 +414,11 @@ model weight names (`weights.npz`, `model.bin`, `model.safetensors`). Treat the
 filename-based no-weight rule as bounded to supported model formats rather than
 a proof against every future filename.
 
-## Supply chain, CI, and release lane
+## Supply chain and local release lane
 
 Review:
 
-- every GitHub Action pinned by full commit SHA;
-- `permissions: contents: read`;
-- checkout credentials disabled;
-- no `pull_request_target`;
-- concurrency and timeouts;
+- absence of hosted workflow files and paid CI/CD dependencies;
 - exact Node, npm, uv, CPython, npm lock, uv locks, and audit-tool lock;
 - exact npm 11.16.0 installation and fail-closed version verification;
 - `npm ci --strict-allow-scripts` and exact dependency-script allowlist;
@@ -430,11 +427,11 @@ Review:
 - deterministic platform core-runtime SBOM;
 - locked platform Python SBOM;
 - checksums with paths relative to `out/`;
-- installer/SBOM upload names and retention;
+- local installer/SBOM output names and retention;
 - package tests against bundled Python after runtime assembly;
 - public-release fail-closed checks when credentials are absent;
-- tag/version/commit binding in the signed release workflow;
-- secret exposure limited to consuming steps;
+- source tag/version/commit binding in the manual release record;
+- secret exposure limited to the local signed-build process;
 - macOS Developer ID/notary/stapler checks;
 - Windows Authenticode/timestamp checks.
 
@@ -446,16 +443,19 @@ macOS components and 29 Windows components. Recompute these numbers.
 Inspect GitHub itself after the final push:
 
 - repository is private;
-- workflow run used the reviewed SHA;
-- both validation jobs completed;
-- uploaded artifact names and contents match the workflow;
-- `SHA256SUMS.txt` verifies after download;
+- `origin/main` matches the locally verified SHA;
+- no GitHub Actions workflow files are present;
+- branch protection requires pull requests, conversation resolution, and
+  linear history without hosted status checks;
+- locally generated artifact names match the documented procedure;
+- `SHA256SUMS.txt` verifies against the local artifact directory;
 - SBOM JSON parses and matches the platform;
-- no secrets appear in logs;
-- branch protection, environment protection, secret custody, and variable
-  values are reported only if actually observable.
+- no secrets appear in source or captured local verification output;
+- branch protection and secret custody are reported only if actually
+  observable.
 
-Do not trigger the signed release workflow or create a tag merely to review it.
+Do not create a tag, publish a release, or request signing credentials merely
+to review the repository.
 
 ## Performance and platform-optimization lane
 
@@ -493,8 +493,8 @@ Assess:
 - clean Windows 11 x64 install/update/uninstall;
 - at least the claimed minimum GPU and one current RTX generation.
 
-Hosted GitHub runners have no NVIDIA GPU. A Windows installer built in CI is
-not Windows CUDA validation.
+A Windows installer built without real NVIDIA inference is not Windows CUDA
+validation.
 
 ### Accuracy
 
@@ -526,18 +526,7 @@ git rev-parse origin/main
 npm install --global npm@11.16.0
 npm run toolchain:verify:npm
 npm ci --strict-allow-scripts
-npm run worker:check-locks
-npm run audit:production
-npm run audit:all
-npm run audit:python
-npm run lint:all
-npm run typecheck
-npm test -- --reporter=dot
-npm run test:packaging -- --reporter=dot
-npm run --silent sbom:runtime:macos > /tmp/localscribe-core-macos.cdx.json
-npm run --silent sbom:runtime:windows > /tmp/localscribe-core-windows.cdx.json
-npm run --silent sbom:python:macos > /tmp/localscribe-python-macos.cdx.json
-npm run --silent sbom:python:windows > /tmp/localscribe-python-windows.cdx.json
+npm run verify:local
 git diff --check
 git status --short
 ```
@@ -545,11 +534,7 @@ git status --short
 On Apple Silicon:
 
 ```sh
-npm run make:mac
-resources/python-runtime/venv/bin/python -B \
-  -m unittest discover -s worker/tests -v
-codesign --verify --deep --strict --verbose=4 \
-  out/LocalScribe-darwin-arm64/LocalScribe.app
+npm run verify:local:macos
 ```
 
 Do not run packaged Python without `-B` /
@@ -566,7 +551,7 @@ Get-AuthenticodeSignature <signed-artifact>
 ```
 
 Only run the Authenticode command against an artifact that is claimed to be a
-signed release candidate. An unsigned CI validation artifact should be
+signed release candidate. An unsigned local validation artifact should be
 reported as unsigned.
 
 ## Known evidence boundaries to preserve
@@ -579,7 +564,7 @@ At handoff, none of these should be rounded up:
 2. No production Developer ID/notarized/stapled artifact or timestamped
    Authenticode artifact has been established.
 3. The five `Undeclared` MLX model revisions require real legal review. A
-   protected boolean gate is not the review itself.
+   local environment-variable gate is not the review itself.
 4. Not every model family/tier has completed real inference or accuracy
    testing. Existing Mac evidence is one direct packaged-worker FP16 smoke.
 5. Local validation DMGs may carry Apple Development or ad-hoc signatures and
@@ -591,8 +576,8 @@ At handoff, none of these should be rounded up:
    before OS event delivery.
 8. The package weight exclusion recognizes supported model filenames, not
    every arbitrary future weight filename.
-9. GitHub branch protection, release-environment protection, secret custody,
-   and legal-variable provenance cannot be inferred from workflow YAML.
+9. GitHub branch protection, secret custody, and legal-variable provenance
+   cannot be inferred from source files.
 10. Visual similarity to another app is not functional or accessibility proof.
 
 ## Suggested Opus 4.8 subagent lanes
@@ -610,8 +595,8 @@ Claude Fable may adjust the decomposition, but should avoid overlap:
    audio, clipboard, and logging.
 7. Resource Merkle integrity, package inventory, ASAR, first-party worker
    cache freshness, and artifact inspection.
-8. npm/Python supply chain, SBOM completeness, workflow security, checksums,
-   and GitHub run inspection.
+8. npm/Python supply chain, SBOM completeness, local verification, checksums,
+   and GitHub branch inspection.
 9. Pill, scratchpad, settings, insights, dictionary, snippets, cleanup,
    transforms, accessibility, and functional UI smoke.
 10. Cross-platform performance, VRAM/unified-memory estimates, real-device
@@ -643,10 +628,10 @@ Claude Fable’s final response should include:
    truthful explanation, placeholder, or untested.
 8. **macOS verdict** separating source, packaged validation, signed/notarized,
    and physical-model evidence.
-9. **Windows verdict** separating source, hosted-CI package, signed installer,
-   and physical-NVIDIA evidence.
-10. **Supply-chain and GitHub verdict** including final CI run URLs and artifact
-    checksum results.
+9. **Windows verdict** separating source, local package, signed installer, and
+   physical-NVIDIA evidence.
+10. **Supply-chain and GitHub verdict** including the verified source SHA,
+    local command evidence, and artifact checksum results.
 11. **Performance/accuracy plan** for all tiers without treating estimates as
     measurements.
 12. **Residual-risk register** with owners and acceptance decisions.

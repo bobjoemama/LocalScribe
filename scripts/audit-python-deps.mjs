@@ -48,7 +48,7 @@ function exportAuditRequirements(project) {
   );
 
   // Audit every exact package/version present in the lock, including branches
-  // selected by platform markers for a different CI host. pip-audit otherwise
+  // selected by platform markers for a different audit host. pip-audit otherwise
   // skips inactive markers, which could make one target's graph invisible.
   const requirements = [];
   let pinCount = 0;
