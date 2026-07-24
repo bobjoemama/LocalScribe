@@ -4,22 +4,20 @@ import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import process from "node:process";
+import { fileURLToPath } from "node:url";
 
 const projectRoot = path.resolve(import.meta.dirname, "..");
-const platformArgumentIndex = process.argv.indexOf("--platform");
-const platform = platformArgumentIndex >= 0 ? process.argv[platformArgumentIndex + 1] : undefined;
-
-if (platform !== "darwin" && platform !== "win32") {
-  throw new Error("Runtime SBOM generation requires --platform darwin or --platform win32.");
-}
 
 function readJson(relativePath) {
   return JSON.parse(readFileSync(path.join(projectRoot, relativePath), "utf8"));
 }
 
-function exactVersion(value, label) {
-  if (typeof value !== "string" || !/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(value)) {
-    throw new Error(`Runtime SBOM requires an exact ${label} version.`);
+export function exactVersion(value, label) {
+  if (
+    typeof value !== "string" ||
+    !/^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:[-+][0-9A-Za-z.-]+)?$/.test(value)
+  ) {
+    throw new Error(`${label} must be an exact semantic version.`);
   }
   return value;
 }
@@ -40,39 +38,64 @@ function componentReference(component) {
   return `${component.name}@${component.version}`;
 }
 
+export function resolveRuntimeVersions({
+  packageJson,
+  packageLock,
+  macRuntimeScript,
+  windowsRuntimeScript,
+}) {
+  const app = exactVersion(packageJson?.version, "LocalScribe");
+  const electronDeclared = exactVersion(
+    packageJson?.devDependencies?.electron,
+    "Electron declaration",
+  );
+  const electronRootLock = exactVersion(
+    packageLock?.packages?.[""]?.devDependencies?.electron,
+    "root Electron lock",
+  );
+  const electron = exactVersion(
+    packageLock?.packages?.["node_modules/electron"]?.version,
+    "installed Electron lock",
+  );
+  if (electronDeclared !== electronRootLock || electronDeclared !== electron) {
+    throw new Error("Electron declaration and lock pins disagree.");
+  }
+  const macPython = captureVersion(
+    macRuntimeScript,
+    /^python_version="([^"]+)"$/mu,
+    "macOS CPython",
+  );
+  const windowsPython = captureVersion(
+    windowsRuntimeScript,
+    /^\$PythonVersion = "([^"]+)"$/mu,
+    "Windows CPython",
+  );
+  if (macPython !== windowsPython) {
+    throw new Error("macOS and Windows CPython pins disagree.");
+  }
+  return { app, electron, python: macPython };
+}
+
+function main() {
+const platformArgumentIndex = process.argv.indexOf("--platform");
+const platform = platformArgumentIndex >= 0 ? process.argv[platformArgumentIndex + 1] : undefined;
+if (platform !== "darwin" && platform !== "win32") {
+  throw new Error("Runtime SBOM generation requires --platform darwin or --platform win32.");
+}
 const packageJson = readJson("package.json");
 const packageLock = readJson("package-lock.json");
-const electronDeclared = exactVersion(packageJson.devDependencies?.electron, "Electron");
-const electronLocked = exactVersion(
-  packageLock.packages?.["node_modules/electron"]?.version,
-  "locked Electron",
-);
-if (electronDeclared !== electronLocked) {
-  throw new Error("Runtime SBOM rejected mismatched declared and locked Electron versions.");
-}
-
-const macRuntimeScript = readFileSync(
-  path.join(projectRoot, "scripts/build-worker-runtime.sh"),
-  "utf8",
-);
-const windowsRuntimeScript = readFileSync(
-  path.join(projectRoot, "scripts/build-worker-runtime.ps1"),
-  "utf8",
-);
-const macPython = captureVersion(
-  macRuntimeScript,
-  /^python_version="([^"]+)"$/mu,
-  "macOS CPython",
-);
-const windowsPython = captureVersion(
-  windowsRuntimeScript,
-  /^\$PythonVersion = "([^"]+)"$/mu,
-  "Windows CPython",
-);
-if (macPython !== windowsPython) {
-  throw new Error("Runtime SBOM rejected platform CPython version drift.");
-}
-
+const runtimeVersions = resolveRuntimeVersions({
+  packageJson,
+  packageLock,
+  macRuntimeScript: readFileSync(
+    path.join(projectRoot, "scripts/build-worker-runtime.sh"),
+    "utf8",
+  ),
+  windowsRuntimeScript: readFileSync(
+    path.join(projectRoot, "scripts/build-worker-runtime.ps1"),
+    "utf8",
+  ),
+});
 const npmExecPath = process.env.npm_execpath;
 if (!npmExecPath || !path.isAbsolute(npmExecPath)) {
   throw new Error("Runtime SBOM must run through a pinned npm script.");
@@ -102,7 +125,9 @@ if (productionBom.metadata && typeof productionBom.metadata === "object") {
   delete productionBom.metadata.timestamp;
 }
 
-const appVersion = exactVersion(packageJson.version, "LocalScribe");
+const appVersion = runtimeVersions.app;
+const electronLocked = runtimeVersions.electron;
+const macPython = runtimeVersions.python;
 const platformName = platform === "darwin" ? "macos-arm64" : "windows-x64";
 const helperName = platform === "darwin"
   ? "native/macos/active-target"
@@ -177,3 +202,7 @@ productionBom.metadata.properties = [
 ].sort((left, right) => left.name.localeCompare(right.name));
 
 process.stdout.write(`${JSON.stringify(productionBom, null, 2)}\n`);
+}
+
+const invokedPath = process.argv[1] ? path.resolve(process.argv[1]) : null;
+if (invokedPath === fileURLToPath(import.meta.url)) main();
