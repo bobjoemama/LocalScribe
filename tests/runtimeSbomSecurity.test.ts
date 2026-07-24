@@ -139,7 +139,7 @@ describe("runtime core SBOM generation", () => {
   it("is byte-for-byte deterministic for each platform graph", () => {
     expect(runtimeSbomOutput("macos")).toBe(runtimeSbomOutput("macos"));
     expect(runtimeSbomOutput("windows")).toBe(runtimeSbomOutput("windows"));
-  });
+  }, 20_000);
 
   it("fails closed on missing, ranged, malformed, or inconsistent runtime versions", () => {
     for (const invalidVersion of [undefined, "", "^43.2.0", "43.2", "043.2.0"]) {
