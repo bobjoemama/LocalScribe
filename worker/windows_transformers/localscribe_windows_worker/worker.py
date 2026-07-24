@@ -3,6 +3,7 @@ from __future__ import annotations
 import gc
 import hashlib
 import importlib.util
+import io
 import json
 import os
 import re
@@ -393,10 +394,16 @@ class DeviceInfo:
     free_vram_bytes: int
 
 
+@dataclass(frozen=True)
+class ValidatedAudio:
+    path: Path
+    wav_bytes: bytes
+
+
 class InferenceRuntime(Protocol):
     def transcribe(
         self,
-        audio_path: Path,
+        audio: ValidatedAudio,
         *,
         language: str | None,
         context: str,
@@ -616,7 +623,73 @@ def ensure_model(model_root: Path, manifest: ModelManifest) -> Path:
             _safe_remove_entry(staging, model_root)
 
 
-def validate_audio_path(audio_path_raw: str, allowed_root_raw: str) -> Path:
+def _is_reparse_point(metadata: os.stat_result) -> bool:
+    file_attributes = getattr(metadata, "st_file_attributes", 0)
+    reparse_attribute = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    return stat.S_ISLNK(metadata.st_mode) or bool(file_attributes & reparse_attribute)
+
+
+def _assert_unambiguous_audio_path(audio_path: Path, allowed_root: Path) -> None:
+    try:
+        relative_audio = audio_path.relative_to(allowed_root)
+    except ValueError as error:
+        raise WorkerError(
+            "audio_path_not_allowed",
+            "audio file is outside the allowed root",
+        ) from error
+    if not relative_audio.parts:
+        raise WorkerError("invalid_audio_file", "audio must be a WAV file")
+
+    current = allowed_root
+    paths = [current]
+    for part in relative_audio.parts:
+        current /= part
+        paths.append(current)
+    try:
+        for path in paths:
+            if _is_reparse_point(path.lstat()):
+                raise WorkerError(
+                    "invalid_audio_path",
+                    "audio path must not contain filesystem links",
+                )
+    except WorkerError:
+        raise
+    except OSError as error:
+        raise WorkerError("invalid_audio_path", "audio file is unavailable") from error
+
+
+def _same_file_identity(first: os.stat_result, second: os.stat_result) -> bool:
+    return first.st_dev == second.st_dev and first.st_ino == second.st_ino
+
+
+def _verify_open_audio_file(
+    handle: BinaryIO,
+    audio_path: Path,
+    *,
+    expected_identity: os.stat_result,
+    expected_size: int,
+) -> None:
+    try:
+        handle_metadata = os.fstat(handle.fileno())
+        path_metadata = audio_path.lstat()
+    except OSError as error:
+        raise WorkerError("invalid_audio_file", "audio file is unavailable") from error
+    if (
+        _is_reparse_point(path_metadata)
+        or not stat.S_ISREG(handle_metadata.st_mode)
+        or not stat.S_ISREG(path_metadata.st_mode)
+        or not _same_file_identity(handle_metadata, path_metadata)
+        or not _same_file_identity(handle_metadata, expected_identity)
+        or handle_metadata.st_size != expected_size
+        or path_metadata.st_size != expected_size
+    ):
+        raise WorkerError(
+            "invalid_audio_file",
+            "audio file changed during validation",
+        )
+
+
+def validate_audio_path(audio_path_raw: str, allowed_root_raw: str) -> ValidatedAudio:
     if (
         not audio_path_raw
         or not allowed_root_raw
@@ -624,20 +697,64 @@ def validate_audio_path(audio_path_raw: str, allowed_root_raw: str) -> Path:
         or len(allowed_root_raw) > MAX_PATH_CHARS
     ):
         raise WorkerError("invalid_audio_path", "audio path is invalid")
+    lexical_allowed_root = Path(os.path.abspath(allowed_root_raw))
+    lexical_audio_path = Path(os.path.abspath(audio_path_raw))
+    _assert_unambiguous_audio_path(lexical_audio_path, lexical_allowed_root)
     try:
-        allowed_root = Path(allowed_root_raw).resolve(strict=True)
-        audio_path = Path(audio_path_raw).resolve(strict=True)
-    except OSError as error:
+        allowed_root = lexical_allowed_root.resolve(strict=True)
+        audio_path = lexical_audio_path.resolve(strict=True)
+    except (OSError, RuntimeError) as error:
         raise WorkerError("invalid_audio_path", "audio file is unavailable") from error
     if not allowed_root.is_dir() or not _is_within(audio_path, allowed_root):
         raise WorkerError("audio_path_not_allowed", "audio file is outside the allowed root")
-    if not audio_path.is_file() or audio_path.suffix.lower() != ".wav":
+    if audio_path.suffix.lower() != ".wav":
         raise WorkerError("invalid_audio_file", "audio must be a WAV file")
-    size = audio_path.stat().st_size
+    try:
+        path_metadata = lexical_audio_path.lstat()
+    except OSError as error:
+        raise WorkerError("invalid_audio_path", "audio file is unavailable") from error
+    if _is_reparse_point(path_metadata) or not stat.S_ISREG(path_metadata.st_mode):
+        raise WorkerError("invalid_audio_file", "audio must be a WAV file")
+    size = path_metadata.st_size
     if size <= WAV_HEADER_BYTES or size > MAX_AUDIO_BYTES:
         raise WorkerError("invalid_audio_file", "audio file size is invalid")
+
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOINHERIT", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
     try:
-        with wave.open(str(audio_path), "rb") as wav:
+        descriptor = os.open(lexical_audio_path, flags)
+        with os.fdopen(descriptor, "rb") as handle:
+            _verify_open_audio_file(
+                handle,
+                lexical_audio_path,
+                expected_identity=path_metadata,
+                expected_size=size,
+            )
+            wav_bytes = handle.read(MAX_AUDIO_BYTES + 1)
+            _assert_unambiguous_audio_path(lexical_audio_path, lexical_allowed_root)
+            if (
+                lexical_allowed_root.resolve(strict=True) != allowed_root
+                or lexical_audio_path.resolve(strict=True) != audio_path
+            ):
+                raise WorkerError(
+                    "invalid_audio_file",
+                    "audio file changed during validation",
+                )
+            _verify_open_audio_file(
+                handle,
+                lexical_audio_path,
+                expected_identity=path_metadata,
+                expected_size=size,
+            )
+    except WorkerError:
+        raise
+    except (OSError, RuntimeError) as error:
+        raise WorkerError("invalid_audio_file", "audio file is unavailable") from error
+    if len(wav_bytes) != size:
+        raise WorkerError("invalid_audio_file", "audio file changed during validation")
+
+    try:
+        with wave.open(io.BytesIO(wav_bytes), "rb") as wav:
             if (
                 wav.getnchannels() != REQUIRED_CHANNELS
                 or wav.getsampwidth() != REQUIRED_SAMPLE_WIDTH_BYTES
@@ -656,7 +773,7 @@ def validate_audio_path(audio_path_raw: str, allowed_root_raw: str) -> Path:
         raise
     except (EOFError, OSError, wave.Error) as error:
         raise WorkerError("invalid_audio_file", "audio WAV is malformed") from error
-    return audio_path
+    return ValidatedAudio(path=audio_path, wav_bytes=wav_bytes)
 
 
 def _configure_windows_cuda_dlls() -> None:
@@ -793,9 +910,9 @@ class FasterWhisperRuntime:
             ) from error
         return cls(model, np, compute_type)
 
-    def _read_pcm16(self, audio_path: Path) -> Any:
+    def _read_pcm16(self, audio: ValidatedAudio) -> Any:
         try:
-            with wave.open(str(audio_path), "rb") as wav:
+            with wave.open(io.BytesIO(audio.wav_bytes), "rb") as wav:
                 frame_count = wav.getnframes()
                 if (
                     wav.getnchannels() != REQUIRED_CHANNELS
@@ -819,14 +936,14 @@ class FasterWhisperRuntime:
 
     def transcribe(
         self,
-        audio_path: Path,
+        audio: ValidatedAudio,
         *,
         language: str | None,
         context: str,
     ) -> TranscriptionResult:
         if self._closed or self._model is None:
             raise WorkerError("model_not_loaded", "ASR model is not loaded")
-        pcm = self._read_pcm16(audio_path)
+        pcm = self._read_pcm16(audio)
         try:
             segment_iterator, info = self._model.transcribe(
                 pcm,
@@ -1148,30 +1265,36 @@ def run_worker(
                         "allowedRoot",
                         max_chars=MAX_PATH_CHARS,
                     )
-                    audio_path = validate_audio_path(audio_path_raw, allowed_root_raw)
-                    context = message.get("context")
-                    if not isinstance(context, str) or len(context) > MAX_CONTEXT_CHARS:
-                        raise WorkerError("invalid_context", "context must be at most 4000 characters")
-                    language = _normalize_language(message.get("language"))
-                    if (
-                        language is not None
-                        and active_manifest is not None
-                        and language
-                        in UNSUPPORTED_LANGUAGE_CODES_BY_FAMILY.get(
-                            active_manifest.family_id,
-                            frozenset(),
+                    validated_audio = validate_audio_path(audio_path_raw, allowed_root_raw)
+                    try:
+                        context = message.get("context")
+                        if not isinstance(context, str) or len(context) > MAX_CONTEXT_CHARS:
+                            raise WorkerError(
+                                "invalid_context",
+                                "context must be at most 4000 characters",
+                            )
+                        language = _normalize_language(message.get("language"))
+                        if (
+                            language is not None
+                            and active_manifest is not None
+                            and language
+                            in UNSUPPORTED_LANGUAGE_CODES_BY_FAMILY.get(
+                                active_manifest.family_id,
+                                frozenset(),
+                            )
+                        ):
+                            raise WorkerError(
+                                "invalid_language",
+                                "language is not supported by the selected Whisper model",
+                            )
+                        started = time.perf_counter()
+                        result = runtime.transcribe(
+                            validated_audio,
+                            language=language,
+                            context=context,
                         )
-                    ):
-                        raise WorkerError(
-                            "invalid_language",
-                            "language is not supported by the selected Whisper model",
-                        )
-                    started = time.perf_counter()
-                    result = runtime.transcribe(
-                        audio_path,
-                        language=language,
-                        context=context,
-                    )
+                    finally:
+                        del validated_audio
                     _send(
                         output_stream,
                         {

@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import os
+import stat
 import sys
 import tempfile
 import types
@@ -29,6 +31,7 @@ from localscribe_windows_worker.worker import (
     ModelFile,
     ModelManifest,
     TranscriptionResult,
+    ValidatedAudio,
     WorkerError,
     run_worker,
 )
@@ -124,16 +127,103 @@ class FakeRuntime:
 
     def transcribe(
         self,
-        audio_path: Path,
+        audio: ValidatedAudio,
         *,
         language: str | None,
         context: str,
     ) -> TranscriptionResult:
-        self.calls.append((audio_path, language, context))
+        self.calls.append((audio.path, language, context))
         return TranscriptionResult("Hello from CUDA.", language or "en")
 
     def close(self) -> None:
         self.closed = True
+
+
+class AudioValidationTests(unittest.TestCase):
+    def test_rejects_symlinked_audio_path_component(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            allowed_root = Path(temporary)
+            real_directory = allowed_root / "real"
+            real_directory.mkdir()
+            write_wav(real_directory / "audio.wav")
+            linked_directory = allowed_root / "linked"
+            try:
+                linked_directory.symlink_to(real_directory, target_is_directory=True)
+            except OSError as error:
+                self.skipTest(f"symlinks unavailable: {error}")
+
+            with self.assertRaises(WorkerError) as raised:
+                worker_module.validate_audio_path(
+                    str(linked_directory / "audio.wav"),
+                    str(allowed_root),
+                )
+
+        self.assertEqual(raised.exception.code, "invalid_audio_path")
+
+    def test_rejects_windows_reparse_attribute_without_windows_runtime(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            allowed_root = Path(temporary)
+            audio_path = allowed_root / "audio.wav"
+            write_wav(audio_path)
+            real_lstat = Path.lstat
+
+            def lstat_with_reparse(path: Path) -> Any:
+                metadata = real_lstat(path)
+                if path == audio_path:
+                    return types.SimpleNamespace(
+                        st_mode=metadata.st_mode,
+                        st_size=metadata.st_size,
+                        st_dev=metadata.st_dev,
+                        st_ino=metadata.st_ino,
+                        st_file_attributes=getattr(
+                            stat,
+                            "FILE_ATTRIBUTE_REPARSE_POINT",
+                            0x400,
+                        ),
+                    )
+                return metadata
+
+            with (
+                patch.object(Path, "lstat", autospec=True, side_effect=lstat_with_reparse),
+                self.assertRaises(WorkerError) as raised,
+            ):
+                worker_module.validate_audio_path(
+                    str(audio_path),
+                    str(allowed_root),
+                )
+
+        self.assertEqual(raised.exception.code, "invalid_audio_path")
+
+    def test_rejects_open_file_identity_or_size_change(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            allowed_root = Path(temporary)
+            audio_path = allowed_root / "audio.wav"
+            write_wav(audio_path)
+            real_fstat = os.fstat
+
+            for label, stat_index in (("identity", 1), ("size", 6)):
+                with self.subTest(label=label):
+                    fstat_calls = 0
+
+                    def changing_fstat(descriptor: int) -> os.stat_result:
+                        nonlocal fstat_calls
+                        fstat_calls += 1
+                        metadata_values = list(real_fstat(descriptor))
+                        if fstat_calls == 2:
+                            metadata_values[stat_index] += 1
+                        return os.stat_result(metadata_values)
+
+                    with (
+                        patch.object(worker_module.os, "fstat", side_effect=changing_fstat),
+                        self.assertRaises(WorkerError) as raised,
+                    ):
+                        worker_module.validate_audio_path(
+                            str(audio_path),
+                            str(allowed_root),
+                        )
+
+                    self.assertEqual(raised.exception.code, "invalid_audio_file")
+                    self.assertEqual(fstat_calls, 2)
 
 
 class WorkerProtocolTests(unittest.TestCase):
@@ -1195,9 +1285,16 @@ class FasterWhisperRuntimeTests(unittest.TestCase):
             audio_path = Path(temporary) / "audio.wav"
             write_wav(audio_path)
             runtime = FasterWhisperRuntime(Model(), FakeNumpyModule(), "float16")
+            audio = worker_module.validate_audio_path(
+                str(audio_path),
+                str(audio_path.parent),
+            )
+            replacement = audio_path.with_name("replacement.wav")
+            write_wav(replacement, channels=2)
+            replacement.replace(audio_path)
 
             result = runtime.transcribe(
-                audio_path,
+                audio,
                 language="en",
                 context="LocalScribe vocabulary",
             )
@@ -1227,8 +1324,9 @@ class FasterWhisperRuntimeTests(unittest.TestCase):
             audio_path = Path(temporary) / "stereo.wav"
             write_wav(audio_path, channels=2)
             runtime = FasterWhisperRuntime(model, FakeNumpyModule(), "int8")
+            audio = ValidatedAudio(audio_path, audio_path.read_bytes())
             with self.assertRaises(WorkerError) as raised:
-                runtime.transcribe(audio_path, language=None, context="")
+                runtime.transcribe(audio, language=None, context="")
         self.assertEqual(raised.exception.code, "invalid_audio_format")
 
     def test_close_unloads_ctranslate2_model_and_is_idempotent(self) -> None:
