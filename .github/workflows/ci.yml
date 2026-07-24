@@ -66,6 +66,9 @@ jobs:
       - name: Build unsigned validation DMG and ZIP
         run: npm run make:mac
 
+      - name: Smoke packaged macOS main process
+        run: npm run smoke:packaged:macos
+
       - name: Test macOS worker with bundled Python
         run: |
           resources/python-runtime/venv/bin/python \
@@ -180,6 +183,10 @@ jobs:
 
       - name: Build unsigned Squirrel validation installer
         run: npx electron-forge make --platform=win32 --arch=x64
+
+      - name: Smoke packaged Windows main process
+        shell: pwsh
+        run: npm run smoke:packaged:windows
 
       - name: Generate SBOM and checksums
         shell: pwsh

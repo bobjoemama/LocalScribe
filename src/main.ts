@@ -128,6 +128,8 @@ const insertion = new InsertionService({
 });
 let session: SessionSnapshot = { state: "idle" };
 let quitting = false;
+let workerInitialized = false;
+let startupPromise: Promise<void> | null = null;
 let runtimeModelPlatformCatalog: RuntimePlatformModelCatalog | null = null;
 let modelResolution: ModelPerformanceResolution | null = null;
 let previousAutoTier: ModelPerformanceTier | undefined;
@@ -138,7 +140,11 @@ let modelOperationTail: Promise<void> = Promise.resolve();
 let modelOperationCount = 0;
 // Squirrel must process install/update/uninstall lifecycle events before the
 // app acquires its normal instance lock or creates any windows/tray state.
-const squirrelStartup = Boolean(createRequire(import.meta.url)("electron-squirrel-startup"));
+// Vite emits the Electron main process as CommonJS, where `import.meta.url`
+// is not available. Anchor createRequire to Electron's guaranteed-absolute
+// application path so the same bootstrap works in development and app.asar.
+const appRequire = createRequire(path.join(app.getAppPath(), "package.json"));
+const squirrelStartup = Boolean(appRequire("electron-squirrel-startup"));
 const hasSingleInstanceLock = !squirrelStartup && app.requestSingleInstanceLock();
 if (!hasSingleInstanceLock) app.quit();
 
@@ -299,7 +305,7 @@ async function refreshModelResolution(): Promise<ModelPerformanceResolution> {
       acceleratorSnapshot = await worker.deviceInfo();
     } catch (error) {
       acceleratorSnapshot = null;
-      console.warn("Accelerator diagnostics are unavailable", error);
+      if (!quitting) console.warn("Accelerator diagnostics are unavailable", error);
     }
   }
   const preference = database.getSettings().modelPerformanceMode;
@@ -1237,7 +1243,7 @@ async function cleanStaleAudio(): Promise<void> {
   }
 }
 
-app.whenReady().then(async () => {
+startupPromise = app.whenReady().then(async () => {
   if (!hasSingleInstanceLock) return;
   verifyPackagedResourceIntegrity({ isPackaged: app.isPackaged });
   app.setName("LocalScribe");
@@ -1263,7 +1269,12 @@ app.whenReady().then(async () => {
       : null,
     process.platform === "win32" ? "localscribe_windows_worker" : "localscribe_worker",
   );
+  workerInitialized = true;
   await refreshModelResolution();
+  // A quit request can interrupt the initial hardware probe. The shutdown
+  // path waits for this promise before closing the database; do not construct
+  // windows, IPC handlers, or hotkeys after that request.
+  if (quitting) return;
   registerIpc();
   pillWindow = createPillWindow();
   startPillDisplayFollowing();
@@ -1301,6 +1312,15 @@ app.whenReady().then(async () => {
     showHub("dictation");
   });
 });
+void startupPromise.catch((error: unknown) => {
+  if (quitting) return;
+  console.error("LocalScribe startup failed", error);
+  dialog.showErrorBox(
+    "LocalScribe could not start",
+    "The local application could not initialize. Quit LocalScribe and try opening it again.",
+  );
+  app.exit(1);
+});
 
 app.on("second-instance", () => {
   showHub("dictation");
@@ -1310,8 +1330,27 @@ app.on("window-all-closed", () => {
   // The pill and global dictation service keep the app resident.
 });
 
+async function finishShutdown(): Promise<void> {
+  try {
+    await startupPromise;
+  } catch (error) {
+    console.warn("LocalScribe startup was interrupted by shutdown", error);
+  }
+  try {
+    await worker.shutdown();
+  } catch (error) {
+    console.warn("LocalScribe worker could not shut down cleanly", error);
+  }
+  try {
+    database.close();
+  } catch (error) {
+    console.warn("LocalScribe database could not close cleanly", error);
+  }
+  app.exit(0);
+}
+
 app.on("before-quit", (event) => {
-  if (quitting || !worker) return;
+  if (quitting || !workerInitialized) return;
   event.preventDefault();
   quitting = true;
   if (pillDisplayTimer) clearInterval(pillDisplayTimer);
@@ -1322,6 +1361,5 @@ app.on("before-quit", (event) => {
   errorDismissTimer = null;
   hotkeys?.stop();
   worker.abort("LocalScribe is quitting");
-  database.close();
-  app.exit(0);
+  void finishShutdown();
 });

@@ -95,6 +95,38 @@ describe("release hardening configuration", () => {
     expect(forgeConfig).toContain("[FuseV1Options.OnlyLoadAppFromAsar]: true");
   });
 
+  it("anchors CommonJS require to Electron's absolute app path", () => {
+    const main = projectFile("src/main.ts");
+    const verifier = projectFile("scripts/verify-packaged-main.mjs");
+    const macSmoke = projectFile("scripts/smoke-packaged-macos.sh");
+    const windowsSmoke = projectFile("scripts/smoke-packaged-windows.ps1");
+    const ciWorkflow = projectFile(".github/workflows/ci.yml");
+    const releaseWorkflow = projectFile(".github/workflows/release.yml");
+
+    expect(main).not.toMatch(/createRequire\s*\(\s*import\.meta\.url\s*\)/u);
+    expect(main).toContain(
+      'createRequire(path.join(app.getAppPath(), "package.json"))',
+    );
+    expect(main).toContain('appRequire("electron-squirrel-startup")');
+    expect(verifier).toContain("Packaged Electron main contains an import.meta.url");
+    expect(macSmoke).toContain("verify-packaged-main.mjs");
+    expect(windowsSmoke).toContain("verify-packaged-main.mjs");
+    expect(ciWorkflow.match(/npm run smoke:packaged:(?:macos|windows)/gu)).toHaveLength(2);
+    expect(releaseWorkflow.match(/npm run smoke:packaged:(?:macos|windows)/gu)).toHaveLength(2);
+  });
+
+  it("waits for interrupted startup before closing the local database", () => {
+    const main = projectFile("src/main.ts");
+    const beforeQuit = main.slice(main.indexOf('app.on("before-quit"'));
+
+    expect(main).toContain("startupPromise = app.whenReady().then");
+    expect(main).toContain("await startupPromise;");
+    expect(main).toContain("if (quitting) return;");
+    expect(beforeQuit).toContain("worker.abort(\"LocalScribe is quitting\")");
+    expect(beforeQuit).toContain("void finishShutdown()");
+    expect(beforeQuit).not.toContain("database.close()");
+  });
+
   it("binds every platform-pruned loose resource to an expectation bundled in app.asar", () => {
     const forgeConfig = projectFile("forge.config.ts");
     const integrity = projectFile("src/main/resourceIntegrity.ts");
