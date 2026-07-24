@@ -200,11 +200,35 @@ describe("HotkeyService capture and validation", () => {
 
     service.startFallback();
     expect(monitor.start).toHaveBeenCalledOnce();
+    expect(service.isGlobalHoldReady()).toBe(true);
     monitorState.listener?.("control-down");
     vi.advanceTimersByTime(160);
     expect(onPress).toHaveBeenCalledOnce();
     monitorState.listener?.("control-up");
     expect(onRelease).toHaveBeenCalledOnce();
+  });
+
+  it("reports global hold ready only after a hook or native fallback starts", () => {
+    const full = new HotkeyService(vi.fn(), vi.fn(), vi.fn());
+    expect(full.isGlobalHoldReady()).toBe(false);
+    full.start();
+    expect(full.isGlobalHoldReady()).toBe(true);
+    full.stop();
+    expect(full.isGlobalHoldReady()).toBe(false);
+
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const unavailableFallback = new HotkeyService(
+      vi.fn(),
+      vi.fn(),
+      vi.fn(),
+      { start: vi.fn(() => false), stop: vi.fn() },
+      "Control",
+      "Control+Space",
+      "darwin",
+    );
+    unavailableFallback.startFallback();
+    expect(unavailableFallback.isGlobalHoldReady()).toBe(false);
+    warning.mockRestore();
   });
 
   it("keeps Windows Ctrl+Space toggle distinct from a Control push-to-talk hold", () => {
@@ -242,6 +266,45 @@ describe("HotkeyService capture and validation", () => {
     expect(onPress).toHaveBeenCalledOnce();
     mocks.listeners.get("keyup")?.({ keycode: 29 });
     expect(onRelease).toHaveBeenCalledOnce();
+  });
+
+  it("cancels macOS modifier-only holds when another key or mouse input is used", () => {
+    const onPress = vi.fn();
+    const service = new HotkeyService(
+      onPress,
+      vi.fn(),
+      vi.fn(),
+      null,
+      "Command+Control",
+      "Control+Space",
+      "darwin",
+    );
+    service.start();
+
+    // Command+Control+A is an application shortcut, not push-to-talk.
+    mocks.listeners.get("keydown")?.({ keycode: 3675 });
+    mocks.listeners.get("keydown")?.({ keycode: 29 });
+    mocks.listeners.get("keydown")?.({ keycode: 30 });
+    vi.advanceTimersByTime(160);
+    expect(onPress).not.toHaveBeenCalled();
+    mocks.listeners.get("keyup")?.({ keycode: 30 });
+    mocks.listeners.get("keyup")?.({ keycode: 29 });
+    mocks.listeners.get("keyup")?.({ keycode: 3675 });
+
+    // Clicking while the modifier hold is pending also cancels it.
+    mocks.listeners.get("keydown")?.({ keycode: 3675 });
+    mocks.listeners.get("keydown")?.({ keycode: 29 });
+    mocks.listeners.get("mousedown")?.({ keycode: 1 });
+    vi.advanceTimersByTime(160);
+    expect(onPress).not.toHaveBeenCalled();
+    mocks.listeners.get("keyup")?.({ keycode: 29 });
+    mocks.listeners.get("keyup")?.({ keycode: 3675 });
+
+    // A clean Command+Control hold still starts dictation.
+    mocks.listeners.get("keydown")?.({ keycode: 3675 });
+    mocks.listeners.get("keydown")?.({ keycode: 29 });
+    vi.advanceTimersByTime(160);
+    expect(onPress).toHaveBeenCalledOnce();
   });
 
   it("uses Windows-specific shortcut diagnostics and preserves toggle fallback", () => {

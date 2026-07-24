@@ -25,6 +25,7 @@ export function permissionSnapshotForPlatform(
   platform: RuntimePlatform,
   microphone: PermissionSnapshot["microphone"],
   accessibilityGranted: boolean,
+  globalHoldReady: boolean,
 ): PermissionSnapshot {
   const isMac = platform === "darwin";
   const isWindows = platform === "win32";
@@ -42,7 +43,10 @@ export function permissionSnapshotForPlatform(
     },
     globalHold: {
       supported: isMac || isWindows,
-      ready: isMac ? accessibilityGranted : isWindows,
+      // Accessibility permits the full macOS hook, but only HotkeyService can
+      // prove that either that hook or the bare-Control fallback actually
+      // started. Keep capability support separate from runtime readiness.
+      ready: (isMac || isWindows) && globalHoldReady,
     },
   };
 }

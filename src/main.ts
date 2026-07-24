@@ -116,7 +116,6 @@ let scratchpadWindow: BrowserWindow | null = null;
 let database: LocalDatabase;
 let worker: WorkerSupervisor;
 let hotkeys: HotkeyService;
-let globalHoldReady = false;
 let tray: Tray | null = null;
 let pillDisplayTimer: NodeJS.Timeout | null = null;
 let accessibilityTimer: NodeJS.Timeout | null = null;
@@ -620,10 +619,9 @@ function startAccessibilityUpgradeCheck(): void {
     if (!hotkeys || !systemPreferences.isTrustedAccessibilityClient(false)) return;
     try {
       hotkeys.start();
-      globalHoldReady = true;
     } catch (error) {
-      globalHoldReady = false;
       console.warn("Global hold-to-talk could not start after Accessibility changed", error);
+      hotkeys.startFallback();
     }
   }, 2_000);
   accessibilityTimer.unref();
@@ -1068,16 +1066,12 @@ function registerIpc(): void {
     const accessibilityGranted = platform === "darwin"
       ? await insertion.accessibilityReady()
       : false;
-    const snapshot = permissionSnapshotForPlatform(platform, microphone, accessibilityGranted);
-    return platform === "win32"
-      ? {
-          ...snapshot,
-          globalHold: {
-            ...snapshot.globalHold,
-            ready: globalHoldReady,
-          },
-        }
-      : snapshot;
+    return permissionSnapshotForPlatform(
+      platform,
+      microphone,
+      accessibilityGranted,
+      hotkeys?.isGlobalHoldReady() ?? false,
+    );
   });
   handle(IPC.systemOpenPermission, async (_event, kind: unknown) => {
     const permission = z.enum(["microphone", "accessibility"]).parse(kind);
@@ -1322,14 +1316,11 @@ app.whenReady().then(async () => {
   if (process.platform !== "darwin" || systemPreferences.isTrustedAccessibilityClient(false)) {
     try {
       hotkeys.start();
-      globalHoldReady = true;
     } catch (error) {
-      globalHoldReady = false;
       console.warn("Global hold-to-talk could not start", error);
       hotkeys.startFallback();
     }
   } else {
-    globalHoldReady = false;
     hotkeys.startFallback();
   }
   startAccessibilityUpgradeCheck();

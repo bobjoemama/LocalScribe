@@ -157,6 +157,14 @@ export class HotkeyService {
     this.startFull(false);
   }
 
+  /**
+   * Reports only a hook that this service started successfully. On macOS this
+   * includes the permission-free, bare-Control native monitor fallback.
+   */
+  isGlobalHoldReady(): boolean {
+    return this.mode === "full" || this.fallbackMonitorStarted;
+  }
+
   private startFull(requireToggle: boolean): void {
     if (this.mode === "full") return;
     this.stopFallbackMonitor();
@@ -426,7 +434,12 @@ export class HotkeyService {
         onChordEnd: () => this.gesture.keyUp(),
         onModifiedInput: () => this.gesture.modifiedInput(),
       },
-      this.platform === "win32",
+      // A modifier-only hold is intentionally delayed so the user can still
+      // use that modifier in another shortcut. Once every modifier is down,
+      // the matcher must continue watching for a non-required key: otherwise
+      // Command+Control+A can start dictation after the grace period on macOS.
+      // Windows already needs this behavior for its modifier holds.
+      this.platform === "win32" || (this.platform === "darwin" && isModifierOnlyShortcut(shortcut)),
     );
   }
 
