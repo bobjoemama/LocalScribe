@@ -108,6 +108,12 @@ describe("release hardening configuration", () => {
       'createRequire(path.join(app.getAppPath(), "package.json"))',
     );
     expect(main).toContain('appRequire("electron-squirrel-startup")');
+    expect(verifier).toContain(
+      'path.join(".vite", "build", "main.js")',
+    );
+    expect(verifier).not.toContain(
+      'extractFile(resolvedAsarPath, ".vite/build/main.js")',
+    );
     expect(verifier).toContain("Packaged Electron main contains an import.meta.url");
     expect(macSmoke).toContain("verify-packaged-main.mjs");
     expect(windowsSmoke).toContain("verify-packaged-main.mjs");

@@ -12,7 +12,8 @@ if (!existsSync(resolvedAsarPath)) {
   throw new Error(`Packaged app.asar does not exist: ${resolvedAsarPath}`);
 }
 
-const main = extractFile(resolvedAsarPath, ".vite/build/main.js").toString("utf8");
+const mainArchivePath = path.join(".vite", "build", "main.js");
+const main = extractFile(resolvedAsarPath, mainArchivePath).toString("utf8");
 if (
   main.includes("createRequire(import.meta.url)")
   || /createRequire\)\(\{\}\.url\)/u.test(main)
