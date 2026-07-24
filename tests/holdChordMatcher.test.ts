@@ -72,4 +72,26 @@ describe("HoldChordMatcher", () => {
     matcher.keyDown(29);
     expect(callbacks.onChordStart).toHaveBeenCalledTimes(2);
   });
+
+  it("suppresses a matched multi-modifier hold after an extra key until release", () => {
+    const callbacks = {
+      onChordStart: vi.fn(),
+      onChordEnd: vi.fn(),
+      onModifiedInput: vi.fn(),
+    };
+    const matcher = new HoldChordMatcher([[3675, 3676], [29, 3613]], callbacks, true);
+
+    matcher.keyDown(3675); // Command
+    matcher.keyDown(29); // Control
+    expect(callbacks.onChordStart).toHaveBeenCalledOnce();
+    matcher.keyDown(30); // A while Command+Control is pending
+    expect(callbacks.onModifiedInput).toHaveBeenCalledOnce();
+    matcher.keyUp(30);
+    matcher.keyUp(29);
+    matcher.keyUp(3675);
+
+    matcher.keyDown(3675);
+    matcher.keyDown(29);
+    expect(callbacks.onChordStart).toHaveBeenCalledTimes(2);
+  });
 });
