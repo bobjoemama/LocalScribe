@@ -1,7 +1,7 @@
 {
   "name": "localscribe",
   "productName": "LocalScribe",
-  "version": "0.1.0-dev.2",
+  "version": "0.1.0-dev.3",
   "description": "Private, local-first Whisper desktop dictation for macOS and Windows.",
   "author": "Devesh",
   "license": "UNLICENSED",

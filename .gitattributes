@@ -1,4 +1,6 @@
-* text=auto
+# Keep every detected text file reproducible across macOS, Linux, and Windows.
+# Windows PowerShell scripts are the sole intentional CRLF exception below.
+* text=auto eol=lf
 
 *.sh text eol=lf
 *.ps1 text eol=crlf
@@ -9,10 +11,10 @@
 *.tsx text eol=lf
 *.py text eol=lf
 
-*.icns binary
-*.ico binary
-*.png binary
-*.dylib binary
-*.dll binary
-*.exe binary
-*.node binary
+*.icns binary !eol
+*.ico binary !eol
+*.png binary !eol
+*.dylib binary !eol
+*.dll binary !eol
+*.exe binary !eol
+*.node binary !eol

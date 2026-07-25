@@ -7,6 +7,46 @@ param(
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
+function Resolve-RequiredNpmLifecyclePath {
+  param(
+    [Parameter(Mandatory)]
+    [ValidateNotNullOrEmpty()]
+    [string]$VariableName,
+    [Parameter(Mandatory)]
+    [ValidateNotNullOrEmpty()]
+    [string]$ExpectedLeafName
+  )
+
+  $CandidatePath = [Environment]::GetEnvironmentVariable($VariableName)
+  if (
+    [string]::IsNullOrWhiteSpace($CandidatePath) -or
+    -not [IO.Path]::IsPathRooted($CandidatePath)
+  ) {
+    throw "Complete local Windows verification must run through a pinned npm script."
+  }
+  $ResolvedPath = [IO.Path]::GetFullPath($CandidatePath)
+  if (
+    -not $ResolvedPath.Equals($CandidatePath, [StringComparison]::OrdinalIgnoreCase) -or
+    -not [IO.Path]::GetFileName($ResolvedPath).Equals(
+      $ExpectedLeafName,
+      [StringComparison]::OrdinalIgnoreCase
+    )
+  ) {
+    throw "Pinned npm lifecycle path is unexpected: $VariableName"
+  }
+  $ResolvedItem = Microsoft.PowerShell.Management\Get-Item `
+    -LiteralPath $ResolvedPath `
+    -Force `
+    -ErrorAction Stop
+  if (
+    $ResolvedItem.PSIsContainer -or
+    ($ResolvedItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0
+  ) {
+    throw "Pinned npm lifecycle path is not a regular file: $VariableName"
+  }
+  return $ResolvedItem.FullName
+}
+
 if ([System.Environment]::OSVersion.Platform -ne [System.PlatformID]::Win32NT) {
   throw "Complete local Windows verification requires Windows."
 }
@@ -16,7 +56,13 @@ if ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture -ne "X64
 
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $ProjectRoot
-$ReleaseJson = (& node scripts/release-metadata.mjs --platform win32 --format json) -join "`n"
+$NodeExecutable = Resolve-RequiredNpmLifecyclePath `
+  -VariableName "npm_node_execpath" `
+  -ExpectedLeafName "node.exe"
+$NpmCli = Resolve-RequiredNpmLifecyclePath `
+  -VariableName "npm_execpath" `
+  -ExpectedLeafName "npm-cli.js"
+$ReleaseJson = (& $NodeExecutable scripts/release-metadata.mjs --platform win32 --format json) -join "`n"
 if ($LASTEXITCODE -ne 0) {
   throw "Windows release metadata resolution failed."
 }
@@ -27,22 +73,22 @@ if ($Release.arch -ne "x64") {
 
 $ExpectedNodeVersion = (Get-Content -LiteralPath (Join-Path $ProjectRoot ".nvmrc") -Raw).Trim()
 $ExpectedNodeVersion = $ExpectedNodeVersion.TrimStart([char]"v")
-$ActualNodeVersion = (& node --version).Trim().TrimStart([char]"v")
+$ActualNodeVersion = (& $NodeExecutable --version).Trim().TrimStart([char]"v")
 if ($LASTEXITCODE -ne 0 -or $ActualNodeVersion -ne $ExpectedNodeVersion) {
   throw "Node version mismatch: expected $ExpectedNodeVersion, received $ActualNodeVersion."
 }
 
-npm run verify:local
+& $NodeExecutable $NpmCli run verify:local
 if ($LASTEXITCODE -ne 0) {
   throw "Local source verification failed."
 }
 
-npm run make:windows
+& $NodeExecutable $NpmCli run make:windows
 if ($LASTEXITCODE -ne 0) {
   throw "Windows packaging failed."
 }
 
-npm run smoke:packaged:windows
+& $NodeExecutable $NpmCli run smoke:packaged:windows
 if ($LASTEXITCODE -ne 0) {
   throw "Packaged Windows startup smoke failed."
 }
@@ -81,7 +127,7 @@ finally {
 
 $CoreSbom = $Release.coreSbomPath
 $PythonSbom = $Release.pythonSbomPath
-$CoreSbomText = (& npm.cmd run --silent sbom:runtime:windows) -join "`n"
+$CoreSbomText = (& $NodeExecutable $NpmCli run --silent sbom:runtime:windows) -join "`n"
 if ($LASTEXITCODE -ne 0) {
   throw "Windows core-runtime SBOM generation failed."
 }
@@ -90,7 +136,7 @@ if ($LASTEXITCODE -ne 0) {
   "$CoreSbomText`n",
   [Text.UTF8Encoding]::new($false)
 )
-$PythonSbomText = (& npm.cmd run --silent sbom:python:windows) -join "`n"
+$PythonSbomText = (& $NodeExecutable $NpmCli run --silent sbom:python:windows) -join "`n"
 if ($LASTEXITCODE -ne 0) {
   throw "Windows Python SBOM generation failed."
 }
@@ -211,7 +257,7 @@ foreach ($Line in Get-Content -LiteralPath $ChecksumPath) {
   }
 }
 
-& node scripts/verify-release-assets.mjs --platform win32 | Out-Null
+& $NodeExecutable scripts/verify-release-assets.mjs --platform win32 | Out-Null
 if ($LASTEXITCODE -ne 0) {
   throw "Windows release asset verification failed."
 }

@@ -1,8 +1,12 @@
 #!/usr/bin/env node
 
 import { spawnSync } from "node:child_process";
+import { isAbsolute } from "node:path";
 
-const npmExecutable = process.platform === "win32" ? "npm.cmd" : "npm";
+const npmExecPath = process.env.npm_execpath;
+if (!npmExecPath || !isAbsolute(npmExecPath)) {
+  throw new Error("Local source verification must run through a pinned npm script.");
+}
 const checks = [
   ["run", "toolchain:verify"],
   ["run", "audit:production"],
@@ -17,7 +21,7 @@ const checks = [
 ];
 
 for (const arguments_ of checks) {
-  const result = spawnSync(npmExecutable, arguments_, {
+  const result = spawnSync(process.execPath, [npmExecPath, ...arguments_], {
     cwd: process.cwd(),
     env: process.env,
     stdio: "inherit",

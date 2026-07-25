@@ -1,12 +1,17 @@
 #!/usr/bin/env node
 
 import { spawnSync } from "node:child_process";
+import { isAbsolute } from "node:path";
 
-const npmExecutable = process.platform === "win32" ? "npm.cmd" : "npm";
+const npmExecPath = process.env.npm_execpath;
+if (!npmExecPath || !isAbsolute(npmExecPath)) {
+  throw new Error("Windows source verification must run through a pinned npm script.");
+}
 const checks = [
   {
-    command: npmExecutable,
+    command: process.execPath,
     arguments_: [
+      npmExecPath,
       "ci",
       "--dry-run",
       "--strict-allow-scripts",
