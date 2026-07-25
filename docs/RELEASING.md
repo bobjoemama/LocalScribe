@@ -20,7 +20,10 @@ npm ci --strict-allow-scripts
 npm dependency install scripts are denied unless their exact reviewed package
 version appears in `allowScripts`. All Python dependency graphs and the
 separately locked `pip-audit==2.10.1` toolchain come from committed `uv.lock`
-files.
+files. The audit runs that pinned package as `python -m pip_audit` rather than
+through its generated executable shim, so Windows Smart App Control can assess
+the pinned Python runtime instead of blocking an unsigned console-script
+wrapper.
 
 ## Source verification
 

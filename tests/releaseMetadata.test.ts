@@ -85,6 +85,30 @@ describe("release metadata", () => {
     ).toThrow(/GitHub HTTPS/u);
   });
 
+  it.each([
+    "CON",
+    "nul",
+    "AUX.txt",
+    "PRN.release",
+    "COM1",
+    "com9.exe",
+    "LPT1",
+    "lpt9.log",
+  ])("rejects reserved Windows device product name %s", (productName) => {
+    expect(() =>
+      loadReleaseMetadata(project(manifest({ productName }))),
+    ).toThrow(/reserved Windows device basename/u);
+  });
+
+  it.each(["Console", "COM0", "COM10", "LPT0", "LPT10"])(
+    "accepts ordinary product name %s near the reserved-device namespace",
+    (productName) => {
+      expect(loadReleaseMetadata(project(manifest({ productName }))).productName).toBe(
+        productName,
+      );
+    },
+  );
+
   it("keeps target commands and release docs metadata-driven", () => {
     const packageJson = JSON.parse(
       readFileSync(path.resolve("package.json"), "utf8"),

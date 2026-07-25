@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 const root = resolve(process.cwd());
 
 function projectFile(relativePath: string): string {
-  return readFileSync(resolve(root, relativePath), "utf8");
+  return readFileSync(resolve(root, relativePath), "utf8").replace(/\r\n?/gu, "\n");
 }
 
 describe("release hardening configuration", () => {
@@ -45,6 +45,13 @@ describe("release hardening configuration", () => {
     expect(packageJson.scripts?.["audit:all"]).toBe(
       "node scripts/audit-npm-all.mjs",
     );
+    expect(localVerification).toContain("process.env.npm_execpath");
+    expect(localVerification).toContain("isAbsolute(npmExecPath)");
+    expect(localVerification).toContain(
+      "spawnSync(process.execPath, [npmExecPath, ...arguments_]",
+    );
+    expect(localVerification).not.toContain("npm.cmd");
+    expect(localVerification).not.toContain("shell: true");
     for (const command of [
       '["run", "toolchain:verify"]',
       '["run", "audit:production"]',
@@ -73,6 +80,12 @@ describe("release hardening configuration", () => {
     const windowsVerification = projectFile("scripts/verify-windows-source.mjs");
     const packageLock = projectFile("package-lock.json");
 
+    expect(windowsVerification).toContain("process.env.npm_execpath");
+    expect(windowsVerification).toContain("isAbsolute(npmExecPath)");
+    expect(windowsVerification).toContain("command: process.execPath");
+    expect(windowsVerification).toContain("npmExecPath");
+    expect(windowsVerification).not.toContain("npm.cmd");
+    expect(windowsVerification).not.toContain("shell: true");
     expect(packageJson.scripts["worker:test:windows"]).toContain(
       "uv run --project worker/windows_transformers --locked",
     );
@@ -102,11 +115,11 @@ describe("release hardening configuration", () => {
     const cudaSmoke = projectFile("scripts/smoke-windows-cuda.py");
 
     for (const expected of [
-      "npm run verify:local",
+      "& $NodeExecutable $NpmCli run verify:local",
       '".nvmrc"',
       "Node version mismatch",
-      "npm run make:windows",
-      "npm run smoke:packaged:windows",
+      "& $NodeExecutable $NpmCli run make:windows",
+      "& $NodeExecutable $NpmCli run smoke:packaged:windows",
       "worker\\windows_transformers\\tests",
       "sbom:runtime:windows",
       "sbom:python:windows",
@@ -442,6 +455,8 @@ describe("release hardening configuration", () => {
     expect(auditScript).toContain('const auditToolProject = "tools/python-audit"');
     expect(auditScript).not.toContain("PIP_AUDIT_VERSION");
     expect(auditScript).not.toContain('"tool"');
+    expect(auditScript).toContain('"python",\n      "-m",\n      "pip_audit"');
+    expect(auditScript).not.toContain('"pip-audit",');
     expect(auditScript).toContain('{ label: "macOS worker", directory: "worker" }');
     expect(auditScript).toContain(
       '{ label: "Windows worker", directory: "worker/windows_transformers" }',

@@ -90,6 +90,9 @@ const SKIPPED_SOURCE_NAMES = new Set([
 
 const ALLOWED_RENDERER_ASSET_EXTENSION =
   /\.(?:css|gif|jpe?g|js|otf|png|svg|ttf|webp|woff2?)$/u;
+const WINDOWS_RESERVED_DEVICE_SEGMENT =
+  /^(?:aux|con|nul|prn|com[1-9]|lpt[1-9])(?:\.|$)/iu;
+const WINDOWS_FORBIDDEN_SEGMENT_CHARACTERS = /[<>"|?*]/u;
 
 export interface PackageProvenance {
   schemaVersion: number;
@@ -122,6 +125,13 @@ export interface PackagedArchiveVerificationOptions extends PackageProvenanceOpt
 
 function compareCanonical(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function hasControlCharacter(value: string): boolean {
+  return [...value].some((character) => {
+    const codePoint = character.codePointAt(0);
+    return codePoint !== undefined && (codePoint <= 0x1f || codePoint === 0x7f);
+  });
 }
 
 function sha256(input: string | Buffer): string {
@@ -294,12 +304,83 @@ export function assertFreshViteBuild(buildPath: string, buildStartedAtMs: number
   }
 }
 
-function archiveEntries(asarPath: string): Set<string> {
-  return new Set(
-    listPackage(asarPath, { isPack: false })
-      .map((entry) => entry.replace(/^\/+/u, ""))
-      .filter((entry) => entry.length > 0),
-  );
+export function normalizeArchiveEntry(entry: string): string {
+  const rootSeparator = entry[0];
+  if (rootSeparator !== "/" && rootSeparator !== "\\") {
+    throw new Error(
+      `Packaged archive verification failed: archive entry has no canonical root separator: ${JSON.stringify(entry)}.`,
+    );
+  }
+
+  const relativePath = entry.slice(1);
+  const alternateSeparator = rootSeparator === "/" ? "\\" : "/";
+  if (
+    relativePath.length === 0 ||
+    relativePath.startsWith("/") ||
+    relativePath.startsWith("\\") ||
+    relativePath.includes(alternateSeparator) ||
+    hasControlCharacter(relativePath) ||
+    relativePath.includes(":")
+  ) {
+    throw new Error(
+      `Packaged archive verification failed: archive entry has an ambiguous path: ${JSON.stringify(entry)}.`,
+    );
+  }
+
+  const segments = relativePath.split(rootSeparator);
+  if (segments.some((segment) => segment.length === 0 || segment === "." || segment === "..")) {
+    throw new Error(
+      `Packaged archive verification failed: archive entry has an unsafe path: ${JSON.stringify(entry)}.`,
+    );
+  }
+  return segments.join("/");
+}
+
+function windowsArchiveKey(normalizedEntry: string): string {
+  for (const segment of normalizedEntry.split("/")) {
+    if (
+      segment.endsWith(".")
+      || segment.endsWith(" ")
+      || WINDOWS_FORBIDDEN_SEGMENT_CHARACTERS.test(segment)
+      || WINDOWS_RESERVED_DEVICE_SEGMENT.test(segment)
+    ) {
+      throw new Error(
+        `Packaged archive verification failed: archive entry is not a portable Windows path: ${JSON.stringify(normalizedEntry)}.`,
+      );
+    }
+  }
+  return normalizedEntry.toLocaleLowerCase("en-US");
+}
+
+export function normalizeArchiveEntries(
+  entries: readonly string[],
+  platform: PackagedPlatform,
+): Set<string> {
+  const normalizedEntries = new Set<string>();
+  const windowsEntries = new Set<string>();
+  for (const entry of entries) {
+    const normalized = normalizeArchiveEntry(entry);
+    if (normalizedEntries.has(normalized)) {
+      throw new Error(
+        `Packaged archive verification failed: archive contains duplicate canonical path ${normalized}.`,
+      );
+    }
+    if (platform === "win32") {
+      const windowsKey = windowsArchiveKey(normalized);
+      if (windowsEntries.has(windowsKey)) {
+        throw new Error(
+          `Packaged archive verification failed: archive contains a case-insensitive Windows path collision at ${normalized}.`,
+        );
+      }
+      windowsEntries.add(windowsKey);
+    }
+    normalizedEntries.add(normalized);
+  }
+  return normalizedEntries;
+}
+
+function archiveEntries(asarPath: string, platform: PackagedPlatform): Set<string> {
+  return normalizeArchiveEntries(listPackage(asarPath, { isPack: false }), platform);
 }
 
 function extractArchiveText(asarPath: string, archivePath: string): string {
@@ -472,7 +553,7 @@ export function assertPackagedArchive({
     throw new Error(`Packaged archive verification failed: missing ${resolvedAsarPath}`);
   }
 
-  const entries = archiveEntries(resolvedAsarPath);
+  const entries = archiveEntries(resolvedAsarPath, platform);
   for (const required of [
     ".vite/build/main.js",
     ".vite/build/preload.js",

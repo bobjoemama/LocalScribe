@@ -51,6 +51,8 @@ export interface ReleaseLayout {
 const EXACT_SEMVER =
   /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-(?:0|[1-9]\d*|[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|[A-Za-z-][0-9A-Za-z-]*))*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/u;
 const SAFE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/u;
+const WINDOWS_RESERVED_DEVICE_BASENAME =
+  /^(?:aux|con|nul|prn|com[1-9]|lpt[1-9])(?:\.|$)/iu;
 const BUNDLE_ID = /^[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+$/u;
 const MAC_VERSION = /^(?:0|[1-9]\d*)(?:\.(?:0|[1-9]\d*)){1,2}$/u;
 
@@ -61,6 +63,9 @@ function fail(message: string): never {
 function requireSafeName(value: unknown, label: string): string {
   if (typeof value !== "string" || !SAFE_NAME.test(value)) {
     fail(`${label} must be a filesystem-safe nonempty name`);
+  }
+  if (WINDOWS_RESERVED_DEVICE_BASENAME.test(value)) {
+    fail(`${label} must not use a reserved Windows device basename`);
   }
   return value;
 }

@@ -14,6 +14,8 @@ import {
   assertFreshViteBuild,
   assertPackagedArchive,
   buildPackageProvenance,
+  normalizeArchiveEntries,
+  normalizeArchiveEntry,
   writePackageProvenance,
 } from "../scripts/package-provenance.mts";
 
@@ -114,6 +116,85 @@ afterEach(() => {
 });
 
 describe("package source provenance", () => {
+  it("canonicalizes POSIX and Windows ASAR entry separators identically", () => {
+    expect(normalizeArchiveEntry("/.vite/build/main.js")).toBe(".vite/build/main.js");
+    expect(normalizeArchiveEntry("\\.vite\\build\\main.js")).toBe(
+      ".vite/build/main.js",
+    );
+  });
+
+  it.each([
+    ["missing root", ".vite/build/main.js"],
+    ["empty root", "/"],
+    ["doubled POSIX root", "//server/share"],
+    ["doubled Windows root", "\\\\server\\share"],
+    ["mixed separators", "\\.vite/build\\main.js"],
+    ["empty segment", "\\.vite\\\\build\\main.js"],
+    ["current-directory segment", "/.vite/./build/main.js"],
+    ["traversal segment", "/.vite/../package.json"],
+    ["drive or alternate-stream ambiguity", "\\C:\\app\\package.json"],
+    ["control character", "/.vite/build/\u0000main.js"],
+  ])("rejects %s archive entry paths", (_label, entry) => {
+    expect(() => normalizeArchiveEntry(entry)).toThrow(/archive entry/);
+  });
+
+  it("rejects entries that collide after separator canonicalization", () => {
+    expect(() =>
+      normalizeArchiveEntries([
+        "/.vite/build/main.js",
+        "\\.vite\\build\\main.js",
+      ], "darwin")
+    ).toThrow(/duplicate canonical path \.vite\/build\/main\.js/);
+  });
+
+  it("accepts ordinary Windows archive paths after canonicalization", () => {
+    expect(normalizeArchiveEntries([
+      "\\package.json",
+      "\\.vite\\build\\main.js",
+      "\\assets\\console.js",
+      "\\devices\\COM10.txt",
+    ], "win32")).toEqual(new Set([
+      "package.json",
+      ".vite/build/main.js",
+      "assets/console.js",
+      "devices/COM10.txt",
+    ]));
+  });
+
+  it("rejects case-insensitive aliases only for Windows archives", () => {
+    const aliases = ["/assets/Main.js", "/assets/main.js"];
+    expect(() => normalizeArchiveEntries(aliases, "win32")).toThrow(
+      /case-insensitive Windows path collision/u,
+    );
+    expect(normalizeArchiveEntries(aliases, "darwin")).toEqual(new Set([
+      "assets/Main.js",
+      "assets/main.js",
+    ]));
+  });
+
+  it.each([
+    ["/assets/trailing.", "trailing dot"],
+    ["/assets/trailing ", "trailing space"],
+    ["/assets/CON", "reserved bare device"],
+    ["/assets/aux.txt", "reserved device with extension"],
+    ["/COM1/config.json", "reserved device directory"],
+    ["/assets/bad?.js", "forbidden Win32 character"],
+  ])("rejects Windows archive path with %s", (entry, _label) => {
+    expect(() => normalizeArchiveEntries([entry], "win32")).toThrow(
+      /not a portable Windows path/u,
+    );
+  });
+
+  it("does not apply Windows filename restrictions to a macOS archive", () => {
+    expect(normalizeArchiveEntries([
+      "/assets/trailing.",
+      "/assets/AUX.txt",
+    ], "darwin")).toEqual(new Set([
+      "assets/trailing.",
+      "assets/AUX.txt",
+    ]));
+  });
+
   it("changes when a release input changes but ignores the transient integrity module", () => {
     const project = makeSourceProject();
     const initial = buildPackageProvenance({
