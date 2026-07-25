@@ -98,4 +98,11 @@ export const migrations: Migration[] = [
       WHERE id = 1;
     `,
   },
+  {
+    version: 4,
+    name: "remove_legacy_scratchpad",
+    sql: `
+      DROP TABLE IF EXISTS scratchpad;
+    `,
+  },
 ];

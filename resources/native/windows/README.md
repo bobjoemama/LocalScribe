@@ -54,9 +54,10 @@ The commands return:
 
 `paste` is intentionally omitted from manual smoke commands because it may
 inject Ctrl+V. LocalScribe invokes it as
-`paste win32 <pid> <application-id> <window-fingerprint>`. The helper recaptures
-the editable target immediately before `SendInput` and injects only when all
-identity fields match. It never receives transcript or clipboard content and
+`paste win32 <pid> <application-id> <window-fingerprint> <clipboard-sequence>`.
+The helper recaptures the editable target and rechecks the expected clipboard
+sequence immediately before `SendInput`; it injects only when all identity
+fields and the sequence match. It never receives transcript or clipboard content and
 returns `{ "injected": boolean }`; a false result keeps the dictated text copied
 for manual paste. Windows UIPI intentionally prevents injection into
 higher-integrity applications.

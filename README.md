@@ -6,22 +6,24 @@ telemetry service, or listening network port.
 
 ## Download
 
-### macOS (available)
+### macOS validation builds
 
-[**Download LocalScribe for Apple Silicon (.dmg)**](https://github.com/bobjoemama/LocalScribe/releases/download/v0.1.0-dev.1/LocalScribe-0.1.0-arm64.dmg)
+[**Open LocalScribe downloads**](https://github.com/bobjoemama/LocalScribe/releases)
 
 - Requires an Apple Silicon Mac and macOS 14 or newer.
-- This is a private validation build signed with an Apple Development
-  certificate. It is not yet a notarized public release.
+- Choose the newest prerelease and download its `.dmg` asset. Do not download
+  the source-code ZIP when you want to install the app.
+- The release description states whether that exact artifact is a private
+  Apple Development validation build or a notarized public candidate.
 - The model is downloaded separately inside LocalScribe after installation.
-
-[View the release, checksum, and security metadata](https://github.com/bobjoemama/LocalScribe/releases/tag/v0.1.0-dev.1)
 
 ### Windows (not available yet)
 
-There is no Windows installer to download yet. The Windows backend and packaging
-code are present, but `LocalScribe-Setup.exe` must still be built and tested on
-a Windows 11 PC with an NVIDIA GPU before it is published.
+There is no supported Windows download yet. The Windows backend can build a
+verified portable ZIP on Windows 11 x64, but that artifact still needs the
+remaining real-microphone, hotkey, paste, clean-user, and CUDA model-inference
+acceptance pass before publication. There is currently no supported `.exe`
+installer or automatic updater.
 
 The `.zip` produced by the Mac build is also a **macOS** file; it is not a
 Windows installer. Follow [Windows status and requirements](docs/WINDOWS.md)
@@ -29,7 +31,8 @@ for the exact validation boundary.
 
 ## Install on a Mac
 
-1. Download `LocalScribe-0.1.0-arm64.dmg` using the button above.
+1. Open the downloads page above and download the `.dmg` from the newest
+   validation release.
 2. Open the DMG.
 3. Drag **LocalScribe** into **Applications**.
 4. Open LocalScribe and allow **Microphone** access.
@@ -93,11 +96,11 @@ inference are not packaged.
 
 ### Common verification
 
-Install Node.js 24.18.0, npm 11.16.0, and `uv` 0.11.11, then run:
+Install the exact Node, npm, and `uv` versions declared by
+[`.nvmrc`](.nvmrc), [`packageManager`](package.json), and
+[`.uv-version`](.uv-version), then run:
 
 ```sh
-npm install --global npm@11.16.0
-npm run toolchain:verify:npm
 npm ci --strict-allow-scripts
 npm run verify:local
 ```
@@ -115,7 +118,7 @@ A normal local build uses an Apple Development or ad-hoc signature. Creating a
 notarized public build requires the release credentials documented in
 [the release procedure](docs/RELEASING.md).
 
-### Build the Windows installer
+### Build the Windows portable package
 
 Run on Windows 11 x64 with PowerShell and Visual Studio C++ Build Tools:
 
@@ -129,9 +132,17 @@ On the NVIDIA system intended for use, also require the CUDA checks:
 npm run verify:local:windows -- -RequireCuda
 ```
 
-The target gate produces and checks `LocalScribe-Setup.exe`, the Squirrel
-release files, SBOMs, and `out\SHA256SUMS-windows.txt`. See the
-[Windows guide](docs/WINDOWS.md) before publishing any Windows artifact.
+The target gate produces one versioned portable ZIP, proves that it is an exact
+byte-for-byte copy of the staged app, and writes versioned SBOMs plus a
+versioned checksum manifest. Print the exact paths for the current checkout:
+
+```powershell
+node scripts/release-metadata.mjs --platform win32 --format json
+```
+
+Extract the ZIP before launching `LocalScribe.exe`; do not run the executable
+from inside the archive. See the [Windows guide](docs/WINDOWS.md) before
+publishing any Windows artifact.
 
 ## Documentation
 
@@ -162,13 +173,13 @@ release files, SBOMs, and `out\SHA256SUMS-windows.txt`. See the
   validation prerelease until a compatible upstream fix is available.
 - Generated runtimes, model weights, installers, signing credentials, and build
   outputs are not committed.
-- GitHub `main` is protected; changes arrive through pull requests.
 - No paid GitHub Actions or hosted CI/CD pipeline is used.
 
 The macOS download above is a private validation build, not proof of notarized
-public-release readiness. A Windows download will not be published until it
-passes native Windows packaging, installer, and real NVIDIA/CUDA inference
-tests.
+public-release readiness. A Windows download will not be published until its
+portable artifact passes native Windows and real NVIDIA/CUDA acceptance. A
+Windows installer will remain unavailable until a supported installer,
+signing, update, and uninstall design passes separate clean-machine tests.
 
 ## License
 

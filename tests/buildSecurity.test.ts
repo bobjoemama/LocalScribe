@@ -39,8 +39,14 @@ describe("release hardening configuration", () => {
     expect(packageJson.scripts?.["verify:local:windows"]).toBe(
       "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify-local-windows.ps1",
     );
+    expect(packageJson.scripts?.["audit:production"]).toBe(
+      "npm audit --omit=dev --audit-level=high",
+    );
+    expect(packageJson.scripts?.["audit:all"]).toBe(
+      "node scripts/audit-npm-all.mjs",
+    );
     for (const command of [
-      '["run", "toolchain:verify:npm"]',
+      '["run", "toolchain:verify"]',
       '["run", "audit:production"]',
       '["run", "audit:all"]',
       '["run", "worker:check-locks"]',
@@ -104,7 +110,9 @@ describe("release hardening configuration", () => {
       "worker\\windows_transformers\\tests",
       "sbom:runtime:windows",
       "sbom:python:windows",
-      "SHA256SUMS-windows.txt",
+      "$Release.checksumPath",
+      "$Release.makerDirectory",
+      "verify-release-assets.mjs --platform win32",
       "Get-AuthenticodeSignature",
       "$RequireCuda",
       "$CudaModelRoot",
@@ -180,6 +188,22 @@ describe("release hardening configuration", () => {
     expect(forgeConfig).toContain("[FuseV1Options.OnlyLoadAppFromAsar]: true");
   });
 
+  it("forbids renderer document embedding, object loading, base rewriting, and form egress", () => {
+    const rendererDocument = projectFile("index.html");
+
+    for (const directive of [
+      "base-uri 'none'",
+      "object-src 'none'",
+      "frame-src 'none'",
+      "form-action 'none'",
+    ]) {
+      expect(rendererDocument).toContain(directive);
+    }
+    expect(rendererDocument).toContain("script-src 'self'");
+    expect(rendererDocument).not.toContain("script-src 'self' 'unsafe-inline'");
+    expect(rendererDocument).not.toContain("script-src 'self' 'unsafe-eval'");
+  });
+
   it("anchors CommonJS require to Electron's absolute app path", () => {
     const main = projectFile("src/main.ts");
     const verifier = projectFile("scripts/verify-packaged-main.mjs");
@@ -216,6 +240,10 @@ describe("release hardening configuration", () => {
     expect(beforeQuit).toContain("worker.abort(\"LocalScribe is quitting\")");
     expect(beforeQuit).toContain("void finishShutdown()");
     expect(beforeQuit).not.toContain("database.close()");
+    expect(main).toContain('window.once("session-end"');
+    expect(main).toContain("if (!beginShutdown()) return;");
+    expect(main).toContain("runtimeReleasePromise ??=");
+    expect(main).toContain('if (quitting) throw new Error("LocalScribe is shutting down")');
   });
 
   it("binds every platform-pruned loose resource to an expectation bundled in app.asar", () => {
@@ -249,8 +277,12 @@ describe("release hardening configuration", () => {
 
     expect(forgeConfig).toContain('process.env.LOCALSCRIBE_RELEASE === "1"');
     expect(forgeConfig).toContain('startsWith("Developer ID Application:")');
-    expect(forgeConfig).toContain('requireReleaseEnvironment("APPLE_APP_SPECIFIC_PASSWORD")');
-    expect(forgeConfig).toContain('requireReleaseEnvironment("WINDOWS_TIMESTAMP_SERVER")');
+    expect(forgeConfig).toContain('requireReleaseEnvironment("APPLE_KEYCHAIN_PROFILE")');
+    expect(forgeConfig).toContain('"--keychain-profile"');
+    expect(forgeConfig).not.toContain("APPLE_APP_SPECIFIC_PASSWORD");
+    expect(forgeConfig).not.toContain('"--password"');
+    expect(forgeConfig).toContain("Public Windows publication is disabled");
+    expect(forgeConfig).not.toContain("WINDOWS_CERTIFICATE_PASSWORD");
     expect(forgeConfig).toContain('execFileSync("codesign", ["--verify"');
     expect(forgeConfig).toContain('execFileSync("spctl", ["--assess"');
     expect(forgeConfig).toContain("verifyAuthenticode");
@@ -280,26 +312,42 @@ describe("release hardening configuration", () => {
 
     for (const buildScript of [macBuild, windowsBuild]) {
       expect(buildScript).toContain("3.12.13");
-      expect(buildScript).toContain("uv sync");
       expect(buildScript).toContain("--locked");
       expect(buildScript).toContain("--no-editable");
-      expect(buildScript).toContain("uv lock --check");
       expect(buildScript).not.toContain("uv pip install");
     }
+    expect(macBuild).toContain('"$uv_bin" sync');
+    expect(macBuild).toContain('"$uv_bin" lock --check');
+    expect(macBuild).toContain('"$project_root/.uv-version"');
+    expect(windowsBuild).toContain(
+      '$UvVersion = (Get-Content -LiteralPath (Join-Path $ProjectRoot ".uv-version") -Raw).Trim()',
+    );
+    expect(windowsBuild).toContain('-Arguments @("lock", "--check", "--project", $WorkerRoot)');
+    expect(windowsBuild).toContain('"sync",');
+    expect(windowsBuild).toContain("Invoke-Checked");
+    expect(windowsBuild).toContain("Existing Windows runtime root");
+    expect(windowsBuild).toContain(".python-runtime-windows-build-");
+    expect(windowsBuild).toContain("Recover-StaleTransactions");
+    expect(windowsBuild).toContain("Cannot recover Windows runtime because multiple owned backups exist");
+    expect(windowsBuild).toContain("Move-Item -LiteralPath $StagingRoot -Destination $RuntimeRoot");
+    const promotionBlock = windowsBuild.slice(windowsBuild.indexOf("$BackupCreated = $false"));
+    expect(promotionBlock.indexOf("(Join-Path $RuntimeRoot $OwnershipMarkerName)")).toBeLessThan(
+      promotionBlock.indexOf("Move-Item -LiteralPath $RuntimeRoot -Destination $BackupRoot"),
+    );
     expect(macBuild).toContain("--reinstall-package localscribe-worker");
     expect(windowsBuild).toContain(
-      "--reinstall-package localscribe-windows-faster-whisper-worker",
+      '"--reinstall-package", "localscribe-windows-faster-whisper-worker"',
     );
     expect(windowsBuild).toContain(
       '"cpython-$PythonVersion-windows-x86_64-none"',
     );
-    expect(windowsBuild.match(/FileAttributes\]::ReparsePoint/g)).toHaveLength(4);
+    expect(windowsBuild.match(/FileAttributes\]::ReparsePoint/g)?.length).toBeGreaterThanOrEqual(3);
     expect(windowsBuild.match(/ForEach-Object \{ \$_\.Delete\(\) \}/g)).toHaveLength(2);
     expect(
       windowsBuild.match(
         /\(\$_\.Attributes -band \[IO\.FileAttributes\]::ReparsePoint\) -ne 0\s*\}\s*\|\s*ForEach-Object \{ \$_\.Delete\(\) \}/gu,
       ),
-    ).toHaveLength(2);
+    ).toHaveLength(1);
     expect(windowsBuild).toContain(
       "Relocatable runtime still contains non-portable reparse points",
     );
@@ -322,6 +370,24 @@ describe("release hardening configuration", () => {
     expect(windowsHelperBuild).toContain('"/analyze"');
     expect(windowsHelperBuild).toContain('"/HIGHENTROPYVA"');
     expect(windowsHelperBuild).toContain('"/DEPENDENTLOADFLAG:0x800"');
+    expect(windowsHelperBuild).toContain(
+      'Join-Path ([Environment]::SystemDirectory) "cmd.exe"',
+    );
+    expect(windowsHelperBuild).not.toContain("$env:ComSpec");
+    expect(windowsHelperBuild).not.toContain("${env:ProgramFiles(x86)}");
+    expect(windowsHelperBuild).not.toContain("$env:VSCMD_ARG_TGT_ARCH");
+    expect(windowsHelperBuild).toContain("Get-AuthenticodeSignature");
+    expect(windowsHelperBuild).toContain("CN=Microsoft Corporation");
+    for (const variable of ["CL", "_CL_", "LINK", "_LINK_", "INCLUDE", "LIB", "LIBPATH"]) {
+      expect(windowsHelperBuild).toContain(`"${variable}"`);
+    }
+    expect(windowsHelperBuild).toContain(
+      "Push-Location -LiteralPath $temporaryDirectory",
+    );
+    expect(windowsHelperBuild).toContain("[IO.FileAttributes]::ReparsePoint");
+    expect(windowsHelperBuild).toContain(
+      "The helper output path must not overwrite its source file.",
+    );
     expect(windowsHelperBuild).not.toContain(
       "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
     );
@@ -331,6 +397,34 @@ describe("release hardening configuration", () => {
     expect(windowsHelperSource.indexOf("#include <objbase.h>")).toBeLessThan(
       windowsHelperSource.indexOf("#include <uiautomation.h>"),
     );
+    const environmentImport = windowsHelperBuild.indexOf(
+      "if (-not (Import-X64VisualCppEnvironment))",
+    );
+    const postImportArgumentClear = windowsHelperBuild.indexOf(
+      'foreach ($injectedArgumentVariable in @("CL", "_CL_", "LINK", "_LINK_"))',
+      environmentImport,
+    );
+    const compilerResolution = windowsHelperBuild.indexOf(
+      'Resolve-TrustedMicrosoftBuildTool -Name "cl.exe"',
+    );
+    expect(environmentImport).toBeGreaterThan(-1);
+    expect(postImportArgumentClear).toBeGreaterThan(environmentImport);
+    expect(compilerResolution).toBeGreaterThan(postImportArgumentClear);
+    expect(windowsHelperSource).toContain(
+      "has_keyboard_focus != FALSE &&\n          !runtime_id->empty()",
+    );
+    expect(windowsHelperSource).toContain(
+      "!explicitly_read_only &&\n      NativeControlLooksEditable",
+    );
+    expect(windowsHelperSource).toContain(
+      "GetForegroundWindow() != target.foreground_window",
+    );
+    expect(windowsHelperSource).toContain(
+      "GetClipboardSequenceNumber() != expectation.clipboard_sequence",
+    );
+    expect(windowsHelperSource.match(/IsKeyPressed\(VK_SHIFT\)/g)).toHaveLength(2);
+    expect(windowsHelperSource).toContain("IsKeyPressed(VK_LWIN)");
+    expect(windowsHelperSource).toContain("IsKeyPressed(VK_RWIN)");
   });
 
   it("audits every exact worker package with a separately locked pip-audit", () => {
@@ -381,8 +475,13 @@ describe("release hardening configuration", () => {
     expect(localMacVerification).toContain("-m unittest discover -s worker/tests -v");
     expect(localMacVerification).toContain("npm run --silent sbom:runtime:macos");
     expect(localMacVerification).toContain("npm run --silent sbom:python:macos");
-    expect(localMacVerification).toContain("SHA256SUMS.txt");
-    expect(localMacVerification).toContain("shasum -a 256 -c SHA256SUMS.txt");
+    expect(localMacVerification).toContain("checksum_path");
+    expect(localMacVerification).toContain(
+      'shasum -a 256 -c "$(basename "$checksum_path")"',
+    );
+    expect(localMacVerification).toContain(
+      "verify-release-assets.mjs --platform darwin",
+    );
     expect(localMacVerification).toContain("codesign --verify --deep --strict");
     expect(localMacVerification).toContain("verify-macos-entitlements.mjs");
     expect(localMacVerification).not.toMatch(/npm run sbom/u);

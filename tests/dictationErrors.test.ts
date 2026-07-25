@@ -42,19 +42,47 @@ describe("dictation error presentation", () => {
     });
   });
 
-  it("routes model recovery to the current model screen without retired model names", () => {
+  it("normalizes both duration and byte-limit recording failures", () => {
+    for (const message of [
+      "Recording is too long; please keep dictation under 10 minutes",
+      "Recording is too large; please keep dictation under 10 minutes",
+    ]) {
+      expect(presentDictationError(message)).toEqual({
+        title: "Recording is too long",
+        detail: "Finish the dictation sooner, then continue in a new recording.",
+      });
+    }
+  });
+
+  it("routes model recovery to the current model screen without assuming the active family", () => {
     for (const message of ["model_not_installed", "model_not_loaded", "model_checksum_failed"]) {
       const presentation = presentDictationError(message);
       expect(presentation.detail).toContain("Settings > Model & Performance");
-      expect(presentation.detail).toContain("Whisper");
-      expect(presentation.detail).not.toMatch(/Qwen|Settings > System/i);
+      expect(presentation.detail).toContain("selected local model");
+      expect(presentation.detail).not.toMatch(/Whisper|Qwen|Settings > System/i);
     }
   });
 
   it("keeps safe unknown errors useful but does not expose local paths", () => {
     expect(presentDictationError("The selected audio format is unsupported").detail)
       .toBe("The selected audio format is unsupported");
-    expect(presentDictationError("Failed at /Users/devesh/private/audio.wav").detail)
+    expect(presentDictationError("Failed at /Users/Alice/private/audio.wav").detail)
+      .toBe("Try again. If this keeps happening, quit and reopen LocalScribe.");
+    expect(presentDictationError("Missing /Applications/LocalScribe.app/Contents/Resources/worker").detail)
+      .toBe("Try again. If this keeps happening, quit and reopen LocalScribe.");
+    expect(presentDictationError("Failed at \\\\workstation\\private\\model.bin").detail)
+      .toBe("Try again. If this keeps happening, quit and reopen LocalScribe.");
+    expect(presentDictationError("Failed at C:/Users/Alice/private/audio.wav").detail)
+      .toBe("Try again. If this keeps happening, quit and reopen LocalScribe.");
+    expect(presentDictationError("Missing %LOCALAPPDATA%\\LocalScribe\\worker.exe").detail)
+      .toBe("Try again. If this keeps happening, quit and reopen LocalScribe.");
+    expect(presentDictationError("ENOENT while starting the speech worker").detail)
+      .toBe("Try again. If this keeps happening, quit and reopen LocalScribe.");
+    expect(presentDictationError("Failed at /workspace/private/model.bin").detail)
+      .toBe("Try again. If this keeps happening, quit and reopen LocalScribe.");
+    expect(presentDictationError("TypeError: failed to decode audio\n    at decode (audio.ts:12:3)").detail)
+      .toBe("Try again. If this keeps happening, quit and reopen LocalScribe.");
+    expect(presentDictationError("Download failed at https://models.example.test/private?token=secret").detail)
       .toBe("Try again. If this keeps happening, quit and reopen LocalScribe.");
   });
 

@@ -10,18 +10,39 @@ import re
 import shutil
 import stat
 import sys
-import tempfile
 import time
 import uuid
 import wave
 from collections.abc import Callable
 from dataclasses import dataclass
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as package_version
 from pathlib import Path
 from typing import Any, BinaryIO, Protocol, TextIO
 
 PROTOCOL_VERSION = 1
 BACKEND_NAME = "faster-whisper-ctranslate2"
-BACKEND_VERSION = "1.2.1"
+# Handshake the installed runtime version, not a second handwritten literal.
+# Supervisor retains the release allowlist, so dependency drift fails closed.
+try:
+    BACKEND_VERSION = package_version("faster-whisper")
+except PackageNotFoundError:
+    # Source tests run on macOS where the Windows-only dependency marker keeps
+    # faster-whisper out of the venv. Derive the same exact pin from this
+    # worker project's pyproject instead of introducing another version literal.
+    import tomllib
+
+    _pyproject = tomllib.loads(
+        (Path(__file__).resolve().parents[1] / "pyproject.toml").read_text(
+            encoding="utf-8"
+        )
+    )
+    _dependency = next(
+        dependency
+        for dependency in _pyproject["project"]["dependencies"]
+        if dependency.startswith("faster-whisper==")
+    )
+    BACKEND_VERSION = _dependency.removeprefix("faster-whisper==").split(";", 1)[0]
 
 MAX_REQUEST_BYTES = 16 * 1024
 # Keep these literals in sync with resources/audio-protocol.json. They are
@@ -40,6 +61,26 @@ MAX_LANGUAGE_CHARS = 80
 MAX_PATH_CHARS = 2_048
 MAX_RESULT_CHARS = 100_000
 MIN_FREE_DISK_BYTES = 6 * 1024 * 1024 * 1024
+MODEL_TRANSACTION_PREFIX = ".localscribe-model-install-"
+MODEL_TRANSACTION_MARKER = "transaction.json"
+MODEL_TRANSACTION_OWNER = "com.localscribe.model-install"
+MODEL_TRANSACTION_SCHEMA_VERSION = 1
+MODEL_TRANSACTION_FIELDS = frozenset(
+    {
+        "schemaVersion",
+        "owner",
+        "transactionId",
+        "backend",
+        "modelId",
+        "artifactId",
+        "storageDirectory",
+        "revision",
+        "manifestDigest",
+    }
+)
+MODEL_TRANSACTION_NAME = re.compile(
+    rf"^{re.escape(MODEL_TRANSACTION_PREFIX)}([0-9a-f]{{32}})$"
+)
 
 TIER_COMPUTE_TYPES = {
     "high": "float16",
@@ -205,6 +246,7 @@ UNSUPPORTED_LANGUAGE_CODES_BY_FAMILY = {
 
 _DLL_DIRECTORY_HANDLES: list[Any] = []
 _CUDA_DLLS_CONFIGURED = False
+_SELECTED_CUDA_DEVICE_INDEX: int | None = None
 
 
 class WorkerError(Exception):
@@ -212,17 +254,6 @@ class WorkerError(Exception):
         super().__init__(message)
         self.code = code
         self.public_message = message
-
-
-@dataclass(frozen=True)
-class ModelSpec:
-    manifest_filename: str
-    family_id: str
-    artifact_id: str
-    model_id: str
-    revision: str
-    storage_directory: str
-    expected_files: frozenset[str]
 
 
 @dataclass(frozen=True)
@@ -244,42 +275,20 @@ class ModelManifest:
     files: dict[str, ModelFile]
 
 
-MODEL_SPECS = {
-    "Systran/faster-whisper-large-v3": ModelSpec(
-        manifest_filename="faster-whisper-large-v3.json",
-        family_id="whisper-large-v3",
-        artifact_id="whisper-large-v3-ctranslate2",
-        model_id="Systran/faster-whisper-large-v3",
-        revision="edaa852ec7e145841d8ffdb056a99866b5f0a478",
-        storage_directory="faster-whisper-large-v3-edaa852",
-        expected_files=frozenset(
-            {
-                "config.json",
-                "model.bin",
-                "preprocessor_config.json",
-                "tokenizer.json",
-                "vocabulary.json",
-            }
-        ),
-    ),
-    "Systran/faster-whisper-large-v2": ModelSpec(
-        manifest_filename="faster-whisper-large-v2.json",
-        family_id="whisper-large-v2",
-        artifact_id="whisper-large-v2-ctranslate2",
-        model_id="Systran/faster-whisper-large-v2",
-        revision="f0fe81560cb8b68660e564f55dd99207059c092e",
-        storage_directory="faster-whisper-large-v2-f0fe815",
-        expected_files=frozenset(
-            {
-                "config.json",
-                "model.bin",
-                "tokenizer.json",
-                "vocabulary.txt",
-            }
-        ),
-    ),
-}
-MANIFEST_FILENAMES = frozenset(spec.manifest_filename for spec in MODEL_SPECS.values())
+# Model repository/revision/artifact identities live only in these packaged,
+# resource-integrity-covered manifests. The exact filenames remain the
+# deliberate executable allowlist, so renderers cannot introduce repositories
+# or URLs and a curated addition still requires a signed LocalScribe release.
+MANIFEST_FILENAMES = frozenset(
+    {
+        "faster-whisper-large-v3.json",
+        "faster-whisper-large-v2.json",
+    }
+)
+DEFAULT_MANIFEST_FILENAME = "faster-whisper-large-v3.json"
+REQUIRED_CTRANSLATE2_FILES = frozenset(
+    {"config.json", "model.bin", "tokenizer.json"}
+)
 
 
 def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -306,7 +315,7 @@ def _manifest_path(filename: str) -> Path:
     raise RuntimeError("packaged_model_manifest_missing")
 
 
-def _load_model_manifest(path: Path, spec: ModelSpec) -> ModelManifest:
+def _load_model_manifest(path: Path) -> ModelManifest:
     try:
         metadata = path.lstat()
         if path.is_symlink() or not stat.S_ISREG(metadata.st_mode):
@@ -325,19 +334,43 @@ def _load_model_manifest(path: Path, spec: ModelSpec) -> ModelManifest:
         raise RuntimeError("packaged_model_manifest_platform_mismatch")
     if raw.get("schemaVersion") != 1:
         raise RuntimeError("packaged_model_manifest_invalid")
-    if (
-        raw.get("familyId") != spec.family_id
-        or raw.get("artifactId") != spec.artifact_id
-        or raw.get("modelId") != spec.model_id
-        or raw.get("revision") != spec.revision
-        or raw.get("storageDirectory") != spec.storage_directory
-    ):
-        raise RuntimeError("packaged_model_manifest_identity_mismatch")
-    for field in ("backend", "displayName", "license"):
+    if raw.get("backend") != "faster-whisper/CTranslate2":
+        raise RuntimeError("packaged_model_manifest_backend_mismatch")
+    for field in ("displayName", "license"):
         if not isinstance(raw.get(field), str) or not raw[field] or len(raw[field]) > 200:
             raise RuntimeError("packaged_model_manifest_invalid")
+    model_id = raw.get("modelId")
+    family_id = raw.get("familyId")
+    artifact_id = raw.get("artifactId")
+    storage_directory = raw.get("storageDirectory")
+    revision = raw.get("revision")
+    if (
+        not isinstance(model_id, str)
+        or re.fullmatch(
+            r"[A-Za-z0-9][A-Za-z0-9._-]{0,95}/[A-Za-z0-9][A-Za-z0-9._-]{0,95}",
+            model_id,
+        )
+        is None
+        or not isinstance(family_id, str)
+        or re.fullmatch(r"[a-z0-9][a-z0-9-]*", family_id) is None
+        or not isinstance(artifact_id, str)
+        or re.fullmatch(r"[a-z0-9][a-z0-9-]*", artifact_id) is None
+        or not isinstance(storage_directory, str)
+        or re.fullmatch(r"[a-z0-9][a-z0-9._-]*", storage_directory) is None
+        or not isinstance(revision, str)
+        or re.fullmatch(r"[a-f0-9]{40}", revision) is None
+    ):
+        raise RuntimeError("packaged_model_manifest_invalid")
     files = raw.get("files")
-    if not isinstance(files, dict) or frozenset(files) != spec.expected_files:
+    if (
+        not isinstance(files, dict)
+        or not REQUIRED_CTRANSLATE2_FILES.issubset(files)
+        or any(
+            not isinstance(filename, str)
+            or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", filename) is None
+            for filename in files
+        )
+    ):
         raise RuntimeError("packaged_model_manifest_invalid")
     parsed_files: dict[str, ModelFile] = {}
     for filename, metadata in files.items():
@@ -358,24 +391,29 @@ def _load_model_manifest(path: Path, spec: ModelSpec) -> ModelManifest:
     return ModelManifest(
         backend=raw["backend"],
         display_name=raw["displayName"],
-        family_id=raw["familyId"],
-        artifact_id=raw["artifactId"],
-        model_id=raw["modelId"],
-        storage_directory=raw["storageDirectory"],
-        revision=raw["revision"],
+        family_id=family_id,
+        artifact_id=artifact_id,
+        model_id=model_id,
+        storage_directory=storage_directory,
+        revision=revision,
         license=raw["license"],
         files=parsed_files,
     )
 
 
-MODEL_MANIFESTS = {
-    model_id: _load_model_manifest(_manifest_path(spec.manifest_filename), spec)
-    for model_id, spec in MODEL_SPECS.items()
+MODEL_MANIFESTS_BY_FILENAME = {
+    filename: _load_model_manifest(_manifest_path(filename))
+    for filename in MANIFEST_FILENAMES
 }
+MODEL_MANIFESTS: dict[str, ModelManifest] = {}
+for _manifest in MODEL_MANIFESTS_BY_FILENAME.values():
+    if _manifest.model_id in MODEL_MANIFESTS:
+        raise RuntimeError("duplicate_model_catalog_selection")
+    MODEL_MANIFESTS[_manifest.model_id] = _manifest
 
 # Retained as compatibility aliases for callers that only use the original
 # large-v3 default. The request path always selects from MODEL_MANIFESTS.
-MODEL_ID = "Systran/faster-whisper-large-v3"
+MODEL_ID = MODEL_MANIFESTS_BY_FILENAME[DEFAULT_MANIFEST_FILENAME].model_id
 MODEL_MANIFEST = MODEL_MANIFESTS[MODEL_ID]
 MODEL_REVISION = MODEL_MANIFEST.revision
 MODEL_DIRECTORY_NAME = MODEL_MANIFEST.storage_directory
@@ -393,6 +431,7 @@ class DeviceInfo:
     device_name: str
     total_vram_bytes: int
     free_vram_bytes: int
+    device_index: int = 0
 
 
 @dataclass(frozen=True)
@@ -505,6 +544,12 @@ def _is_within(path: Path, root: Path) -> bool:
     return path != root
 
 
+def _is_reparse_point(metadata: os.stat_result) -> bool:
+    file_attributes = getattr(metadata, "st_file_attributes", 0)
+    reparse_attribute = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    return stat.S_ISLNK(metadata.st_mode) or bool(file_attributes & reparse_attribute)
+
+
 def _bounded_absolute_directory(raw_path: str, *, create: bool) -> Path:
     if not raw_path or len(raw_path) > MAX_PATH_CHARS:
         raise WorkerError("invalid_model_root", "modelRoot is invalid")
@@ -514,7 +559,15 @@ def _bounded_absolute_directory(raw_path: str, *, create: bool) -> Path:
     try:
         if create:
             candidate.mkdir(parents=True, exist_ok=True, mode=0o700)
+        metadata = candidate.lstat()
+        if _is_reparse_point(metadata) or not stat.S_ISDIR(metadata.st_mode):
+            raise WorkerError(
+                "invalid_model_root",
+                "modelRoot must be a regular directory",
+            )
         resolved = candidate.resolve(strict=True)
+    except WorkerError:
+        raise
     except OSError as error:
         raise WorkerError("invalid_model_root", "modelRoot is unavailable") from error
     if not resolved.is_dir() or resolved == Path(resolved.anchor):
@@ -533,7 +586,9 @@ def _sha256(path: Path) -> str:
 def _valid_model_directory(model_directory: Path, manifest: ModelManifest) -> bool:
     try:
         directory_metadata = model_directory.lstat()
-        if not stat.S_ISDIR(directory_metadata.st_mode):
+        if _is_reparse_point(directory_metadata) or not stat.S_ISDIR(
+            directory_metadata.st_mode
+        ):
             return False
         entries = {entry.name: entry for entry in model_directory.iterdir()}
         if set(entries) != set(manifest.files):
@@ -541,7 +596,11 @@ def _valid_model_directory(model_directory: Path, manifest: ModelManifest) -> bo
         for filename, expected in manifest.files.items():
             candidate = entries[filename]
             metadata = candidate.lstat()
-            if not stat.S_ISREG(metadata.st_mode) or metadata.st_size != expected.bytes:
+            if (
+                _is_reparse_point(metadata)
+                or not stat.S_ISREG(metadata.st_mode)
+                or metadata.st_size != expected.bytes
+            ):
                 return False
             if _sha256(candidate) != expected.sha256:
                 return False
@@ -559,42 +618,259 @@ def _safe_remove_entry(path: Path, root: Path) -> None:
         metadata = path.lstat()
     except FileNotFoundError:
         return
-    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
-        path.unlink()
-        return
+    if _is_reparse_point(metadata) or not stat.S_ISDIR(metadata.st_mode):
+        raise WorkerError(
+            "unsafe_model_path",
+            "refusing to remove a non-directory model path",
+        )
     shutil.rmtree(path)
 
 
-def _activate_staged_model(staging: Path, final_directory: Path, model_root: Path) -> None:
-    if not final_directory.exists() and not final_directory.is_symlink():
-        staging.replace(final_directory)
-        return
+def _model_manifest_digest(manifest: ModelManifest) -> str:
+    payload = {
+        "backend": manifest.backend,
+        "modelId": manifest.model_id,
+        "artifactId": manifest.artifact_id,
+        "storageDirectory": manifest.storage_directory,
+        "revision": manifest.revision,
+        "files": {
+            filename: {
+                "bytes": model_file.bytes,
+                "sha256": model_file.sha256,
+            }
+            for filename, model_file in sorted(manifest.files.items())
+        },
+    }
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
-    backup = model_root / f".faster-whisper-replaced-{uuid.uuid4().hex}"
+
+def _transaction_marker_payload(
+    transaction_id: str,
+    manifest: ModelManifest,
+) -> dict[str, Any]:
+    return {
+        "schemaVersion": MODEL_TRANSACTION_SCHEMA_VERSION,
+        "owner": MODEL_TRANSACTION_OWNER,
+        "transactionId": transaction_id,
+        "backend": manifest.backend,
+        "modelId": manifest.model_id,
+        "artifactId": manifest.artifact_id,
+        "storageDirectory": manifest.storage_directory,
+        "revision": manifest.revision,
+        "manifestDigest": _model_manifest_digest(manifest),
+    }
+
+
+def _sync_directory(path: Path) -> None:
+    # Windows does not support opening ordinary directory handles through
+    # os.open. Model/marker file handles are flushed by their writers; renames
+    # remain atomic within the model root.
+    if os.name == "nt":
+        return
     try:
-        final_directory.replace(backup)
-        try:
-            staging.replace(final_directory)
-        except Exception:
-            backup.replace(final_directory)
-            raise
-        _safe_remove_entry(backup, model_root)
-    except WorkerError:
+        descriptor = os.open(path, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(descriptor)
+    except OSError:
+        pass
+    finally:
+        os.close(descriptor)
+
+
+def _create_model_transaction(
+    model_root: Path,
+    manifest: ModelManifest,
+) -> tuple[Path, Path, Path]:
+    transaction_id = uuid.uuid4().hex
+    transaction = model_root / f"{MODEL_TRANSACTION_PREFIX}{transaction_id}"
+    transaction.mkdir(mode=0o700)
+    marker = transaction / MODEL_TRANSACTION_MARKER
+    descriptor = os.open(
+        marker,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+        0o600,
+    )
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            json.dump(
+                _transaction_marker_payload(transaction_id, manifest),
+                handle,
+                ensure_ascii=True,
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+            handle.flush()
+            os.fsync(handle.fileno())
+    except BaseException:
+        if marker.exists():
+            marker.unlink()
+        transaction.rmdir()
         raise
+    staging = transaction / "staging"
+    staging.mkdir(mode=0o700)
+    _sync_directory(transaction)
+    _sync_directory(model_root)
+    return transaction, staging, transaction / "backup"
+
+
+def _owned_model_transaction(
+    transaction: Path,
+    model_root: Path,
+    manifest: ModelManifest,
+) -> bool:
+    match = MODEL_TRANSACTION_NAME.fullmatch(transaction.name)
+    if match is None or transaction.parent != model_root:
+        return False
+    try:
+        transaction_metadata = transaction.lstat()
+        if _is_reparse_point(transaction_metadata) or not stat.S_ISDIR(
+            transaction_metadata.st_mode
+        ):
+            return False
+        entries = {entry.name: entry for entry in transaction.iterdir()}
+        if not set(entries).issubset(
+            {MODEL_TRANSACTION_MARKER, "staging", "backup"}
+        ):
+            return False
+        marker = entries.get(MODEL_TRANSACTION_MARKER)
+        if marker is None:
+            return False
+        marker_metadata = marker.lstat()
+        if (
+            _is_reparse_point(marker_metadata)
+            or not stat.S_ISREG(marker_metadata.st_mode)
+            or marker_metadata.st_size > 4_096
+        ):
+            return False
+        for directory_name in ("staging", "backup"):
+            directory = entries.get(directory_name)
+            if directory is None:
+                continue
+            metadata = directory.lstat()
+            if _is_reparse_point(metadata) or not stat.S_ISDIR(metadata.st_mode):
+                return False
+        raw = json.loads(
+            marker.read_text(encoding="utf-8"),
+            object_pairs_hook=_reject_duplicate_keys,
+        )
+    except (OSError, UnicodeError, json.JSONDecodeError, WorkerError):
+        return False
+    if not isinstance(raw, dict) or frozenset(raw) != MODEL_TRANSACTION_FIELDS:
+        return False
+    transaction_id = match.group(1)
+    return raw == _transaction_marker_payload(transaction_id, manifest)
+
+
+def _remove_owned_model_transaction(
+    transaction: Path,
+    model_root: Path,
+    manifest: ModelManifest,
+) -> None:
+    if not _owned_model_transaction(transaction, model_root, manifest):
+        raise WorkerError(
+            "unsafe_model_path",
+            "refusing to remove an unowned model transaction",
+        )
+    _safe_remove_entry(transaction, model_root)
+    _sync_directory(model_root)
+
+
+def _regular_directory_present(path: Path) -> bool:
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError:
+        return False
     except OSError as error:
-        raise WorkerError("model_activation_failed", "model activation failed") from error
+        raise WorkerError("unsafe_model_path", "model path is unavailable") from error
+    if _is_reparse_point(metadata) or not stat.S_ISDIR(metadata.st_mode):
+        raise WorkerError(
+            "unsafe_model_path",
+            "model path must be a regular directory",
+        )
+    return True
+
+
+def _recover_model_transactions(
+    model_root: Path,
+    manifest: ModelManifest,
+) -> None:
+    final_directory = model_root / manifest.storage_directory
+    try:
+        candidates = tuple(model_root.iterdir())
+    except OSError as error:
+        raise WorkerError("invalid_model_root", "modelRoot is unavailable") from error
+    for transaction in candidates:
+        if not _owned_model_transaction(transaction, model_root, manifest):
+            continue
+        staging = transaction / "staging"
+        backup = transaction / "backup"
+        final_valid = _valid_model_directory(final_directory, manifest)
+        final_present = _regular_directory_present(final_directory)
+        backup_present = _regular_directory_present(backup)
+        staging_present = _regular_directory_present(staging)
+        backup_valid = backup_present and _valid_model_directory(backup, manifest)
+        staging_valid = staging_present and _valid_model_directory(staging, manifest)
+
+        if final_valid:
+            _remove_owned_model_transaction(transaction, model_root, manifest)
+            continue
+        if final_present and backup_valid:
+            # The replacement was promoted but did not survive verification
+            # (for example, a crash or disk fault after the atomic rename).
+            # This transaction is marker-owned and its backup is verified, so
+            # restore the last known-good artifact instead of discarding it.
+            _safe_remove_entry(final_directory, model_root)
+            backup.replace(final_directory)
+            _sync_directory(model_root)
+            if not _valid_model_directory(final_directory, manifest):
+                raise WorkerError(
+                    "model_recovery_failed",
+                    "restored model verification failed",
+                )
+            _remove_owned_model_transaction(transaction, model_root, manifest)
+            continue
+        if not final_present and backup_valid:
+            backup.replace(final_directory)
+            _sync_directory(model_root)
+            if not _valid_model_directory(final_directory, manifest):
+                raise WorkerError(
+                    "model_recovery_failed",
+                    "restored model verification failed",
+                )
+            _remove_owned_model_transaction(transaction, model_root, manifest)
+            continue
+        if not final_present and staging_valid:
+            staging.replace(final_directory)
+            _sync_directory(model_root)
+            if not _valid_model_directory(final_directory, manifest):
+                raise WorkerError(
+                    "model_recovery_failed",
+                    "recovered model verification failed",
+                )
+            _remove_owned_model_transaction(transaction, model_root, manifest)
+            continue
+        _remove_owned_model_transaction(transaction, model_root, manifest)
 
 
 def ensure_model(model_root: Path, manifest: ModelManifest) -> Path:
     model_root = _bounded_absolute_directory(str(model_root), create=True)
     final_directory = model_root / manifest.storage_directory
+    _recover_model_transactions(model_root, manifest)
     if _valid_model_directory(final_directory, manifest):
         return final_directory
 
     if shutil.disk_usage(model_root).free < MIN_FREE_DISK_BYTES:
         raise WorkerError("insufficient_disk_space", "at least 6 GiB of free disk is required")
 
-    staging = Path(tempfile.mkdtemp(prefix=".faster-whisper-staging-", dir=model_root))
+    transaction, staging, backup = _create_model_transaction(model_root, manifest)
     try:
         try:
             from huggingface_hub import snapshot_download
@@ -615,19 +891,26 @@ def ensure_model(model_root: Path, manifest: ModelManifest) -> Path:
         _safe_remove_entry(staging / ".cache", model_root)
         if not _valid_model_directory(staging, manifest):
             raise WorkerError("model_checksum_failed", "downloaded model verification failed")
-        _activate_staged_model(staging, final_directory, model_root)
+        if _regular_directory_present(final_directory):
+            final_directory.replace(backup)
+            _sync_directory(transaction)
+            _sync_directory(model_root)
+        try:
+            staging.replace(final_directory)
+            _sync_directory(transaction)
+            _sync_directory(model_root)
+        except Exception:
+            if _valid_model_directory(backup, manifest) and not final_directory.exists():
+                backup.replace(final_directory)
+                _sync_directory(model_root)
+            raise
         if not _valid_model_directory(final_directory, manifest):
             raise WorkerError("model_activation_failed", "activated model verification failed")
+        _remove_owned_model_transaction(transaction, model_root, manifest)
         return final_directory
     finally:
-        if staging.exists() or staging.is_symlink():
-            _safe_remove_entry(staging, model_root)
-
-
-def _is_reparse_point(metadata: os.stat_result) -> bool:
-    file_attributes = getattr(metadata, "st_file_attributes", 0)
-    reparse_attribute = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
-    return stat.S_ISLNK(metadata.st_mode) or bool(file_attributes & reparse_attribute)
+        if transaction.exists():
+            _recover_model_transactions(model_root, manifest)
 
 
 def _assert_unambiguous_audio_path(audio_path: Path, allowed_root: Path) -> None:
@@ -813,6 +1096,7 @@ def _configure_windows_cuda_dlls() -> None:
 
 
 def query_device_info() -> DeviceInfo:
+    global _SELECTED_CUDA_DEVICE_INDEX
     try:
         import pynvml
     except Exception as error:
@@ -822,24 +1106,64 @@ def query_device_info() -> DeviceInfo:
     try:
         pynvml.nvmlInit()
         initialized = True
-        if pynvml.nvmlDeviceGetCount() < 1:
+        device_count = int(pynvml.nvmlDeviceGetCount())
+        if device_count < 1:
             raise WorkerError("cuda_unavailable", "an NVIDIA CUDA GPU is required")
-        handle = pynvml.nvmlDeviceGetHandleByIndex(0)
-        raw_name = pynvml.nvmlDeviceGetName(handle)
-        name = raw_name.decode("utf-8", errors="replace") if isinstance(raw_name, bytes) else raw_name
-        memory = pynvml.nvmlDeviceGetMemoryInfo(handle)
-        total_bytes = int(memory.total)
-        free_bytes = int(memory.free)
-        if (
-            not isinstance(name, str)
-            or not name.strip()
-            or len(name) > 256
-            or total_bytes <= 0
-            or free_bytes < 0
-            or free_bytes > total_bytes
-        ):
+        candidates: list[DeviceInfo] = []
+        invalid_telemetry = False
+        for device_index in range(device_count):
+            try:
+                handle = pynvml.nvmlDeviceGetHandleByIndex(device_index)
+                raw_name = pynvml.nvmlDeviceGetName(handle)
+                name = (
+                    raw_name.decode("utf-8", errors="replace")
+                    if isinstance(raw_name, bytes)
+                    else raw_name
+                )
+                memory = pynvml.nvmlDeviceGetMemoryInfo(handle)
+                total_bytes = int(memory.total)
+                free_bytes = int(memory.free)
+            except Exception:
+                invalid_telemetry = True
+                continue
+            if (
+                not isinstance(name, str)
+                or not name.strip()
+                or len(name) > 200
+                or total_bytes <= 0
+                or free_bytes < 0
+                or free_bytes > total_bytes
+            ):
+                invalid_telemetry = True
+                continue
+            candidates.append(
+                DeviceInfo(
+                    name.strip(),
+                    total_bytes,
+                    free_bytes,
+                    device_index,
+                )
+            )
+        if not candidates:
+            if invalid_telemetry:
+                raise WorkerError(
+                    "device_info_invalid",
+                    "NVIDIA device telemetry is invalid",
+                )
             raise WorkerError("device_info_invalid", "NVIDIA device telemetry is invalid")
-        return DeviceInfo(name.strip(), total_bytes, free_bytes)
+        # Main's Auto decision and CTranslate2 must refer to one physical GPU.
+        # Prefer currently free capacity, then total capacity, then the lower
+        # stable CUDA/NVML ordinal for deterministic ties.
+        selected = max(
+            candidates,
+            key=lambda device: (
+                device.free_vram_bytes,
+                device.total_vram_bytes,
+                -device.device_index,
+            ),
+        )
+        _SELECTED_CUDA_DEVICE_INDEX = selected.device_index
+        return selected
     except WorkerError:
         raise
     except Exception as error:
@@ -871,8 +1195,8 @@ class FasterWhisperRuntime:
         if not _valid_model_directory(model_directory, manifest):
             raise WorkerError("model_checksum_failed", "local model verification failed")
 
-        _configure_windows_cuda_dlls()
         try:
+            _configure_windows_cuda_dlls()
             import ctranslate2
             import numpy as np
             from faster_whisper import WhisperModel
@@ -885,7 +1209,20 @@ class FasterWhisperRuntime:
         try:
             if ctranslate2.get_cuda_device_count() < 1:
                 raise WorkerError("cuda_unavailable", "an NVIDIA CUDA GPU is required")
-            supported_types = set(ctranslate2.get_supported_compute_types("cuda", 0))
+            device_index = _SELECTED_CUDA_DEVICE_INDEX
+            if device_index is None:
+                # Install/switch/shutdown boundaries create fresh workers.
+                # Never silently fall back to GPU 0 after such a restart:
+                # re-run the same NVML selector used by device_info.
+                device_index = query_device_info().device_index
+            if device_index >= ctranslate2.get_cuda_device_count():
+                raise WorkerError(
+                    "cuda_unavailable",
+                    "the selected NVIDIA GPU is unavailable to CTranslate2",
+                )
+            supported_types = set(
+                ctranslate2.get_supported_compute_types("cuda", device_index)
+            )
         except WorkerError:
             raise
         except Exception as error:
@@ -900,7 +1237,7 @@ class FasterWhisperRuntime:
             model = WhisperModel(
                 str(model_directory),
                 device="cuda",
-                device_index=0,
+                device_index=device_index,
                 compute_type=compute_type,
                 local_files_only=True,
             )
@@ -1143,6 +1480,11 @@ def run_worker(
                         max_chars=MAX_PATH_CHARS,
                     )
                     model_root = _bounded_absolute_directory(model_root_raw, create=True)
+                    # A killed repair can leave the verified prior artifact in
+                    # a marker-owned backup between the two atomic renames.
+                    # Recover that local data before declaring the model
+                    # missing; this path never downloads.
+                    _recover_model_transactions(model_root, manifest)
                     if (
                         runtime is not None
                         and active_model_id == model_id
@@ -1229,6 +1571,7 @@ def run_worker(
                             "id": request_id,
                             "acceleratorKind": "nvidia-cuda",
                             "deviceName": device_info.device_name,
+                            "deviceIndex": device_info.device_index,
                             "totalVramBytes": device_info.total_vram_bytes,
                             "freeVramBytes": device_info.free_vram_bytes,
                             "memoryBasis": "nvml-current",

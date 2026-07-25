@@ -66,7 +66,7 @@ describe("persisted app-profile identity matching", () => {
       smartPunctuation: true,
     });
 
-    expect(database.findProfile("C:\\Users\\Devesh\\Apps\\SLACK.EXE")?.id).toBe(saved.id);
+    expect(database.findProfile("C:\\Users\\Alice\\Apps\\SLACK.EXE")?.id).toBe(saved.id);
     database.close();
   });
 });

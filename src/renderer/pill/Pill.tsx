@@ -12,35 +12,127 @@ import {
   PILL_LAYOUT_CSS_PROPERTIES,
   type PillLayoutCssVariable,
 } from "../../shared/pillLayout";
-import { shortcutCompactLabel } from "../../shared/shortcuts";
+import {
+  shortcutCompactLabel,
+  type ShortcutDisplayPlatform,
+} from "../../shared/shortcuts";
 import { AudioRecorder, RecorderCancelledError } from "../audioRecorder";
 
 const WAVE_SAMPLE_COUNT = 15;
+const MICROPHONE_PICKER_ID = "pill-microphone-picker";
+const MICROPHONE_PICKER_TITLE_ID = "pill-microphone-picker-title";
 const quietWave = () => Array.from({ length: WAVE_SAMPLE_COUNT }, () => 0);
 type PillStyle = CSSProperties & Record<PillLayoutCssVariable, string>;
 type ErrorNoticeStyle = CSSProperties & Record<"--pill-error-notice-duration", string>;
 const pillStageStyle = PILL_LAYOUT_CSS_PROPERTIES as PillStyle;
 
 type ShortcutSettingsStatus = "loading" | "unavailable" | "ready";
+type RuntimePlatformStatus = "loading" | "unavailable" | "ready";
+type MicrophoneListStatus = "idle" | "loading" | "ready" | "unavailable";
 
 export function holdShortcutPresentation(
   holdShortcut: string | null,
   status: ShortcutSettingsStatus,
+  platform?: RuntimePlatform,
+  platformStatus: RuntimePlatformStatus = platform ? "ready" : "loading",
 ): { tooltip: string; dictateAriaLabel: string } {
-  if (status === "ready" && holdShortcut) {
-    const label = shortcutCompactLabel(holdShortcut);
+  if (status !== "ready" || !holdShortcut) {
+    const detail = status === "loading"
+      ? "shortcut settings are loading"
+      : "shortcut settings are unavailable";
     return {
-      tooltip: `Dictate · hold ${label}`,
-      dictateAriaLabel: `Start dictating; hold ${label}`,
+      tooltip: `Dictate · ${detail}`,
+      dictateAriaLabel: `Start dictating; ${detail}`,
     };
   }
-  const detail = status === "loading"
-    ? "shortcut settings are loading"
-    : "shortcut settings are unavailable";
+
+  if (platformStatus !== "ready") {
+    const detail = platformStatus === "loading"
+      ? "platform details are loading"
+      : "platform details are unavailable";
+    return {
+      tooltip: `Dictate · ${detail}`,
+      dictateAriaLabel: `Start dictating; ${detail}`,
+    };
+  }
+
+  const shortcutPlatform = shortcutDisplayPlatformFor(platform);
+  if (!shortcutPlatform) {
+    return {
+      tooltip: "Dictate · shortcut unavailable on this platform",
+      dictateAriaLabel: "Start dictating; shortcut unavailable on this platform",
+    };
+  }
+  const label = shortcutCompactLabel(holdShortcut, shortcutPlatform);
   return {
-    tooltip: `Dictate · ${detail}`,
-    dictateAriaLabel: `Start dictating; ${detail}`,
+    tooltip: `Dictate · hold ${label}`,
+    dictateAriaLabel: `Start dictating; hold ${label}`,
   };
+}
+
+function shortcutDisplayPlatformFor(
+  platform: RuntimePlatform | undefined,
+): ShortcutDisplayPlatform | null {
+  return platform === "darwin" || platform === "win32" || platform === "linux"
+    ? platform
+    : null;
+}
+
+export async function listSelectableMicrophones(
+  mediaDevices: Pick<MediaDevices, "enumerateDevices"> | undefined,
+): Promise<MediaDeviceInfo[]> {
+  if (!mediaDevices) throw new Error("Media device discovery is unavailable");
+  const devices = await mediaDevices.enumerateDevices();
+  const seen = new Set<string>();
+  return devices.filter((device) => {
+    if (
+      device.kind !== "audioinput"
+      || !device.deviceId
+      || device.deviceId === "default"
+      || seen.has(device.deviceId)
+    ) {
+      return false;
+    }
+    seen.add(device.deviceId);
+    return true;
+  });
+}
+
+export function selectedMicrophoneIsUnavailable(
+  microphoneId: string | null,
+  microphones: readonly Pick<MediaDeviceInfo, "deviceId">[],
+): boolean {
+  return microphoneId !== null
+    && !microphones.some((device) => device.deviceId === microphoneId);
+}
+
+export async function trySelectMicrophone(
+  onSelectMicrophone: (microphoneId: string | null) => Promise<void>,
+  microphoneId: string | null,
+): Promise<boolean> {
+  try {
+    await onSelectMicrophone(microphoneId);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function listeningRecorderStart(
+  snapshot: SessionSnapshot,
+  settingsStatus: ShortcutSettingsStatus,
+  startedSessionId: string | null,
+  microphoneId: string | null,
+): { sessionId: string; microphoneId: string | null } | null {
+  if (
+    snapshot.state !== "listening"
+    || !snapshot.sessionId
+    || settingsStatus === "loading"
+    || snapshot.sessionId === startedSessionId
+  ) {
+    return null;
+  }
+  return { sessionId: snapshot.sessionId, microphoneId };
 }
 
 export function isCurrentFinalization(
@@ -56,11 +148,14 @@ export function Pill() {
   const [holdShortcut, setHoldShortcut] = useState<string | null>(null);
   const [shortcutSettingsStatus, setShortcutSettingsStatus] = useState<ShortcutSettingsStatus>("loading");
   const [platform, setPlatform] = useState<RuntimePlatform | undefined>();
+  const [platformStatus, setPlatformStatus] = useState<RuntimePlatformStatus>("loading");
   const [waveform, setWaveform] = useState<number[]>(quietWave);
   const recorder = useRef(new AudioRecorder());
   const previousState = useRef<SessionSnapshot["state"]>("idle");
   const latestSnapshot = useRef<SessionSnapshot>({ state: "idle" });
   const microphoneIdRef = useRef<string | null>(null);
+  const settingsStatusRef = useRef<ShortcutSettingsStatus>("loading");
+  const recorderSessionId = useRef<string | null>(null);
 
   useEffect(() => {
     recorder.current.setLevelListener((level) => {
@@ -72,16 +167,28 @@ export function Pill() {
       const message = error instanceof Error ? error.message : "Microphone recording failed";
       await window.localScribe.session.fail(message);
     };
+    const startListeningRecorder = () => {
+      const start = listeningRecorderStart(
+        latestSnapshot.current,
+        settingsStatusRef.current,
+        recorderSessionId.current,
+        microphoneIdRef.current,
+      );
+      if (!start) return;
+      recorderSessionId.current = start.sessionId;
+      setWaveform(quietWave());
+      void recorder.current.start(start.microphoneId).catch(handleFailure);
+    };
     const applySnapshot = (next: SessionSnapshot) => {
       const previous = previousState.current;
       previousState.current = next.state;
       latestSnapshot.current = next;
       setSnapshot(next);
       if (next.state === "listening" && previous !== "listening") {
-        setWaveform(quietWave());
-        void recorder.current.start(microphoneIdRef.current).catch(handleFailure);
+        startListeningRecorder();
       } else if (next.state === "finalizing" && previous === "listening") {
         const sessionId = next.sessionId;
+        recorderSessionId.current = null;
         void recorder.current
           .stop()
           .then(async (audio) => {
@@ -102,6 +209,7 @@ export function Pill() {
         next.state === "idle" &&
         (previous === "listening" || previous === "finalizing")
       ) {
+        recorderSessionId.current = null;
         void recorder.current.cancel();
       }
       if (next.state !== "listening") setWaveform(quietWave());
@@ -112,10 +220,12 @@ export function Pill() {
     });
     let sawSettingsChange = false;
     const applySettings = (settings: Pick<AppSettings, "microphoneId" | "holdShortcut">) => {
+      settingsStatusRef.current = "ready";
       microphoneIdRef.current = settings.microphoneId;
       setMicrophoneId(settings.microphoneId);
       setHoldShortcut(settings.holdShortcut);
       setShortcutSettingsStatus("ready");
+      startListeningRecorder();
     };
     const unsubscribeSettings = window.localScribe.settings.onChanged((settings) => {
       sawSettingsChange = true;
@@ -124,11 +234,18 @@ export function Pill() {
     void window.localScribe.settings.get().then((settings) => {
       if (!sawSettingsChange) applySettings(settings);
     }).catch(() => {
-      if (!sawSettingsChange) setShortcutSettingsStatus("unavailable");
+      if (!sawSettingsChange) {
+        settingsStatusRef.current = "unavailable";
+        setShortcutSettingsStatus("unavailable");
+        startListeningRecorder();
+      }
     });
     void window.localScribe.system.getPermissions().then((next) => {
       setPlatform(next.platform);
-    }).catch(() => undefined);
+      setPlatformStatus("ready");
+    }).catch(() => {
+      setPlatformStatus("unavailable");
+    });
     void window.localScribe.session.get().then((initial) => {
       if (!sawLiveEvent) applySnapshot(initial);
     });
@@ -151,6 +268,8 @@ export function Pill() {
             microphoneId={microphoneId}
             holdShortcut={holdShortcut}
             shortcutSettingsStatus={shortcutSettingsStatus}
+            platform={platform}
+            platformStatus={platformStatus}
             onSelectMicrophone={selectMicrophone}
           />
         : <ActivePill snapshot={snapshot} waveform={waveform} platform={platform} />}
@@ -162,21 +281,32 @@ function IdlePill({
   microphoneId,
   holdShortcut,
   shortcutSettingsStatus,
+  platform,
+  platformStatus,
   onSelectMicrophone,
 }: {
   microphoneId: string | null;
   holdShortcut: string | null;
   shortcutSettingsStatus: ShortcutSettingsStatus;
+  platform: RuntimePlatform | undefined;
+  platformStatus: RuntimePlatformStatus;
   onSelectMicrophone: (microphoneId: string | null) => Promise<void>;
 }) {
   const [visualMode, setVisualMode] = useState<PillMode>("collapsed");
-  const [hoveredAction, setHoveredAction] = useState<"dictate" | "scratchpad" | null>(null);
+  const [hoveredAction, setHoveredAction] = useState<"dictate" | "microphone" | "scratchpad" | null>(null);
   const [microphones, setMicrophones] = useState<MediaDeviceInfo[]>([]);
-  const [loadingMicrophones, setLoadingMicrophones] = useState(false);
+  const [microphoneListStatus, setMicrophoneListStatus] = useState<MicrophoneListStatus>("idle");
+  const [savingMicrophone, setSavingMicrophone] = useState(false);
   const [microphoneError, setMicrophoneError] = useState("");
   const pillModeRequest = useRef(0);
+  const microphoneListRequest = useRef(0);
+  const microphoneSelectionPending = useRef(false);
   const pointerInside = useRef(false);
   const pickerOpen = visualMode === "picker";
+  const loadingMicrophones = microphoneListStatus === "idle"
+    || microphoneListStatus === "loading";
+  const selectedMicrophoneUnavailable = microphoneListStatus === "ready"
+    && selectedMicrophoneIsUnavailable(microphoneId, microphones);
 
   const toggle = () => {
     // The listening window is smaller than the expanded idle control, so clear it first.
@@ -195,16 +325,19 @@ function IdlePill({
   };
 
   const loadMicrophones = async () => {
+    const request = ++microphoneListRequest.current;
     setMicrophoneError("");
-    setLoadingMicrophones(true);
+    setMicrophoneListStatus("loading");
     try {
-      const devices = await navigator.mediaDevices?.enumerateDevices();
-      setMicrophones((devices ?? []).filter((device) => device.kind === "audioinput"));
+      const devices = await listSelectableMicrophones(navigator.mediaDevices);
+      if (microphoneListRequest.current !== request) return;
+      setMicrophones(devices);
+      setMicrophoneListStatus("ready");
     } catch {
+      if (microphoneListRequest.current !== request) return;
       setMicrophones([]);
       setMicrophoneError("Microphones could not be listed");
-    } finally {
-      setLoadingMicrophones(false);
+      setMicrophoneListStatus("unavailable");
     }
   };
 
@@ -241,15 +374,37 @@ function IdlePill({
   };
 
   const chooseMicrophone = async (nextMicrophoneId: string | null) => {
-    await onSelectMicrophone(nextMicrophoneId);
-    const nextMode: PillMode = pointerInside.current ? "hover" : "collapsed";
-    // This transition only reduces the renderer while its native window is still picker-sized.
-    flushSync(() => setVisualMode(nextMode));
-    void requestPillMode(nextMode);
+    if (microphoneSelectionPending.current) return;
+    microphoneSelectionPending.current = true;
+    setSavingMicrophone(true);
+    setMicrophoneError("");
+    try {
+      const selected = await trySelectMicrophone(onSelectMicrophone, nextMicrophoneId);
+      if (!selected) {
+        setMicrophoneError("Microphone selection could not be saved");
+        return;
+      }
+      const nextMode: PillMode = pointerInside.current ? "hover" : "collapsed";
+      // This transition only reduces the renderer while its native window is still picker-sized.
+      flushSync(() => setVisualMode(nextMode));
+      void requestPillMode(nextMode);
+    } finally {
+      microphoneSelectionPending.current = false;
+      setSavingMicrophone(false);
+    }
   };
 
-  const shortcutPresentation = holdShortcutPresentation(holdShortcut, shortcutSettingsStatus);
-  const tooltip = hoveredAction === "scratchpad" ? "Scratchpad" : shortcutPresentation.tooltip;
+  const shortcutPresentation = holdShortcutPresentation(
+    holdShortcut,
+    shortcutSettingsStatus,
+    platform,
+    platformStatus,
+  );
+  const tooltip = hoveredAction === "scratchpad"
+    ? "Scratchpad"
+    : hoveredAction === "microphone"
+      ? (pickerOpen ? "Close microphone menu" : "Choose microphone")
+      : shortcutPresentation.tooltip;
   const tooltipAction = hoveredAction ?? "dictate";
 
   return (
@@ -262,24 +417,31 @@ function IdlePill({
       <span className="pill__idle-rail" aria-hidden="true" />
       <div className="pill__idle-menu">
         {pickerOpen && (
-          <div className="pill__microphone-menu" role="menu" aria-label="Choose microphone">
-            <span className="pill__microphone-title">Microphone</span>
+          <div
+            className="pill__microphone-menu"
+            id={MICROPHONE_PICKER_ID}
+            role="group"
+            aria-labelledby={MICROPHONE_PICKER_TITLE_ID}
+            aria-busy={loadingMicrophones || savingMicrophone}
+          >
+            <span className="pill__microphone-title" id={MICROPHONE_PICKER_TITLE_ID}>Microphone</span>
             <button
               type="button"
-              role="menuitemradio"
-              aria-checked={microphoneId === null}
+              aria-pressed={microphoneId === null}
+              disabled={savingMicrophone}
               onClick={() => void chooseMicrophone(null)}
             >
               <span className="pill__device-check">{microphoneId === null ? <CheckIcon /> : null}</span>
               <span>System default</span>
             </button>
-            {loadingMicrophones && <span className="pill__device-empty">Looking for microphones…</span>}
-            {!loadingMicrophones && microphoneError && <span className="pill__device-empty">{microphoneError}</span>}
+            {loadingMicrophones && <span className="pill__device-empty" role="status">Looking for microphones…</span>}
+            {savingMicrophone && <span className="pill__device-empty" role="status">Saving microphone…</span>}
+            {!loadingMicrophones && microphoneError && <span className="pill__device-empty" role="alert">{microphoneError}</span>}
             {!loadingMicrophones && microphones.map((device, index) => (
               <button
                 type="button"
-                role="menuitemradio"
-                aria-checked={microphoneId === device.deviceId}
+                aria-pressed={microphoneId === device.deviceId}
+                disabled={savingMicrophone}
                 key={device.deviceId}
                 onClick={() => void chooseMicrophone(device.deviceId)}
               >
@@ -287,10 +449,18 @@ function IdlePill({
                 <span title={device.label}>{device.label || `Microphone ${index + 1}`}</span>
               </button>
             ))}
-            {!loadingMicrophones && !microphoneError && microphones.length === 0 && <span className="pill__device-empty">No additional microphones found</span>}
+            {selectedMicrophoneUnavailable && (
+              <span className="pill__device-empty" role="status">
+                Selected microphone is unavailable. Choose another input.
+              </span>
+            )}
+            {microphoneListStatus === "ready"
+              && !selectedMicrophoneUnavailable
+              && microphones.length === 0
+              && <span className="pill__device-empty">No additional microphones found</span>}
           </div>
         )}
-        <span className="pill__idle-tooltip" data-action={tooltipAction} role="status">{tooltip}</span>
+        <span className="pill__idle-tooltip" data-action={tooltipAction} role="status" title={tooltip}>{tooltip}</span>
         <div className="pill__idle-actions">
           <button
             className="pill__round pill__round--dictate"
@@ -305,6 +475,18 @@ function IdlePill({
             onPointerLeave={() => setHoveredAction(null)}
           >
             <MicrophoneIcon />
+          </button>
+          <button
+            className="pill__round pill__round--microphone"
+            type="button"
+            onClick={togglePicker}
+            aria-label={pickerOpen ? "Close microphone menu" : "Choose microphone"}
+            aria-controls={MICROPHONE_PICKER_ID}
+            aria-expanded={pickerOpen}
+            onPointerEnter={() => setHoveredAction("microphone")}
+            onPointerLeave={() => setHoveredAction(null)}
+          >
+            <MixerIcon />
           </button>
           <button
             className="pill__round pill__round--scratchpad"
@@ -463,4 +645,8 @@ function CheckIcon() {
 
 function MicrophoneIcon() {
   return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4.5a3 3 0 0 0-3 3v4.7a3 3 0 0 0 6 0V7.5a3 3 0 0 0-3-3Z" /><path d="M6.7 11.8a5.3 5.3 0 0 0 10.6 0M12 17.1v2.4M8.8 19.5h6.4" /></svg>;
+}
+
+function MixerIcon() {
+  return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h8M17 7h2M11 12h8M5 12h2M5 17h5M14 17h5" /><circle cx="15" cy="7" r="2" /><circle cx="9" cy="12" r="2" /><circle cx="12" cy="17" r="2" /></svg>;
 }

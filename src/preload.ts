@@ -7,6 +7,7 @@ import {
   diagnosticsSchema,
   dictionaryEntrySchema,
   IPC,
+  launchAtLoginStatusSchema,
   modelInstallRequestSchema,
   modelCatalogSchema,
   modelFamilyLibraryRequestSchema,
@@ -121,6 +122,8 @@ const api: LocalScribeApi = {
   system: {
     getPermissions: async () =>
       permissionSnapshotSchema.parse(await ipcRenderer.invoke(IPC.systemGetPermissions)),
+    getLaunchAtLoginStatus: async () =>
+      launchAtLoginStatusSchema.parse(await ipcRenderer.invoke(IPC.systemGetLaunchAtLoginStatus)),
     openPermission: async (kind) => ipcRenderer.invoke(IPC.systemOpenPermission, kind),
     appInfo: async () => appInfoSchema.parse(await ipcRenderer.invoke(IPC.systemAppInfo)),
     diagnostics: async () => diagnosticsSchema.parse(await ipcRenderer.invoke(IPC.systemDiagnostics)),

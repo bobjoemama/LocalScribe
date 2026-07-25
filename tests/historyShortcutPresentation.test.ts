@@ -13,12 +13,27 @@ describe("history shortcut presentation", () => {
       holdLabel: "Shortcut settings are unavailable",
       toggleLabel: null,
     });
+    expect(historyShortcutPresentation({
+      holdShortcut: "Control",
+      toggleShortcut: "Control+Space",
+    }, "ready")).toEqual({
+      ariaLabel: "Shortcut settings are unavailable",
+      holdLabel: "Shortcut settings are unavailable",
+      toggleLabel: null,
+    });
     const ready = historyShortcutPresentation({
       holdShortcut: "Control",
       toggleShortcut: "Control+Space",
-    }, "ready");
+    }, "ready", "darwin");
     expect(ready.ariaLabel).toMatch(/^Hold .+ to dictate; .+ toggles dictation$/);
-    expect(ready.holdLabel).toMatch(/^Hold /);
-    expect(ready.toggleLabel).toBeTruthy();
+    expect(ready.holdLabel).toBe("Hold ⌃");
+    expect(ready.toggleLabel).toBe("⌃ + Space");
+
+    const windows = historyShortcutPresentation({
+      holdShortcut: "Control",
+      toggleShortcut: "Control+Space",
+    }, "ready", "win32");
+    expect(windows.holdLabel).toBe("Hold Ctrl");
+    expect(windows.toggleLabel).toBe("Ctrl + Space");
   });
 });

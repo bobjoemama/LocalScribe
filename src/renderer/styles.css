@@ -176,7 +176,7 @@ html[data-surface="pill"], html[data-surface="pill"] body, html[data-surface="pi
   display: flex;
   align-items: center;
   color: white;
-  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI Variable Text", "Segoe UI", sans-serif;
 }
 .pill button { font: inherit; }
 .pill--idle { width: var(--pill-idle-collapsed-width); height: var(--pill-idle-collapsed-height); justify-content: center; transition: width 140ms ease, height 140ms ease; }
@@ -217,10 +217,11 @@ html[data-surface="pill"], html[data-surface="pill"] body, html[data-surface="pi
 .pill--picker-open .pill__idle-menu { width: var(--pill-idle-picker-width); height: var(--pill-picker-menu-height); justify-content: flex-end; }
 .pill__idle-tooltip {
   display: grid;
-  width: 137px;
+  width: calc(var(--pill-idle-hover-width) - 9px);
   height: 32px;
   flex: 0 0 auto;
   place-items: center;
+  overflow: hidden;
   padding: 0 10px;
   margin-bottom: 6px;
   border: 0;
@@ -230,6 +231,8 @@ html[data-surface="pill"], html[data-surface="pill"] body, html[data-surface="pi
   font-size: 11px;
   font-weight: 600;
   letter-spacing: -.1px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   box-shadow: 0 1px 3px rgba(0, 0, 0, .4);
 }
 .pill__idle-tooltip[data-action="scratchpad"] { width: 103px; }
@@ -245,14 +248,15 @@ html[data-surface="pill"], html[data-surface="pill"] body, html[data-surface="pi
   cursor: pointer;
 }
 .pill__round svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.8; }
-.pill__round--dictate, .pill__round--scratchpad { background: #050505; color: white; box-shadow: 0 1px 3px rgba(0, 0, 0, .4); }
-.pill__round--dictate:hover, .pill__round--dictate:focus-visible, .pill__round--scratchpad:hover, .pill__round--scratchpad:focus-visible { background: #191919; }
+.pill__round--dictate, .pill__round--microphone, .pill__round--scratchpad { background: #050505; color: white; box-shadow: 0 1px 3px rgba(0, 0, 0, .4); }
+.pill__round--dictate:hover, .pill__round--dictate:focus-visible, .pill__round--microphone:hover, .pill__round--microphone:focus-visible, .pill__round--scratchpad:hover, .pill__round--scratchpad:focus-visible { background: #191919; }
+.pill__round:focus-visible { outline-offset: -2px; }
 .pill__microphone-menu {
   position: absolute;
-  bottom: 66px;
+  bottom: calc(var(--pill-idle-hover-height) + 2px);
   display: flex;
-  width: 202px;
-  max-height: 142px;
+  width: calc(var(--pill-idle-picker-width) - 8px);
+  max-height: calc(var(--pill-idle-picker-height) - var(--pill-idle-hover-height) - 6px);
   flex-direction: column;
   gap: 2px;
   overflow: auto;
@@ -265,6 +269,7 @@ html[data-surface="pill"], html[data-surface="pill"] body, html[data-surface="pi
 .pill__microphone-title { padding: 3px 8px 5px; color: #8f8f8f; font-size: 9px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
 .pill__microphone-menu button { display: flex; width: 100%; min-height: 29px; align-items: center; gap: 7px; padding: 5px 8px; border: 0; border-radius: 8px; background: transparent; color: #f4f4f4; cursor: pointer; font-size: 10px; text-align: left; }
 .pill__microphone-menu button:hover { background: #1b1b1b; }
+.pill__microphone-menu button:disabled { background: transparent; color: #8f8f8f; cursor: wait; }
 .pill__microphone-menu button > span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pill__device-check { display: grid; width: 13px; height: 13px; flex: 0 0 auto; place-items: center; }
 .pill__device-check svg { width: 12px; height: 12px; fill: none; stroke: white; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; }
@@ -321,7 +326,7 @@ html[data-surface="pill"], html[data-surface="pill"] body, html[data-surface="pi
   align-items: center;
   justify-content: flex-end;
   color: #f8f8f8;
-  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI Variable Text", "Segoe UI", sans-serif;
 }
 .pill-error-notice {
   display: grid;
@@ -402,7 +407,7 @@ html[data-surface="pill"], html[data-surface="pill"] body, html[data-surface="pi
 @keyframes pill-error-countdown { to { stroke-dashoffset: 40.84; } }
 
 @media (prefers-reduced-motion: reduce) {
-  .pill, .pill__idle-menu, .pill-wave i, .pill-compact-wave i, .pill-error-notice { animation: none; transition: none; }
+  .pill, .pill__idle-menu, .pill-wave i, .pill-compact-wave i, .pill-error-notice, .pill-error-notice__countdown-progress { animation: none; transition: none; }
 }
 
 @media (max-width: 900px) {

@@ -29,8 +29,8 @@ export interface ModelTierRuntimeStatus {
   familyId: ModelFamilyId;
   tier: ConcreteModelTier;
   artifactId: string;
-  qualityNote: string;
-  verificationStatus: Exclude<ModelVerificationState, "unknown">;
+  qualityNote?: string;
+  verificationStatus: ModelVerificationState;
 }
 
 export interface ModelTierView {
@@ -102,26 +102,26 @@ export function platformModelCopy(platform: ModelHardwareView["platform"] | null
 } {
   if (platform === "darwin") {
     return {
-      summary: "Auto uses available unified memory to choose the best MLX tier for this Mac.",
+      summary: "Auto uses available unified memory to choose the highest profile that fits in the active family.",
       memoryLabel: "Unified memory",
     };
   }
   if (platform === "win32") {
     return {
-      summary: "Auto uses available NVIDIA VRAM to choose the best faster-whisper tier for this PC.",
+      summary: "Auto uses available NVIDIA VRAM to choose the highest profile that fits in the active family.",
       memoryLabel: "NVIDIA VRAM",
     };
   }
   return {
-    summary: "Auto uses the platform memory reported by LocalScribe to choose a supported tier.",
+    summary: "Auto uses the accelerator memory reported by LocalScribe to choose the highest supported profile that fits in the active family.",
     memoryLabel: "Accelerator memory",
   };
 }
 
-export function platformEngineLabel(platform: ModelHardwareView["platform"] | null): string {
-  if (platform === "darwin") return "MLX Whisper";
-  if (platform === "win32") return "faster-whisper/CTranslate2 CUDA";
-  return "Curated local speech runtime";
+export function catalogFamilyBackendLabel(
+  family: ModelCatalog["families"][number],
+): string {
+  return [...new Set(family.artifacts.map((artifact) => artifact.backend))].join(" · ");
 }
 
 export function friendlyPrecision(precision: string): string {
@@ -144,6 +144,14 @@ export function formatModelBytes(bytes: number): string {
   if (bytes <= 0) return "0 GB";
   const gigabytes = bytes / 1_000_000_000;
   return `${gigabytes.toFixed(gigabytes >= 10 ? 1 : 2)} GB`;
+}
+
+export function formatStorageBytes(bytes: number | null): string {
+  if (bytes === null) return "Size unavailable";
+  if (bytes < 1_000) return `${bytes} B`;
+  if (bytes < 1_000_000) return `${(bytes / 1_000).toFixed(1)} KB`;
+  if (bytes < 1_000_000_000) return `${(bytes / 1_000_000).toFixed(1)} MB`;
+  return `${(bytes / 1_000_000_000).toFixed(2)} GB`;
 }
 
 export function formatAcceleratorBytes(bytes: number): string {
@@ -196,7 +204,12 @@ export function catalogTierViews(
           basis: profile.memoryBasis,
         },
         license: friendlyLicense(artifact.license),
-        qualityNote: runtime?.qualityNote ?? "Curated local speech profile. Activate this family to verify its installed data.",
+        qualityNote: runtime?.qualityNote
+          ?? (family.active
+            ? "Runtime quality details are unavailable until model diagnostics refresh."
+            : family.inLibrary
+              ? "Activate this family to load its runtime quality details."
+              : "Add this family to your library, then activate it to load runtime quality details."),
         verificationStatus: runtime?.verificationStatus ?? "unknown",
       };
     });
@@ -237,7 +250,9 @@ export function ModelPerformanceSettings({
         <div>
           <span>Performance within the active family</span>
           <h2 id="model-auto-heading">
-            {mode === "auto" ? <>Auto resolves to <strong>{autoResolutionLabel}</strong></> : <>Using <strong>{requestedLabel}</strong></>}
+            {mode === "auto"
+              ? <>Auto resolves to <strong>{autoResolutionLabel}</strong></>
+              : <><strong>{requestedLabel}</strong> selected</>}
           </h2>
           <p>{platformCopy.summary} Family selection changes the speech model; Auto, High, Medium, and Low choose a profile only within that active family.</p>
         </div>
@@ -280,6 +295,14 @@ export function ModelPerformanceSettings({
           <span>{resolutionReason}</span>
         </p>
       )}
+      {mode !== "auto" && fitsMemoryBudget === false && (
+        <p className="ls-model-resolution-note" role="status">
+          <InfoIcon />
+          <span>
+            <strong>{requestedLabel}</strong> cannot run with the {platformCopy.memoryLabel} currently available. Dictation stays blocked until enough {platformCopy.memoryLabel} is available or you choose a lower profile.
+          </span>
+        </p>
+      )}
 
       <MemoryStatus
         hardware={hardware}
@@ -313,31 +336,52 @@ export function ModelPerformanceSettings({
         ) : !catalog ? (
           <div className="ls-model-empty" role="status">Loading curated model catalog…</div>
         ) : (
-          <div className="ls-model-family-list">
-            {catalog.families.map((family) => (
-              <ModelFamilyCard
-                key={family.familyId}
-                family={family}
-                mode={mode}
-                resolvedTier={resolvedTier}
-                fitsMemoryBudget={fitsMemoryBudget}
-                runtimeTierStatuses={runtimeTierStatuses}
-                action={action}
-                runEligibilityUnknown={eligibilityUnknown}
-                platformEngine={platformEngineLabel(platform)}
-                onInstall={onInstall}
-                onRepair={onRepair}
-                onRemove={onRemove}
-                onAddFamily={onAddFamily}
-                onActivateFamily={onActivateFamily}
-              />
-            ))}
-          </div>
+          <>
+            <div className="ls-model-family-list">
+              {catalog.families.map((family) => (
+                <ModelFamilyCard
+                  key={family.familyId}
+                  family={family}
+                  mode={mode}
+                  resolvedTier={resolvedTier}
+                  fitsMemoryBudget={fitsMemoryBudget}
+                  runtimeTierStatuses={runtimeTierStatuses}
+                  action={action}
+                  runEligibilityUnknown={eligibilityUnknown}
+                  onInstall={onInstall}
+                  onRepair={onRepair}
+                  onRemove={onRemove}
+                  onAddFamily={onAddFamily}
+                  onActivateFamily={onActivateFamily}
+                />
+              ))}
+            </div>
+            {catalog.unmanagedEntries.length > 0 && (
+              <section className="ls-model-unmanaged" aria-labelledby="model-unmanaged-heading">
+                <div>
+                  <h3 id="model-unmanaged-heading">Other model storage found</h3>
+                  <p>These entries are not managed or used by this LocalScribe build. They are listed for transparency and will not be deleted automatically.</p>
+                </div>
+                <ul>
+                  {catalog.unmanagedEntries.map((entry) => (
+                    <li key={`${entry.kind}:${entry.name}`}>
+                      <strong>{entry.name}</strong>
+                      <span>
+                        {entry.reason === "interrupted-install" ? "Interrupted model installation" : "Unmanaged model data"}
+                        {" · "}{entry.kind}
+                        {" · "}{formatStorageBytes(entry.sizeBytes)}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            )}
+          </>
         )}
 
-        {platform === "darwin" && (
+        {catalog && (
           <p className="ls-model-compatibility-note">
-            Additional model families appear here only after their complete High, Medium, and Low MLX profiles have pinned manifests and package validation.
+            Additional model families appear here only after their complete High, Medium, and Low profiles have pinned manifests and package validation for this local runtime.
           </p>
         )}
       </section>
@@ -366,6 +410,9 @@ function MemoryStatus({
   }
   const requirement = memoryRequirement?.requiredFreeMemoryBytes;
   const headroom = memoryRequirement?.reservedHeadroomBytes;
+  const inlineMemoryLabel = platformCopy.memoryLabel === "NVIDIA VRAM"
+    ? platformCopy.memoryLabel
+    : platformCopy.memoryLabel.toLowerCase();
   return (
     <>
       <section className="ls-model-hardware" aria-label="Detected accelerator memory">
@@ -379,14 +426,18 @@ function MemoryStatus({
         </span>
         <span>
           <strong>{hardware.availableMemoryBytes === null ? "Unavailable" : formatAcceleratorBytes(hardware.availableMemoryBytes)}</strong>
-          <small>Available now · {hardware.memoryBasis}</small>
+          <small>
+            {hardware.availableMemoryBytes === null
+              ? "Availability · unavailable"
+              : `Available now · ${hardware.memoryBasis}`}
+          </small>
         </span>
       </section>
       {requirement !== null && requirement !== undefined ? (
         <p className="ls-model-memory-note">
           <InfoIcon />
           <span>
-            This selected profile requires <strong>{formatAcceleratorBytes(requirement)}</strong> free {platformCopy.memoryLabel.toLowerCase()}, including {headroom === null || headroom === undefined ? "the reserved runtime headroom" : `${formatAcceleratorBytes(headroom)} reserved headroom`}.
+            This selected profile requires <strong>{formatAcceleratorBytes(requirement)}</strong> free {inlineMemoryLabel}, including {headroom === null || headroom === undefined ? "the reserved runtime headroom" : `${formatAcceleratorBytes(headroom)} reserved headroom`}.
           </span>
         </p>
       ) : eligibilityUnknown ? (
@@ -407,7 +458,6 @@ function ModelFamilyCard({
   runtimeTierStatuses,
   action,
   runEligibilityUnknown,
-  platformEngine,
   onInstall,
   onRepair,
   onRemove,
@@ -421,7 +471,6 @@ function ModelFamilyCard({
   runtimeTierStatuses: readonly ModelTierRuntimeStatus[];
   action: ModelActionState;
   runEligibilityUnknown: boolean;
-  platformEngine: string;
   onInstall(familyId: ModelFamilyId, tier: ConcreteModelTier): void;
   onRepair(familyId: ModelFamilyId, tier: ConcreteModelTier): void;
   onRemove(familyId: ModelFamilyId, tier: ConcreteModelTier): void;
@@ -450,7 +499,7 @@ function ModelFamilyCard({
             {!family.inLibrary && <span className="ls-model-family-badge">Available to add</span>}
           </div>
           <h3>{family.displayName}</h3>
-          <p>Platform engine: {platformEngine}</p>
+          <p>Catalog backend: {catalogFamilyBackendLabel(family)}</p>
         </div>
         {!family.inLibrary ? (
           <button type="button" className="ls-small-button ls-model-primary-action" onClick={() => onAddFamily(family.familyId)}>
@@ -483,6 +532,7 @@ function ModelFamilyCard({
               && resolvedTier === tier.tier
             ))}
             activeFamily={family.active}
+            familyInLibrary={family.inLibrary}
             sharedArtifact={sharedArtifactIds.has(tier.artifactId)}
             isArtifactControl={firstTierForArtifact.get(tier.artifactId) === tier.tier}
             artifactControlTier={firstTierForArtifact.get(tier.artifactId) ?? tier.tier}
@@ -502,6 +552,7 @@ function ModelTierRow({
   tier,
   selected,
   activeFamily,
+  familyInLibrary,
   sharedArtifact,
   isArtifactControl,
   artifactControlTier,
@@ -514,6 +565,7 @@ function ModelTierRow({
   tier: ModelTierView;
   selected: boolean;
   activeFamily: boolean;
+  familyInLibrary: boolean;
   sharedArtifact: boolean;
   isArtifactControl: boolean;
   artifactControlTier: ConcreteModelTier;
@@ -549,7 +601,9 @@ function ModelTierRow({
       <div className="ls-model-tier-footer">
         <p>{tier.qualityNote}{runEligibilityUnknown && activeFamily ? " Run eligibility is unknown until accelerator memory can be read." : ""}</p>
         {!activeFamily ? (
-          <span className="ls-model-shared-label">{tier.familyId === DEFAULT_MODEL_FAMILY_ID ? "Built-in family" : "Activate to manage"}</span>
+          <span className="ls-model-shared-label">
+            {familyInLibrary ? "Activate to manage" : "Add to library to manage"}
+          </span>
         ) : sharedArtifact && !isArtifactControl ? (
           <span className="ls-model-shared-label">{sharedWith} · managed from {tierLabelFor(artifactControlTier)}</span>
         ) : (
@@ -601,6 +655,11 @@ function ModelArtifactControl({
     </button>
   );
 
+  // Keep the confirmed operation visible until it finishes even if a
+  // diagnostics or catalog refresh updates the disk status first.
+  if (activeAction === "installing") return operationButton("install", "Download");
+  if (activeAction === "repairing") return operationButton("repair", "Repair", "ls-model-repair-button");
+  if (activeAction === "removing") return operationButton("remove", "Remove", "ls-model-remove-button");
   if (tier.verificationStatus === "verified") return operationButton("remove", "Remove", "ls-model-remove-button");
   if (tier.verificationStatus === "invalid") return operationButton("repair", "Repair", "ls-model-repair-button");
   if (tier.verificationStatus === "missing") return operationButton("install", "Download");

@@ -5,6 +5,7 @@ import {
   MODEL_PERFORMANCE_MODES,
   appSettingsSchema,
   diagnosticsSchema,
+  modelCatalogSchema,
   modelFamilyLibraryRequestSchema,
   modelInstallRequestSchema,
   modelRemoveRequestSchema,
@@ -159,6 +160,103 @@ describe("IPC contracts", () => {
     expect(() => modelFamilyLibraryRequestSchema.parse({
       familyId: "https://untrusted.invalid/model",
     })).toThrow();
+  });
+
+  it("requires one internally consistent verification for every curated model artifact", () => {
+    const profiles = (
+      familyId: "whisper-large-v3" | "whisper-large-v2",
+      artifactId: string,
+    ) => (["high", "medium", "low"] as const).map((tier) => ({
+      profileId: `${familyId}-${tier}`,
+      tier,
+      artifactId,
+      engine: "faster-whisper" as const,
+      precision: tier === "high" ? "float16" : tier === "medium" ? "int8_float16" : "int8",
+      expectedMemoryMinBytes: 1,
+      expectedMemoryMaxBytes: 2,
+      memoryBasis: "estimated" as const,
+    }));
+    const artifact = (artifactId: string, modelId: string) => ({
+      artifactId,
+      displayName: modelId,
+      backend: "faster-whisper/CTranslate2",
+      modelId,
+      storageDirectory: artifactId,
+      revision: "a".repeat(40),
+      license: "MIT",
+      expectedDownloadBytes: 1,
+    });
+    const verification = (
+      familyId: "whisper-large-v3" | "whisper-large-v2",
+      artifactId: string,
+    ) => ({
+      familyId,
+      artifactId,
+      present: false,
+      verified: false,
+      verificationStatus: "missing" as const,
+      sizeBytes: 0,
+      expectedBytes: 1,
+      verifiedFiles: 0,
+      expectedFiles: 1,
+    });
+    const catalog = {
+      platform: "win32-x64-cuda" as const,
+      activeModelFamilyId: "whisper-large-v3" as const,
+      modelLibraryFamilyIds: ["whisper-large-v3" as const],
+      families: [
+        {
+          familyId: "whisper-large-v3" as const,
+          displayName: "Whisper large-v3",
+          active: true,
+          inLibrary: true,
+          artifacts: [artifact("whisper-large-v3-ctranslate2", "Systran/faster-whisper-large-v3")],
+          profiles: profiles("whisper-large-v3", "whisper-large-v3-ctranslate2"),
+        },
+        {
+          familyId: "whisper-large-v2" as const,
+          displayName: "Whisper large-v2",
+          active: false,
+          inLibrary: false,
+          artifacts: [artifact("whisper-large-v2-ctranslate2", "Systran/faster-whisper-large-v2")],
+          profiles: profiles("whisper-large-v2", "whisper-large-v2-ctranslate2"),
+        },
+      ],
+      verifications: [
+        verification("whisper-large-v3", "whisper-large-v3-ctranslate2"),
+        verification("whisper-large-v2", "whisper-large-v2-ctranslate2"),
+      ],
+      unmanagedEntries: [],
+    };
+
+    expect(modelCatalogSchema.parse(catalog).verifications).toHaveLength(2);
+    expect(() => modelCatalogSchema.parse({
+      ...catalog,
+      verifications: catalog.verifications.slice(0, 1),
+    })).toThrow("Every curated artifact must have one verification result");
+    expect(() => modelCatalogSchema.parse({
+      ...catalog,
+      verifications: [
+        ...catalog.verifications,
+        catalog.verifications[0],
+      ],
+    })).toThrow("Duplicate artifact verification");
+    expect(() => modelCatalogSchema.parse({
+      ...catalog,
+      verifications: [{
+        ...catalog.verifications[0],
+        present: true,
+      }, catalog.verifications[1]],
+    })).toThrow("presence state is inconsistent");
+    expect(() => modelCatalogSchema.parse({
+      ...catalog,
+      families: [{
+        ...catalog.families[0],
+        profiles: catalog.families[0]!.profiles.map((profile, index) => index === 0
+          ? { ...profile, artifactId: "missing-artifact" }
+          : profile),
+      }, catalog.families[1]],
+    })).toThrow("Profile does not reference a curated family artifact");
   });
 
   it("accepts scratchpad notes with a derived title and bounded body", () => {

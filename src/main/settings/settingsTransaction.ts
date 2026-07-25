@@ -32,15 +32,19 @@ export function persistSettingsTransaction(
   next: AppSettings,
   previous = database.getSettings(),
 ): AppSettings {
-  const shortcutsChanged = next.holdShortcut !== previous.holdShortcut
-    || next.toggleShortcut !== previous.toggleShortcut;
-  if (shortcutsChanged) hotkeys.reconfigure(next.holdShortcut, next.toggleShortcut);
+  const validatedPrevious = appSettingsSchema.parse(previous);
+  const validatedNext = appSettingsSchema.parse(next);
+  const shortcutsChanged = validatedNext.holdShortcut !== validatedPrevious.holdShortcut
+    || validatedNext.toggleShortcut !== validatedPrevious.toggleShortcut;
+  if (shortcutsChanged) {
+    hotkeys.reconfigure(validatedNext.holdShortcut, validatedNext.toggleShortcut);
+  }
   try {
-    return database.saveSettings(next);
+    return database.saveSettings(validatedNext);
   } catch (error) {
     if (shortcutsChanged) {
       try {
-        hotkeys.reconfigure(previous.holdShortcut, previous.toggleShortcut);
+        hotkeys.reconfigure(validatedPrevious.holdShortcut, validatedPrevious.toggleShortcut);
       } catch (rollbackError) {
         console.error("Could not restore LocalScribe shortcuts after a settings write failed", rollbackError);
       }

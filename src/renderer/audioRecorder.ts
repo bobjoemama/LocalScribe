@@ -17,6 +17,21 @@ export class RecorderCancelledError extends Error {
   }
 }
 
+export function audioDurationLimitLabel(durationMs = AUDIO_MAX_DURATION_MS): string {
+  const totalSeconds = Math.max(1, Math.round(durationMs / 1_000));
+  if (totalSeconds % 60 === 0) {
+    const minutes = totalSeconds / 60;
+    return `${minutes} ${minutes === 1 ? "minute" : "minutes"}`;
+  }
+  return `${totalSeconds} ${totalSeconds === 1 ? "second" : "seconds"}`;
+}
+
+function createCaptureLimitError(kind: "large" | "long"): Error {
+  return new Error(
+    `Recording is too ${kind}; please keep dictation under ${audioDurationLimitLabel()}`,
+  );
+}
+
 export class AudioRecorder {
   private context: AudioContext | null = null;
   private stream: MediaStream | null = null;
@@ -71,15 +86,7 @@ export class AudioRecorder {
   private async startInternal(deviceId: string | null, generation: number): Promise<void> {
     this.chunks = [];
     this.resetCaptureLimit();
-    const stream = await navigator.mediaDevices.getUserMedia({
-      audio: {
-        deviceId: deviceId ? { exact: deviceId } : undefined,
-        channelCount: 1,
-        echoCancellation: true,
-        noiseSuppression: true,
-        autoGainControl: true,
-      },
-    });
+    const stream = await this.openInputStream(deviceId, generation);
     if (generation !== this.generation) {
       for (const track of stream.getTracks()) track.stop();
       throw new RecorderCancelledError();
@@ -105,9 +112,7 @@ export class AudioRecorder {
       const remainingSamples = this.maxCapturedSamples - this.capturedSamples;
       const remainingBytes = this.maxCapturedBytes - this.capturedBytes;
       if (chunk.length > remainingSamples || chunk.byteLength > remainingBytes) {
-        this.captureLimitError = new Error(
-          "Recording is too large; please keep dictation under 10 minutes",
-        );
+        this.captureLimitError = createCaptureLimitError("large");
         this.stopCaptureAtLimit();
         return;
       }
@@ -129,6 +134,23 @@ export class AudioRecorder {
     };
     this.source.connect(this.node);
     this.startedAt = performance.now();
+  }
+
+  private async openInputStream(
+    deviceId: string | null,
+    generation: number,
+  ): Promise<MediaStream> {
+    try {
+      return await navigator.mediaDevices.getUserMedia(audioConstraints(deviceId));
+    } catch (error) {
+      // Browser device identifiers can change after an unplug, a driver
+      // update, or an OS privacy reset. Only that narrow stale-device failure
+      // may fall back to the system default; permission, security, and hardware
+      // errors must remain visible to the user.
+      if (!deviceId || !isUnavailableInputDeviceError(error)) throw error;
+      if (generation !== this.generation) throw new RecorderCancelledError();
+      return navigator.mediaDevices.getUserMedia(audioConstraints(null));
+    }
   }
 
   stop(): Promise<CapturedAudio> {
@@ -158,7 +180,7 @@ export class AudioRecorder {
     }
     if (durationMs > AUDIO_MAX_DURATION_MS) {
       this.resetAfterStop();
-      throw new Error("Recording is too long; please keep dictation under 10 minutes");
+      throw createCaptureLimitError("long");
     }
     const merged = merge(this.chunks);
     if (merged.length < Math.round(inputRate * 0.1)) {
@@ -173,7 +195,7 @@ export class AudioRecorder {
     const wav = encodePcm16Wav(samples, AUDIO_SAMPLE_RATE_HZ);
     if (wav.byteLength > AUDIO_MAX_FILE_BYTES) {
       this.resetAfterStop();
-      throw new Error("Recording is too large; please keep dictation under 10 minutes");
+      throw createCaptureLimitError("large");
     }
     this.resetAfterStop();
     return { wav, durationMs };
@@ -270,6 +292,25 @@ export class AudioRecorder {
     this.maxCapturedBytes = 0;
     this.captureLimitError = null;
   }
+}
+
+function audioConstraints(deviceId: string | null): MediaStreamConstraints {
+  return {
+    audio: {
+      deviceId: deviceId ? { exact: deviceId } : undefined,
+      channelCount: 1,
+      echoCancellation: true,
+      noiseSuppression: true,
+      autoGainControl: true,
+    },
+  };
+}
+
+export function isUnavailableInputDeviceError(error: unknown): boolean {
+  if (!(error instanceof Error) && !(typeof DOMException !== "undefined" && error instanceof DOMException)) {
+    return false;
+  }
+  return error.name === "NotFoundError" || error.name === "OverconstrainedError";
 }
 
 export function audioLevelFromRms(rms: number): number {

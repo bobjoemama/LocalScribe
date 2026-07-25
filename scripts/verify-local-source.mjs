@@ -4,7 +4,7 @@ import { spawnSync } from "node:child_process";
 
 const npmExecutable = process.platform === "win32" ? "npm.cmd" : "npm";
 const checks = [
-  ["run", "toolchain:verify:npm"],
+  ["run", "toolchain:verify"],
   ["run", "audit:production"],
   ["run", "audit:all"],
   ["run", "worker:check-locks"],

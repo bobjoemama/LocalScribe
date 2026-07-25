@@ -64,4 +64,17 @@ describe("HoldShortcutGesture", () => {
     expect(callbacks.onHoldStart).toHaveBeenCalledOnce();
     expect(callbacks.onHoldEnd).toHaveBeenCalledOnce();
   });
+
+  it("releases an active hold exactly once when its listener lifecycle resets", () => {
+    const gesture = new HoldShortcutGesture(callbacks, 160);
+    gesture.keyDown();
+    vi.advanceTimersByTime(160);
+
+    gesture.reset();
+    gesture.reset();
+    gesture.keyUp();
+
+    expect(callbacks.onHoldStart).toHaveBeenCalledOnce();
+    expect(callbacks.onHoldEnd).toHaveBeenCalledOnce();
+  });
 });

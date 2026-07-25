@@ -463,6 +463,50 @@ class WorkerProtocolTests(unittest.TestCase):
             )
             self.assertEqual(messages[1]["code"], "model_not_installed")
 
+    def test_load_recovers_verified_backup_without_downloading(self) -> None:
+        manifest = test_manifest()
+        with tempfile.TemporaryDirectory() as temporary:
+            model_root = Path(temporary).resolve()
+            transaction, _staging, backup = worker_module._create_model_transaction(
+                model_root,
+                manifest,
+            )
+            write_installed_test_model(
+                transaction,
+                MODEL_ID,
+            ).replace(backup)
+            runtime = FakeRuntime()
+
+            def installer(root: Path, selected: ModelManifest) -> Path:
+                recovered = root / selected.storage_directory
+                self.assertTrue(
+                    worker_module._valid_model_directory(recovered, selected),
+                    "load_model must recover the verified backup before invoking the installer",
+                )
+                return recovered
+
+            messages, _errors, _exit_code = self.run_protocol(
+                encode_requests(
+                    request(
+                        "load_model",
+                        modelId=MODEL_ID,
+                        modelRoot=str(model_root),
+                    ),
+                    request("shutdown"),
+                ),
+                installer=installer,
+                factory=lambda *_args: runtime,
+            )
+
+            self.assertEqual(messages[1]["type"], "model_ready")
+            self.assertFalse(transaction.exists())
+            self.assertTrue(
+                worker_module._valid_model_directory(
+                    model_root / manifest.storage_directory,
+                    manifest,
+                )
+            )
+
     def test_rejects_invalid_tier_compute_pairs_without_loading(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             invalid_messages = [
@@ -596,6 +640,7 @@ class WorkerProtocolTests(unittest.TestCase):
                 "id": info_request["id"],
                 "acceleratorKind": "nvidia-cuda",
                 "deviceName": "NVIDIA GeForce RTX 4090",
+                "deviceIndex": 0,
                 "totalVramBytes": 25_769_803_776,
                 "freeVramBytes": 20_000_000_000,
                 "memoryBasis": "nvml-current",
@@ -1037,6 +1082,44 @@ class WorkerProtocolTests(unittest.TestCase):
 
 
 class ModelIntegrityTests(unittest.TestCase):
+    def test_catalog_identity_is_manifest_driven_but_never_accepts_a_url(self) -> None:
+        source = worker_module._manifest_path("faster-whisper-large-v2.json")
+        raw = json.loads(source.read_text(encoding="utf-8"))
+        raw.update(
+            {
+                "modelId": "curated-owner/custom-faster-whisper",
+                "artifactId": "custom-faster-whisper",
+                "storageDirectory": "custom-faster-whisper",
+                "revision": "c" * 40,
+            }
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            manifest_path = Path(temporary) / source.name
+            manifest_path.write_text(json.dumps(raw), encoding="utf-8")
+            manifest = worker_module._load_model_manifest(manifest_path)
+            self.assertEqual(
+                (
+                    manifest.model_id,
+                    manifest.artifact_id,
+                    manifest.storage_directory,
+                    manifest.revision,
+                ),
+                (
+                    "curated-owner/custom-faster-whisper",
+                    "custom-faster-whisper",
+                    "custom-faster-whisper",
+                    "c" * 40,
+                ),
+            )
+
+            raw["modelId"] = "https://untrusted.invalid/model"
+            manifest_path.write_text(json.dumps(raw), encoding="utf-8")
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "packaged_model_manifest_invalid",
+            ):
+                worker_module._load_model_manifest(manifest_path)
+
     def test_catalog_identity_revision_allowlist_and_total(self) -> None:
         self.assertEqual(MODEL_ID, "Systran/faster-whisper-large-v3")
         self.assertEqual(MODEL_REVISION, "edaa852ec7e145841d8ffdb056a99866b5f0a478")
@@ -1164,13 +1247,133 @@ class ModelIntegrityTests(unittest.TestCase):
             self.assertEqual(installed, old_directory.resolve())
             self.assertTrue(worker_module._valid_model_directory(installed, manifest))
             self.assertEqual(set(path.name for path in installed.iterdir()), {"model.bin"})
-            self.assertFalse(any(path.name.startswith(".faster-whisper-") for path in root.iterdir()))
+            self.assertFalse(
+                any(
+                    path.name.startswith(worker_module.MODEL_TRANSACTION_PREFIX)
+                    for path in root.iterdir()
+                )
+            )
 
         self.assertEqual(len(calls), 1)
         self.assertEqual(calls[0]["repo_id"], manifest.model_id)
         self.assertEqual(calls[0]["revision"], manifest.revision)
         self.assertEqual(calls[0]["allow_patterns"], ["model.bin"])
         self.assertIs(calls[0]["token"], False)
+
+    def test_interrupted_download_cleans_only_marker_owned_transaction(self) -> None:
+        manifest = test_manifest()
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            malformed = root / f"{worker_module.MODEL_TRANSACTION_PREFIX}{'f' * 32}"
+            malformed.mkdir()
+            (malformed / worker_module.MODEL_TRANSACTION_MARKER).write_text(
+                "{}",
+                encoding="utf-8",
+            )
+            unowned = root / ".faster-whisper-staging-user-data"
+            unowned.mkdir()
+            (unowned / "keep.txt").write_text("keep", encoding="utf-8")
+
+            def interrupted_download(**kwargs: Any) -> str:
+                staging = Path(kwargs["local_dir"])
+                (staging / "model.bin").write_bytes(b"partial")
+                raise RuntimeError("simulated interruption")
+
+            fake_hub = types.SimpleNamespace(snapshot_download=interrupted_download)
+            with patch.object(
+                worker_module,
+                "MIN_FREE_DISK_BYTES",
+                0,
+            ), patch.dict(sys.modules, {"huggingface_hub": fake_hub}):
+                with self.assertRaisesRegex(WorkerError, "model download failed"):
+                    worker_module.ensure_model(root, manifest)
+
+            self.assertTrue(malformed.is_dir())
+            self.assertTrue((unowned / "keep.txt").is_file())
+            self.assertEqual(
+                {entry.name for entry in root.iterdir()},
+                {malformed.name, unowned.name},
+            )
+
+    def test_recovery_after_final_was_renamed_restores_verified_backup(self) -> None:
+        manifest = test_manifest()
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            transaction, staging, backup = worker_module._create_model_transaction(
+                root,
+                manifest,
+            )
+            write_test_model(staging)
+            final_directory = root / manifest.storage_directory
+            write_test_model(final_directory)
+            final_directory.replace(backup)
+            fake_hub = types.SimpleNamespace(
+                snapshot_download=lambda **_kwargs: self.fail(
+                    "recovery must not use the network"
+                )
+            )
+
+            with patch.dict(sys.modules, {"huggingface_hub": fake_hub}):
+                installed = worker_module.ensure_model(root, manifest)
+
+            self.assertEqual(installed, root / manifest.storage_directory)
+            self.assertTrue(worker_module._valid_model_directory(installed, manifest))
+            self.assertFalse(transaction.exists())
+
+    def test_recovery_after_staging_was_promoted_cleans_verified_backup(self) -> None:
+        manifest = test_manifest()
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            transaction, staging, backup = worker_module._create_model_transaction(
+                root,
+                manifest,
+            )
+            write_test_model(staging)
+            final_directory = root / manifest.storage_directory
+            write_test_model(final_directory)
+            final_directory.replace(backup)
+            staging.replace(final_directory)
+            fake_hub = types.SimpleNamespace(
+                snapshot_download=lambda **_kwargs: self.fail(
+                    "recovery must not use the network"
+                )
+            )
+
+            with patch.dict(sys.modules, {"huggingface_hub": fake_hub}):
+                installed = worker_module.ensure_model(root, manifest)
+
+            self.assertEqual(installed, final_directory)
+            self.assertTrue(worker_module._valid_model_directory(installed, manifest))
+            self.assertFalse(transaction.exists())
+            self.assertFalse(backup.exists())
+
+    def test_recovery_restores_verified_backup_over_corrupt_promoted_model(self) -> None:
+        manifest = test_manifest()
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            transaction, staging, backup = worker_module._create_model_transaction(
+                root,
+                manifest,
+            )
+            write_test_model(staging)
+            final_directory = root / manifest.storage_directory
+            write_test_model(final_directory)
+            final_directory.replace(backup)
+            staging.replace(final_directory)
+            (final_directory / "model.bin").write_bytes(b"corrupt")
+            fake_hub = types.SimpleNamespace(
+                snapshot_download=lambda **_kwargs: self.fail(
+                    "recovery must not use the network"
+                )
+            )
+
+            with patch.dict(sys.modules, {"huggingface_hub": fake_hub}):
+                installed = worker_module.ensure_model(root, manifest)
+
+            self.assertEqual(installed, final_directory)
+            self.assertTrue(worker_module._valid_model_directory(installed, manifest))
+            self.assertFalse(transaction.exists())
+            self.assertFalse(backup.exists())
 
     def test_valid_installed_model_never_calls_network_installer(self) -> None:
         fake_hub = types.SimpleNamespace(
@@ -1186,6 +1389,13 @@ class ModelIntegrityTests(unittest.TestCase):
 
 
 class FasterWhisperRuntimeTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.original_device_index = worker_module._SELECTED_CUDA_DEVICE_INDEX
+        worker_module._SELECTED_CUDA_DEVICE_INDEX = 0
+
+    def tearDown(self) -> None:
+        worker_module._SELECTED_CUDA_DEVICE_INDEX = self.original_device_index
+
     def test_cuda_dll_configuration_adds_only_bundled_directories_once(self) -> None:
         with (
             tempfile.TemporaryDirectory() as temporary,
@@ -1316,6 +1526,63 @@ class FasterWhisperRuntimeTests(unittest.TestCase):
                 FasterWhisperRuntime.load(Path(temporary), "int8", test_manifest())
         self.assertEqual(raised.exception.code, "compute_type_unsupported")
 
+    def test_load_requires_cuda_without_a_cpu_fallback(self) -> None:
+        fake_ctranslate2 = types.SimpleNamespace(
+            get_cuda_device_count=lambda: 0,
+            get_supported_compute_types=lambda *_args: self.fail(
+                "compute types must not be queried without a CUDA device"
+            ),
+        )
+        fake_faster_whisper = types.SimpleNamespace(
+            WhisperModel=lambda *_args, **_kwargs: self.fail(
+                "a CPU or alternate runtime must not be constructed"
+            )
+        )
+        with tempfile.TemporaryDirectory() as temporary, patch.object(
+            worker_module,
+            "_valid_model_directory",
+            return_value=True,
+        ), patch.object(
+            worker_module,
+            "_configure_windows_cuda_dlls",
+        ), patch.dict(
+            sys.modules,
+            {
+                "ctranslate2": fake_ctranslate2,
+                "faster_whisper": fake_faster_whisper,
+                "numpy": FakeNumpyModule(),
+            },
+        ):
+            with self.assertRaises(WorkerError) as raised:
+                FasterWhisperRuntime.load(
+                    Path(temporary),
+                    "int8",
+                    test_manifest(),
+                )
+        self.assertEqual(raised.exception.code, "cuda_unavailable")
+
+    def test_load_bounds_cuda_dll_configuration_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary, patch.object(
+            worker_module,
+            "_valid_model_directory",
+            return_value=True,
+        ), patch.object(
+            worker_module,
+            "_configure_windows_cuda_dlls",
+            side_effect=OSError("simulated DLL search failure"),
+        ):
+            with self.assertRaises(WorkerError) as raised:
+                FasterWhisperRuntime.load(
+                    Path(temporary),
+                    "int8_float16",
+                    test_manifest(),
+                )
+        self.assertEqual(raised.exception.code, "runtime_import_failed")
+        self.assertEqual(
+            raised.exception.public_message,
+            "faster-whisper CUDA runtime dependencies are unavailable",
+        )
+
     def test_transcribe_disables_timestamps_and_fully_materializes_final_text(self) -> None:
         iteration_completed = False
         transcribe_calls: list[tuple[Any, dict[str, Any]]] = []
@@ -1427,6 +1694,151 @@ class FasterWhisperRuntimeTests(unittest.TestCase):
             DeviceInfo("NVIDIA RTX 5000 Ada", 34_359_738_368, 28_000_000_000),
         )
         self.assertEqual(events, ["init", "shutdown"])
+
+    def test_multi_gpu_selection_reuses_the_highest_free_vram_device_for_runtime(
+        self,
+    ) -> None:
+        original_index = worker_module._SELECTED_CUDA_DEVICE_INDEX
+        calls: list[tuple[str, int] | tuple[str, int, str]] = []
+        memories = {
+            "gpu-0": types.SimpleNamespace(total=8 * 1024**3, free=2 * 1024**3),
+            "gpu-1": types.SimpleNamespace(total=24 * 1024**3, free=20 * 1024**3),
+        }
+        fake_pynvml = types.SimpleNamespace(
+            nvmlInit=lambda: None,
+            nvmlShutdown=lambda: None,
+            nvmlDeviceGetCount=lambda: 2,
+            nvmlDeviceGetHandleByIndex=lambda index: f"gpu-{index}",
+            nvmlDeviceGetName=lambda handle: {
+                "gpu-0": b"NVIDIA Low Memory",
+                "gpu-1": b"NVIDIA High Memory",
+            }[handle],
+            nvmlDeviceGetMemoryInfo=lambda handle: memories[handle],
+        )
+        fake_ctranslate2 = types.SimpleNamespace(
+            get_cuda_device_count=lambda: 2,
+            get_supported_compute_types=lambda device, index: (
+                calls.append(("compute", index))
+                or {"float16", "int8_float16", "int8"}
+                if device == "cuda" and index == 1
+                else set()
+            ),
+        )
+
+        class WhisperModel:
+            def __init__(self, _path: str, **kwargs: Any) -> None:
+                calls.append(("model", kwargs["device_index"], kwargs["compute_type"]))
+
+        try:
+            with patch.dict(sys.modules, {"pynvml": fake_pynvml}):
+                selected = worker_module.query_device_info()
+            self.assertEqual(selected.device_index, 1)
+
+            with tempfile.TemporaryDirectory() as temporary, patch.object(
+                worker_module,
+                "_valid_model_directory",
+                return_value=True,
+            ), patch.object(
+                worker_module,
+                "_configure_windows_cuda_dlls",
+            ), patch.dict(
+                sys.modules,
+                {
+                    "ctranslate2": fake_ctranslate2,
+                    "faster_whisper": types.SimpleNamespace(WhisperModel=WhisperModel),
+                    "numpy": FakeNumpyModule(),
+                },
+            ):
+                FasterWhisperRuntime.load(
+                    Path(temporary),
+                    "int8_float16",
+                    test_manifest(),
+                )
+        finally:
+            worker_module._SELECTED_CUDA_DEVICE_INDEX = original_index
+
+        self.assertEqual(
+            calls,
+            [
+                ("compute", 1),
+                ("model", 1, "int8_float16"),
+            ],
+        )
+
+    def test_fresh_runtime_selects_a_gpu_instead_of_falling_back_to_device_zero(
+        self,
+    ) -> None:
+        selected_indices: list[int] = []
+        memories = {
+            "gpu-0": types.SimpleNamespace(total=8 * 1024**3, free=1 * 1024**3),
+            "gpu-1": types.SimpleNamespace(total=16 * 1024**3, free=12 * 1024**3),
+        }
+        fake_pynvml = types.SimpleNamespace(
+            nvmlInit=lambda: None,
+            nvmlShutdown=lambda: None,
+            nvmlDeviceGetCount=lambda: 2,
+            nvmlDeviceGetHandleByIndex=lambda index: f"gpu-{index}",
+            nvmlDeviceGetName=lambda handle: handle,
+            nvmlDeviceGetMemoryInfo=lambda handle: memories[handle],
+        )
+        fake_ctranslate2 = types.SimpleNamespace(
+            get_cuda_device_count=lambda: 2,
+            get_supported_compute_types=lambda _device, index: (
+                selected_indices.append(index) or {"int8_float16"}
+            ),
+        )
+
+        class WhisperModel:
+            def __init__(self, _path: str, **kwargs: Any) -> None:
+                selected_indices.append(kwargs["device_index"])
+
+        worker_module._SELECTED_CUDA_DEVICE_INDEX = None
+        with tempfile.TemporaryDirectory() as temporary, patch.object(
+            worker_module,
+            "_valid_model_directory",
+            return_value=True,
+        ), patch.object(
+            worker_module,
+            "_configure_windows_cuda_dlls",
+        ), patch.dict(
+            sys.modules,
+            {
+                "pynvml": fake_pynvml,
+                "ctranslate2": fake_ctranslate2,
+                "faster_whisper": types.SimpleNamespace(WhisperModel=WhisperModel),
+                "numpy": FakeNumpyModule(),
+            },
+        ):
+            FasterWhisperRuntime.load(
+                Path(temporary),
+                "int8_float16",
+                test_manifest(),
+            )
+
+        self.assertEqual(selected_indices, [1, 1])
+
+    def test_query_device_info_rejects_values_outside_the_main_protocol(self) -> None:
+        for name, total, free in (
+            ("N" * 201, 6 * 1024**3, 5 * 1024**3),
+            ("NVIDIA RTX", 6 * 1024**3, 7 * 1024**3),
+        ):
+            with self.subTest(name_length=len(name), total=total, free=free):
+                events: list[str] = []
+                fake_pynvml = types.SimpleNamespace(
+                    nvmlInit=lambda events=events: events.append("init"),
+                    nvmlShutdown=lambda events=events: events.append("shutdown"),
+                    nvmlDeviceGetCount=lambda: 1,
+                    nvmlDeviceGetHandleByIndex=lambda _index: "gpu-0",
+                    nvmlDeviceGetName=lambda _handle, value=name: value,
+                    nvmlDeviceGetMemoryInfo=lambda _handle, total=total, free=free: (
+                        types.SimpleNamespace(total=total, free=free)
+                    ),
+                )
+                with patch.dict(sys.modules, {"pynvml": fake_pynvml}):
+                    with self.assertRaises(WorkerError) as raised:
+                        worker_module.query_device_info()
+                self.assertEqual(raised.exception.code, "device_info_invalid")
+                self.assertEqual(events, ["init", "shutdown"])
 
 
 if __name__ == "__main__":

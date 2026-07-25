@@ -16,6 +16,14 @@ if ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture -ne "X64
 
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $ProjectRoot
+$ReleaseJson = (& node scripts/release-metadata.mjs --platform win32 --format json) -join "`n"
+if ($LASTEXITCODE -ne 0) {
+  throw "Windows release metadata resolution failed."
+}
+$Release = $ReleaseJson | ConvertFrom-Json
+if ($Release.arch -ne "x64") {
+  throw "Windows release metadata must target x64."
+}
 
 $ExpectedNodeVersion = (Get-Content -LiteralPath (Join-Path $ProjectRoot ".nvmrc") -Raw).Trim()
 $ExpectedNodeVersion = $ExpectedNodeVersion.TrimStart([char]"v")
@@ -71,8 +79,8 @@ finally {
   $env:PYTHONPATH = $PreviousPythonPath
 }
 
-$CoreSbom = Join-Path $ProjectRoot "out\localscribe-core-runtime-windows-sbom.cdx.json"
-$PythonSbom = Join-Path $ProjectRoot "out\localscribe-python-windows-sbom.cdx.json"
+$CoreSbom = $Release.coreSbomPath
+$PythonSbom = $Release.pythonSbomPath
 $CoreSbomText = (& npm.cmd run --silent sbom:runtime:windows) -join "`n"
 if ($LASTEXITCODE -ne 0) {
   throw "Windows core-runtime SBOM generation failed."
@@ -101,15 +109,45 @@ foreach ($SbomPath in @($CoreSbom, $PythonSbom)) {
   }
 }
 
-$SetupFiles = @(Get-ChildItem -LiteralPath (Join-Path $ProjectRoot "out\make") -Recurse -File -Filter "*Setup.exe")
-$PackageFiles = @(Get-ChildItem -LiteralPath (Join-Path $ProjectRoot "out\make") -Recurse -File -Filter "*.nupkg")
-$ReleaseFiles = @(Get-ChildItem -LiteralPath (Join-Path $ProjectRoot "out\make") -Recurse -File -Filter "RELEASES")
-if ($SetupFiles.Count -ne 1 -or $PackageFiles.Count -ne 1 -or $ReleaseFiles.Count -ne 1) {
-  throw "Windows make must produce exactly one Setup.exe, one .nupkg, and one RELEASES file."
+$ExpectedPortablePaths = @($Release.primaryArtifactPaths | ForEach-Object {
+  [IO.Path]::GetFullPath([string]$_)
+})
+if ($ExpectedPortablePaths.Count -ne 1) {
+  throw "Windows release metadata must define exactly one portable ZIP."
+}
+$PortableFiles = @(
+  Get-ChildItem -LiteralPath $Release.makerDirectory -File |
+    Where-Object { $_.Extension -eq ".zip" }
+)
+if ($PortableFiles.Count -ne 1) {
+  throw "Windows make must produce exactly one verified portable ZIP."
+}
+$PortablePath = [IO.Path]::GetFullPath($PortableFiles[0].FullName)
+if (
+  -not $PortablePath.Equals(
+    $ExpectedPortablePaths[0],
+    [StringComparison]::OrdinalIgnoreCase
+  ) -or
+  ($PortableFiles[0].Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+  $PortableFiles[0].Length -le 0
+) {
+  throw "Windows make produced an unexpected, empty, or reparse-point portable ZIP."
+}
+$UnsupportedSquirrelFiles = @(
+  Get-ChildItem -LiteralPath (Join-Path $ProjectRoot "out\make") -Recurse -File |
+    Where-Object {
+      $_.Name -match "Setup\.exe$" -or
+      $_.Extension -eq ".nupkg" -or
+      $_.Name -eq "RELEASES"
+    }
+)
+if ($UnsupportedSquirrelFiles.Count -ne 0) {
+  throw "Default Windows verification must not publish unsupported Squirrel artifacts."
 }
 
-$PackagedApp = Join-Path $ProjectRoot "out\LocalScribe-win32-x64\LocalScribe.exe"
-$PackagedHelper = Join-Path $ProjectRoot "out\LocalScribe-win32-x64\resources\native\windows\active-target.exe"
+$PackagedApp = $Release.applicationPath
+$PackagedRoot = $Release.packageDirectory
+$PackagedHelper = Join-Path $PackagedRoot "resources\native\windows\active-target.exe"
 foreach ($RequiredBinary in @($PackagedApp, $PackagedHelper)) {
   if (-not (Test-Path -LiteralPath $RequiredBinary -PathType Leaf)) {
     throw "Required packaged Windows binary is missing: $RequiredBinary"
@@ -118,11 +156,11 @@ foreach ($RequiredBinary in @($PackagedApp, $PackagedHelper)) {
 
 $PublicRelease = $env:LOCALSCRIBE_RELEASE -eq "1"
 $PackagedPeFiles = @(
-  Get-ChildItem -LiteralPath (Join-Path $ProjectRoot "out\LocalScribe-win32-x64") -Recurse -File |
+  Get-ChildItem -LiteralPath $PackagedRoot -Recurse -File |
     Where-Object { $_.Extension -in @(".exe", ".dll", ".node") } |
     ForEach-Object { $_.FullName }
 )
-$SignedCandidates = @($PackagedPeFiles + $SetupFiles[0].FullName | Sort-Object -Unique)
+$SignedCandidates = @($PackagedPeFiles | Sort-Object -Unique)
 if ($SignedCandidates.Count -lt 3) {
   throw "Packaged Windows executable inventory is unexpectedly small."
 }
@@ -140,13 +178,11 @@ foreach ($SignedCandidate in $SignedCandidates) {
 }
 
 $ChecksumCandidates = @(
-  $SetupFiles[0].FullName,
-  $PackageFiles[0].FullName,
-  $ReleaseFiles[0].FullName,
+  $PortablePath,
   $CoreSbom,
   $PythonSbom
 )
-$ChecksumPath = Join-Path $ProjectRoot "out\SHA256SUMS-windows.txt"
+$ChecksumPath = $Release.checksumPath
 $OutRoot = (Resolve-Path -LiteralPath (Join-Path $ProjectRoot "out")).Path.TrimEnd("\")
 $ChecksumLines = foreach ($Candidate in $ChecksumCandidates) {
   $ResolvedCandidate = (Resolve-Path -LiteralPath $Candidate).Path
@@ -175,4 +211,9 @@ foreach ($Line in Get-Content -LiteralPath $ChecksumPath) {
   }
 }
 
-Write-Host "Complete local Windows verification passed."
+& node scripts/verify-release-assets.mjs --platform win32 | Out-Null
+if ($LASTEXITCODE -ne 0) {
+  throw "Windows release asset verification failed."
+}
+
+Write-Host "Complete local Windows verification passed for $($Release.productName) $($Release.version)."

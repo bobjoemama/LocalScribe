@@ -1,12 +1,16 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   MAX_HISTORY_ITEMS,
   type AppSettings,
   type Transcription,
 } from "../../../shared/contracts";
-import { shortcutCompactLabel } from "../../../shared/shortcuts";
+import {
+  shortcutCompactLabel,
+  type ShortcutDisplayPlatform,
+} from "../../../shared/shortcuts";
 import {
   activityForRange,
+  appIdentityKey,
   calculateStreak,
   categoryBreakdown,
   countWords,
@@ -16,6 +20,7 @@ import {
   type AppCategoryKey,
   type InsightRange,
 } from "../../../shared/insights";
+import { rendererSafeErrorMessage } from "../../../shared/rendererErrors";
 import "./history-insights.css";
 
 type HistoryState = {
@@ -24,16 +29,17 @@ type HistoryState = {
   error: string | null;
 };
 
-type InsightTab = "usage" | "voice";
-type ShortcutSettingsStatus = "loading" | "unavailable" | "ready";
+export type InsightTab = "usage" | "voice";
+type ShortcutRuntimeStatus = "loading" | "unavailable" | "ready";
 
 export function historyShortcutPresentation(
   shortcuts: Pick<AppSettings, "holdShortcut" | "toggleShortcut"> | null,
-  status: ShortcutSettingsStatus,
+  status: ShortcutRuntimeStatus,
+  platform?: ShortcutDisplayPlatform,
 ): { ariaLabel: string; holdLabel: string; toggleLabel: string | null } {
-  if (status === "ready" && shortcuts) {
-    const holdLabel = shortcutCompactLabel(shortcuts.holdShortcut);
-    const toggleLabel = shortcutCompactLabel(shortcuts.toggleShortcut);
+  if (status === "ready" && shortcuts && platform) {
+    const holdLabel = shortcutCompactLabel(shortcuts.holdShortcut, platform);
+    const toggleLabel = shortcutCompactLabel(shortcuts.toggleShortcut, platform);
     return {
       ariaLabel: `Hold ${holdLabel} to dictate; ${toggleLabel} toggles dictation`,
       holdLabel: `Hold ${holdLabel}`,
@@ -44,6 +50,81 @@ export function historyShortcutPresentation(
     ? "Shortcut settings are loading"
     : "Shortcut settings are unavailable";
   return { ariaLabel: label, holdLabel: label, toggleLabel: null };
+}
+
+export function historySampleLabel(itemCount: number): string {
+  if (itemCount >= MAX_HISTORY_ITEMS) return `Latest ${MAX_HISTORY_ITEMS}`;
+  return `${itemCount} saved`;
+}
+
+type HistorySavingState = boolean | "loading" | "unavailable";
+
+export function historyStoragePresentation(enabled: HistorySavingState): {
+  intro: string;
+  status: string;
+  emptyTitle: string;
+  emptyBody: string;
+  insightsEmptyBody: string;
+} {
+  if (enabled === false) {
+    return {
+      intro: "Transcript history saving is off. Existing encrypted transcripts remain searchable until removed or expired.",
+      status: "History saving off",
+      emptyTitle: "Transcript history saving is off",
+      emptyBody: "Turn on Save transcript history in Settings to keep completed dictations here.",
+      insightsEmptyBody: "Turn on Save transcript history in Settings to build local usage insights.",
+    };
+  }
+  if (enabled === true) {
+    return {
+      intro: "Your recent words stay searchable and encrypted on this computer.",
+      status: "Encrypted history",
+      emptyTitle: "Your first dictation will appear here",
+      emptyBody: "Use the floating bar or keyboard shortcut whenever you are ready.",
+      insightsEmptyBody: "Once you dictate, your local usage patterns will appear here.",
+    };
+  }
+  if (enabled === "loading") {
+    return {
+      intro: "Checking whether completed dictations are being saved locally.",
+      status: "Checking history setting",
+      emptyTitle: "Checking history settings",
+      emptyBody: "Completed dictation will still be inserted or copied while LocalScribe checks.",
+      insightsEmptyBody: "LocalScribe is checking whether future dictations will contribute to Insights.",
+    };
+  }
+  return {
+    intro: "Saved transcripts stay searchable and encrypted on this computer.",
+    status: "Local encrypted storage",
+    emptyTitle: "No saved dictations yet",
+    emptyBody: "History settings are unavailable right now; completed dictation will still be inserted or copied.",
+    insightsEmptyBody: "History settings are unavailable right now, so future insight collection cannot be confirmed.",
+  };
+}
+
+export function insightTabForKey(current: InsightTab, key: string): InsightTab | null {
+  if (key === "Home") return "usage";
+  if (key === "End") return "voice";
+  if (key === "ArrowLeft" || key === "ArrowRight") {
+    return current === "usage" ? "voice" : "usage";
+  }
+  return null;
+}
+
+export function createLatestRequestGate() {
+  let latestRequest = 0;
+  return {
+    begin(): number {
+      latestRequest += 1;
+      return latestRequest;
+    },
+    invalidate(): void {
+      latestRequest += 1;
+    },
+    isLatest(request: number): boolean {
+      return request === latestRequest;
+    },
+  };
 }
 
 const SENTENCE_PATTERN = /[^.!?]+[.!?]+|[^.!?]+$/g;
@@ -58,59 +139,107 @@ const STOP_WORDS = new Set([
   "what", "when", "where", "which", "who", "will", "with", "would", "you", "your",
 ]);
 
-export function HistoryScreen() {
+function useLocalHistory(fallbackError: string): readonly [HistoryState, () => Promise<void>] {
   const [{ items, loading, error }, setHistory] = useState<HistoryState>({
     items: [],
     loading: true,
     error: null,
   });
+  const requestGate = useRef(createLatestRequestGate());
+
+  const load = useCallback(async () => {
+    const request = requestGate.current.begin();
+    setHistory((current) => ({ ...current, loading: true, error: null }));
+    try {
+      const nextItems = await window.localScribe.history.list(MAX_HISTORY_ITEMS);
+      if (!requestGate.current.isLatest(request)) return;
+      setHistory({ items: nextItems, loading: false, error: null });
+    } catch (loadError) {
+      if (!requestGate.current.isLatest(request)) return;
+      setHistory((current) => ({
+        ...current,
+        loading: false,
+        error: historyErrorMessage(loadError, fallbackError),
+      }));
+    }
+  }, [fallbackError]);
+
+  useEffect(() => {
+    const gate = requestGate.current;
+    void load();
+    const unsubscribe = window.localScribe.history.onChanged(() => void load());
+    return () => {
+      gate.invalidate();
+      unsubscribe();
+    };
+  }, [load]);
+
+  return [{ items, loading, error }, load] as const;
+}
+
+export function HistoryScreen() {
+  const [{ items, loading, error }, load] = useLocalHistory("History could not be loaded.");
   const [query, setQuery] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
   const [notice, setNotice] = useState("");
   const [shortcuts, setShortcuts] = useState<Pick<AppSettings, "holdShortcut" | "toggleShortcut"> | null>(null);
-  const [shortcutSettingsStatus, setShortcutSettingsStatus] = useState<ShortcutSettingsStatus>("loading");
-
-  const load = useCallback(async () => {
-    setHistory((current) => ({ ...current, loading: true, error: null }));
-    try {
-      const nextItems = await window.localScribe.history.list(MAX_HISTORY_ITEMS);
-      setHistory({ items: nextItems, loading: false, error: null });
-    } catch (loadError) {
-      setHistory((current) => ({
-        ...current,
-        loading: false,
-        error: readableError(loadError, "History could not be loaded."),
-      }));
-    }
-  }, []);
+  const [shortcutSettingsStatus, setShortcutSettingsStatus] = useState<ShortcutRuntimeStatus>("loading");
+  const [shortcutPlatformStatus, setShortcutPlatformStatus] = useState<ShortcutRuntimeStatus>("loading");
+  const [shortcutPlatform, setShortcutPlatform] = useState<ShortcutDisplayPlatform | undefined>(undefined);
+  const [historySavingEnabled, setHistorySavingEnabled] = useState<HistorySavingState>("loading");
 
   useEffect(() => {
-    void load();
-    return window.localScribe.history.onChanged(() => void load());
-  }, [load]);
-
-  useEffect(() => {
-    const setShortcutSettings = (settings: Pick<AppSettings, "holdShortcut" | "toggleShortcut">) => {
+    const setShortcutSettings = (
+      settings: Pick<AppSettings, "holdShortcut" | "toggleShortcut" | "keepHistory">,
+    ) => {
       setShortcuts({
         holdShortcut: settings.holdShortcut,
         toggleShortcut: settings.toggleShortcut,
       });
+      setHistorySavingEnabled(settings.keepHistory);
       setShortcutSettingsStatus("ready");
     };
+    let active = true;
     let sawSettingsChange = false;
     const unsubscribe = window.localScribe.settings.onChanged((settings) => {
+      if (!active) return;
       sawSettingsChange = true;
       setShortcutSettings(settings);
     });
     void window.localScribe.settings.get().then((settings) => {
-      if (!sawSettingsChange) setShortcutSettings(settings);
+      if (active && !sawSettingsChange) setShortcutSettings(settings);
     }).catch(() => {
-      if (!sawSettingsChange) setShortcutSettingsStatus("unavailable");
+      if (active && !sawSettingsChange) {
+        setShortcutSettingsStatus("unavailable");
+        setHistorySavingEnabled("unavailable");
+      }
     });
-    return unsubscribe;
+    void window.localScribe.system.appInfo().then((info) => {
+      if (active && (info.platform === "darwin" || info.platform === "win32" || info.platform === "linux")) {
+        setShortcutPlatform(info.platform);
+        setShortcutPlatformStatus("ready");
+      } else if (active) {
+        setShortcutPlatformStatus("unavailable");
+      }
+    }).catch(() => {
+      if (active) setShortcutPlatformStatus("unavailable");
+    });
+    return () => {
+      active = false;
+      unsubscribe();
+    };
   }, []);
 
-  const shortcutPresentation = historyShortcutPresentation(shortcuts, shortcutSettingsStatus);
+  const shortcutPresentation = historyShortcutPresentation(
+    shortcuts,
+    shortcutSettingsStatus === "unavailable" || shortcutPlatformStatus === "unavailable"
+      ? "unavailable"
+      : shortcutSettingsStatus === "ready" && shortcutPlatformStatus === "ready"
+        ? "ready"
+        : "loading",
+    shortcutPlatform,
+  );
+  const storagePresentation = historyStoragePresentation(historySavingEnabled);
 
   const filtered = useMemo(() => {
     const normalizedQuery = query.trim().toLocaleLowerCase();
@@ -119,9 +248,9 @@ export function HistoryScreen() {
   }, [items, query]);
 
   const groups = useMemo(() => groupTranscriptions(filtered), [filtered]);
-  const allStats = useMemo(() => summarize(items), [items]);
+  const allStats = useMemo(() => summarizeTranscriptions(items), [items]);
   const todayItems = useMemo(() => items.filter((item) => isToday(item.createdAt)), [items]);
-  const todayStats = useMemo(() => summarize(todayItems), [todayItems]);
+  const todayStats = useMemo(() => summarizeTranscriptions(todayItems), [todayItems]);
   const primaryCategory = useMemo(() => categoryBreakdown(items)[0]?.label ?? "No apps yet", [items]);
 
   const copyText = useCallback(async (text: string, successMessage: string) => {
@@ -129,7 +258,7 @@ export function HistoryScreen() {
       await navigator.clipboard.writeText(text);
       setNotice(successMessage);
     } catch (copyError) {
-      setNotice(readableError(copyError, "Could not copy to the clipboard."));
+      setNotice(historyErrorMessage(copyError, "Could not copy to the clipboard."));
     }
   }, []);
 
@@ -139,7 +268,7 @@ export function HistoryScreen() {
       await window.localScribe.history.delete(item.id);
       setNotice("Transcript deleted.");
     } catch (deleteError) {
-      setNotice(readableError(deleteError, "The transcript could not be deleted."));
+      setNotice(historyErrorMessage(deleteError, "The transcript could not be deleted."));
     }
   }, []);
 
@@ -149,7 +278,7 @@ export function HistoryScreen() {
       await window.localScribe.history.clear();
       setNotice("Transcript history cleared.");
     } catch (clearError) {
-      setNotice(readableError(clearError, "History could not be cleared."));
+      setNotice(historyErrorMessage(clearError, "History could not be cleared."));
     }
   }, []);
 
@@ -158,7 +287,7 @@ export function HistoryScreen() {
       const path = await window.localScribe.history.export();
       if (path) setNotice("History exported locally.");
     } catch (exportError) {
-      setNotice(readableError(exportError, "History could not be exported."));
+      setNotice(historyErrorMessage(exportError, "History could not be exported."));
     }
   }, []);
 
@@ -168,7 +297,7 @@ export function HistoryScreen() {
         <div>
           <p className="hi-eyebrow">Dictation</p>
           <h1>Welcome back</h1>
-          <p>Your recent words stay searchable and encrypted on this computer.</p>
+          <p>{storagePresentation.intro}</p>
         </div>
         <div className="hi-header-actions">
           <button
@@ -183,24 +312,28 @@ export function HistoryScreen() {
           >
             <SearchIcon />
           </button>
-          <button className="hi-secondary-button" type="button" onClick={() => void exportHistory()}>
-            <ExportIcon /> Export
-          </button>
-          <details className="hi-overflow hi-overflow--header">
-            <summary aria-label="More history actions"><MoreIcon /></summary>
-            <div className="hi-overflow-menu">
-              <button
-                type="button"
-                disabled={filtered.length === 0}
-                onClick={() => void copyText(filtered.map((item) => item.text).join("\n\n"), "Visible transcripts copied.")}
-              >
-                Copy visible
+          {items.length > 0 && (
+            <>
+              <button className="hi-secondary-button" type="button" onClick={() => void exportHistory()}>
+                <ExportIcon /> Export
               </button>
-              <button className="hi-destructive-action" type="button" disabled={items.length === 0} onClick={() => void clear()}>
-                Clear history
-              </button>
-            </div>
-          </details>
+              <details className="hi-overflow hi-overflow--header">
+                <summary aria-label="More history actions"><MoreIcon /></summary>
+                <div className="hi-overflow-menu">
+                  <button
+                    type="button"
+                    disabled={filtered.length === 0}
+                    onClick={() => void copyText(filtered.map((item) => item.text).join("\n\n"), "Visible transcripts copied.")}
+                  >
+                    Copy visible
+                  </button>
+                  <button className="hi-destructive-action" type="button" onClick={() => void clear()}>
+                    Clear history
+                  </button>
+                </div>
+              </details>
+            </>
+          )}
         </div>
       </header>
 
@@ -226,17 +359,25 @@ export function HistoryScreen() {
           <p>LocalScribe turns speech into text on this computer. Raw recordings are discarded after each transcription.</p>
           <div className="hi-hero-meta">
             <span><ShieldIcon /> Local model</span>
-            <span><LockIcon /> Encrypted history</span>
+            <span><LockIcon /> {storagePresentation.status}</span>
           </div>
         </div>
         <div
           className="hi-shortcut-card"
+          role="group"
           aria-label={shortcutPresentation.ariaLabel}
         >
           <span>Start dictating anywhere</span>
           <div>
-            <kbd>{shortcutPresentation.holdLabel}</kbd>
-            {shortcutPresentation.toggleLabel && <><span>or</span><kbd>{shortcutPresentation.toggleLabel}</kbd></>}
+            {shortcutPresentation.toggleLabel
+              ? (
+                  <>
+                    <kbd>{shortcutPresentation.holdLabel}</kbd>
+                    <span>or</span>
+                    <kbd>{shortcutPresentation.toggleLabel}</kbd>
+                  </>
+                )
+              : <span className="hi-shortcut-status" role="status">{shortcutPresentation.holdLabel}</span>}
           </div>
         </div>
       </section>
@@ -266,8 +407,8 @@ export function HistoryScreen() {
           {!loading && !error && groups.length === 0 && (
             <div className="hi-empty-state">
               <div className="hi-empty-mark">L</div>
-              <h3>{query ? "No dictations match" : "Your first dictation will appear here"}</h3>
-              <p>{query ? "Try a different word or clear the search." : "Use the floating bar or keyboard shortcut whenever you are ready."}</p>
+              <h3>{query ? "No dictations match" : storagePresentation.emptyTitle}</h3>
+              <p>{query ? "Try a different word or clear the search." : storagePresentation.emptyBody}</p>
               {query && <button className="hi-secondary-button" type="button" onClick={() => setQuery("")}>Clear search</button>}
             </div>
           )}
@@ -326,7 +467,7 @@ export function HistoryScreen() {
             </div>
           </section>
           <section className="hi-aside-card">
-            <div className="hi-aside-card__title"><h2>Your rhythm</h2><span>Recent {MAX_HISTORY_ITEMS}</span></div>
+            <div className="hi-aside-card__title"><h2>Your rhythm</h2><span>{historySampleLabel(items.length)}</span></div>
             <div className="hi-large-stat"><strong>{allStats.wpm || "—"}</strong><span>average words per minute</span></div>
             <div className="hi-mini-rows">
               <div><span>Active streak</span><strong>{calculateStreak(items)} {calculateStreak(items) === 1 ? "day" : "days"}</strong></div>
@@ -346,38 +487,45 @@ export function HistoryScreen() {
 }
 
 export function InsightsScreen() {
-  const [{ items, loading, error }, setHistory] = useState<HistoryState>({
-    items: [],
-    loading: true,
-    error: null,
-  });
+  const [{ items, loading, error }, load] = useLocalHistory("Insights could not be calculated.");
   const [tab, setTab] = useState<InsightTab>("usage");
   const [range, setRange] = useState<InsightRange>("30d");
-
-  const load = useCallback(async () => {
-    setHistory((current) => ({ ...current, loading: true, error: null }));
-    try {
-      const nextItems = await window.localScribe.history.list(MAX_HISTORY_ITEMS);
-      setHistory({ items: nextItems, loading: false, error: null });
-    } catch (loadError) {
-      setHistory((current) => ({
-        ...current,
-        loading: false,
-        error: readableError(loadError, "Insights could not be calculated."),
-      }));
-    }
-  }, []);
+  const [historySavingEnabled, setHistorySavingEnabled] = useState<HistorySavingState>("loading");
 
   useEffect(() => {
-    void load();
-    return window.localScribe.history.onChanged(() => void load());
-  }, [load]);
+    let active = true;
+    let sawSettingsChange = false;
+    const apply = (settings: AppSettings) => {
+      if (active) setHistorySavingEnabled(settings.keepHistory);
+    };
+    const unsubscribe = window.localScribe.settings.onChanged((settings) => {
+      sawSettingsChange = true;
+      apply(settings);
+    });
+    void window.localScribe.settings.get().then((settings) => {
+      if (!sawSettingsChange) apply(settings);
+    }).catch(() => {
+      if (active && !sawSettingsChange) setHistorySavingEnabled("unavailable");
+    });
+    return () => {
+      active = false;
+      unsubscribe();
+    };
+  }, []);
 
   const rangedItems = useMemo(() => filterByRange(items, range), [items, range]);
-  const stats = useMemo(() => summarize(rangedItems), [rangedItems]);
+  const stats = useMemo(() => summarizeTranscriptions(rangedItems), [rangedItems]);
   const categories = useMemo(() => categoryBreakdown(rangedItems), [rangedItems]);
   const activity = useMemo(() => activityForRange(rangedItems, range), [rangedItems, range]);
   const voice = useMemo(() => createVoiceProfile(rangedItems), [rangedItems]);
+  const storagePresentation = historyStoragePresentation(historySavingEnabled);
+  const onTabKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>) => {
+    const nextTab = insightTabForKey(tab, event.key);
+    if (!nextTab) return;
+    event.preventDefault();
+    setTab(nextTab);
+    document.getElementById(`${nextTab}-tab`)?.focus();
+  };
 
   return (
     <div className="hi-screen hi-insights-screen">
@@ -397,8 +545,10 @@ export function InsightsScreen() {
           role="tab"
           aria-selected={tab === "usage"}
           aria-controls="usage-panel"
+          tabIndex={tab === "usage" ? 0 : -1}
           className={tab === "usage" ? "hi-tab hi-tab--active" : "hi-tab"}
           onClick={() => setTab("usage")}
+          onKeyDown={onTabKeyDown}
         >Usage</button>
         <button
           id="voice-tab"
@@ -406,8 +556,10 @@ export function InsightsScreen() {
           role="tab"
           aria-selected={tab === "voice"}
           aria-controls="voice-panel"
+          tabIndex={tab === "voice" ? 0 : -1}
           className={tab === "voice" ? "hi-tab hi-tab--active" : "hi-tab"}
           onClick={() => setTab("voice")}
+          onKeyDown={onTabKeyDown}
         >Voice profile</button>
       </div>
 
@@ -427,18 +579,31 @@ export function InsightsScreen() {
         </div>
       )}
 
-      {!loading && !error && tab === "usage" && (
-        <section id="usage-panel" role="tabpanel" aria-labelledby="usage-tab" className="hi-insight-panel">
-          {rangedItems.length === 0 ? (
+      <section
+        id="usage-panel"
+        role="tabpanel"
+        aria-labelledby="usage-tab"
+        aria-busy={loading}
+        className="hi-insight-panel"
+        hidden={tab !== "usage"}
+        tabIndex={tab === "usage" ? 0 : -1}
+      >
+        {!loading && !error && (
+          rangedItems.length === 0 ? (
             <div className="hi-empty-state hi-empty-state--insights">
               <div className="hi-empty-mark">L</div>
-              <h3>No activity in this period</h3>
-              <p>Once you dictate, your local usage patterns will appear here.</p>
+              <h2>No activity in this period</h2>
+              <p>{storagePresentation.insightsEmptyBody}</p>
             </div>
           ) : (
             <>
               <div className="hi-usage-summary">
-                <MetricCard icon={<WordIcon />} value={formatNumber(stats.words)} label="Words dictated" detail={`${rangedItems.length} sessions`} />
+                <MetricCard
+                  icon={<WordIcon />}
+                  value={formatNumber(stats.words)}
+                  label="Words dictated"
+                  detail={`${rangedItems.length} ${rangedItems.length === 1 ? "session" : "sessions"}`}
+                />
                 <MetricCard icon={<TimerIcon />} value={String(stats.wpm || "—")} label="Average WPM" detail="Based on audio duration" />
                 <MetricCard icon={<ClockIcon />} value={formatDuration(stats.durationMs)} label="Time dictated" detail={`${formatNumber(stats.characters)} characters`} />
                 <MetricCard icon={<AppIcon />} value={String(stats.appCount)} label="Apps used" detail={`${calculateStreak(rangedItems)} day streak`} />
@@ -469,63 +634,75 @@ export function InsightsScreen() {
                 <div className="hi-momentum-orb" aria-hidden="true"><strong>{calculateStreak(rangedItems)}</strong><span>day streak</span></div>
               </section>
             </>
-          )}
-        </section>
-      )}
+          )
+        )}
+      </section>
 
-      {!loading && !error && tab === "voice" && (
-        <section id="voice-panel" role="tabpanel" aria-labelledby="voice-tab" className="hi-insight-panel hi-voice-panel">
-          <div className="hi-profile-disclosure">
-            <InfoIcon />
-            <p><strong>A deterministic local summary.</strong> This profile uses counts and simple thresholds—not a generative model or personality inference.</p>
-          </div>
-
-          {rangedItems.length === 0 ? (
-            <div className="hi-empty-state hi-empty-state--insights">
-              <div className="hi-empty-mark">L</div>
-              <h3>Your voice profile is waiting</h3>
-              <p>Dictate a few passages to build a private, factual summary.</p>
+      <section
+        id="voice-panel"
+        role="tabpanel"
+        aria-labelledby="voice-tab"
+        aria-busy={loading}
+        className="hi-insight-panel hi-voice-panel"
+        hidden={tab !== "voice"}
+        tabIndex={tab === "voice" ? 0 : -1}
+      >
+        {!loading && !error && (
+          <>
+            <div className="hi-profile-disclosure">
+              <InfoIcon />
+              <p><strong>A deterministic local summary.</strong> This profile uses counts and simple thresholds—not a generative model or personality inference.</p>
             </div>
-          ) : (
-            <>
-              <section className="hi-voice-hero">
-                <div className="hi-voice-hero__copy">
-                  <p className="hi-eyebrow">Your measured style</p>
-                  <h2>{voice.headline}</h2>
-                  <p>{voice.summary}</p>
-                  <span>{rangeLabel(range)} · {formatNumber(stats.words)} locally stored words</span>
-                </div>
-                <div className="hi-voice-shape" aria-hidden="true">
-                  <span style={{ "--voice-level": `${voice.pacePercent}%` } as React.CSSProperties} />
-                  <span style={{ "--voice-level": `${voice.sentencePercent}%` } as React.CSSProperties} />
-                  <span style={{ "--voice-level": `${voice.varietyPercent}%` } as React.CSSProperties} />
-                </div>
-              </section>
 
-              <div className="hi-voice-grid">
-                <VoiceTrait title="Speaking pace" value={voice.paceLabel} detail={`${stats.wpm || "—"} measured WPM`} percent={voice.pacePercent} />
-                <VoiceTrait title="Sentence shape" value={voice.sentenceLabel} detail={`${voice.averageSentenceWords} words per sentence`} percent={voice.sentencePercent} />
-                <VoiceTrait title="Word variety" value={voice.varietyLabel} detail={`${voice.uniquePercent}% unique words`} percent={voice.varietyPercent} />
+            {rangedItems.length === 0 ? (
+              <div className="hi-empty-state hi-empty-state--insights">
+                <div className="hi-empty-mark">L</div>
+                <h2>Your voice profile is waiting</h2>
+                <p>{historySavingEnabled === true
+                  ? "Dictate a few passages to build a private, factual summary."
+                  : storagePresentation.insightsEmptyBody}</p>
               </div>
-
-              <div className="hi-insights-grid hi-voice-detail-grid">
-                <section className="hi-insight-card">
-                  <div className="hi-card-heading"><div><p className="hi-eyebrow">Vocabulary</p><h2>Frequent words</h2></div></div>
-                  <div className="hi-word-cloud">
-                    {voice.frequentWords.length > 0
-                      ? voice.frequentWords.map((entry, index) => <span key={entry.word} data-rank={Math.min(index + 1, 4)}>{entry.word}<small>{entry.count}</small></span>)
-                      : <p>More words are needed for this summary.</p>}
+            ) : (
+              <>
+                <section className="hi-voice-hero">
+                  <div className="hi-voice-hero__copy">
+                    <p className="hi-eyebrow">Your measured style</p>
+                    <h2>{voice.headline}</h2>
+                    <p>{voice.summary}</p>
+                    <span>{rangeLabel(range)} · {formatNumber(stats.words)} locally stored words</span>
+                  </div>
+                  <div className="hi-voice-shape" aria-hidden="true">
+                    <span style={{ "--voice-level": `${voice.pacePercent}%` } as React.CSSProperties} />
+                    <span style={{ "--voice-level": `${voice.sentencePercent}%` } as React.CSSProperties} />
+                    <span style={{ "--voice-level": `${voice.varietyPercent}%` } as React.CSSProperties} />
                   </div>
                 </section>
-                <section className="hi-insight-card">
-                  <div className="hi-card-heading"><div><p className="hi-eyebrow">Context</p><h2>Where your voice goes</h2></div></div>
-                  <CategoryList categories={categories} />
-                </section>
-              </div>
-            </>
-          )}
-        </section>
-      )}
+
+                <div className="hi-voice-grid">
+                  <VoiceTrait title="Speaking pace" value={voice.paceLabel} detail={`${stats.wpm || "—"} measured WPM`} percent={voice.pacePercent} />
+                  <VoiceTrait title="Sentence shape" value={voice.sentenceLabel} detail={`${voice.averageSentenceWords} words per sentence`} percent={voice.sentencePercent} />
+                  <VoiceTrait title="Word variety" value={voice.varietyLabel} detail={`${voice.uniquePercent}% unique words`} percent={voice.varietyPercent} />
+                </div>
+
+                <div className="hi-insights-grid hi-voice-detail-grid">
+                  <section className="hi-insight-card">
+                    <div className="hi-card-heading"><div><p className="hi-eyebrow">Vocabulary</p><h2>Frequent words</h2></div></div>
+                    <div className="hi-word-cloud">
+                      {voice.frequentWords.length > 0
+                        ? voice.frequentWords.map((entry, index) => <span key={entry.word} data-rank={Math.min(index + 1, 4)}>{entry.word}<small>{entry.count}</small></span>)
+                        : <p>More words are needed for this summary.</p>}
+                    </div>
+                  </section>
+                  <section className="hi-insight-card">
+                    <div className="hi-card-heading"><div><p className="hi-eyebrow">Context</p><h2>Where your voice goes</h2></div></div>
+                    <CategoryList categories={categories} />
+                  </section>
+                </div>
+              </>
+            )}
+          </>
+        )}
+      </section>
     </div>
   );
 }
@@ -555,7 +732,7 @@ function MetricCard({ icon, value, label, detail }: { icon: React.ReactNode; val
 
 function RangeControl({ range, onChange }: { range: InsightRange; onChange(range: InsightRange): void }) {
   return (
-    <div className="hi-range-control" aria-label="Insight period">
+    <div className="hi-range-control" role="group" aria-label="Insight period">
       {(["7d", "30d", "recent"] as const).map((option) => (
         <button
           key={option}
@@ -569,47 +746,66 @@ function RangeControl({ range, onChange }: { range: InsightRange; onChange(range
   );
 }
 
-function CategoryList({ categories }: { categories: ReturnType<typeof categoryBreakdown> }) {
+export function CategoryList({ categories }: { categories: ReturnType<typeof categoryBreakdown> }) {
   if (categories.length === 0) return <p className="hi-card-empty">App information will appear after your first dictation.</p>;
   return (
-    <div className="hi-category-list">
+    <div className="hi-category-list" role="list" aria-label="App categories by share of dictated words">
       {categories.map((category) => (
-        <div className="hi-category-row" key={category.key}>
-          <span className={`hi-category-icon hi-category-icon--${category.key}`}><CategoryIcon category={category.key} /></span>
+        <div className="hi-category-row" role="listitem" key={category.key}>
+          <span className={`hi-category-icon hi-category-icon--${category.key}`} aria-hidden="true"><CategoryIcon category={category.key} /></span>
           <div>
             <span>{category.label}</span>
             <small>{category.count} {category.count === 1 ? "session" : "sessions"} · {formatNumber(category.words)} words</small>
-            <div><i style={{ width: `${Math.max(category.percent, category.words > 0 ? 1 : 0)}%` }} /></div>
+            <div aria-hidden="true"><i style={{ width: `${Math.max(category.percent, category.words > 0 ? 1 : 0)}%` }} /></div>
           </div>
-          <strong>{category.percent === 0 && category.words > 0 ? "<1%" : `${category.percent}%`}</strong>
+          <strong>
+            <span className="hi-visually-hidden">Share of dictated words: </span>
+            {category.percent === 0 && category.words > 0 ? "<1%" : `${category.percent}%`}
+          </strong>
         </div>
       ))}
     </div>
   );
 }
 
-function ActivityChart({ points }: { points: ReturnType<typeof activityForRange> }) {
+export function activityBarHeightPercent(wordCount: number, maximum: number): number {
+  if (wordCount <= 0 || maximum <= 0) return 0;
+  return Math.max((wordCount / maximum) * 100, 5);
+}
+
+export function ActivityChart({ points }: { points: ReturnType<typeof activityForRange> }) {
   const maximum = Math.max(...points.map((point) => point.words), 1);
+  const edgePointCount = points.length >= 20 ? 5 : 1;
   return (
-    <div className="hi-chart" role="group" aria-label={`Words by day. ${points.map((point) => `${point.fullLabel}: ${point.words}`).join(", ")}`}>
+    <div className="hi-chart" role="group" aria-label="Dictated words over time">
       <div className="hi-chart-grid" aria-hidden="true"><span /><span /><span /></div>
       <div className="hi-chart-bars">
-        {points.map((point, index) => (
-          <div
-            className="hi-chart-column"
-            data-edge={index === 0 ? "start" : index === points.length - 1 ? "end" : undefined}
-            key={point.key}
-            tabIndex={0}
-            aria-label={`${point.fullLabel}: ${point.words} ${point.words === 1 ? "word" : "words"}`}
-          >
-            <span className="hi-chart-tooltip" role="tooltip">
-              <strong>{formatNumber(point.words)} {point.words === 1 ? "word" : "words"}</strong>
-              <small>{point.fullLabel}</small>
-            </span>
-            <i style={{ height: `${Math.max((point.words / maximum) * 100, point.words > 0 ? 5 : 1)}%` }} />
-            <span className="hi-chart-label">{point.label}</span>
-          </div>
-        ))}
+        {points.map((point, index) => {
+          const tooltipId = `hi-chart-tooltip-${point.key.replace(/[^a-z0-9_-]/giu, "-")}`;
+          const edge = index < edgePointCount
+            ? "start"
+            : index >= points.length - edgePointCount
+              ? "end"
+              : undefined;
+          return (
+            <div
+              className="hi-chart-column"
+              data-edge={edge}
+              key={point.key}
+              role="img"
+              tabIndex={0}
+              aria-label={point.fullLabel}
+              aria-describedby={tooltipId}
+            >
+              <span className="hi-chart-tooltip" id={tooltipId} role="tooltip">
+                <strong>{formatNumber(point.words)} {point.words === 1 ? "word" : "words"}</strong>
+                <small>{point.fullLabel}</small>
+              </span>
+              <i aria-hidden="true" style={{ height: `${activityBarHeightPercent(point.words, maximum)}%` }} />
+              <span className="hi-chart-label" aria-hidden="true">{point.label}</span>
+            </div>
+          );
+        })}
       </div>
     </div>
   );
@@ -630,11 +826,14 @@ function words(text: string): string[] {
   return (text.toLocaleLowerCase().match(WORD_PATTERN) ?? []).map((word) => word.replace("’", "'"));
 }
 
-function summarize(items: Transcription[]) {
+export function summarizeTranscriptions(items: Transcription[]) {
   const wordCount = items.reduce((total, item) => total + countWords(item.text), 0);
   const durationMs = items.reduce((total, item) => total + item.durationMs, 0);
   const minutes = durationMs / 60_000;
-  const appIds = new Set(items.flatMap((item) => item.sourceAppId ? [item.sourceAppId] : []));
+  const appIds = new Set(items.flatMap((item) => {
+    const identity = appIdentityKey(item.sourceAppId);
+    return identity ? [identity] : [];
+  }));
   return {
     words: wordCount,
     durationMs,
@@ -691,12 +890,12 @@ function formatNumber(value: number): string {
   return new Intl.NumberFormat(undefined, { notation: value >= 10_000 ? "compact" : "standard", maximumFractionDigits: 1 }).format(value);
 }
 
-function readableError(error: unknown, fallback: string): string {
-  return error instanceof Error && error.message ? error.message : fallback;
+export function historyErrorMessage(error: unknown, fallback: string): string {
+  return rendererSafeErrorMessage(error, fallback);
 }
 
 function createVoiceProfile(items: Transcription[]) {
-  const stats = summarize(items);
+  const stats = summarizeTranscriptions(items);
   const allWords = items.flatMap((item) => words(item.text));
   const uniqueWords = new Set(allWords);
   const uniquePercent = allWords.length > 0 ? Math.round((uniqueWords.size / allWords.length) * 100) : 0;
@@ -706,9 +905,9 @@ function createVoiceProfile(items: Transcription[]) {
   const paceLabel = stats.wpm === 0 ? "Not measured" : stats.wpm < 105 ? "Measured" : stats.wpm <= 155 ? "Steady" : "Quick";
   const sentenceLabel = averageSentenceWords < 10 ? "Compact" : averageSentenceWords <= 19 ? "Balanced" : "Expansive";
   const varietyLabel = uniquePercent >= 70 ? "Varied" : uniquePercent >= 50 ? "Balanced" : "Consistent";
-  const pacePercent = stats.wpm === 0 ? 0 : clamp(Math.round((stats.wpm / 190) * 100), 12, 100);
-  const sentencePercent = clamp(Math.round((averageSentenceWords / 28) * 100), 8, 100);
-  const varietyPercent = clamp(uniquePercent, 8, 100);
+  const pacePercent = stats.wpm === 0 ? 0 : clamp(Math.round((stats.wpm / 190) * 100), 0, 100);
+  const sentencePercent = clamp(Math.round((averageSentenceWords / 28) * 100), 0, 100);
+  const varietyPercent = clamp(uniquePercent, 0, 100);
 
   const counts = new Map<string, number>();
   allWords.filter((word) => word.length > 2 && !STOP_WORDS.has(word)).forEach((word) => counts.set(word, (counts.get(word) ?? 0) + 1));

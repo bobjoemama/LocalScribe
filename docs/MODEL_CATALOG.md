@@ -20,11 +20,30 @@ The only performance choices are Auto, High, Medium, and Low. Auto resolves to
 one of the three concrete profiles from local accelerator-memory policy; it is
 not a model, manifest, or fourth physical artifact.
 
+Every mode reserves the greater of 2 GiB or 20% of total accelerator memory
+above the tier's conservative maximum estimate. Explicit High/Medium/Low fail
+closed when their exact tier does not fit and never substitute another tier.
+Auto probes an unloaded accelerator at each recording boundary, selects the
+highest fitting tier, requires 1 GiB of additional free memory before an
+upgrade, downgrades immediately when necessary, and pins the result through
+that dictation.
+
 The packaged catalog is the sole selection authority. It fixes the platform,
 engine, family, artifact identity, repository ID, storage name, immutable
 revision, expected file sizes, and SHA-256 hashes. There is no plugin API,
 arbitrary URL or repository input, arbitrary code, custom loader, or custom
 manifest path.
+
+Immutable repository, revision, artifact, storage, and file identity are read
+from the packaged manifests instead of being copied into TypeScript and both
+Python workers. This is safe in a release because the loose-resource integrity
+root covers the exact platform manifest files before startup. The remaining
+allowlist is intentional and smaller: the app package fixes manifest
+filenames, family IDs, platform engine, three compute profiles, and memory
+policy. “Add model” therefore means add/activate a model already curated into
+this signed build. It does not mean paste a Hugging Face repository or URL.
+Supporting user-supplied manifests would require a separate signed-catalog
+trust design and is deliberately not implemented.
 
 ## Packaged manifest inventory
 
@@ -50,6 +69,12 @@ The package gate removes all other manifests, including the other platform's
 files, before signing. The source manifests provide the exact revision and
 per-file digest records; do not substitute a moving branch, a repository name,
 or a new file list for those pins.
+
+On multi-GPU Windows systems the worker enumerates current NVML devices, chooses
+the valid device with the most free VRAM (then total VRAM, then the lower
+ordinal for a deterministic tie), reports that ordinal, and reuses it for the
+CTranslate2 capability probe and model load. A fresh worker repeats selection;
+it never silently falls back to CUDA device 0.
 
 ## License boundary
 

@@ -8,23 +8,31 @@ import {
   type ReactNode,
 } from "react";
 import {
+  DEFAULT_SETTINGS,
   HISTORY_RETENTION_OPTIONS,
   historyRetentionLabel,
+  type AppInfo,
   type AppProfile,
   type AppSettings,
   type AppSettingsPatch,
   type DictionaryEntry,
   type Diagnostics,
+  type LaunchAtLoginStatus,
   type ModelCatalog,
   type ModelFamilyId,
   type ModelPerformanceTier,
   type PermissionSnapshot,
 } from "../../../shared/contracts";
+import { rendererSafeErrorMessage } from "../../../shared/rendererErrors";
 import { shortcutDisplayLabel } from "../../../shared/shortcuts";
+import {
+  GENERATIVE_TEXT_MODEL_REQUIRED_NOTICE,
+  UNAVAILABLE_IN_THIS_BUILD_NOTICE,
+} from "../../generativeTextAvailability";
 import { ShortcutRecorder, type ShortcutValidationOutcome } from "../components/ShortcutRecorder";
 import {
   DICTATION_LANGUAGE_DETAIL,
-  DICTATION_LANGUAGE_OPTIONS,
+  dictationLanguageOptionsFor,
 } from "../dictationLanguages";
 import {
   ModelPerformanceSettings,
@@ -37,8 +45,49 @@ type StyleTab = "personal" | "work" | "email" | "other" | "cleanup";
 type SettingsTab = "general" | "system" | "model" | "writing" | "experimental" | "privacy";
 type CleanupLevel = "none" | "light" | "medium";
 export type CleanupSelection = CleanupLevel | "custom";
-export const GENERATIVE_TEXT_MODEL_REQUIRED_NOTICE = "Additional generative text model required — not installed";
-export const UNAVAILABLE_IN_THIS_BUILD_NOTICE = "Unavailable in this build";
+export {
+  GENERATIVE_TEXT_MODEL_REQUIRED_NOTICE,
+  UNAVAILABLE_IN_THIS_BUILD_NOTICE,
+} from "../../generativeTextAvailability";
+
+export function appProfilePresentation(
+  platform: AppInfo["platform"] | null,
+): {
+  detail: string;
+  labelPlaceholder: string;
+  appIdPlaceholder: string;
+} {
+  if (platform === "darwin") {
+    return {
+      detail: "Override cleanup for a macOS app bundle identifier.",
+      labelPlaceholder: "TextEdit",
+      appIdPlaceholder: "com.apple.TextEdit",
+    };
+  }
+  if (platform === "win32") {
+    return {
+      detail: "Override cleanup for a Windows executable name.",
+      labelPlaceholder: "Notepad",
+      appIdPlaceholder: "notepad.exe",
+    };
+  }
+  return {
+    detail: "Override cleanup for an application identifier reported by this platform.",
+    labelPlaceholder: "App name",
+    appIdPlaceholder: "Application identifier",
+  };
+}
+
+export function profileCleanupDefaults(
+  settings: AppSettings | null,
+): Pick<AppSettings, "removeFillers" | "spokenCommands" | "smartPunctuation"> {
+  const source = settings ?? DEFAULT_SETTINGS;
+  return {
+    removeFillers: source.removeFillers,
+    spokenCommands: source.spokenCommands,
+    smartPunctuation: source.smartPunctuation,
+  };
+}
 
 export function settingsLoadPresentation(
   settings: AppSettings | null,
@@ -66,6 +115,138 @@ export function settingsControlAvailability(
   return {
     enabled: settings !== null,
     presentation: settingsLoadPresentation(settings, error),
+  };
+}
+
+export function settingsWithPendingDraft(
+  persisted: AppSettings,
+  pending: AppSettingsPatch,
+): AppSettings {
+  return { ...persisted, ...pending };
+}
+
+/**
+ * Keep edits made while an earlier save request was in flight. Only fields
+ * that still equal the submitted snapshot have been acknowledged.
+ */
+export function pendingSettingsAfterSave(
+  current: AppSettingsPatch,
+  submitted: AppSettingsPatch,
+): AppSettingsPatch {
+  const pending = { ...current };
+  for (const key of Object.keys(submitted) as Array<keyof AppSettingsPatch>) {
+    const currentValue = current[key];
+    const submittedValue = submitted[key];
+    const unchanged = Array.isArray(currentValue) && Array.isArray(submittedValue)
+      ? currentValue.length === submittedValue.length
+        && currentValue.every((value, index) => value === submittedValue[index])
+      : Object.is(currentValue, submittedValue);
+    if (unchanged) delete pending[key];
+  }
+  return pending;
+}
+
+export function selectedMicrophoneIsUnavailable(
+  selectedMicrophoneId: string | null,
+  microphones: ReadonlyArray<Pick<MediaDeviceInfo, "deviceId">>,
+): boolean {
+  return Boolean(
+    selectedMicrophoneId
+    && !microphones.some((microphone) => microphone.deviceId === selectedMicrophoneId),
+  );
+}
+
+export function automaticPasteSettingsPresentation(
+  permissions: PermissionSnapshot | null,
+): { editable: boolean; detail: string; value: string | null } {
+  if (!permissions) {
+    return {
+      editable: false,
+      detail: "Checking whether automatic paste is available. Completed dictation will still be copied.",
+      value: "Checking",
+    };
+  }
+  if (!permissions.automaticPaste.supported) {
+    return {
+      editable: false,
+      detail: "Automatic paste is not supported on this platform. Completed dictation is copied to the clipboard.",
+      value: "Unavailable",
+    };
+  }
+  if (permissions.platform === "win32" && !permissions.automaticPaste.ready) {
+    return {
+      editable: false,
+      detail: "The local Windows paste helper is unavailable. Completed dictation will be copied until the helper is available.",
+      value: "Copy only",
+    };
+  }
+  return {
+    editable: true,
+    detail: "Paste only when the app active at start is still the target; otherwise copy.",
+    value: null,
+  };
+}
+
+export function launchAtLoginSettingsPresentation(
+  savedValue: boolean,
+  status: LaunchAtLoginStatus | null,
+  pendingRequest = false,
+): { editable: boolean; value: boolean; detail: string } {
+  if (pendingRequest) {
+    return {
+      editable: true,
+      value: savedValue,
+      detail: "Save changes to apply this login startup setting to the operating system.",
+    };
+  }
+  if (!status) {
+    return {
+      editable: true,
+      value: savedValue,
+      detail: "Checking the operating system's login startup state.",
+    };
+  }
+  if (!status.supported) {
+    return {
+      editable: false,
+      value: false,
+      detail: "Launch at login is not supported on this platform.",
+    };
+  }
+  if (status.effective) {
+    return {
+      editable: true,
+      value: true,
+      detail: savedValue
+        ? "Enabled and confirmed by the operating system."
+        : "The operating system still reports a login item. Turn this off and save to remove it.",
+    };
+  }
+  if (status.requiresApproval) {
+    return {
+      editable: true,
+      value: false,
+      detail: "Saved as on, but macOS requires approval in System Settings. Turn this on and save to request registration again.",
+    };
+  }
+  if (savedValue && status.registered) {
+    return {
+      editable: true,
+      value: false,
+      detail: "Saved as on, but disabled in the operating system's startup settings. Turn this on and save to register it again.",
+    };
+  }
+  if (savedValue) {
+    return {
+      editable: true,
+      value: false,
+      detail: "Saved as on, but no effective login item was found. Turn this on and save to register it again.",
+    };
+  }
+  return {
+    editable: true,
+    value: false,
+    detail: "Disabled and confirmed by the operating system.",
   };
 }
 
@@ -216,12 +397,14 @@ export function StyleScreen() {
   const [profileMessage, setProfileMessage] = useState("");
   const [profileMessageIsError, setProfileMessageIsError] = useState(false);
   const [profileBusy, setProfileBusy] = useState(false);
+  const [appPlatform, setAppPlatform] = useState<AppInfo["platform"] | null>(null);
+  const cleanupDraft = useRef<AppSettingsPatch>({});
 
   const loadProfiles = useCallback(() => window.localScribe.profiles.list().then(setProfiles), []);
 
   useEffect(() => {
     const applySettings = (next: AppSettings) => {
-      setSettings(next);
+      setSettings(settingsWithPendingDraft(next, cleanupDraft.current));
       setSettingsLoadError(null);
     };
     void window.localScribe.settings.get().then(applySettings).catch((error: unknown) => {
@@ -231,6 +414,9 @@ export function StyleScreen() {
       setProfileMessageIsError(true);
       setProfileMessage(`Could not load app profiles: ${errorDetail(error)}`);
     });
+    void window.localScribe.system.appInfo()
+      .then((info) => setAppPlatform(info.platform))
+      .catch(() => setAppPlatform(null));
     return window.localScribe.settings.onChanged(applySettings);
   }, [loadProfiles]);
 
@@ -239,6 +425,7 @@ export function StyleScreen() {
     [settings],
   );
   const cleanupControls = settingsControlAvailability(settings, settingsLoadError);
+  const profilePresentation = appProfilePresentation(appPlatform);
 
   const chooseCleanup = (level: CleanupLevel) => {
     if (!settings) return;
@@ -248,6 +435,11 @@ export function StyleScreen() {
       spokenCommands: level !== "none",
       smartPunctuation: level !== "none",
     };
+    cleanupDraft.current = {
+      removeFillers: next.removeFillers,
+      spokenCommands: next.spokenCommands,
+      smartPunctuation: next.smartPunctuation,
+    };
     setSettings(next);
     setMessage("");
     setMessageIsError(false);
@@ -255,15 +447,20 @@ export function StyleScreen() {
 
   const saveCleanup = async () => {
     if (!settings) return;
+    const patch: AppSettingsPatch = {
+      removeFillers: settings.removeFillers,
+      spokenCommands: settings.spokenCommands,
+      smartPunctuation: settings.smartPunctuation,
+    };
     try {
-      const saved = await window.localScribe.settings.patch({
-        removeFillers: settings.removeFillers,
-        spokenCommands: settings.spokenCommands,
-        smartPunctuation: settings.smartPunctuation,
-      });
-      setSettings(saved);
+      const saved = await window.localScribe.settings.patch(patch);
+      const remaining = pendingSettingsAfterSave(cleanupDraft.current, patch);
+      cleanupDraft.current = remaining;
+      setSettings(settingsWithPendingDraft(saved, remaining));
       setMessageIsError(false);
-      setMessage("Cleanup saved");
+      setMessage(Object.keys(remaining).length > 0
+        ? "Saved the submitted cleanup. Newer changes still need to be saved."
+        : "Cleanup saved");
     } catch (error) {
       setMessageIsError(true);
       setMessage(`Could not save cleanup: ${errorDetail(error)}`);
@@ -343,7 +540,7 @@ export function StyleScreen() {
           <div className="ls-section-heading">
             <div>
               <h2 id="tone-heading">How should it sound?</h2>
-              <p>These are local preview references. The installed speech model transcribes speech but does not rewrite tone.</p>
+              <p>These are local preview references. Speech transcription and tone rewriting use different model capabilities.</p>
             </div>
             <span className="ls-status-chip ls-status-chip--muted ls-status-chip--model-required">{GENERATIVE_TEXT_MODEL_REQUIRED_NOTICE}</span>
           </div>
@@ -410,14 +607,22 @@ export function StyleScreen() {
         <div className="ls-section-heading">
           <div>
             <h2 id="profiles-heading">App profiles</h2>
-            <p>Override cleanup for a macOS bundle ID or Windows executable.</p>
+            <p>{profilePresentation.detail}</p>
           </div>
           <button type="button" className="ls-secondary-button" onClick={() => setProfileOpen((open) => !open)}>
             {profileOpen ? "Cancel" : "+ Add profile"}
           </button>
         </div>
 
-        {profileOpen && <ProfileForm onSubmit={saveProfile} busy={profileBusy} />}
+        {profileOpen && (
+          <ProfileForm
+            onSubmit={saveProfile}
+            busy={profileBusy}
+            labelPlaceholder={profilePresentation.labelPlaceholder}
+            appIdPlaceholder={profilePresentation.appIdPlaceholder}
+            cleanupDefaults={profileCleanupDefaults(settings)}
+          />
+        )}
         {profileMessage && (
           <p className={profileMessageIsError ? "ls-action-feedback is-error" : "ls-action-feedback"} role={profileMessageIsError ? "alert" : "status"} aria-live="polite">
             {profileMessage}
@@ -450,21 +655,33 @@ export function StyleScreen() {
   );
 }
 
-function ProfileForm({ onSubmit, busy }: { onSubmit(event: FormEvent<HTMLFormElement>): void; busy: boolean }) {
+function ProfileForm({
+  onSubmit,
+  busy,
+  labelPlaceholder,
+  appIdPlaceholder,
+  cleanupDefaults,
+}: {
+  onSubmit(event: FormEvent<HTMLFormElement>): void;
+  busy: boolean;
+  labelPlaceholder: string;
+  appIdPlaceholder: string;
+  cleanupDefaults: Pick<AppSettings, "removeFillers" | "spokenCommands" | "smartPunctuation">;
+}) {
   return (
     <form className="ls-profile-form" onSubmit={onSubmit}>
       <label>
         <span>Profile name</span>
-        <input name="label" placeholder="Slack" required maxLength={120} />
+        <input name="label" placeholder={labelPlaceholder} required maxLength={120} />
       </label>
       <label>
         <span>App identifier</span>
-        <input name="appId" placeholder="com.tinyspeck.slackmacgap" required maxLength={300} />
+        <input name="appId" placeholder={appIdPlaceholder} required maxLength={300} />
       </label>
       <div className="ls-form-checks">
-        <label><input type="checkbox" name="removeFillers" defaultChecked /> Remove fillers</label>
-        <label><input type="checkbox" name="spokenCommands" defaultChecked /> Spoken commands</label>
-        <label><input type="checkbox" name="smartPunctuation" defaultChecked /> Smart punctuation</label>
+        <label><input type="checkbox" name="removeFillers" defaultChecked={cleanupDefaults.removeFillers} /> Remove fillers</label>
+        <label><input type="checkbox" name="spokenCommands" defaultChecked={cleanupDefaults.spokenCommands} /> Spoken commands</label>
+        <label><input type="checkbox" name="smartPunctuation" defaultChecked={cleanupDefaults.smartPunctuation} /> Smart punctuation</label>
       </div>
       <button className="ls-primary-button" type="submit" disabled={busy}>{busy ? "Saving…" : "Save profile"}</button>
     </form>
@@ -589,11 +806,11 @@ export function TransformsScreen() {
       <ScreenHeader
         eyebrow="Deterministic tools"
         title="Transforms"
-        description="Exact local transforms work now. Semantic rewrites are disabled until a separate text model is added."
+        description="Exact local transforms work now. Semantic rewriting is unavailable in this build."
       />
       <div className="ls-local-banner">
         <LockIcon />
-        <div><strong>Current transforms run locally</strong><span>The installed ASR model handles speech. Generative rewriting needs an additional text model, which is not installed.</span></div>
+        <div><strong>Current transforms run locally</strong><span>Speech uses the selected local ASR profile when its model data is verified. Generative rewriting is unavailable in this build.</span></div>
       </div>
 
       {transformControls.presentation && (
@@ -658,6 +875,7 @@ export function SettingsModal({ onClose }: { onClose(): void }) {
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [settingsLoadError, setSettingsLoadError] = useState<unknown | null>(null);
   const [permissions, setPermissions] = useState<PermissionSnapshot | null>(null);
+  const [launchAtLoginStatus, setLaunchAtLoginStatus] = useState<LaunchAtLoginStatus | null>(null);
   const [diagnostics, setDiagnostics] = useState<Diagnostics | null>(null);
   const [modelCatalog, setModelCatalog] = useState<ModelCatalog | null>(null);
   const [modelCatalogError, setModelCatalogError] = useState<string | null>(null);
@@ -668,17 +886,26 @@ export function SettingsModal({ onClose }: { onClose(): void }) {
   const dirtySettings = useRef<AppSettingsPatch>({});
   const [modelAction, setModelAction] = useState<ModelActionState>(null);
   const [modelFeedback, setModelFeedback] = useState<{ message: string; isError: boolean } | null>(null);
+  const shortcutPlatform = permissions?.platform === "darwin"
+    || permissions?.platform === "win32"
+    || permissions?.platform === "linux"
+    ? permissions.platform
+    : null;
 
   const refresh = useCallback(async () => {
-    const [permissionResult, diagnosticsResult, profileResult] = await Promise.allSettled([
+    const [permissionResult, launchAtLoginResult, diagnosticsResult, profileResult] = await Promise.allSettled([
       window.localScribe.system.getPermissions(),
+      window.localScribe.system.getLaunchAtLoginStatus(),
       window.localScribe.system.diagnostics(),
       window.localScribe.profiles.list(),
     ]);
-    if (permissionResult.status === "fulfilled") setPermissions(permissionResult.value);
-    if (diagnosticsResult.status === "fulfilled") setDiagnostics(diagnosticsResult.value);
-    if (profileResult.status === "fulfilled") setProfiles(profileResult.value);
-    const failures = [permissionResult, diagnosticsResult, profileResult]
+    setPermissions(permissionResult.status === "fulfilled" ? permissionResult.value : null);
+    setLaunchAtLoginStatus(
+      launchAtLoginResult.status === "fulfilled" ? launchAtLoginResult.value : null,
+    );
+    setDiagnostics(diagnosticsResult.status === "fulfilled" ? diagnosticsResult.value : null);
+    setProfiles(profileResult.status === "fulfilled" ? profileResult.value : []);
+    const failures = [permissionResult, launchAtLoginResult, diagnosticsResult, profileResult]
       .filter((result): result is PromiseRejectedResult => result.status === "rejected")
       .map((result) => errorDetail(result.reason));
     if (failures.length > 0) throw new Error(failures.join("; "));
@@ -692,6 +919,7 @@ export function SettingsModal({ onClose }: { onClose(): void }) {
       return next;
     } catch (error) {
       const detail = errorDetail(error);
+      setModelCatalog(null);
       setModelCatalogError(detail);
       throw error;
     }
@@ -700,8 +928,23 @@ export function SettingsModal({ onClose }: { onClose(): void }) {
   const applyPersistedSettings = useCallback((next: AppSettings) => {
     // Keep only local edits pending for a field-level patch. A shortcut that
     // just committed in another surface otherwise must replace this stale copy.
-    setSettings({ ...next, ...dirtySettings.current });
+    setSettings(settingsWithPendingDraft(next, dirtySettings.current));
     setSettingsLoadError(null);
+  }, []);
+
+  const refreshMicrophones = useCallback(async () => {
+    const mediaDevices = navigator.mediaDevices;
+    if (!mediaDevices?.enumerateDevices) {
+      setMicrophones([]);
+      return;
+    }
+    try {
+      const devices = await mediaDevices.enumerateDevices();
+      setMicrophones(devices.filter((device) => device.kind === "audioinput"));
+    } catch (error) {
+      setMicrophones([]);
+      throw error;
+    }
   }, []);
 
   useEffect(() => {
@@ -712,29 +955,59 @@ export function SettingsModal({ onClose }: { onClose(): void }) {
       setStatus(`Could not refresh system information: ${errorDetail(error)}`);
     });
     void refreshModelCatalog().catch(() => undefined);
-    void navigator.mediaDevices?.enumerateDevices().then((devices) => {
-      setMicrophones(devices.filter((device) => device.kind === "audioinput"));
-    }).catch((error: unknown) => {
+    void refreshMicrophones().catch((error: unknown) => {
       setStatus(`Could not list microphones: ${errorDetail(error)}`);
     });
     return window.localScribe.settings.onChanged(applyPersistedSettings);
-  }, [applyPersistedSettings, refresh, refreshModelCatalog]);
+  }, [applyPersistedSettings, refresh, refreshMicrophones, refreshModelCatalog]);
+
+  useEffect(() => {
+    const mediaDevices = navigator.mediaDevices;
+    if (!mediaDevices?.addEventListener) return;
+    const handleDeviceChange = () => {
+      void refreshMicrophones().catch((error: unknown) => {
+        setStatus(`Could not refresh microphones: ${errorDetail(error)}`);
+      });
+    };
+    mediaDevices.addEventListener("devicechange", handleDeviceChange);
+    window.addEventListener("focus", handleDeviceChange);
+    return () => {
+      mediaDevices.removeEventListener("devicechange", handleDeviceChange);
+      window.removeEventListener("focus", handleDeviceChange);
+    };
+  }, [refreshMicrophones]);
 
   useEffect(() => {
     let disposed = false;
     const refreshPermissions = () => {
       void window.localScribe.system.getPermissions().then((next) => {
         if (!disposed) setPermissions(next);
-      }).catch(() => undefined);
+      }).catch(() => {
+        if (!disposed) setPermissions(null);
+      });
+    };
+    const refreshLaunchAtLogin = () => {
+      void window.localScribe.system.getLaunchAtLoginStatus().then((next) => {
+        if (!disposed) setLaunchAtLoginStatus(next);
+      }).catch(() => {
+        if (!disposed) setLaunchAtLoginStatus(null);
+      });
+    };
+    const refreshForegroundState = () => {
+      refreshPermissions();
+      refreshLaunchAtLogin();
+    };
+    const refreshVisibleState = () => {
+      if (document.visibilityState === "visible") refreshForegroundState();
     };
     const interval = window.setInterval(refreshPermissions, 1_000);
-    window.addEventListener("focus", refreshPermissions);
-    document.addEventListener("visibilitychange", refreshPermissions);
+    window.addEventListener("focus", refreshForegroundState);
+    document.addEventListener("visibilitychange", refreshVisibleState);
     return () => {
       disposed = true;
       window.clearInterval(interval);
-      window.removeEventListener("focus", refreshPermissions);
-      document.removeEventListener("visibilitychange", refreshPermissions);
+      window.removeEventListener("focus", refreshForegroundState);
+      document.removeEventListener("visibilitychange", refreshVisibleState);
     };
   }, []);
 
@@ -769,7 +1042,7 @@ export function SettingsModal({ onClose }: { onClose(): void }) {
       const saved = await window.localScribe.shortcuts.update({ kind, shortcut });
       const field = kind === "hold" ? "holdShortcut" : "toggleShortcut";
       delete dirtySettings.current[field];
-      setSettings({ ...saved, ...dirtySettings.current });
+      setSettings(settingsWithPendingDraft(saved, dirtySettings.current));
       setStatus("Shortcut applied");
       return {
         accepted: true,
@@ -785,7 +1058,7 @@ export function SettingsModal({ onClose }: { onClose(): void }) {
 
   const save = async () => {
     if (!settings) return;
-    const patch = dirtySettings.current;
+    const patch = { ...dirtySettings.current };
     if (Object.keys(patch).length === 0) {
       setStatus("No settings changes to save");
       return;
@@ -793,10 +1066,13 @@ export function SettingsModal({ onClose }: { onClose(): void }) {
     setBusy(true);
     try {
       const saved = await window.localScribe.settings.patch(patch);
-      dirtySettings.current = {};
-      setSettings(saved);
-      setStatus("Settings saved");
-      if (saved.modelPerformanceMode !== diagnostics?.performance.preference) {
+      const remaining = pendingSettingsAfterSave(dirtySettings.current, patch);
+      dirtySettings.current = remaining;
+      setSettings(settingsWithPendingDraft(saved, remaining));
+      setStatus(Object.keys(remaining).length > 0
+        ? "Saved the submitted settings. Newer changes still need to be saved."
+        : "Settings saved");
+      if (patch.modelPerformanceMode !== undefined) {
         try {
           const nextDiagnostics = await window.localScribe.system.diagnostics();
           setDiagnostics(nextDiagnostics);
@@ -812,6 +1088,14 @@ export function SettingsModal({ onClose }: { onClose(): void }) {
             message: "The performance mode was saved, but LocalScribe could not refresh its model status. Recheck memory to try again.",
             isError: true,
           });
+        }
+      }
+      if (patch.launchAtLogin !== undefined) {
+        try {
+          setLaunchAtLoginStatus(await window.localScribe.system.getLaunchAtLoginStatus());
+        } catch {
+          setLaunchAtLoginStatus(null);
+          setStatus("Settings saved, but LocalScribe could not confirm the operating system's login startup state.");
         }
       }
     } catch (error) {
@@ -852,13 +1136,14 @@ export function SettingsModal({ onClose }: { onClose(): void }) {
     }
     const expectedSize = formatBytes(model.artifact.expectedDownloadBytes);
     const action = replaceExisting ? "repair" : "install";
+    const scope = modelArtifactScopePresentation(modelCatalog, familyId, tier);
     if (!window.confirm(
-      `${replaceExisting ? "Repair" : "Download"} ${model.family.displayName} ${tierLabel(tier)} profile? `
+      `${replaceExisting ? "Repair" : "Download"} ${scope.confirmationTarget}? `
       + `LocalScribe will use its fixed local runtime to download and verify ${expectedSize} of curated model data.`,
     )) return;
     setModelAction({ action: replaceExisting ? "repairing" : "installing", familyId, tier });
     setModelFeedback({
-      message: `${replaceExisting ? "Repairing" : "Downloading"} ${model.family.displayName} ${tierLabel(tier)} and verifying ${expectedSize}…`,
+      message: `${replaceExisting ? "Repairing" : "Downloading"} ${scope.progressTarget} and verifying ${expectedSize}…`,
       isError: false,
     });
     try {
@@ -866,10 +1151,18 @@ export function SettingsModal({ onClose }: { onClose(): void }) {
         ...modelInstallRequest(familyId, tier, replaceExisting),
       });
       setDiagnostics(nextDiagnostics);
-      setModelFeedback({
-        message: `${model.family.displayName} ${tierLabel(tier)} profile ${action === "repair" ? "repaired" : "downloaded"} and verified.`,
-        isError: false,
-      });
+      try {
+        await refreshModelCatalog();
+        setModelFeedback({
+          message: `${scope.successTarget} ${action === "repair" ? "repaired" : "downloaded"} and verified.`,
+          isError: false,
+        });
+      } catch (error) {
+        setModelFeedback({
+          message: `${scope.successTarget} was ${action === "repair" ? "repaired" : "downloaded"}, but LocalScribe could not refresh its displayed verification status: ${errorDetail(error)}`,
+          isError: true,
+        });
+      }
     } catch (error) {
       setModelFeedback({
         message: modelActionFailureMessage(action, error, diagnostics),
@@ -886,16 +1179,25 @@ export function SettingsModal({ onClose }: { onClose(): void }) {
       setModelFeedback({ message: "Curated model details are not available yet. Refresh model status and try again.", isError: true });
       return;
     }
-    if (!window.confirm(`Remove the ${model.family.displayName} ${tierLabel(tier)} local speech-model profile from this computer?`)) return;
+    const scope = modelArtifactScopePresentation(modelCatalog, familyId, tier);
+    if (!window.confirm(`Remove ${scope.removalTarget} from this computer?`)) return;
     setModelAction({ action: "removing", familyId, tier });
-    setModelFeedback({ message: `Removing the ${model.family.displayName} ${tierLabel(tier)} profile…`, isError: false });
+    setModelFeedback({ message: `Removing ${scope.progressTarget}…`, isError: false });
     try {
       const nextDiagnostics = await window.localScribe.system.removeModel(modelRemoveRequest(familyId, tier));
       setDiagnostics(nextDiagnostics);
-      setModelFeedback({ message: `${model.family.displayName} ${tierLabel(tier)} profile removed.`, isError: false });
+      try {
+        await refreshModelCatalog();
+        setModelFeedback({ message: `${scope.successTarget} removed.`, isError: false });
+      } catch (error) {
+        setModelFeedback({
+          message: `${scope.successTarget} was removed, but LocalScribe could not refresh its displayed verification status: ${errorDetail(error)}`,
+          isError: true,
+        });
+      }
     } catch (error) {
       setModelFeedback({
-        message: `Could not remove the ${model.family.displayName} ${tierLabel(tier)} profile: ${errorDetail(error)}`,
+        message: `Could not remove ${scope.removalTarget}: ${errorDetail(error)}`,
         isError: true,
       });
     } finally {
@@ -967,6 +1269,14 @@ export function SettingsModal({ onClose }: { onClose(): void }) {
 
   const loadPresentation = settingsLoadPresentation(settings, settingsLoadError);
   const loadingPresentation = settingsLoadPresentation(null, settingsLoadError)!;
+  const automaticPastePresentation = automaticPasteSettingsPresentation(permissions);
+  const launchAtLoginPresentation = settings
+    ? launchAtLoginSettingsPresentation(
+        settings.launchAtLogin,
+        launchAtLoginStatus,
+        Object.prototype.hasOwnProperty.call(dirtySettings.current, "launchAtLogin"),
+      )
+    : null;
 
   return (
     <div
@@ -993,7 +1303,14 @@ export function SettingsModal({ onClose }: { onClose(): void }) {
             <button type="button" className="ls-close-button" onClick={onClose} aria-label="Close settings"><CloseIcon /></button>
           </header>
 
-          <div className="ls-settings-scroll" aria-busy={loadPresentation && !loadPresentation.isError ? true : undefined}>
+          <div
+            key={tab}
+            className="ls-settings-scroll"
+            role="region"
+            aria-labelledby="settings-title"
+            aria-busy={loadPresentation && !loadPresentation.isError ? true : undefined}
+            tabIndex={0}
+          >
             {!settings ? (
               <div className={loadingPresentation.isError ? "ls-action-feedback is-error" : "ls-action-feedback"} role={loadingPresentation.isError ? "alert" : "status"} aria-live="polite">
                 <strong>{loadingPresentation.title}</strong><br />{loadingPresentation.detail}
@@ -1008,6 +1325,7 @@ export function SettingsModal({ onClose }: { onClose(): void }) {
                     label="Push-to-talk shortcut"
                     detail="Hold this key while speaking, then release it to transcribe."
                     value={settings.holdShortcut}
+                    platform={shortcutPlatform}
                     onAccept={(shortcut) => commitShortcut("hold", shortcut)}
                   />
                   <ShortcutRecorder
@@ -1015,6 +1333,7 @@ export function SettingsModal({ onClose }: { onClose(): void }) {
                     label="Toggle dictation shortcut"
                     detail="Press once to start listening and once again to stop."
                     value={settings.toggleShortcut}
+                    platform={shortcutPlatform}
                     onAccept={(shortcut) => commitShortcut("toggle", shortcut)}
                   />
                   <SettingsSelect
@@ -1024,10 +1343,13 @@ export function SettingsModal({ onClose }: { onClose(): void }) {
                     onChange={(value) => update("microphoneId", value || null)}
                   >
                     <option value="">System default</option>
+                    {selectedMicrophoneIsUnavailable(settings.microphoneId, microphones) && (
+                      <option value={settings.microphoneId!}>Previously selected microphone (unavailable)</option>
+                    )}
                     {microphones.map((device, index) => <option value={device.deviceId} key={device.deviceId}>{device.label || `Microphone ${index + 1}`}</option>)}
                   </SettingsSelect>
                   <SettingsSelect label="Dictation language" detail={DICTATION_LANGUAGE_DETAIL} value={settings.language} onChange={(value) => update("language", value)}>
-                    {DICTATION_LANGUAGE_OPTIONS.map((language) => <option value={language.value} key={language.value}>{language.label}</option>)}
+                    {dictationLanguageOptionsFor(settings.language).map((language) => <option value={language.value} key={language.value}>{language.label}</option>)}
                   </SettingsSelect>
                   <SettingsReadOnly label="App language" detail="The LocalScribe interface is currently available in English." value="English" />
                 </SettingsGroup>
@@ -1058,9 +1380,13 @@ export function SettingsModal({ onClose }: { onClose(): void }) {
                     <SettingsReadOnly
                       label="Input access"
                       detail={permissions.platform === "win32"
-                        ? "Windows does not use a separate Accessibility privacy setting for LocalScribe."
+                        ? permissions.automaticPaste.ready
+                          ? "Windows does not use a separate Accessibility privacy setting for LocalScribe."
+                          : "Windows does not use a separate Accessibility privacy setting, but the local paste helper is unavailable. Completed dictation will be copied."
                         : "Automatic paste and global push-to-talk are not supported on this platform yet."}
-                      value={permissions.platform === "win32" ? "No extra permission" : "Unavailable"}
+                      value={permissions.platform === "win32"
+                        ? permissions.automaticPaste.ready ? "No extra permission" : "Copy only"
+                        : "Unavailable"}
                     />
                   )}
                 </SettingsGroup>
@@ -1070,11 +1396,13 @@ export function SettingsModal({ onClose }: { onClose(): void }) {
             {tab === "system" && (
               <>
                 <SettingsGroup title="App behavior">
-                  <SettingsToggle label="Launch at login" detail="Make LocalScribe ready after you sign in." value={settings.launchAtLogin} onChange={(value) => update("launchAtLogin", value)} />
+                  {launchAtLoginPresentation?.editable
+                    ? <SettingsToggle label="Launch at login" detail={launchAtLoginPresentation.detail} value={launchAtLoginPresentation.value} onChange={(value) => update("launchAtLogin", value)} />
+                    : <SettingsReadOnly label="Launch at login" detail={launchAtLoginPresentation?.detail ?? "Checking login startup."} value="Unavailable" />}
                   <SettingsToggle label="Show floating bar" detail="Keep the small bottom-center control visible while idle." value={settings.showPillWhenIdle} onChange={(value) => update("showPillWhenIdle", value)} />
-                  {permissions && !permissions.automaticPaste.supported
-                    ? <SettingsReadOnly label="Paste automatically" detail="Automatic paste is not supported on this platform. Completed dictation is copied to the clipboard." value="Unavailable" />
-                    : <SettingsToggle label="Paste automatically" detail="Paste only when the app active at start is still the target; otherwise copy." value={settings.autoPaste} onChange={(value) => update("autoPaste", value)} />}
+                  {automaticPastePresentation.editable
+                    ? <SettingsToggle label="Paste automatically" detail={automaticPastePresentation.detail} value={settings.autoPaste} onChange={(value) => update("autoPaste", value)} />
+                    : <SettingsReadOnly label="Paste automatically" detail={automaticPastePresentation.detail} value={automaticPastePresentation.value ?? "Unavailable"} />}
                   <SettingsToggle label="Save transcript history" detail="Text is encrypted locally. Raw audio is not retained." value={settings.keepHistory} onChange={(value) => update("keepHistory", value)} />
                   <SettingsSelect label="History retention" detail="Expired encrypted transcripts are deleted locally." value={String(settings.historyRetentionDays)} onChange={(value) => update("historyRetentionDays", Number(value) as AppSettings["historyRetentionDays"])}>
                     {HISTORY_RETENTION_OPTIONS.map((days) => <option key={days} value={days}>{historyRetentionLabel(days)}</option>)}
@@ -1108,7 +1436,7 @@ export function SettingsModal({ onClose }: { onClose(): void }) {
                 } : null}
                 catalog={modelCatalog}
                 catalogError={modelCatalogError}
-                runtimeTierStatuses={modelRuntimeTierStatuses(diagnostics)}
+                runtimeTierStatuses={modelRuntimeTierStatuses(diagnostics, modelCatalog)}
                 action={modelAction}
                 feedback={modelFeedback}
                 onModeChange={(mode) => {
@@ -1157,7 +1485,7 @@ export function SettingsModal({ onClose }: { onClose(): void }) {
 
             {tab === "privacy" && (
               <>
-                <div className="ls-privacy-hero"><LockIcon /><div><span>Private by design</span><h2>Your voice stays on this computer.</h2><p>Audio is processed by the installed local model and removed after transcription. Transcripts, snippet expansions, and scratchpad text are encrypted with the operating system key store.</p></div></div>
+                <div className="ls-privacy-hero"><LockIcon /><div><span>Private by design</span><h2>Your voice stays on this computer.</h2><p>Audio is sent only to the selected local speech runtime and removed after transcription. Transcripts, snippet expansions, and scratchpad text are encrypted with the operating system key store.</p></div></div>
                 <SettingsGroup title="Storage and diagnostics">
                   <SettingsReadOnly label="Processing" detail="No listening server or transcription API." value={resolvedModelEngine(diagnostics)} />
                   <SettingsReadOnly label="Database" detail="Encrypted transcript and scratchpad storage." value={diagnostics?.databaseIntegrity ?? "Checking"} />
@@ -1257,14 +1585,36 @@ function formatBytes(bytes: number) {
 
 export function modelRuntimeTierStatuses(
   diagnostics: Diagnostics | null,
+  catalog: ModelCatalog | null = null,
 ): ModelTierRuntimeStatus[] {
-  if (!diagnostics) return [];
-  return diagnostics.performance.options.map((option) => ({
+  const activeStatuses = diagnostics?.performance.options.map((option) => ({
     familyId: diagnostics.model.familyId,
     tier: option.tier,
     artifactId: option.artifactId,
     qualityNote: option.qualityNote,
     verificationStatus: option.verificationStatus,
+  })) ?? [];
+  if (!catalog) return activeStatuses;
+
+  return catalog.families.flatMap((family) => family.profiles.map((profile) => {
+    const verification = catalog.verifications.find((candidate) => (
+      candidate.familyId === family.familyId
+      && candidate.artifactId === profile.artifactId
+    ));
+    const activeStatus = activeStatuses.find((candidate) => (
+      candidate.familyId === family.familyId
+      && candidate.tier === profile.tier
+      && candidate.artifactId === profile.artifactId
+    ));
+    return {
+      familyId: family.familyId,
+      tier: profile.tier,
+      artifactId: profile.artifactId,
+      qualityNote: activeStatus?.qualityNote,
+      verificationStatus: verification?.verificationStatus
+        ?? activeStatus?.verificationStatus
+        ?? "unknown",
+    };
   }));
 }
 
@@ -1277,6 +1627,40 @@ function catalogModelProfile(
   const profile = family?.profiles.find((candidate) => candidate.tier === tier);
   const artifact = profile && family?.artifacts.find((candidate) => candidate.artifactId === profile.artifactId);
   return family && profile && artifact ? { family, profile, artifact } : null;
+}
+
+export function modelArtifactScopePresentation(
+  catalog: ModelCatalog | null,
+  familyId: ModelFamilyId,
+  tier: ModelPerformanceTier,
+): {
+  confirmationTarget: string;
+  progressTarget: string;
+  removalTarget: string;
+  successTarget: string;
+  sharedAcrossTiers: boolean;
+} {
+  const model = catalogModelProfile(catalog, familyId, tier);
+  const familyName = model?.family.displayName ?? familyId;
+  const sharedAcrossTiers = Boolean(model && model.family.profiles
+    .filter((profile) => profile.artifactId === model.profile.artifactId).length > 1);
+  if (sharedAcrossTiers) {
+    return {
+      confirmationTarget: `${familyName} shared model data for all performance profiles`,
+      progressTarget: `${familyName} shared model data`,
+      removalTarget: `the ${familyName} shared local model data used by all performance profiles`,
+      successTarget: `${familyName} shared model data for all performance profiles`,
+      sharedAcrossTiers,
+    };
+  }
+  const profile = `${familyName} ${tierLabel(tier)} profile`;
+  return {
+    confirmationTarget: profile,
+    progressTarget: profile,
+    removalTarget: `the ${profile}`,
+    successTarget: profile,
+    sharedAcrossTiers,
+  };
 }
 
 export function modelActionFailureMessage(
@@ -1331,15 +1715,20 @@ function modelRuntimePlatform(
   return "unsupported";
 }
 
-function resolvedModelEngine(diagnostics: Diagnostics | null): string {
-  if (!diagnostics) return "Checking";
-  return diagnostics.performance.options.find(
-    (option) => option.tier === diagnostics.performance.resolvedTier,
-  )?.engine ?? "Local worker";
+export function resolvedModelEngine(diagnostics: Diagnostics | null): string {
+  return diagnostics?.backend ?? "Checking";
 }
 
-function shortcutHelpText(permissions: PermissionSnapshot | null, holdShortcut: string): string {
-  const label = shortcutDisplayLabel(holdShortcut);
+export function shortcutHelpText(
+  permissions: PermissionSnapshot | null,
+  holdShortcut: string,
+): string {
+  const platform = permissions?.platform === "darwin"
+    || permissions?.platform === "win32"
+    || permissions?.platform === "linux"
+    ? permissions.platform
+    : undefined;
+  const label = shortcutDisplayLabel(holdShortcut, platform);
   if (!permissions) return `Shortcut changes apply immediately. The current push-to-talk key is ${label}.`;
   if (permissions.globalHold.ready) {
     return `Shortcut changes apply immediately. Hold ${label} to dictate from any app.`;
@@ -1350,11 +1739,14 @@ function shortcutHelpText(permissions: PermissionSnapshot | null, holdShortcut: 
     }
     return `The current push-to-talk key is ${label}. Grant Accessibility to use it globally; until then, use the toggle shortcut and LocalScribe will copy completed dictation.`;
   }
+  if (permissions.platform === "win32") {
+    return `The current push-to-talk key is ${label}. The Windows global keyboard hook is not running; restart LocalScribe or use the toggle shortcut.`;
+  }
   return `The current push-to-talk key is ${label}. Global push-to-talk is unavailable on this platform; the toggle shortcut still works.`;
 }
 
 function errorDetail(error: unknown): string {
-  return error instanceof Error && error.message ? error.message : "Unknown local error";
+  return rendererSafeErrorMessage(error);
 }
 
 type IconProps = { className?: string };

@@ -5,6 +5,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
+import { RELEASE_POLICY } from "../src/shared/releasePolicy.mts";
 
 const projectRoot = path.resolve(import.meta.dirname, "..");
 
@@ -136,7 +137,7 @@ if (productionBom.metadata && typeof productionBom.metadata === "object") {
 const appVersion = runtimeVersions.app;
 const electronLocked = runtimeVersions.electron;
 const macPython = runtimeVersions.python;
-const platformName = platform === "darwin" ? "macos-arm64" : "windows-x64";
+const platformName = RELEASE_POLICY.targets[platform].label;
 const helperName = platform === "darwin"
   ? "native/macos/active-target"
   : "native/windows/active-target.exe";

@@ -11,18 +11,20 @@ import shutil
 import stat
 import subprocess
 import sys
-import tempfile
 import time
 import uuid
 import wave
 from collections.abc import Callable
 from dataclasses import dataclass
+from importlib.metadata import version as package_version
 from pathlib import Path
 from typing import Any, BinaryIO, Protocol, TextIO
 
 PROTOCOL_VERSION = 1
 BACKEND_NAME = "mlx-whisper"
-BACKEND_VERSION = "0.4.3"
+# Handshake the installed runtime version, not a second handwritten literal.
+# Supervisor retains the release allowlist, so dependency drift fails closed.
+BACKEND_VERSION = package_version("mlx-whisper")
 
 MAX_REQUEST_BYTES = 16 * 1024
 # Keep these literals in sync with resources/audio-protocol.json. They are
@@ -40,6 +42,26 @@ MAX_CONTEXT_CHARS = 4_000
 MAX_LANGUAGE_CHARS = 80
 MAX_PATH_CHARS = 2_048
 MAX_RESULT_CHARS = 100_000
+MODEL_TRANSACTION_PREFIX = ".localscribe-model-install-"
+MODEL_TRANSACTION_MARKER = "transaction.json"
+MODEL_TRANSACTION_OWNER = "com.localscribe.model-install"
+MODEL_TRANSACTION_SCHEMA_VERSION = 1
+MODEL_TRANSACTION_FIELDS = frozenset(
+    {
+        "schemaVersion",
+        "owner",
+        "transactionId",
+        "backend",
+        "modelId",
+        "artifactId",
+        "storageDirectory",
+        "revision",
+        "manifestDigest",
+    }
+)
+MODEL_TRANSACTION_NAME = re.compile(
+    rf"^{re.escape(MODEL_TRANSACTION_PREFIX)}([0-9a-f]{{32}})$"
+)
 
 EXPECTED_MODEL_FILES = frozenset({"config.json", "weights.npz"})
 EXPECTED_MANIFEST_FIELDS = frozenset(
@@ -88,98 +110,21 @@ def _catalog_selection(spec: TierSpec) -> CatalogSelection:
     return (spec.model_id, spec.tier, spec.compute_type)
 
 
-# This is intentionally a static, data-only catalog.  A load request can name
-# only one of these exact (modelId, tier, computeType) triples; it cannot choose
-# a manifest filename, repo, revision, local path, loader, or runtime options.
-TIER_SPECS = {
-    (
-        "mlx-community/whisper-large-v3-mlx",
-        "high",
-        "float16",
-    ): TierSpec(
-        tier="high",
-        manifest_filename="whisper-large-v3-mlx.json",
-        model_id="mlx-community/whisper-large-v3-mlx",
-        family_id="whisper-large-v3",
-        artifact_id="whisper-large-v3-mlx-fp16",
-        revision="49e6aa286ad60c14352c404340ded53710378a11",
-        storage_directory="whisper-large-v3-mlx-49e6aa2",
-        compute_type="float16",
-    ),
-    (
-        "mlx-community/whisper-large-v3-mlx-8bit",
-        "medium",
-        "int8",
-    ): TierSpec(
-        tier="medium",
-        manifest_filename="whisper-large-v3-mlx-8bit.json",
-        model_id="mlx-community/whisper-large-v3-mlx-8bit",
-        family_id="whisper-large-v3",
-        artifact_id="whisper-large-v3-mlx-int8",
-        revision="04ca5b03c22d72ddf4f4b2d808a28bf9902fb71a",
-        storage_directory="whisper-large-v3-mlx-8bit-04ca5b0",
-        compute_type="int8",
-    ),
-    (
-        "mlx-community/whisper-large-v3-mlx-4bit",
-        "low",
-        "int4",
-    ): TierSpec(
-        tier="low",
-        manifest_filename="whisper-large-v3-mlx-4bit.json",
-        model_id="mlx-community/whisper-large-v3-mlx-4bit",
-        family_id="whisper-large-v3",
-        artifact_id="whisper-large-v3-mlx-int4",
-        revision="d12b5d0043a6fe0c59af321617fba041d4e8e0c8",
-        storage_directory="whisper-large-v3-mlx-4bit-d12b5d0",
-        compute_type="int4",
-    ),
-    (
-        "mlx-community/whisper-large-v2-mlx",
-        "high",
-        "float16",
-    ): TierSpec(
-        tier="high",
-        manifest_filename="whisper-large-v2-mlx.json",
-        model_id="mlx-community/whisper-large-v2-mlx",
-        family_id="whisper-large-v2",
-        artifact_id="whisper-large-v2-mlx-fp16",
-        revision="cce86229e2765266197fef869ce9f7e2550067ab",
-        storage_directory="whisper-large-v2-mlx-cce8622",
-        compute_type="float16",
-    ),
-    (
-        "mlx-community/whisper-large-v2-mlx-8bit",
-        "medium",
-        "int8",
-    ): TierSpec(
-        tier="medium",
-        manifest_filename="whisper-large-v2-mlx-8bit.json",
-        model_id="mlx-community/whisper-large-v2-mlx-8bit",
-        family_id="whisper-large-v2",
-        artifact_id="whisper-large-v2-mlx-int8",
-        revision="ee1ab587ec0827941f04d9bb0ff9c2005444ef80",
-        storage_directory="whisper-large-v2-mlx-8bit-ee1ab58",
-        compute_type="int8",
-    ),
-    (
-        "mlx-community/whisper-large-v2-mlx-4bit",
-        "low",
-        "int4",
-    ): TierSpec(
-        tier="low",
-        manifest_filename="whisper-large-v2-mlx-4bit.json",
-        model_id="mlx-community/whisper-large-v2-mlx-4bit",
-        family_id="whisper-large-v2",
-        artifact_id="whisper-large-v2-mlx-int4",
-        revision="79e71f0c4946290e517db80c7a5cba6f91bdfcaf",
-        storage_directory="whisper-large-v2-mlx-4bit-79e71f0",
-        compute_type="int4",
-    ),
-}
-if any(_catalog_selection(spec) != selection for selection, spec in TIER_SPECS.items()):
-    raise RuntimeError("invalid_model_catalog")
-MANIFEST_FILENAMES = frozenset(spec.manifest_filename for spec in TIER_SPECS.values())
+# Immutable repository/revision/artifact identity comes from these packaged,
+# resource-integrity-covered manifests. Only the manifest filename and the
+# runtime compute profile remain an executable allowlist: a renderer cannot
+# supply either, and adding a curated model still requires a signed app build.
+CURATED_PROFILE_POLICIES = (
+    ("whisper-large-v3-mlx.json", "high", "float16"),
+    ("whisper-large-v3-mlx-8bit.json", "medium", "int8"),
+    ("whisper-large-v3-mlx-4bit.json", "low", "int4"),
+    ("whisper-large-v2-mlx.json", "high", "float16"),
+    ("whisper-large-v2-mlx-8bit.json", "medium", "int8"),
+    ("whisper-large-v2-mlx-4bit.json", "low", "int4"),
+)
+MANIFEST_FILENAMES = frozenset(
+    filename for filename, _tier, _compute_type in CURATED_PROFILE_POLICIES
+)
 MODEL_REQUEST_FIELDS = frozenset(
     {
         "type",
@@ -264,6 +209,15 @@ HardwareProbe = Callable[[], HardwareInfo]
 SnapshotDownloader = Callable[..., Any]
 
 
+def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise WorkerError("invalid_json", "JSON contains duplicate fields")
+        result[key] = value
+    return result
+
+
 def _manifest_path(filename: str) -> Path:
     if filename not in MANIFEST_FILENAMES:
         raise RuntimeError("packaged_model_manifest_not_allowed")
@@ -279,31 +233,51 @@ def _manifest_path(filename: str) -> Path:
     raise RuntimeError("packaged_model_manifest_missing")
 
 
-def _parse_manifest(path: Path, spec: TierSpec) -> ModelManifest:
+def _parse_manifest(path: Path, tier: str) -> ModelManifest:
     try:
         metadata = path.lstat()
         if path.is_symlink() or not stat.S_ISREG(metadata.st_mode):
             raise RuntimeError("packaged_model_manifest_invalid")
-        raw = json.loads(path.read_text(encoding="utf-8"))
+        raw = json.loads(
+            path.read_text(encoding="utf-8"),
+            object_pairs_hook=_reject_duplicate_keys,
+        )
+    except WorkerError as error:
+        raise RuntimeError("packaged_model_manifest_invalid") from error
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise RuntimeError("packaged_model_manifest_invalid") from error
     if not isinstance(raw, dict) or frozenset(raw) != EXPECTED_MANIFEST_FIELDS:
         raise RuntimeError("packaged_model_manifest_invalid")
     if raw.get("schemaVersion") != 1 or raw.get("platform") != "darwin-arm64":
         raise RuntimeError("packaged_model_manifest_invalid")
-    if (
-        raw.get("modelId") != spec.model_id
-        or raw.get("familyId") != spec.family_id
-        or raw.get("artifactId") != spec.artifact_id
-        or raw.get("revision") != spec.revision
-    ):
-        raise RuntimeError("packaged_model_manifest_identity_mismatch")
-    if raw.get("storageDirectory") != spec.storage_directory:
-        raise RuntimeError("packaged_model_manifest_identity_mismatch")
-    for field in ("backend", "displayName", "license"):
+    if raw.get("backend") != "MLX Whisper":
+        raise RuntimeError("packaged_model_manifest_backend_mismatch")
+    for field in ("displayName", "license"):
         value = raw.get(field)
         if not isinstance(value, str) or not value or len(value) > 200:
             raise RuntimeError("packaged_model_manifest_invalid")
+    model_id = raw.get("modelId")
+    family_id = raw.get("familyId")
+    artifact_id = raw.get("artifactId")
+    storage_directory = raw.get("storageDirectory")
+    revision = raw.get("revision")
+    if (
+        not isinstance(model_id, str)
+        or re.fullmatch(
+            r"[A-Za-z0-9][A-Za-z0-9._-]{0,95}/[A-Za-z0-9][A-Za-z0-9._-]{0,95}",
+            model_id,
+        )
+        is None
+        or not isinstance(family_id, str)
+        or re.fullmatch(r"[a-z0-9][a-z0-9-]*", family_id) is None
+        or not isinstance(artifact_id, str)
+        or re.fullmatch(r"[a-z0-9][a-z0-9-]*", artifact_id) is None
+        or not isinstance(storage_directory, str)
+        or re.fullmatch(r"[a-z0-9][a-z0-9._-]*", storage_directory) is None
+        or not isinstance(revision, str)
+        or re.fullmatch(r"[a-f0-9]{40}", revision) is None
+    ):
+        raise RuntimeError("packaged_model_manifest_invalid")
     files = raw.get("files")
     if not isinstance(files, dict) or frozenset(files) != EXPECTED_MODEL_FILES:
         raise RuntimeError("packaged_model_manifest_invalid")
@@ -324,23 +298,38 @@ def _parse_manifest(path: Path, spec: TierSpec) -> ModelManifest:
             sha256=file_raw["sha256"],
         )
     return ModelManifest(
-        tier=spec.tier,
+        tier=tier,
         backend=raw["backend"],
         display_name=raw["displayName"],
-        model_id=raw["modelId"],
-        family_id=raw["familyId"],
-        artifact_id=raw["artifactId"],
-        storage_directory=raw["storageDirectory"],
-        revision=raw["revision"],
+        model_id=model_id,
+        family_id=family_id,
+        artifact_id=artifact_id,
+        storage_directory=storage_directory,
+        revision=revision,
         license=raw["license"],
         files=parsed_files,
     )
 
 
-MODEL_MANIFESTS = {
-    selection: _parse_manifest(_manifest_path(spec.manifest_filename), spec)
-    for selection, spec in TIER_SPECS.items()
-}
+TIER_SPECS: dict[CatalogSelection, TierSpec] = {}
+MODEL_MANIFESTS: dict[CatalogSelection, ModelManifest] = {}
+for manifest_filename, tier, compute_type in CURATED_PROFILE_POLICIES:
+    manifest = _parse_manifest(_manifest_path(manifest_filename), tier)
+    spec = TierSpec(
+        tier=tier,
+        manifest_filename=manifest_filename,
+        model_id=manifest.model_id,
+        family_id=manifest.family_id,
+        artifact_id=manifest.artifact_id,
+        revision=manifest.revision,
+        storage_directory=manifest.storage_directory,
+        compute_type=compute_type,
+    )
+    selection = _catalog_selection(spec)
+    if selection in TIER_SPECS:
+        raise RuntimeError("duplicate_model_catalog_selection")
+    TIER_SPECS[selection] = spec
+    MODEL_MANIFESTS[selection] = manifest
 
 
 def _send(output_stream: TextIO, payload: dict[str, Any]) -> None:
@@ -362,7 +351,7 @@ def _send_error(
     )
 
 
-def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+def _reject_request_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     result: dict[str, Any] = {}
     for key, value in pairs:
         if key in result:
@@ -499,6 +488,240 @@ def _safe_rmtree(path: Path, root: Path) -> None:
     shutil.rmtree(resolved)
 
 
+def _model_manifest_digest(manifest: ModelManifest) -> str:
+    payload = {
+        "backend": manifest.backend,
+        "modelId": manifest.model_id,
+        "artifactId": manifest.artifact_id,
+        "storageDirectory": manifest.storage_directory,
+        "revision": manifest.revision,
+        "files": {
+            filename: {
+                "bytes": model_file.bytes,
+                "sha256": model_file.sha256,
+            }
+            for filename, model_file in sorted(manifest.files.items())
+        },
+    }
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _transaction_marker_payload(
+    transaction_id: str,
+    manifest: ModelManifest,
+) -> dict[str, Any]:
+    return {
+        "schemaVersion": MODEL_TRANSACTION_SCHEMA_VERSION,
+        "owner": MODEL_TRANSACTION_OWNER,
+        "transactionId": transaction_id,
+        "backend": manifest.backend,
+        "modelId": manifest.model_id,
+        "artifactId": manifest.artifact_id,
+        "storageDirectory": manifest.storage_directory,
+        "revision": manifest.revision,
+        "manifestDigest": _model_manifest_digest(manifest),
+    }
+
+
+def _sync_directory(path: Path) -> None:
+    try:
+        descriptor = os.open(path, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(descriptor)
+    except OSError:
+        # Some packaged filesystems do not support directory fsync. The
+        # transaction marker and model files are still individually durable.
+        pass
+    finally:
+        os.close(descriptor)
+
+
+def _create_model_transaction(
+    model_root: Path,
+    manifest: ModelManifest,
+) -> tuple[Path, Path, Path]:
+    transaction_id = uuid.uuid4().hex
+    transaction = model_root / f"{MODEL_TRANSACTION_PREFIX}{transaction_id}"
+    transaction.mkdir(mode=0o700)
+    marker = transaction / MODEL_TRANSACTION_MARKER
+    marker_payload = _transaction_marker_payload(transaction_id, manifest)
+    descriptor = os.open(
+        marker,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+        0o600,
+    )
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            json.dump(
+                marker_payload,
+                handle,
+                ensure_ascii=True,
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+            handle.flush()
+            os.fsync(handle.fileno())
+    except BaseException:
+        # fdopen owns the descriptor after it succeeds.
+        if marker.exists():
+            marker.unlink()
+        transaction.rmdir()
+        raise
+    staging = transaction / "staging"
+    staging.mkdir(mode=0o700)
+    _sync_directory(transaction)
+    _sync_directory(model_root)
+    return transaction, staging, transaction / "backup"
+
+
+def _owned_model_transaction(
+    transaction: Path,
+    model_root: Path,
+    manifest: ModelManifest,
+) -> bool:
+    match = MODEL_TRANSACTION_NAME.fullmatch(transaction.name)
+    if match is None or transaction.parent != model_root:
+        return False
+    try:
+        transaction_metadata = transaction.lstat()
+        if transaction.is_symlink() or not stat.S_ISDIR(transaction_metadata.st_mode):
+            return False
+        entries = {entry.name: entry for entry in transaction.iterdir()}
+        if not set(entries).issubset(
+            {MODEL_TRANSACTION_MARKER, "staging", "backup"}
+        ):
+            return False
+        marker = entries.get(MODEL_TRANSACTION_MARKER)
+        if marker is None:
+            return False
+        marker_metadata = marker.lstat()
+        if (
+            marker.is_symlink()
+            or not stat.S_ISREG(marker_metadata.st_mode)
+            or marker_metadata.st_size > 4_096
+        ):
+            return False
+        for directory_name in ("staging", "backup"):
+            directory = entries.get(directory_name)
+            if directory is None:
+                continue
+            metadata = directory.lstat()
+            if directory.is_symlink() or not stat.S_ISDIR(metadata.st_mode):
+                return False
+        raw = json.loads(
+            marker.read_text(encoding="utf-8"),
+            object_pairs_hook=_reject_duplicate_keys,
+        )
+    except (OSError, UnicodeError, json.JSONDecodeError, WorkerError):
+        return False
+    if not isinstance(raw, dict) or frozenset(raw) != MODEL_TRANSACTION_FIELDS:
+        return False
+    transaction_id = match.group(1)
+    return raw == _transaction_marker_payload(transaction_id, manifest)
+
+
+def _remove_owned_model_transaction(
+    transaction: Path,
+    model_root: Path,
+    manifest: ModelManifest,
+) -> None:
+    if not _owned_model_transaction(transaction, model_root, manifest):
+        raise WorkerError(
+            "unsafe_model_path",
+            "refusing to remove an unowned model transaction",
+        )
+    _safe_rmtree(transaction, model_root)
+    _sync_directory(model_root)
+
+
+def _regular_directory_present(path: Path) -> bool:
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError:
+        return False
+    except OSError as error:
+        raise WorkerError("unsafe_model_path", "model path is unavailable") from error
+    if path.is_symlink() or not stat.S_ISDIR(metadata.st_mode):
+        raise WorkerError(
+            "unsafe_model_path",
+            "model path must be a regular directory",
+        )
+    return True
+
+
+def _recover_model_transactions(
+    model_root: Path,
+    manifest: ModelManifest,
+) -> None:
+    final_directory = model_root / manifest.storage_directory
+    try:
+        candidates = tuple(model_root.iterdir())
+    except OSError as error:
+        raise WorkerError("invalid_model_root", "modelRoot is unavailable") from error
+    for transaction in candidates:
+        if not _owned_model_transaction(transaction, model_root, manifest):
+            continue
+        staging = transaction / "staging"
+        backup = transaction / "backup"
+        final_valid = _valid_model_directory(final_directory, manifest)
+        final_present = _regular_directory_present(final_directory)
+        backup_present = _regular_directory_present(backup)
+        staging_present = _regular_directory_present(staging)
+        backup_valid = backup_present and _valid_model_directory(backup, manifest)
+        staging_valid = staging_present and _valid_model_directory(staging, manifest)
+
+        if final_valid:
+            _remove_owned_model_transaction(transaction, model_root, manifest)
+            continue
+        if final_present and backup_valid:
+            # The replacement was promoted but did not survive verification
+            # (for example, a crash or disk fault after the atomic rename).
+            # This transaction is marker-owned and its backup is verified, so
+            # restore the last known-good artifact instead of discarding it.
+            _safe_rmtree(final_directory, model_root)
+            backup.replace(final_directory)
+            _sync_directory(model_root)
+            if not _valid_model_directory(final_directory, manifest):
+                raise WorkerError(
+                    "model_recovery_failed",
+                    "restored model verification failed",
+                )
+            _remove_owned_model_transaction(transaction, model_root, manifest)
+            continue
+        if not final_present and backup_valid:
+            backup.replace(final_directory)
+            _sync_directory(model_root)
+            if not _valid_model_directory(final_directory, manifest):
+                raise WorkerError(
+                    "model_recovery_failed",
+                    "restored model verification failed",
+                )
+            _remove_owned_model_transaction(transaction, model_root, manifest)
+            continue
+        if not final_present and staging_valid:
+            staging.replace(final_directory)
+            _sync_directory(model_root)
+            if not _valid_model_directory(final_directory, manifest):
+                raise WorkerError(
+                    "model_recovery_failed",
+                    "recovered model verification failed",
+                )
+            _remove_owned_model_transaction(transaction, model_root, manifest)
+            continue
+        # A marker-owned partial download, or an invalid model that had already
+        # been selected for replacement, is safe to discard. Unmarked or
+        # malformed lookalike directories never reach this branch.
+        _remove_owned_model_transaction(transaction, model_root, manifest)
+
+
 def ensure_model(
     model_root: Path,
     manifest: ModelManifest,
@@ -508,6 +731,7 @@ def ensure_model(
 ) -> Path:
     model_root = _bounded_absolute_directory(str(model_root), create=True)
     final_directory = model_root / manifest.storage_directory
+    _recover_model_transactions(model_root, manifest)
     if _valid_model_directory(final_directory, manifest):
         return final_directory
     if not allow_download:
@@ -516,13 +740,7 @@ def ensure_model(
             "install the selected local speech model before dictating",
         )
 
-    staging = Path(
-        tempfile.mkdtemp(
-            prefix=f".whisper-{manifest.tier}-staging-",
-            dir=model_root,
-        )
-    )
-    backup: Path | None = None
+    transaction, staging, backup = _create_model_transaction(model_root, manifest)
     try:
         if snapshot_downloader is None:
             with contextlib.redirect_stdout(sys.stderr):
@@ -566,20 +784,28 @@ def ensure_model(
                     "unsafe_model_path",
                     "installed model path is not a regular directory",
                 )
-            backup = model_root / f".replaced-{manifest.tier}-{uuid.uuid4().hex}"
             final_directory.replace(backup)
+            _sync_directory(transaction)
+            _sync_directory(model_root)
         try:
             staging.replace(final_directory)
+            _sync_directory(transaction)
+            _sync_directory(model_root)
         except Exception:
-            if backup is not None and backup.exists() and not final_directory.exists():
+            if _valid_model_directory(backup, manifest) and not final_directory.exists():
                 backup.replace(final_directory)
+                _sync_directory(model_root)
             raise
-        if backup is not None and backup.exists():
-            _safe_rmtree(backup, model_root)
+        if not _valid_model_directory(final_directory, manifest):
+            raise WorkerError(
+                "model_activation_failed",
+                "activated model verification failed",
+            )
+        _remove_owned_model_transaction(transaction, model_root, manifest)
         return final_directory
     finally:
-        if staging.exists():
-            _safe_rmtree(staging, model_root)
+        if transaction.exists():
+            _recover_model_transactions(model_root, manifest)
 
 
 def _read_validated_pcm16(audio_path_raw: str, allowed_root_raw: str) -> bytes:
@@ -973,7 +1199,7 @@ def run_worker(
                 try:
                     message = json.loads(
                         raw_line.decode("utf-8"),
-                        object_pairs_hook=_reject_duplicate_keys,
+                        object_pairs_hook=_reject_request_duplicate_keys,
                     )
                 except WorkerError:
                     raise

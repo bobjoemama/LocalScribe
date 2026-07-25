@@ -1,15 +1,59 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { ScratchpadNote } from "../../shared/contracts";
+import {
+  scratchpadNoteSchema,
+  type RuntimePlatform,
+  type ScratchpadNote,
+} from "../../shared/contracts";
+import {
+  GENERATIVE_TEXT_MODEL_REQUIRED_NOTICE,
+} from "../generativeTextAvailability";
+import { scratchpadNoteMatches } from "./search";
 import "./scratchpad-window.css";
 
-type SaveState = "loading" | "saved" | "saving" | "error";
-const isMacOS = navigator.userAgent.includes("Macintosh");
+type NoteSaveState = "saved" | "saving" | "save-error";
+type ScratchpadStatus = "loading" | NoteSaveState | "load-error" | "create-error" | "delete-error";
 
-function saveStateLabel(state: SaveState): string {
+function requiredMaxLength(value: number | null): number {
+  if (value === null) {
+    throw new Error("Scratchpad body contract must define a maximum length.");
+  }
+  return value;
+}
+
+const SCRATCHPAD_BODY_MAX_LENGTH = requiredMaxLength(scratchpadNoteSchema.shape.body.maxLength);
+
+export function scratchpadStatusLabel(state: ScratchpadStatus): string {
   if (state === "loading") return "Loading";
   if (state === "saving") return "Saving";
-  if (state === "error") return "Save failed";
+  if (state === "save-error") return "Save failed";
+  if (state === "load-error") return "Notes unavailable";
+  if (state === "create-error") return "Note creation failed";
+  if (state === "delete-error") return "Delete failed";
   return "Saved";
+}
+
+export function shouldShowCustomWindowActions(platform: RuntimePlatform | null): boolean {
+  return platform === "darwin";
+}
+
+export function scratchpadWindowControlMode(
+  platform: RuntimePlatform | null,
+): "pending" | "custom" | "native" {
+  if (platform === null) return "pending";
+  return shouldShowCustomWindowActions(platform) ? "custom" : "native";
+}
+
+export function scratchpadHeaderTitle(
+  activeTitle: string | null,
+  status: ScratchpadStatus,
+): string {
+  if (activeTitle) return activeTitle;
+  return status === "loading" ? "Loading notes…" : "Scratchpad";
+}
+
+function statusTone(state: ScratchpadStatus): "loading" | "saved" | "saving" | "error" {
+  if (state === "loading" || state === "saved" || state === "saving") return state;
+  return "error";
 }
 
 function CopyIcon() {
@@ -40,10 +84,6 @@ function FormattingIcon() {
   return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5h14M12 5v14M8 19h8" /></svg>;
 }
 
-function LockIcon() {
-  return <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="10" width="14" height="10" rx="2" /><path d="M8 10V7a4 4 0 0 1 8 0v3" /></svg>;
-}
-
 function TrashIcon() {
   return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3M7 7l1 13h8l1-13M10 11v5M14 11v5" /></svg>;
 }
@@ -56,13 +96,22 @@ function ExpandIcon() {
   return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5H5v4M15 5h4v4M9 19H5v-4M15 19h4v-4" /></svg>;
 }
 
-function wordCount(body: string): number {
-  return body.trim() ? body.trim().split(/\s+/u).length : 0;
+export function ScratchpadWindowControls({ platform }: { platform: RuntimePlatform | null }) {
+  if (!shouldShowCustomWindowActions(platform)) return null;
+  return (
+    <>
+      <button className="scratchpad-window__window-action" type="button" onClick={() => void window.localScribe.windows.toggleScratchpadSize()} aria-label="Toggle expanded Scratchpad" title="Toggle expanded Scratchpad">
+        <ExpandIcon />
+      </button>
+      <button className="scratchpad-window__window-action" type="button" onClick={() => void window.localScribe.windows.closeScratchpad()} aria-label="Close Scratchpad" title="Close Scratchpad">
+        <CloseIcon />
+      </button>
+    </>
+  );
 }
 
-function noteMatches(note: ScratchpadNote, query: string): boolean {
-  const needle = query.trim().toLocaleLowerCase();
-  return !needle || note.title.toLocaleLowerCase().includes(needle) || note.body.toLocaleLowerCase().includes(needle);
+function wordCount(body: string): number {
+  return body.trim() ? body.trim().split(/\s+/u).length : 0;
 }
 
 export function ScratchpadWindow() {
@@ -70,8 +119,11 @@ export function ScratchpadWindow() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [notesCollapsed, setNotesCollapsed] = useState(false);
-  const [saveState, setSaveState] = useState<SaveState>("loading");
+  const [status, setStatus] = useState<ScratchpadStatus>("loading");
   const [copyMessage, setCopyMessage] = useState<string | null>(null);
+  const [creating, setCreating] = useState(false);
+  const [deletingIds, setDeletingIds] = useState<ReadonlySet<string>>(() => new Set());
+  const [runtimePlatform, setRuntimePlatform] = useState<RuntimePlatform | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const notesRef = useRef<ScratchpadNote[]>([]);
   const selectedIdRef = useRef<string | null>(null);
@@ -79,41 +131,61 @@ export function ScratchpadWindow() {
   const pendingBodiesRef = useRef(new Map<string, string>());
   const saveTimersRef = useRef(new Map<string, number>());
   const saveSequencesRef = useRef(new Map<string, number>());
+  const inFlightSequencesRef = useRef(new Map<string, number>());
+  const noteSaveStatesRef = useRef(new Map<string, NoteSaveState>());
   const deletedIdsRef = useRef(new Set<string>());
+  const creatingRef = useRef(false);
+  const copyMessageTimerRef = useRef<number | null>(null);
+  const flushPendingSavesRef = useRef<() => void>(() => undefined);
 
-  useEffect(() => {
-    notesRef.current = notes;
-  }, [notes]);
+  const replaceNotes = useCallback((next: ScratchpadNote[]) => {
+    notesRef.current = next;
+    setNotes(next);
+  }, []);
 
   const selectNote = useCallback((id: string) => {
     selectedIdRef.current = id;
     setSelectedId(id);
-    setSaveState("saved");
+    setStatus(noteSaveStatesRef.current.get(id) ?? "saved");
     window.setTimeout(() => textareaRef.current?.focus(), 0);
   }, []);
 
   const replaceSavedNote = (saved: ScratchpadNote) => {
-    setNotes((current) => [saved, ...current.filter((note) => note.id !== saved.id)]);
+    replaceNotes([saved, ...notesRef.current.filter((note) => note.id !== saved.id)]);
   };
 
   const persistNote = (id: string, body: string, sequence: number) => {
-    if (selectedIdRef.current === id) setSaveState("saving");
+    if (deletedIdsRef.current.has(id)) return;
+    if (inFlightSequencesRef.current.get(id) === sequence) return;
+    inFlightSequencesRef.current.set(id, sequence);
+    noteSaveStatesRef.current.set(id, "saving");
+    if (selectedIdRef.current === id) setStatus("saving");
 
     void window.localScribe.scratchpad.update(id, body).then(
       (saved) => {
+        if (inFlightSequencesRef.current.get(id) === sequence) {
+          inFlightSequencesRef.current.delete(id);
+        }
         if (deletedIdsRef.current.has(id)) return;
         persistedBodiesRef.current.set(id, saved.body);
         if (saveSequencesRef.current.get(id) === sequence) {
           pendingBodiesRef.current.delete(id);
+          noteSaveStatesRef.current.set(id, "saved");
           replaceSavedNote(saved);
         }
         if (selectedIdRef.current === id && saveSequencesRef.current.get(id) === sequence) {
-          setSaveState("saved");
+          setStatus("saved");
         }
       },
       () => {
+        if (inFlightSequencesRef.current.get(id) === sequence) {
+          inFlightSequencesRef.current.delete(id);
+        }
         if (selectedIdRef.current === id && saveSequencesRef.current.get(id) === sequence) {
-          setSaveState("error");
+          noteSaveStatesRef.current.set(id, "save-error");
+          setStatus("save-error");
+        } else if (saveSequencesRef.current.get(id) === sequence) {
+          noteSaveStatesRef.current.set(id, "save-error");
         }
       },
     );
@@ -125,6 +197,8 @@ export function ScratchpadWindow() {
     pendingBodiesRef.current.set(id, body);
     const sequence = (saveSequencesRef.current.get(id) ?? 0) + 1;
     saveSequencesRef.current.set(id, sequence);
+    noteSaveStatesRef.current.set(id, "saving");
+    if (selectedIdRef.current === id) setStatus("saving");
     if (immediately) {
       saveTimersRef.current.delete(id);
       persistNote(id, body, sequence);
@@ -137,18 +211,37 @@ export function ScratchpadWindow() {
     saveTimersRef.current.set(id, timer);
   };
 
+  const flushScheduledSave = (id: string) => {
+    const timer = saveTimersRef.current.get(id);
+    if (timer === undefined) return;
+    window.clearTimeout(timer);
+    saveTimersRef.current.delete(id);
+    const body = pendingBodiesRef.current.get(id);
+    const sequence = saveSequencesRef.current.get(id);
+    if (body !== undefined && sequence !== undefined && !deletedIdsRef.current.has(id)) {
+      persistNote(id, body, sequence);
+    }
+  };
+
   const addNewNote = useCallback(async () => {
-    setSaveState("loading");
+    if (creatingRef.current) return;
+    creatingRef.current = true;
+    setCreating(true);
+    if (notesRef.current.length === 0) setStatus("loading");
     try {
       const note = await window.localScribe.scratchpad.create();
       deletedIdsRef.current.delete(note.id);
       persistedBodiesRef.current.set(note.id, note.body);
-      setNotes((current) => [note, ...current]);
+      noteSaveStatesRef.current.set(note.id, "saved");
+      replaceNotes([note, ...notesRef.current.filter((current) => current.id !== note.id)]);
       selectNote(note.id);
     } catch {
-      setSaveState("error");
+      setStatus("create-error");
+    } finally {
+      creatingRef.current = false;
+      setCreating(false);
     }
-  }, [selectNote]);
+  }, [replaceNotes, selectNote]);
 
   useEffect(() => {
     let active = true;
@@ -158,54 +251,105 @@ export function ScratchpadWindow() {
         if (listedNotes.length) {
           const initialNote = listedNotes[0];
           if (!initialNote) return;
-          for (const note of listedNotes) persistedBodiesRef.current.set(note.id, note.body);
-          setNotes(listedNotes);
+          for (const note of listedNotes) {
+            persistedBodiesRef.current.set(note.id, note.body);
+            noteSaveStatesRef.current.set(note.id, "saved");
+          }
+          replaceNotes(listedNotes);
           selectNote(initialNote.id);
           return;
         }
         await addNewNote();
       },
       () => {
-        if (active) setSaveState("error");
+        if (active) setStatus("load-error");
       },
     );
     return () => { active = false; };
-  }, [addNewNote, selectNote]);
+  }, [addNewNote, replaceNotes, selectNote]);
 
-  useEffect(() => () => {
-    for (const timer of saveTimersRef.current.values()) window.clearTimeout(timer);
+  useEffect(() => {
+    let active = true;
+    void window.localScribe.system.appInfo().then(
+      (info) => {
+        if (active) setRuntimePlatform(info.platform);
+      },
+      () => undefined,
+    );
+    return () => { active = false; };
+  }, []);
+
+  flushPendingSavesRef.current = () => {
     for (const [id, body] of pendingBodiesRef.current) {
-      if (!deletedIdsRef.current.has(id) && persistedBodiesRef.current.get(id) !== body) {
-        void window.localScribe.scratchpad.update(id, body);
+      const timer = saveTimersRef.current.get(id);
+      if (timer !== undefined) window.clearTimeout(timer);
+      saveTimersRef.current.delete(id);
+      if (deletedIdsRef.current.has(id)) continue;
+      if (persistedBodiesRef.current.get(id) === body) {
+        pendingBodiesRef.current.delete(id);
+        noteSaveStatesRef.current.set(id, "saved");
+        if (selectedIdRef.current === id) setStatus("saved");
+        continue;
       }
+      const sequence = saveSequencesRef.current.get(id);
+      if (sequence === undefined || inFlightSequencesRef.current.get(id) === sequence) continue;
+      persistNote(id, body, sequence);
     }
+  };
+
+  useEffect(() => {
+    const flushPendingSaves = () => flushPendingSavesRef.current();
+    const flushWhenHidden = () => {
+      if (document.visibilityState === "hidden") flushPendingSaves();
+    };
+    window.addEventListener("blur", flushPendingSaves);
+    window.addEventListener("pagehide", flushPendingSaves);
+    document.addEventListener("visibilitychange", flushWhenHidden);
+    return () => {
+      window.removeEventListener("blur", flushPendingSaves);
+      window.removeEventListener("pagehide", flushPendingSaves);
+      document.removeEventListener("visibilitychange", flushWhenHidden);
+      flushPendingSaves();
+      if (copyMessageTimerRef.current !== null) {
+        window.clearTimeout(copyMessageTimerRef.current);
+      }
+    };
   }, []);
 
   const activeNote = notes.find((note) => note.id === selectedId) ?? null;
   const activeBody = activeNote?.body ?? "";
   const activeWordCount = wordCount(activeBody);
-  const filteredNotes = useMemo(() => notes.filter((note) => noteMatches(note, query)), [notes, query]);
+  const headerTitle = scratchpadHeaderTitle(activeNote?.title ?? null, status);
+  const windowControlMode = scratchpadWindowControlMode(runtimePlatform);
+  const filteredNotes = useMemo(() => notes.filter((note) => scratchpadNoteMatches(note, query)), [notes, query]);
 
   const updateActiveBody = (body: string) => {
     if (!activeNote) return;
     const noteId = activeNote.id;
-    setNotes((current) => current.map((note) => note.id === noteId ? { ...note, body } : note));
+    if (deletedIdsRef.current.has(noteId)) return;
+    replaceNotes(notesRef.current.map((note) => note.id === noteId ? { ...note, body } : note));
     scheduleSave(noteId, body);
   };
 
   const deleteNote = async (note: ScratchpadNote) => {
+    if (deletedIdsRef.current.has(note.id)) return;
     if (!window.confirm(`Delete “${note.title}”?`)) return;
+    const unsavedBody = pendingBodiesRef.current.get(note.id)
+      ?? (persistedBodiesRef.current.get(note.id) !== note.body ? note.body : undefined);
     const scheduled = saveTimersRef.current.get(note.id);
     if (scheduled !== undefined) window.clearTimeout(scheduled);
     saveTimersRef.current.delete(note.id);
     pendingBodiesRef.current.delete(note.id);
     deletedIdsRef.current.add(note.id);
+    setDeletingIds((current) => new Set(current).add(note.id));
     try {
       await window.localScribe.scratchpad.delete(note.id);
       persistedBodiesRef.current.delete(note.id);
       const remaining = notesRef.current.filter((item) => item.id !== note.id);
-      notesRef.current = remaining;
-      setNotes(remaining);
+      inFlightSequencesRef.current.delete(note.id);
+      noteSaveStatesRef.current.delete(note.id);
+      saveSequencesRef.current.delete(note.id);
+      replaceNotes(remaining);
       if (selectedIdRef.current === note.id) {
         const next = remaining[0];
         if (next) selectNote(next.id);
@@ -213,51 +357,66 @@ export function ScratchpadWindow() {
       }
     } catch {
       deletedIdsRef.current.delete(note.id);
-      setSaveState("error");
+      if (unsavedBody !== undefined && persistedBodiesRef.current.get(note.id) !== unsavedBody) {
+        scheduleSave(note.id, unsavedBody, true);
+      }
+      setStatus("delete-error");
+    } finally {
+      setDeletingIds((current) => {
+        const next = new Set(current);
+        next.delete(note.id);
+        return next;
+      });
     }
+  };
+
+  const showCopyMessage = (message: string, duration: number) => {
+    if (copyMessageTimerRef.current !== null) {
+      window.clearTimeout(copyMessageTimerRef.current);
+    }
+    setCopyMessage(message);
+    copyMessageTimerRef.current = window.setTimeout(() => {
+      copyMessageTimerRef.current = null;
+      setCopyMessage(null);
+    }, duration);
   };
 
   const copyNote = async () => {
     if (!activeBody) return;
     try {
       await navigator.clipboard.writeText(activeBody);
-      setCopyMessage("Copied");
-      window.setTimeout(() => setCopyMessage(null), 1_500);
+      showCopyMessage("Copied", 1_500);
     } catch {
-      setCopyMessage("Copy failed");
+      showCopyMessage("Copy failed", 3_000);
     }
   };
 
   return (
-    <main className={`scratchpad-window${notesCollapsed ? " scratchpad-window--notes-collapsed" : ""}`} aria-label="Scratchpad">
+    <main
+      className={`scratchpad-window${notesCollapsed ? " scratchpad-window--notes-collapsed" : ""}`}
+      data-window-controls={windowControlMode}
+      aria-busy={status === "loading"}
+      aria-label="Scratchpad"
+    >
       <header className="scratchpad-window__titlebar">
         <div className="scratchpad-window__drag-region" />
         <span className="scratchpad-window__brand-mark" aria-hidden="true">L</span>
-        <h1 title={activeNote?.title ?? "Untitled note"}>{activeNote?.title ?? "Untitled note"}</h1>
+        <h1 title={headerTitle}>{headerTitle}</h1>
         <button
           className="scratchpad-window__title-action"
           type="button"
-          disabled={!activeNote}
+          disabled={!activeNote || deletingIds.has(activeNote.id)}
           onClick={() => activeNote && void deleteNote(activeNote)}
           aria-label="Delete current note"
           title="Delete current note"
         >
-          <CloseIcon />
+          <TrashIcon />
         </button>
-        <button className="scratchpad-window__title-action" type="button" onClick={() => void addNewNote()} aria-label="New note" title="New note">
+        <button className="scratchpad-window__title-action" type="button" disabled={creating || status === "loading"} onClick={() => void addNewNote()} aria-label="New note" title="New note">
           <PlusIcon />
         </button>
         <span className="scratchpad-window__title-spacer" />
-        {isMacOS && (
-          <>
-            <button className="scratchpad-window__window-action" type="button" onClick={() => void window.localScribe.windows.toggleScratchpadSize()} aria-label="Toggle expanded Scratchpad" title="Toggle expanded Scratchpad">
-              <ExpandIcon />
-            </button>
-            <button className="scratchpad-window__window-action" type="button" onClick={() => void window.localScribe.windows.closeScratchpad()} aria-label="Close Scratchpad" title="Close Scratchpad">
-              <CloseIcon />
-            </button>
-          </>
-        )}
+        <ScratchpadWindowControls platform={runtimePlatform} />
       </header>
 
       <div className="scratchpad-window__workspace">
@@ -276,30 +435,37 @@ export function ScratchpadWindow() {
           </div>
 
           <div className="scratchpad-window__notes-content">
-            <button className="scratchpad-window__new-note" type="button" onClick={() => void addNewNote()}>
+            <button className="scratchpad-window__new-note" type="button" disabled={creating || status === "loading"} onClick={() => void addNewNote()}>
               <PlusIcon /> <span>New note</span>
             </button>
 
             <label className="scratchpad-window__search">
               <SearchIcon />
               <span className="scratchpad-window__visually-hidden">Search notes</span>
-              <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search notes" />
+              <input
+                type="search"
+                autoComplete="off"
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                placeholder="Search notes"
+              />
             </label>
 
-            <div className="scratchpad-window__note-list" aria-label="Saved notes">
+            <div className="scratchpad-window__note-list" role="list" aria-label="Saved notes" tabIndex={0}>
               {filteredNotes.map((note) => {
                 const noteWordCount = wordCount(note.body);
                 const selected = note.id === selectedId;
+                const deleting = deletingIds.has(note.id);
                 return (
-                  <div className={`scratchpad-window__note-row${selected ? " scratchpad-window__note-row--active" : ""}`} key={note.id}>
-                    <button className="scratchpad-window__note-card" type="button" onClick={() => selectNote(note.id)} aria-current={selected ? "page" : undefined}>
+                  <div className={`scratchpad-window__note-row${selected ? " scratchpad-window__note-row--active" : ""}`} role="listitem" aria-busy={deleting} key={note.id}>
+                    <button className="scratchpad-window__note-card" type="button" disabled={deleting} onClick={() => selectNote(note.id)} aria-current={selected ? "true" : undefined}>
                       <span className="scratchpad-window__note-icon"><NoteIcon /></span>
                       <span className="scratchpad-window__note-details">
                         <strong>{note.title}</strong>
                         <small>{noteWordCount} {noteWordCount === 1 ? "word" : "words"}</small>
                       </span>
                     </button>
-                    <button className="scratchpad-window__delete-note" type="button" onClick={() => void deleteNote(note)} aria-label={`Delete ${note.title}`} title="Delete note">
+                    <button className="scratchpad-window__delete-note" type="button" disabled={deleting} onClick={() => void deleteNote(note)} aria-label={`Delete ${note.title}`} title="Delete note">
                       <TrashIcon />
                     </button>
                   </div>
@@ -309,22 +475,35 @@ export function ScratchpadWindow() {
             </div>
           </div>
 
-          <div className="scratchpad-window__notes-bottom">
-            <button className="scratchpad-window__unavailable" type="button" disabled title="Additional generative text model required — not installed">
+          <div className="scratchpad-window__notes-bottom" aria-label="Unavailable text tools">
+            <button className="scratchpad-window__unavailable" type="button" disabled>
               <WandIcon />
-              <span><strong>Generative Rewrite</strong><small>Additional generative text model required — not installed</small></span>
+              <span><strong>Generative Rewrite</strong><small>{GENERATIVE_TEXT_MODEL_REQUIRED_NOTICE}</small></span>
             </button>
-            <button className="scratchpad-window__unavailable" type="button" disabled title="Unavailable in this build">
+            <button className="scratchpad-window__unavailable" type="button" disabled>
               <FormattingIcon />
-              <span><strong>Formatting</strong><small>Unavailable in this build</small></span>
+              <span><strong>Formatting</strong><small>{GENERATIVE_TEXT_MODEL_REQUIRED_NOTICE}</small></span>
             </button>
           </div>
         </aside>
 
         <section className="scratchpad-window__editor-panel" aria-label="Note editor">
           <div className="scratchpad-window__editor-status">
-            <span className={`scratchpad-window__save-state scratchpad-window__save-state--${saveState}`} aria-live="polite"><i /> {saveStateLabel(saveState)}</span>
-            <span>{activeWordCount} {activeWordCount === 1 ? "word" : "words"}</span>
+            <span className="scratchpad-window__save-state-announcer" role="status" aria-live="polite">
+              {status === "save-error" ? (
+                <button
+                  className="scratchpad-window__save-state scratchpad-window__save-state--error"
+                  type="button"
+                  onClick={() => flushPendingSavesRef.current()}
+                  title="Retry saving this note"
+                >
+                  <i aria-hidden="true" /> Save failed — Retry
+                </button>
+              ) : (
+                <span className={`scratchpad-window__save-state scratchpad-window__save-state--${statusTone(status)}`}><i aria-hidden="true" /> {scratchpadStatusLabel(status)}</span>
+              )}
+            </span>
+            {activeNote && <span>{activeWordCount} {activeWordCount === 1 ? "word" : "words"}</span>}
           </div>
           <label className="scratchpad-window__editor">
             <span className="scratchpad-window__visually-hidden">Scratchpad note</span>
@@ -332,14 +511,15 @@ export function ScratchpadWindow() {
               ref={textareaRef}
               value={activeBody}
               onChange={(event) => updateActiveBody(event.target.value)}
+              onBlur={() => activeNote && flushScheduledSave(activeNote.id)}
+              maxLength={SCRATCHPAD_BODY_MAX_LENGTH}
               placeholder="Start writing…"
               spellCheck
-              disabled={!activeNote}
+              disabled={!activeNote || deletingIds.has(activeNote.id)}
             />
           </label>
           <footer className="scratchpad-window__editor-footer">
-            <span><LockIcon /> Stored locally</span>
-            <button className="scratchpad-window__copy" type="button" disabled={!activeBody} onClick={() => void copyNote()}>
+            <button className="scratchpad-window__copy" type="button" disabled={!activeBody} onClick={() => void copyNote()} aria-live="polite">
               <CopyIcon /> {copyMessage ?? "Copy"}
             </button>
           </footer>

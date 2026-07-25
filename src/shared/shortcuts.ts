@@ -70,7 +70,8 @@ const KEY_ALIASES: Record<string, string> = {
   numpadmultiply: "nummult",
   numdiv: "numdiv",
   numpaddivide: "numdiv",
-  numpadenter: "Enter",
+  numenter: "NumpadEnter",
+  numpadenter: "NumpadEnter",
   capslock: "CapsLock",
   numlock: "NumLock",
   scrolllock: "ScrollLock",
@@ -96,6 +97,7 @@ const KEY_TOKEN_LABELS: Record<string, string> = {
   Right: "Right Arrow",
   PageUp: "Page Up",
   PageDown: "Page Down",
+  NumpadEnter: "Numpad Enter",
 };
 
 const COMPACT_KEY_TOKEN_LABELS: Record<string, string> = {
@@ -105,6 +107,7 @@ const COMPACT_KEY_TOKEN_LABELS: Record<string, string> = {
   Right: "→",
   PageUp: "PgUp",
   PageDown: "PgDn",
+  NumpadEnter: "Num Enter",
 };
 
 /**
@@ -273,7 +276,8 @@ function physicalKeyGroupsForToken(
     case "Shift": return [["shift-left", "shift-right"]];
     // uiohook observes a physical Plus as Shift+Equal on common layouts.
     case "Plus": return [["shift-left", "shift-right"], ["key:Equal"]];
-    // Electron accepts both spellings, but the keyboard has one Enter key.
+    // Electron accepts both spellings for the main Enter key. NumpadEnter is
+    // intentionally separate because uiohook reports its own physical code.
     case "Return":
     case "Enter": return [["key:Enter"]];
     default: return [[`key:${token}`]];
@@ -350,10 +354,11 @@ function shortcutSchemaFor(kind: ShortcutKind) {
   return z.string().trim().min(1).max(120).transform((value, context) => {
     try {
       const parsed = parseShortcut(value);
-      if (kind === "toggle" && parsed.key === null) {
+      const kindError = shortcutKindValidationError(kind, parsed);
+      if (kindError) {
         context.addIssue({
           code: "custom",
-          message: "Toggle dictation needs a non-modifier key so macOS can register it.",
+          message: kindError,
         });
         return z.NEVER;
       }
@@ -366,6 +371,22 @@ function shortcutSchemaFor(kind: ShortcutKind) {
       return z.NEVER;
     }
   });
+}
+
+export const NUMPAD_ENTER_TOGGLE_ERROR =
+  "Toggle dictation cannot use Numpad Enter because the system shortcut API does not support it as a distinct global shortcut. Choose another key.";
+
+export function shortcutKindValidationError(
+  kind: ShortcutKind,
+  parsed: ParsedShortcut,
+): string | null {
+  if (kind === "toggle" && parsed.key === null) {
+    return "Toggle dictation needs a non-modifier key so the system can register it.";
+  }
+  if (kind === "toggle" && parsed.key === "NumpadEnter") {
+    return NUMPAD_ENTER_TOGGLE_ERROR;
+  }
+  return null;
 }
 
 export const holdShortcutSchema = shortcutSchemaFor("hold");

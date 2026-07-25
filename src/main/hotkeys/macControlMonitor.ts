@@ -5,6 +5,7 @@ import {
   resolveNativeActiveTargetHelperPath,
   type NativeActiveTargetHelperPathOptions,
 } from "../nativeHelperPath";
+import { nativeHelperEnvironment } from "../nativeHelperEnvironment";
 
 export const CONTROL_MONITOR_EVENTS = [
   "control-down",
@@ -20,7 +21,10 @@ const controlMonitorPayloadSchema = z.object({
 }).strict();
 
 export interface ControlMonitor {
-  start(listener: (event: ControlMonitorEvent) => void): boolean;
+  start(
+    listener: (event: ControlMonitorEvent) => void,
+    onStopped?: () => void,
+  ): boolean;
   stop(): void;
 }
 
@@ -36,18 +40,28 @@ export function parseControlMonitorLine(line: string): ControlMonitorEvent | nul
 export class MacControlMonitor implements ControlMonitor {
   private process: ChildProcess | null = null;
   private buffer = "";
+  private onStopped: (() => void) | null = null;
 
-  constructor(private readonly executablePath: string) {}
+  constructor(
+    private readonly executablePath: string,
+    private readonly platform: NodeJS.Platform = process.platform,
+  ) {}
 
-  start(listener: (event: ControlMonitorEvent) => void): boolean {
+  start(
+    listener: (event: ControlMonitorEvent) => void,
+    onStopped?: () => void,
+  ): boolean {
     if (this.process) return true;
-    if (process.platform !== "darwin" || !existsSync(this.executablePath)) return false;
+    if (this.platform !== "darwin" || !existsSync(this.executablePath)) return false;
 
     const child = spawn(this.executablePath, ["control-monitor"], {
+      env: nativeHelperEnvironment(this.platform),
+      shell: false,
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
     });
     this.process = child;
+    this.onStopped = onStopped ?? null;
     this.buffer = "";
     child.stdout?.setEncoding("utf8");
     child.stdout?.on("data", (chunk: string) => {
@@ -67,10 +81,10 @@ export class MacControlMonitor implements ControlMonitor {
     });
     child.once("error", (error) => {
       console.warn("Permission-free Control monitor could not start", error);
-      if (this.process === child) this.process = null;
+      this.handleStopped(child);
     });
     child.once("exit", (code, signal) => {
-      if (this.process === child) this.process = null;
+      this.handleStopped(child);
       if (code && code !== 0) console.warn(`Control monitor exited (${code ?? signal ?? "unknown"})`);
     });
     return true;
@@ -80,12 +94,25 @@ export class MacControlMonitor implements ControlMonitor {
     const child = this.process;
     this.process = null;
     this.buffer = "";
+    this.onStopped = null;
     if (child && child.exitCode === null && child.signalCode === null) child.kill();
+  }
+
+  private handleStopped(child: ChildProcess): void {
+    if (this.process !== child) return;
+    this.process = null;
+    this.buffer = "";
+    const onStopped = this.onStopped;
+    this.onStopped = null;
+    onStopped?.();
   }
 }
 
 export function defaultMacControlMonitorPath(
-  options: Pick<NativeActiveTargetHelperPathOptions, "allowEnvironmentOverride"> = {},
+  options: Pick<
+    NativeActiveTargetHelperPathOptions,
+    "allowEnvironmentOverride" | "workingDirectory"
+  > = {},
 ): string {
   // Main only instantiates this on macOS, where the resolver always provides
   // the packaged fallback even if the helper is not present yet.

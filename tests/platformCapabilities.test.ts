@@ -7,7 +7,7 @@ import {
 
 describe("platform-specific permission capabilities", () => {
   it("does not claim macOS global hold or automatic paste until Accessibility is granted", () => {
-    expect(permissionSnapshotForPlatform("darwin", "granted", false, false)).toMatchObject({
+    expect(permissionSnapshotForPlatform("darwin", "granted", false, false, false)).toMatchObject({
       platform: "darwin",
       microphoneSettingsAvailable: true,
       accessibility: { supported: true, granted: false },
@@ -17,12 +17,16 @@ describe("platform-specific permission capabilities", () => {
   });
 
   it("describes Windows and unsupported platforms without inventing an Accessibility setting", () => {
-    expect(permissionSnapshotForPlatform("win32", "unknown", false, true)).toMatchObject({
+    expect(permissionSnapshotForPlatform("win32", "unknown", false, true, true)).toMatchObject({
       accessibility: { supported: false, granted: false },
       automaticPaste: { supported: true, ready: true },
       globalHold: { supported: true, ready: true },
     });
-    expect(permissionSnapshotForPlatform("linux", "unknown", false, true)).toMatchObject({
+    expect(permissionSnapshotForPlatform("win32", "unknown", false, true, false)).toMatchObject({
+      automaticPaste: { supported: true, ready: false },
+      globalHold: { supported: true, ready: true },
+    });
+    expect(permissionSnapshotForPlatform("linux", "unknown", false, true, false)).toMatchObject({
       microphoneSettingsAvailable: false,
       automaticPaste: { supported: false, ready: false },
       globalHold: { supported: false, ready: false },
@@ -34,12 +38,12 @@ describe("platform-specific permission capabilities", () => {
   });
 
   it("uses the hook service's proven readiness for macOS global hold", () => {
-    expect(permissionSnapshotForPlatform("darwin", "granted", true, false)).toMatchObject({
+    expect(permissionSnapshotForPlatform("darwin", "granted", true, false, false)).toMatchObject({
       accessibility: { supported: true, granted: true },
       automaticPaste: { supported: true, ready: true },
       globalHold: { supported: true, ready: false },
     });
-    expect(permissionSnapshotForPlatform("darwin", "granted", false, true)).toMatchObject({
+    expect(permissionSnapshotForPlatform("darwin", "granted", false, true, false)).toMatchObject({
       accessibility: { supported: true, granted: false },
       automaticPaste: { supported: true, ready: false },
       globalHold: { supported: true, ready: true },

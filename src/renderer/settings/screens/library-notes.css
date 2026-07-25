@@ -1,3 +1,9 @@
+.ln-page-frame {
+  width: 100%;
+  min-width: 0;
+  container-type: inline-size;
+}
+
 .ln-page {
   width: min(100%, 1040px);
   margin: 0 auto;
@@ -230,7 +236,8 @@
 .ln-row__expansion p { margin: 0; overflow: hidden; color: #6c6760; font-size: 12px; line-height: 1.45; white-space: pre-wrap; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
 .ln-row__label { display: none; color: #99928a; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; }
 .ln-icon-button { width: 32px; height: 32px; display: grid; place-items: center; padding: 0; color: #858078; border: 1px solid transparent; border-radius: 8px; background: transparent; cursor: pointer; }
-.ln-icon-button:hover { color: #b24242; border-color: #efd4d0; background: #fff4f2; }
+.ln-icon-button:hover:not(:disabled) { color: #b24242; border-color: #efd4d0; background: #fff4f2; }
+.ln-icon-button:disabled { cursor: wait; opacity: .45; }
 .ln-icon-button svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
 
 .ln-list-message { min-height: 190px; display: flex; align-items: center; justify-content: center; flex-direction: column; padding: 32px; text-align: center; }
@@ -238,7 +245,9 @@
 .ln-list-message svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round; }
 .ln-list-message strong { color: #34312c; font-size: 14px; }
 .ln-list-message p { margin: 7px 0 0; color: #8a847c; font-size: 12px; }
-.ln-error { margin: 0 0 12px; padding: 10px 12px; color: #873f35; border: 1px solid #ebccc6; border-radius: 9px; background: #fff3f1; font-size: 12px; }
+.ln-error { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0 0 12px; padding: 10px 12px; color: #873f35; border: 1px solid #ebccc6; border-radius: 9px; background: #fff3f1; font-size: 12px; }
+.ln-error > span { min-width: 0; line-height: 1.45; }
+.ln-error .ln-secondary { flex: 0 0 auto; }
 
 .ln-modal-backdrop {
   position: fixed;
@@ -256,6 +265,8 @@
   width: min(100%, 530px);
   max-height: calc(100vh - 56px);
   overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
   padding: 29px;
   color: #201e1b;
   border: 1px solid #e2ddd5;
@@ -285,7 +296,7 @@
 .ln-modal__form label small { font-size: 11px; }
 
 
-@media (max-width: 840px) {
+@container (max-width: 840px) {
   .ln-page { padding: 34px 28px 60px; }
   .ln-hero { grid-template-columns: 1fr; }
   .ln-hero__copy { padding-right: 58px; }
@@ -298,12 +309,15 @@
   .ln-row .ln-icon-button { grid-column: 2; grid-row: 1 / 3; }
 }
 
-@media (max-width: 650px) {
+@container (max-width: 650px) {
   .ln-page { padding: 27px 19px 45px; }
   .ln-page__topbar { align-items: center; gap: 14px; }
   .ln-page__topbar p { display: none; }
   .ln-toolbar { align-items: flex-start; flex-direction: column; }
   .ln-search { width: 100%; max-width: none; }
+}
+
+@media (max-width: 650px) {
   .ln-modal-backdrop { padding: 14px; }
-  .ln-modal { padding: 23px; }
+  .ln-modal { max-height: calc(100vh - 28px); padding: 23px; }
 }

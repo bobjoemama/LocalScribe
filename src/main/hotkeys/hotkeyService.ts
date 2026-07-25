@@ -3,6 +3,7 @@ import { uIOhook, UiohookKey, type UiohookKeyboardEvent, type UiohookMouseEvent 
 import {
   isModifierOnlyShortcut,
   parseShortcut,
+  shortcutKindValidationError,
   shortcutsUseSamePhysicalKeys,
   shortcutTokens,
   toggleUsesHoldKey,
@@ -11,7 +12,6 @@ import {
   type ShortcutValidationResult,
   type ToggleShortcut,
 } from "../../shared/shortcuts";
-import { DEFAULT_SETTINGS } from "../../shared/contracts";
 import { HoldChordMatcher } from "./holdChordMatcher";
 import { HoldShortcutGesture } from "./holdShortcutGesture";
 import type { ControlMonitor, ControlMonitorEvent } from "./macControlMonitor";
@@ -59,6 +59,7 @@ const KEY_GROUPS: Record<string, readonly (readonly number[])[]> = {
   numsub: [[UiohookKey.NumpadSubtract]],
   nummult: [[UiohookKey.NumpadMultiply]],
   numdiv: [[UiohookKey.NumpadDivide]],
+  NumpadEnter: [[UiohookKey.NumpadEnter]],
 };
 
 function modifierKeyGroups(token: string, platform: NodeJS.Platform): readonly (readonly number[])[] | null {
@@ -141,9 +142,9 @@ export class HotkeyService {
     onPress: () => void,
     onRelease: () => void,
     private readonly onToggle: () => void,
-    private readonly fallbackMonitor: ControlMonitor | null = null,
-    private holdShortcut: HoldShortcut = DEFAULT_SETTINGS.holdShortcut,
-    private toggleShortcut: ToggleShortcut = DEFAULT_SETTINGS.toggleShortcut,
+    private readonly fallbackMonitor: ControlMonitor | null,
+    private holdShortcut: HoldShortcut,
+    private toggleShortcut: ToggleShortcut,
     private readonly platform: NodeJS.Platform = process.platform,
   ) {
     this.gesture = new HoldShortcutGesture({
@@ -167,18 +168,40 @@ export class HotkeyService {
 
   private startFull(requireToggle: boolean): void {
     if (this.mode === "full") return;
-    this.stopFallbackMonitor();
+    if (this.mode === "fallback") {
+      // The fallback listener cannot deliver the eventual key-up after it is
+      // removed. Resetting here releases any active push-to-talk session before
+      // Accessibility-driven full-hook startup.
+      this.stopForReconfigure(true);
+    } else {
+      this.stopFallbackMonitor();
+    }
     this.registerToggle(requireToggle);
-    uIOhook.on("keydown", this.handleDown);
-    uIOhook.on("keyup", this.handleUp);
-    uIOhook.on("mousedown", this.handleMouseDown);
+    let downListener = false;
+    let upListener = false;
+    let mouseListener = false;
     try {
+      uIOhook.on("keydown", this.handleDown);
+      downListener = true;
+      uIOhook.on("keyup", this.handleUp);
+      upListener = true;
+      uIOhook.on("mousedown", this.handleMouseDown);
+      mouseListener = true;
       uIOhook.start();
       this.mode = "full";
     } catch (error) {
-      uIOhook.off("keydown", this.handleDown);
-      uIOhook.off("keyup", this.handleUp);
-      uIOhook.off("mousedown", this.handleMouseDown);
+      for (const [registered, event, listener] of [
+        [downListener, "keydown", this.handleDown],
+        [upListener, "keyup", this.handleUp],
+        [mouseListener, "mousedown", this.handleMouseDown],
+      ] as const) {
+        if (!registered) continue;
+        try {
+          uIOhook.off(event, listener);
+        } catch (cleanupError) {
+          console.error(`Could not remove failed ${event} hotkey listener`, cleanupError);
+        }
+      }
       this.holdMatcher.reset();
       this.gesture.reset();
       this.mode = "stopped";
@@ -187,14 +210,20 @@ export class HotkeyService {
   }
 
   startFallback(): void {
+    if (this.mode === "full") {
+      // Accessibility can be revoked while the app is running. Give up the
+      // full hook and retain the registered toggle while falling back.
+      this.stopForReconfigure(true);
+    }
     this.startFallbackMode(false);
   }
 
   private startFallbackMode(requireToggle: boolean): void {
-    if (this.mode === "full" || this.mode === "fallback") return;
-    this.registerToggle(requireToggle);
+    if (this.mode === "full") return;
+    const enteringFallback = this.mode !== "fallback";
+    if (enteringFallback) this.registerToggle(requireToggle);
     if (this.platform !== "darwin") {
-      console.warn(
+      if (enteringFallback) console.warn(
         `${this.holdShortcut} push-to-talk is unavailable because the ${this.platformLabel()} global keyboard hook could not start`,
       );
       this.mode = "fallback";
@@ -202,20 +231,23 @@ export class HotkeyService {
     }
     if (this.holdShortcut === "Control" && !this.fallbackMonitorStarted) {
       try {
-        this.fallbackMonitorStarted = this.fallbackMonitor?.start(this.handleMonitorEvent) ?? false;
+        this.fallbackMonitorStarted = this.fallbackMonitor?.start(
+          this.handleMonitorEvent,
+          this.handleFallbackMonitorStopped,
+        ) ?? false;
       } catch (error) {
         this.fallbackMonitorStarted = false;
-        console.warn(
+        if (enteringFallback) console.warn(
           `${this.holdShortcut} push-to-talk is unavailable because the native key-state monitor could not start`,
           error,
         );
       }
-      if (!this.fallbackMonitorStarted) {
+      if (!this.fallbackMonitorStarted && enteringFallback) {
         console.warn(
           `${this.holdShortcut} push-to-talk is unavailable because the native key-state monitor could not start`,
         );
       }
-    } else if (this.holdShortcut !== "Control") {
+    } else if (this.holdShortcut !== "Control" && enteringFallback) {
       console.warn(`${this.holdShortcut} push-to-talk requires Accessibility on macOS`);
     }
     this.mode = "fallback";
@@ -237,6 +269,15 @@ export class HotkeyService {
         this.registerToggle(true);
       }
       return;
+    }
+    if (
+      this.mode === "fallback"
+      && this.platform !== "darwin"
+      && canonicalHold !== this.holdShortcut
+    ) {
+      throw new Error(
+        `${this.platformLabel()} push-to-talk cannot be changed because the global keyboard hook did not start. Toggle dictation remains available.`,
+      );
     }
 
     // Build before touching live registration so an unsupported hold cannot
@@ -313,8 +354,10 @@ export class HotkeyService {
   validateShortcut(input: ShortcutValidationRequest): ShortcutValidationResult {
     let shortcut: string;
     let otherShortcut: string | undefined;
+    let parsedShortcut: ReturnType<typeof parseShortcut>;
     try {
-      shortcut = parseShortcut(input.shortcut).canonical;
+      parsedShortcut = parseShortcut(input.shortcut);
+      shortcut = parsedShortcut.canonical;
       otherShortcut = input.otherShortcut === undefined ? undefined : parseShortcut(input.otherShortcut).canonical;
     } catch (error) {
       return {
@@ -338,12 +381,41 @@ export class HotkeyService {
         error: `Toggle dictation needs a non-modifier key so ${this.platformLabel()} can register it.`,
       };
     }
+    const kindError = shortcutKindValidationError(input.kind, parsedShortcut);
+    if (kindError) {
+      return {
+        shortcut,
+        available: false,
+        error: kindError,
+      };
+    }
+    if (input.kind === "hold" && this.mode === "fallback" && this.platform !== "darwin") {
+      return {
+        shortcut,
+        available: false,
+        error: `${this.platformLabel()} push-to-talk is unavailable because the global keyboard hook did not start. Toggle dictation remains available.`,
+      };
+    }
     if (this.captureActive || globalShortcut.isSuspended()) {
       return {
         shortcut,
         available: false,
         error: "Finish recording the shortcut before checking availability.",
       };
+    }
+    // Electron has no distinct Numpad Enter accelerator token. Hold-to-talk
+    // does not need Electron: uiohook exposes its physical keypad keycode.
+    if (input.kind === "hold" && parsedShortcut.key === "NumpadEnter") {
+      try {
+        uiohookHoldKeyGroups(shortcut, this.platform);
+        return { shortcut, available: true };
+      } catch (error) {
+        return {
+          shortcut,
+          available: false,
+          error: error instanceof Error ? error.message : "Numpad Enter is unavailable for push-to-talk.",
+        };
+      }
     }
     // Modifier-only hold chords are handled by the keyboard hook. Unlike an
     // Electron global accelerator, there is no reliable system-wide probe to
@@ -382,22 +454,49 @@ export class HotkeyService {
 
   private stopForReconfigure(preserveToggleRegistration: boolean): void {
     this.endCapture();
+    let firstFailure: unknown;
+    const rememberFailure = (error: unknown) => {
+      firstFailure ??= error;
+    };
     if (this.mode === "full") {
-      uIOhook.off("keydown", this.handleDown);
-      uIOhook.off("keyup", this.handleUp);
-      uIOhook.off("mousedown", this.handleMouseDown);
-      uIOhook.stop();
+      for (const [event, listener] of [
+        ["keydown", this.handleDown],
+        ["keyup", this.handleUp],
+        ["mousedown", this.handleMouseDown],
+      ] as const) {
+        try {
+          uIOhook.off(event, listener);
+        } catch (error) {
+          rememberFailure(error);
+        }
+      }
+      try {
+        uIOhook.stop();
+      } catch (error) {
+        rememberFailure(error);
+      }
     }
     this.mode = "stopped";
     this.holdMatcher.reset();
     this.gesture.reset();
-    this.stopFallbackMonitor();
+    try {
+      this.stopFallbackMonitor();
+    } catch (error) {
+      rememberFailure(error);
+    }
     this.clearToggleLock();
     if (!preserveToggleRegistration) {
-      if (this.toggleRegistered) globalShortcut.unregister(this.toggleShortcut);
+      if (this.toggleRegistered) {
+        try {
+          globalShortcut.unregister(this.toggleShortcut);
+        } catch (error) {
+          rememberFailure(error);
+        }
+      }
       this.toggleRegistered = false;
       this.toggleRegistrationFailure = null;
     }
+    if (firstFailure) throw firstFailure;
   }
 
   private readonly handleDown = (event: UiohookKeyboardEvent): void => {
@@ -420,6 +519,14 @@ export class HotkeyService {
     if (event === "control-down") this.gesture.keyDown();
     else if (event === "control-up") this.gesture.keyUp();
     else this.gesture.modifiedInput();
+  };
+
+  private readonly handleFallbackMonitorStopped = (): void => {
+    if (!this.fallbackMonitorStarted) return;
+    this.fallbackMonitorStarted = false;
+    // A dead helper cannot deliver key-up. End a hold that already began and
+    // let the periodic macOS permission reconciler retry the monitor later.
+    this.gesture.reset();
   };
 
   private readonly handleToggle = (): void => {
@@ -532,8 +639,8 @@ export class HotkeyService {
 
   private stopFallbackMonitor(): void {
     if (!this.fallbackMonitorStarted) return;
-    this.fallbackMonitor?.stop();
     this.fallbackMonitorStarted = false;
+    this.fallbackMonitor?.stop();
   }
 
   private startMode(mode: HotkeyMode, requireToggle: boolean): void {

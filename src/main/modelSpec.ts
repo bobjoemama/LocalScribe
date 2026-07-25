@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
-import { createReadStream, readFileSync } from "node:fs";
-import { lstat, readdir } from "node:fs/promises";
+import { readFileSync } from "node:fs";
+import { lstat, open, readdir } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 import {
@@ -18,6 +18,10 @@ import {
 
 const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
 const stableIdSchema = z.string().regex(/^[a-z0-9][a-z0-9-]*$/);
+const huggingFaceRepositoryIdSchema = z.string().regex(
+  /^[A-Za-z0-9][A-Za-z0-9._-]{0,95}\/[A-Za-z0-9][A-Za-z0-9._-]{0,95}$/,
+  "modelId must be a Hugging Face repository ID, never a URL or local path",
+);
 const manifestFileSchema = z.object({
   bytes: z.number().int().positive(),
   sha256: sha256Schema,
@@ -35,7 +39,7 @@ export const modelSpecSchema = z.object({
   platform: z.enum(["darwin-arm64", "win32-x64-cuda"]),
   backend: z.string().min(1).max(120),
   displayName: z.string().min(1).max(200),
-  modelId: z.string().min(1).max(200),
+  modelId: huggingFaceRepositoryIdSchema,
   storageDirectory: z.string().regex(/^[a-z0-9][a-z0-9._-]*$/),
   revision: z.string().regex(/^[a-f0-9]{40}$/),
   // "Undeclared" is intentional when an audited artifact provides no license
@@ -118,7 +122,7 @@ export interface ModelPerformanceResolution {
   reason: ModelPerformanceResolutionReason;
   fitsMemoryBudget: boolean;
   reservedHeadroomBytes: number | null;
-  /** Required free accelerator memory including reserved Auto headroom. */
+  /** Required free accelerator memory including reserved system headroom. */
   requiredMemoryBytes: number | null;
 }
 
@@ -133,24 +137,26 @@ export interface ModelVerification {
 }
 
 export type ModelCatalogVerifications = Record<ModelPerformanceTier, ModelVerification>;
+export type ModelRootDirectoryStatus = "missing" | "safe" | "invalid";
+
+export interface RuntimeModelArtifactVerification extends ModelVerification {
+  familyId: ModelFamilyId;
+  artifactId: string;
+}
 
 const GIBIBYTE = 1024 ** 3;
-const AUTO_MINIMUM_HEADROOM_BYTES = 2 * GIBIBYTE;
-const AUTO_HEADROOM_FRACTION = 0.2;
+// Deliberate safety policy for every mode: model working-memory estimates do
+// not include the OS, Electron, other apps, or transient allocator peaks.
+// Explicit tiers never fall back, but they still fail closed below this
+// reserve. Auto additionally applies upgrade hysteresis.
+const MINIMUM_ACCELERATOR_HEADROOM_BYTES = 2 * GIBIBYTE;
+const ACCELERATOR_HEADROOM_FRACTION = 0.2;
 const AUTO_UPGRADE_HYSTERESIS_BYTES = GIBIBYTE;
 
 interface CatalogTierDefinition {
-  artifactId: string;
-  profileId: string;
   manifestFilename: string;
   engine: ModelEngine;
-  backend: string;
   precision: ModelPrecision;
-  modelId: string;
-  storageDirectory: string;
-  revision: string;
-  expectedDownloadBytes: number;
-  downloadEvidence: ModelResourceEvidence;
   acceleratorMemory: ModelAcceleratorMemoryMetadata;
 }
 
@@ -188,29 +194,15 @@ const estimatedMemory = (source: string, minimumGiB: number, maximumGiB: number)
 
 const mlxTier = (
   familyId: ModelFamilyId,
-  tier: ModelPerformanceTier,
   input: {
-    artifactId: string;
     manifestFilename: string;
     precision: "fp16" | "8-bit" | "4-bit";
-    modelId: string;
-    storageDirectory: string;
-    revision: string;
-    expectedDownloadBytes: number;
     memory: readonly [number, number];
   },
 ): CatalogTierDefinition => ({
-  artifactId: input.artifactId,
-  profileId: `${familyId}-${tier}`,
   manifestFilename: input.manifestFilename,
   engine: "mlx-whisper",
-  backend: "MLX Whisper",
   precision: input.precision,
-  modelId: input.modelId,
-  storageDirectory: input.storageDirectory,
-  revision: input.revision,
-  expectedDownloadBytes: input.expectedDownloadBytes,
-  downloadEvidence: immutableArtifactAudit(input.modelId, input.revision),
   acceleratorMemory: estimatedMemory(
     `MLX Whisper ${familyId} ${input.precision} artifact size plus conservative inference overhead; physical benchmark pending`,
     input.memory[0],
@@ -220,29 +212,15 @@ const mlxTier = (
 
 const windowsTier = (
   familyId: ModelFamilyId,
-  tier: ModelPerformanceTier,
   precision: "float16" | "int8_float16" | "int8",
   input: {
-    artifactId: string;
     manifestFilename: string;
-    modelId: string;
-    storageDirectory: string;
-    revision: string;
-    expectedDownloadBytes: number;
     memory: readonly [number, number];
   },
 ): CatalogTierDefinition => ({
-  artifactId: input.artifactId,
-  profileId: `${familyId}-${tier}`,
   manifestFilename: input.manifestFilename,
   engine: "faster-whisper",
-  backend: "faster-whisper/CTranslate2",
   precision,
-  modelId: input.modelId,
-  storageDirectory: input.storageDirectory,
-  revision: input.revision,
-  expectedDownloadBytes: input.expectedDownloadBytes,
-  downloadEvidence: immutableArtifactAudit(input.modelId, input.revision),
   acceleratorMemory: estimatedMemory(
     `CTranslate2 ${familyId} ${precision} weights plus conservative CUDA inference overhead; physical benchmark pending`,
     input.memory[0],
@@ -255,34 +233,19 @@ const v3Mac: FamilyCatalogDefinition = {
   displayName: "Whisper large-v3",
   engine: "mlx-whisper",
   tiers: {
-    high: mlxTier("whisper-large-v3", "high", {
-      artifactId: "whisper-large-v3-mlx-fp16",
+    high: mlxTier("whisper-large-v3", {
       manifestFilename: "whisper-large-v3-mlx.json",
       precision: "fp16",
-      modelId: "mlx-community/whisper-large-v3-mlx",
-      storageDirectory: "whisper-large-v3-mlx-49e6aa2",
-      revision: "49e6aa286ad60c14352c404340ded53710378a11",
-      expectedDownloadBytes: 3_083_520_685,
       memory: [4, 5.5],
     }),
-    medium: mlxTier("whisper-large-v3", "medium", {
-      artifactId: "whisper-large-v3-mlx-int8",
+    medium: mlxTier("whisper-large-v3", {
       manifestFilename: "whisper-large-v3-mlx-8bit.json",
       precision: "8-bit",
-      modelId: "mlx-community/whisper-large-v3-mlx-8bit",
-      storageDirectory: "whisper-large-v3-mlx-8bit-04ca5b0",
-      revision: "04ca5b03c22d72ddf4f4b2d808a28bf9902fb71a",
-      expectedDownloadBytes: 1_707_566_582,
       memory: [2.5, 3.5],
     }),
-    low: mlxTier("whisper-large-v3", "low", {
-      artifactId: "whisper-large-v3-mlx-int4",
+    low: mlxTier("whisper-large-v3", {
       manifestFilename: "whisper-large-v3-mlx-4bit.json",
       precision: "4-bit",
-      modelId: "mlx-community/whisper-large-v3-mlx-4bit",
-      storageDirectory: "whisper-large-v3-mlx-4bit-d12b5d0",
-      revision: "d12b5d0043a6fe0c59af321617fba041d4e8e0c8",
-      expectedDownloadBytes: 973_563_382,
       memory: [1.8, 2.7],
     }),
   },
@@ -293,55 +256,30 @@ const v2Mac: FamilyCatalogDefinition = {
   displayName: "Whisper large-v2",
   engine: "mlx-whisper",
   tiers: {
-    high: mlxTier("whisper-large-v2", "high", {
-      artifactId: "whisper-large-v2-mlx-fp16",
+    high: mlxTier("whisper-large-v2", {
       manifestFilename: "whisper-large-v2-mlx.json",
       precision: "fp16",
-      modelId: "mlx-community/whisper-large-v2-mlx",
-      storageDirectory: "whisper-large-v2-mlx-cce8622",
-      revision: "cce86229e2765266197fef869ce9f7e2550067ab",
-      expectedDownloadBytes: 3_083_149_692,
       memory: [4, 5.5],
     }),
-    medium: mlxTier("whisper-large-v2", "medium", {
-      artifactId: "whisper-large-v2-mlx-int8",
+    medium: mlxTier("whisper-large-v2", {
       manifestFilename: "whisper-large-v2-mlx-8bit.json",
       precision: "8-bit",
-      modelId: "mlx-community/whisper-large-v2-mlx-8bit",
-      storageDirectory: "whisper-large-v2-mlx-8bit-ee1ab58",
-      revision: "ee1ab587ec0827941f04d9bb0ff9c2005444ef80",
-      expectedDownloadBytes: 1_707_195_589,
       memory: [2.5, 3.5],
     }),
-    low: mlxTier("whisper-large-v2", "low", {
-      artifactId: "whisper-large-v2-mlx-int4",
+    low: mlxTier("whisper-large-v2", {
       manifestFilename: "whisper-large-v2-mlx-4bit.json",
       precision: "4-bit",
-      modelId: "mlx-community/whisper-large-v2-mlx-4bit",
-      storageDirectory: "whisper-large-v2-mlx-4bit-79e71f0",
-      revision: "79e71f0c4946290e517db80c7a5cba6f91bdfcaf",
-      expectedDownloadBytes: 973_192_389,
       memory: [1.8, 2.7],
     }),
   },
 };
 
 const v3WindowsArtifact = {
-  artifactId: "whisper-large-v3-ctranslate2",
   manifestFilename: "faster-whisper-large-v3.json",
-  modelId: "Systran/faster-whisper-large-v3",
-  storageDirectory: "faster-whisper-large-v3-edaa852",
-  revision: "edaa852ec7e145841d8ffdb056a99866b5f0a478",
-  expectedDownloadBytes: 3_090_835_702,
 } as const;
 
 const v2WindowsArtifact = {
-  artifactId: "whisper-large-v2-ctranslate2",
   manifestFilename: "faster-whisper-large-v2.json",
-  modelId: "Systran/faster-whisper-large-v2",
-  storageDirectory: "faster-whisper-large-v2-f0fe815",
-  revision: "f0fe81560cb8b68660e564f55dd99207059c092e",
-  expectedDownloadBytes: 3_089_578_858,
 } as const;
 
 const windowsFamily = (
@@ -353,9 +291,9 @@ const windowsFamily = (
   displayName,
   engine: "faster-whisper",
   tiers: {
-    high: windowsTier(familyId, "high", "float16", { ...artifact, memory: [4.5, 5.5] }),
-    medium: windowsTier(familyId, "medium", "int8_float16", { ...artifact, memory: [2.9, 3.5] }),
-    low: windowsTier(familyId, "low", "int8", { ...artifact, memory: [2.6, 3.3] }),
+    high: windowsTier(familyId, "float16", { ...artifact, memory: [4.5, 5.5] }),
+    medium: windowsTier(familyId, "int8_float16", { ...artifact, memory: [2.9, 3.5] }),
+    low: windowsTier(familyId, "int8", { ...artifact, memory: [2.6, 3.3] }),
   },
 });
 
@@ -452,16 +390,18 @@ export function loadRuntimePlatformModelCatalog(
         catalogPlatform,
       );
       assertManifestMatchesCatalog(manifest, definition, tierDefinition, tier);
+      const expectedDownloadBytes = Object.values(manifest.files)
+        .reduce((sum, file) => sum + file.bytes, 0);
       return [tier, {
         familyId,
-        artifactId: tierDefinition.artifactId,
-        profileId: tierDefinition.profileId,
+        artifactId: manifest.artifactId,
+        profileId: `${familyId}-${tier}`,
         tier,
         modelKey: tier,
         engine: tierDefinition.engine,
         precision: tierDefinition.precision,
-        expectedDownloadBytes: tierDefinition.expectedDownloadBytes,
-        downloadEvidence: tierDefinition.downloadEvidence,
+        expectedDownloadBytes,
+        downloadEvidence: immutableArtifactAudit(manifest.modelId, manifest.revision),
         acceleratorMemory: tierDefinition.acceleratorMemory,
         manifestFilename: tierDefinition.manifestFilename,
         manifest,
@@ -478,10 +418,12 @@ export function loadRuntimePlatformModelCatalog(
     assertCatalogArtifactIdentity(catalog);
     return [familyId, catalog] as const;
   }));
-  return {
+  const catalog: RuntimePlatformModelCatalog = {
     platform: catalogPlatform,
     families: families as Record<ModelFamilyId, RuntimeModelCatalog>,
   };
+  assertPlatformCatalogIsolation(catalog);
+  return catalog;
 }
 
 export function resolveModelPerformance(
@@ -491,7 +433,10 @@ export function resolveModelPerformance(
   const memory = normalizeMemorySnapshot(input.memory);
   const headroom = memory.totalBytes === null
     ? null
-    : Math.max(AUTO_MINIMUM_HEADROOM_BYTES, Math.ceil(memory.totalBytes * AUTO_HEADROOM_FRACTION));
+    : Math.max(
+        MINIMUM_ACCELERATOR_HEADROOM_BYTES,
+        Math.ceil(memory.totalBytes * ACCELERATOR_HEADROOM_FRACTION),
+      );
 
   if (input.activeDictationTier) {
     return buildResolution(input, input.activeDictationTier, "dictation-active", memory, headroom);
@@ -527,15 +472,23 @@ export function resolveModelPerformance(
 const MODEL_TIER_PRIORITY: readonly ModelPerformanceTier[] = ["high", "medium", "low"];
 
 function assertCatalogRouting(catalog: RuntimeModelCatalog): void {
+  const expectedEngine: ModelEngine = catalog.platform === "darwin-arm64"
+    ? "mlx-whisper"
+    : "faster-whisper";
+  const expectedPrecisions: Record<ModelPerformanceTier, ModelPrecision> = expectedEngine === "mlx-whisper"
+    ? { high: "fp16", medium: "8-bit", low: "4-bit" }
+    : { high: "float16", medium: "int8_float16", low: "int8" };
   for (const tierName of MODEL_TIER_PRIORITY) {
     const tier = catalog.tiers[tierName];
     if (
-      tier.tier !== tierName
+      catalog.engine !== expectedEngine
+      || tier.tier !== tierName
       || tier.modelKey !== tierName
       || tier.familyId !== catalog.familyId
       || tier.manifest.familyId !== catalog.familyId
       || tier.artifactId !== tier.manifest.artifactId
       || tier.engine !== catalog.engine
+      || tier.precision !== expectedPrecisions[tierName]
       || tier.manifest.platform !== catalog.platform
     ) {
       throw new Error(
@@ -581,19 +534,36 @@ function manifestArtifactIdentity(manifest: ModelSpec): string {
   });
 }
 
+function assertPlatformCatalogIsolation(catalog: RuntimePlatformModelCatalog): void {
+  const storageOwners = new Map<string, ModelFamilyId>();
+  for (const familyId of MODEL_FAMILY_IDS) {
+    const seenArtifacts = new Set<string>();
+    for (const tier of Object.values(catalog.families[familyId].tiers)) {
+      if (seenArtifacts.has(tier.artifactId)) continue;
+      seenArtifacts.add(tier.artifactId);
+      const priorFamily = storageOwners.get(tier.manifest.storageDirectory);
+      if (priorFamily && priorFamily !== familyId) {
+        throw new Error(
+          `Packaged ${catalog.platform} model families ${priorFamily} and ${familyId} share a storage directory`,
+        );
+      }
+      storageOwners.set(tier.manifest.storageDirectory, familyId);
+    }
+  }
+}
+
 function assertManifestMatchesCatalog(
   manifest: ModelSpec,
   family: FamilyCatalogDefinition,
   definition: CatalogTierDefinition,
   tier: ModelPerformanceTier,
 ): void {
+  const expectedBackend = definition.engine === "mlx-whisper"
+    ? "MLX Whisper"
+    : "faster-whisper/CTranslate2";
   const expected = {
     familyId: family.familyId,
-    artifactId: definition.artifactId,
-    backend: definition.backend,
-    modelId: definition.modelId,
-    storageDirectory: definition.storageDirectory,
-    revision: definition.revision,
+    backend: expectedBackend,
   };
   for (const [field, value] of Object.entries(expected)) {
     if (manifest[field as keyof typeof expected] !== value) {
@@ -601,12 +571,6 @@ function assertManifestMatchesCatalog(
         `Packaged ${family.familyId}/${tier} model manifest ${field} mismatch: expected ${value}, received ${manifest[field as keyof typeof expected]}`,
       );
     }
-  }
-  const actualDownloadBytes = Object.values(manifest.files).reduce((sum, file) => sum + file.bytes, 0);
-  if (actualDownloadBytes !== definition.expectedDownloadBytes) {
-    throw new Error(
-      `Packaged ${family.familyId}/${tier} model download size mismatch: expected ${definition.expectedDownloadBytes}, received ${actualDownloadBytes}`,
-    );
   }
 }
 
@@ -675,16 +639,52 @@ export async function verifyModelDirectory(
   const expectedEntries = Object.entries(model.files);
   const expectedNames = new Set(expectedEntries.map(([filename]) => filename));
   const expectedBytes = expectedEntries.reduce((sum, [, file]) => sum + file.bytes, 0);
+  const rootStatus = await inspectModelRootDirectory(modelRoot);
+  if (rootStatus !== "safe") {
+    return {
+      present: rootStatus === "invalid",
+      verified: false,
+      verificationStatus: rootStatus === "invalid" ? "invalid" : "missing",
+      sizeBytes: 0,
+      expectedBytes,
+      verifiedFiles: 0,
+      expectedFiles: expectedEntries.length,
+    };
+  }
   let present = false;
   let exactEntries = false;
   try {
-    present = (await lstat(modelDirectory)).isDirectory();
-    if (present) {
-      const entries = await readdir(modelDirectory);
-      exactEntries = entries.length === expectedNames.size && entries.every((entry) => expectedNames.has(entry));
+    const metadata = await lstat(modelDirectory);
+    present = true;
+    // Do not traverse a symlinked artifact directory. Apart from being an
+    // invalid install, following it would hash data outside app-owned storage.
+    if (!metadata.isDirectory() || metadata.isSymbolicLink()) {
+      return {
+        present: true,
+        verified: false,
+        verificationStatus: "invalid",
+        sizeBytes: 0,
+        expectedBytes,
+        verifiedFiles: 0,
+        expectedFiles: expectedEntries.length,
+      };
     }
-  } catch {
-    // A missing or unreadable directory is an ordinary pre-install/invalid state.
+    const entries = await readdir(modelDirectory);
+    exactEntries = entries.length === expectedNames.size && entries.every((entry) => expectedNames.has(entry));
+  } catch (error) {
+    // Only a genuinely absent artifact is "missing". Existing but unreadable
+    // data must be repaired explicitly instead of silently becoming Download.
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      return {
+        present: true,
+        verified: false,
+        verificationStatus: "invalid",
+        sizeBytes: 0,
+        expectedBytes,
+        verifiedFiles: 0,
+        expectedFiles: expectedEntries.length,
+      };
+    }
   }
 
   let sizeBytes = 0;
@@ -696,7 +696,9 @@ export async function verifyModelDirectory(
       if (!metadata.isFile()) continue;
       sizeBytes += metadata.size;
       if (metadata.size !== expected.bytes) continue;
-      if (await sha256File(filePath) === expected.sha256) verifiedFiles += 1;
+      if (await sha256File(filePath, expected.bytes) === expected.sha256) {
+        verifiedFiles += 1;
+      }
     } catch {
       // Keep checking so diagnostics describe all expected manifest files.
     }
@@ -712,6 +714,22 @@ export async function verifyModelDirectory(
     verifiedFiles,
     expectedFiles: expectedEntries.length,
   };
+}
+
+/**
+ * The Python workers reject a symlinked/non-directory model root. Main uses
+ * the same policy so status cannot bless external data that install/load would
+ * reject, and removal cannot traverse an intermediate root symlink.
+ */
+export async function inspectModelRootDirectory(
+  modelRoot: string,
+): Promise<ModelRootDirectoryStatus> {
+  try {
+    const metadata = await lstat(modelRoot);
+    return metadata.isDirectory() && !metadata.isSymbolicLink() ? "safe" : "invalid";
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "ENOENT" ? "missing" : "invalid";
+  }
 }
 
 /** Verifies each distinct manifest-derived artifact once, then projects it onto its profiles. */
@@ -734,12 +752,97 @@ export async function verifyRuntimeModelCatalog(
   return Object.fromEntries(entries) as ModelCatalogVerifications;
 }
 
-async function sha256File(filePath: string): Promise<string> {
-  return new Promise((resolve, reject) => {
+/**
+ * Verifies every distinct artifact in the complete platform catalog.
+ *
+ * The result is keyed by family plus artifact identity rather than by profile:
+ * Windows exposes three compute profiles over one physical CTranslate2 model,
+ * while MLX uses a distinct artifact for each profile. Verification work is
+ * also deduplicated by immutable manifest identity across the whole platform.
+ */
+export async function verifyRuntimePlatformModelCatalog(
+  modelRoot: string,
+  catalog: RuntimePlatformModelCatalog,
+  verifier: (root: string, model: ModelSpec) => Promise<ModelVerification> = verifyModelDirectory,
+): Promise<RuntimeModelArtifactVerification[]> {
+  assertPlatformCatalogIsolation(catalog);
+  const verificationByManifestIdentity = new Map<string, Promise<ModelVerification>>();
+  const results: RuntimeModelArtifactVerification[] = [];
+
+  for (const familyId of MODEL_FAMILY_IDS) {
+    const family = catalog.families[familyId];
+    assertCatalogRouting(family);
+    assertCatalogArtifactIdentity(family);
+    const seenArtifacts = new Set<string>();
+    for (const tierName of MODEL_TIER_PRIORITY) {
+      const tier = family.tiers[tierName];
+      if (seenArtifacts.has(tier.artifactId)) continue;
+      seenArtifacts.add(tier.artifactId);
+
+      const identity = manifestArtifactIdentity(tier.manifest);
+      let verification = verificationByManifestIdentity.get(identity);
+      if (!verification) {
+        verification = verifier(modelRoot, tier.manifest);
+        verificationByManifestIdentity.set(identity, verification);
+      }
+      results.push({
+        familyId,
+        artifactId: tier.artifactId,
+        ...await verification,
+      });
+    }
+  }
+  return results;
+}
+
+async function sha256File(filePath: string, expectedBytes: number): Promise<string> {
+  const handle = await open(filePath, "r");
+  try {
+    const before = await handle.stat();
+    const pathBefore = await lstat(filePath);
+    if (
+      !before.isFile()
+      || !pathBefore.isFile()
+      || pathBefore.isSymbolicLink()
+      || before.dev !== pathBefore.dev
+      || before.ino !== pathBefore.ino
+      || before.size !== expectedBytes
+      || pathBefore.size !== expectedBytes
+    ) {
+      throw new Error("Model file changed before verification");
+    }
+
     const digest = createHash("sha256");
-    const stream = createReadStream(filePath);
-    stream.on("data", (chunk: string | Buffer) => digest.update(chunk));
-    stream.on("error", reject);
-    stream.on("end", () => resolve(digest.digest("hex")));
-  });
+    const buffer = Buffer.allocUnsafe(16 * 1024 * 1024);
+    let totalBytes = 0;
+    for (;;) {
+      const { bytesRead } = await handle.read(buffer, 0, buffer.length, null);
+      if (bytesRead === 0) break;
+      totalBytes += bytesRead;
+      if (totalBytes > expectedBytes) {
+        throw new Error("Model file grew during verification");
+      }
+      digest.update(buffer.subarray(0, bytesRead));
+    }
+
+    const after = await handle.stat();
+    const pathAfter = await lstat(filePath);
+    if (
+      !after.isFile()
+      || !pathAfter.isFile()
+      || pathAfter.isSymbolicLink()
+      || after.dev !== before.dev
+      || after.ino !== before.ino
+      || pathAfter.dev !== before.dev
+      || pathAfter.ino !== before.ino
+      || after.size !== expectedBytes
+      || pathAfter.size !== expectedBytes
+      || totalBytes !== expectedBytes
+    ) {
+      throw new Error("Model file changed during verification");
+    }
+    return digest.digest("hex");
+  } finally {
+    await handle.close();
+  }
 }

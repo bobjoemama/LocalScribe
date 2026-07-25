@@ -5,6 +5,8 @@ export interface ActiveTarget {
   windowFingerprint: string | null;
   /** macOS Accessibility can confirm whether the focused control accepts text. */
   focusedEditable?: boolean | null;
+  /** macOS-only opaque identity for the exact focused editable control. */
+  focusedElementFingerprint?: string | null;
 }
 
 export interface ClipboardSnapshot {
@@ -23,10 +25,17 @@ export interface ClipboardPort {
 }
 
 export interface PlatformInsertionBridge {
+  /** Pins the currently verified helper bytes for later per-spawn checks. */
+  pinExecutableIntegrity?(): boolean;
   captureActiveTarget(): Promise<ActiveTarget | null>;
   clipboardSequence(): Promise<number | null>;
+  /** Proves the packaged helper exists and can execute its deterministic self-test. */
+  ready?(): Promise<boolean>;
   /** Optional native path used when the helper owns macOS input permission. */
-  paste?(expectedTarget: ActiveTarget): Promise<PasteInjectionResult>;
+  paste?(
+    expectedTarget: ActiveTarget,
+    expectedClipboardSequence: number,
+  ): Promise<PasteInjectionResult>;
   accessibilityReady?(): Promise<boolean>;
   requestAccessibility?(): Promise<boolean>;
 }
@@ -48,7 +57,10 @@ export type PasteInjectionResult =
     };
 
 export interface PasteInjector {
-  paste(expectedTarget: ActiveTarget): PasteInjectionResult | Promise<PasteInjectionResult>;
+  paste(
+    expectedTarget: ActiveTarget,
+    expectedClipboardSequence: number,
+  ): PasteInjectionResult | Promise<PasteInjectionResult>;
 }
 
 export type InsertionOutcome = "pasted" | "pasted-with-copy" | "copied";
