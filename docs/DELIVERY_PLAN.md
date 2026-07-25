@@ -91,22 +91,25 @@ Validation path:
 - locked faster-whisper runtime build on a local Windows 11 x64 machine
 - hardened x64 helper build and deterministic smoke
 - native Node rebuild with target-only binary pruning, worker/CUDA checks, and
-  Squirrel make
-- packaged startup, SBOM, checksum, and complete PE-signature-state checks
-- locally reviewed unsigned validation Setup.exe
+  portable ZIP make
+- packaged startup, exact ZIP-to-staged-tree comparison, SBOM, checksum, and
+  complete PE-signature-state checks
+- locally reviewed unsigned portable validation ZIP
 
 Production path:
 
-- explicit local `LOCALSCRIBE_RELEASE=1 npm run make:windows`
-- Authenticode certificate or managed signing parameters
-- required HTTPS timestamp server
-- signatures on every packaged `.exe`, `.dll`, and `.node` plus the Squirrel
-  installer
+- currently blocked fail-closed in `LOCALSCRIBE_RELEASE=1` mode
+- select a supported installer that can carry or securely acquire the large
+  pinned CUDA runtime
+- passwordless managed Authenticode signing with an exact signer/timestamp
+  acceptance policy
+- separately designed and tested update/uninstall path
 
 Remaining release QA requires a physical NVIDIA system: packaged model install,
 real audio transcription for all profiles, VRAM/latency/accuracy measurement,
-hotkey/paste/permission matrix, clean install/update/uninstall, and SmartScreen
-behavior.
+hotkey/paste/permission matrix, portable extraction/manual replacement, and
+SmartScreen behavior. Clean install/update/uninstall applies to the future
+installer deliverable, not the current portable ZIP.
 
 ## 6. Publication
 

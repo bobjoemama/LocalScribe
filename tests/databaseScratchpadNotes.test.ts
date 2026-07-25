@@ -71,6 +71,11 @@ describe("encrypted multi-note scratchpad persistence", () => {
       INSERT INTO schema_migrations (version, name, applied_at) VALUES
         (1, 'local_first_core', 1),
         (2, 'encrypted_scratchpad', 2);
+      CREATE TABLE settings (
+        key TEXT PRIMARY KEY,
+        value_json TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
       CREATE TABLE scratchpad (
         id INTEGER PRIMARY KEY CHECK (id = 1),
         body_encrypted BLOB NOT NULL,
@@ -93,6 +98,77 @@ describe("encrypted multi-note scratchpad persistence", () => {
       },
     ]);
     database.close();
+
+    const migrated = new Database(databasePath, { readonly: true });
+    expect(migrated.prepare(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'scratchpad'",
+    ).get()).toBeUndefined();
+    migrated.close();
+  });
+
+  it("drops legacy storage without resurrecting a singleton after multi-note migration", () => {
+    const databasePath = createDatabasePath();
+    const legacy = new Database(databasePath);
+    legacy.exec(`
+      CREATE TABLE schema_migrations (
+        version INTEGER PRIMARY KEY,
+        name TEXT NOT NULL,
+        applied_at INTEGER NOT NULL
+      );
+      INSERT INTO schema_migrations (version, name, applied_at) VALUES
+        (1, 'local_first_core', 1),
+        (2, 'encrypted_scratchpad', 2),
+        (3, 'encrypted_multi_note_scratchpad', 3);
+      CREATE TABLE settings (
+        key TEXT PRIMARY KEY,
+        value_json TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+      CREATE TABLE scratchpad (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        body_encrypted BLOB NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+      CREATE TABLE scratchpad_notes (
+        id TEXT PRIMARY KEY,
+        body_encrypted BLOB NOT NULL,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+    `);
+    legacy
+      .prepare("INSERT INTO scratchpad (id, body_encrypted, updated_at) VALUES (1, ?, ?)")
+      .run(Buffer.from("cipher:RGVsZXRlZCBsZWdhY3k=", "utf8"), 100);
+    legacy
+      .prepare(
+        `INSERT INTO scratchpad_notes (id, body_encrypted, created_at, updated_at)
+         VALUES (?, ?, ?, ?)`,
+      )
+      .run(
+        "00000000-0000-4000-8000-000000000002",
+        Buffer.from("cipher:Q3VycmVudCBub3Rl", "utf8"),
+        200,
+        200,
+      );
+    legacy.close();
+
+    const database = new LocalDatabase(databasePath);
+    expect(database.listScratchpadNotes()).toEqual([
+      {
+        id: "00000000-0000-4000-8000-000000000002",
+        body: "Current note",
+        title: "Current note",
+        createdAt: 200,
+        updatedAt: 200,
+      },
+    ]);
+    database.close();
+
+    const migrated = new Database(databasePath, { readonly: true });
+    expect(migrated.prepare(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'scratchpad'",
+    ).get()).toBeUndefined();
+    migrated.close();
   });
 
   it("stores note bodies as encrypted SQLite blobs", () => {

@@ -944,13 +944,139 @@ class ModelInstallationTests(unittest.TestCase):
             self.assertEqual(observed["allow_patterns"], ["config.json", "weights.npz"])
             self.assertEqual(observed["max_workers"], 4)
             self.assertIs(observed["token"], False)
-            self.assertEqual(Path(observed["local_dir"]).parent, model_root.resolve())
-            self.assertIn("staging", Path(observed["local_dir"]).name)
+            staging = Path(observed["local_dir"])
+            self.assertEqual(staging.name, "staging")
+            self.assertEqual(staging.parent.parent, model_root.resolve())
+            self.assertTrue(
+                staging.parent.name.startswith(
+                    worker_module.MODEL_TRANSACTION_PREFIX
+                )
+            )
             self.assertEqual(
                 {entry.name for entry in installed.iterdir()},
                 {"config.json", "weights.npz"},
             )
             self.assertFalse(any("staging" in entry.name for entry in model_root.iterdir()))
+
+    def test_interrupted_download_cleans_only_marker_owned_transaction(self) -> None:
+        manifest = tiny_manifest()
+        with tempfile.TemporaryDirectory() as temporary:
+            model_root = Path(temporary)
+            malformed = (
+                model_root
+                / f"{worker_module.MODEL_TRANSACTION_PREFIX}{'f' * 32}"
+            )
+            malformed.mkdir()
+            (malformed / worker_module.MODEL_TRANSACTION_MARKER).write_text(
+                "{}",
+                encoding="utf-8",
+            )
+            unowned = model_root / ".whisper-low-staging-user-data"
+            unowned.mkdir()
+            (unowned / "keep.txt").write_text("keep", encoding="utf-8")
+
+            def interrupted_download(**kwargs: Any) -> None:
+                staging = Path(kwargs["local_dir"])
+                (staging / "config.json").write_bytes(b"partial")
+                raise RuntimeError("simulated interruption")
+
+            with self.assertRaisesRegex(WorkerError, "model download failed"):
+                ensure_model(
+                    model_root,
+                    manifest,
+                    True,
+                    snapshot_downloader=interrupted_download,
+                )
+
+            self.assertTrue(malformed.is_dir())
+            self.assertTrue((unowned / "keep.txt").is_file())
+            self.assertEqual(
+                {entry.name for entry in model_root.iterdir()},
+                {malformed.name, unowned.name},
+            )
+
+    def test_recovery_after_final_was_renamed_restores_verified_backup(self) -> None:
+        manifest = tiny_manifest()
+        with tempfile.TemporaryDirectory() as temporary:
+            model_root = Path(temporary).resolve()
+            transaction, staging, backup = worker_module._create_model_transaction(
+                model_root,
+                manifest,
+            )
+            write_tiny_model(staging, manifest)
+            final_directory = model_root / manifest.storage_directory
+            write_tiny_model(final_directory, manifest)
+            final_directory.replace(backup)
+
+            installed = ensure_model(
+                model_root,
+                manifest,
+                True,
+                snapshot_downloader=lambda **_kwargs: self.fail(
+                    "recovery must not use the network"
+                ),
+            )
+
+            self.assertEqual(installed, model_root / manifest.storage_directory)
+            self.assertTrue(worker_module._valid_model_directory(installed, manifest))
+            self.assertFalse(transaction.exists())
+
+    def test_recovery_after_staging_was_promoted_cleans_verified_backup(self) -> None:
+        manifest = tiny_manifest()
+        with tempfile.TemporaryDirectory() as temporary:
+            model_root = Path(temporary).resolve()
+            transaction, staging, backup = worker_module._create_model_transaction(
+                model_root,
+                manifest,
+            )
+            write_tiny_model(staging, manifest)
+            final_directory = model_root / manifest.storage_directory
+            write_tiny_model(final_directory, manifest)
+            final_directory.replace(backup)
+            staging.replace(final_directory)
+
+            installed = ensure_model(
+                model_root,
+                manifest,
+                True,
+                snapshot_downloader=lambda **_kwargs: self.fail(
+                    "recovery must not use the network"
+                ),
+            )
+
+            self.assertEqual(installed, final_directory)
+            self.assertTrue(worker_module._valid_model_directory(installed, manifest))
+            self.assertFalse(transaction.exists())
+            self.assertFalse(backup.exists())
+
+    def test_recovery_restores_verified_backup_over_corrupt_promoted_model(self) -> None:
+        manifest = tiny_manifest()
+        with tempfile.TemporaryDirectory() as temporary:
+            model_root = Path(temporary).resolve()
+            transaction, staging, backup = worker_module._create_model_transaction(
+                model_root,
+                manifest,
+            )
+            write_tiny_model(staging, manifest)
+            final_directory = model_root / manifest.storage_directory
+            write_tiny_model(final_directory, manifest)
+            final_directory.replace(backup)
+            staging.replace(final_directory)
+            (final_directory / "weights.npz").write_bytes(b"corrupt")
+
+            installed = ensure_model(
+                model_root,
+                manifest,
+                True,
+                snapshot_downloader=lambda **_kwargs: self.fail(
+                    "recovery must not use the network"
+                ),
+            )
+
+            self.assertEqual(installed, final_directory)
+            self.assertTrue(worker_module._valid_model_directory(installed, manifest))
+            self.assertFalse(transaction.exists())
+            self.assertFalse(backup.exists())
 
     def test_corrupt_staged_download_is_removed_and_never_promoted(self) -> None:
         manifest = tiny_manifest()
@@ -991,19 +1117,41 @@ class ModelInstallationTests(unittest.TestCase):
             (model / "unexpected.bin").write_bytes(b"x")
             self.assertFalse(worker_module._valid_model_directory(model, manifest))
 
-    def test_catalog_manifest_rejects_tampered_v2_identity_metadata(self) -> None:
+    def test_catalog_manifest_rejects_a_url_as_manifest_model_identity(self) -> None:
         spec = tier_spec("low", family="v2")
         packaged_path = worker_module._manifest_path(spec.manifest_filename)
         raw = json.loads(packaged_path.read_text(encoding="utf-8"))
-        raw["artifactId"] = "whisper-large-v2-mlx-fp16"
+        raw["modelId"] = "https://untrusted.invalid/model"
         with tempfile.TemporaryDirectory() as temporary:
             tampered = Path(temporary) / spec.manifest_filename
             tampered.write_text(json.dumps(raw), encoding="utf-8")
             with self.assertRaisesRegex(
                 RuntimeError,
-                "packaged_model_manifest_identity_mismatch",
+                "packaged_model_manifest_invalid",
             ):
-                worker_module._parse_manifest(tampered, spec)
+                worker_module._parse_manifest(tampered, spec.tier)
+
+    def test_catalog_identity_is_derived_from_the_curated_manifest(self) -> None:
+        spec = tier_spec("low", family="v2")
+        packaged_path = worker_module._manifest_path(spec.manifest_filename)
+        raw = json.loads(packaged_path.read_text(encoding="utf-8"))
+        raw.update(
+            {
+                "modelId": "curated-owner/custom-whisper",
+                "artifactId": "custom-whisper-int4",
+                "storageDirectory": "custom-whisper-int4",
+                "revision": "c" * 40,
+            }
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            curated = Path(temporary) / spec.manifest_filename
+            curated.write_text(json.dumps(raw), encoding="utf-8")
+            manifest = worker_module._parse_manifest(curated, spec.tier)
+
+        self.assertEqual(manifest.model_id, "curated-owner/custom-whisper")
+        self.assertEqual(manifest.artifact_id, "custom-whisper-int4")
+        self.assertEqual(manifest.storage_directory, "custom-whisper-int4")
+        self.assertEqual(manifest.revision, "c" * 40)
 
     def test_packaged_catalog_has_exact_six_whisper_manifests_and_files(self) -> None:
         self.assertEqual(len(TIER_SPECS), 6)
@@ -1077,7 +1225,7 @@ class RuntimeAndHardwareTests(unittest.TestCase):
         result = runtime.transcribe(
             b"\x00\x00\xff\x7f",
             language="en",
-            context="Devesh LocalScribe",
+            context="Test User LocalScribe",
         )
         self.assertEqual(result, TranscriptionResult("Local audio.", "en"))
         self.assertIsInstance(captured["waveform"], np.ndarray)
@@ -1087,7 +1235,7 @@ class RuntimeAndHardwareTests(unittest.TestCase):
                 "path_or_hf_repo": "/verified/local/model",
                 "verbose": None,
                 "language": "en",
-                "initial_prompt": "Devesh LocalScribe",
+                "initial_prompt": "Test User LocalScribe",
                 "fp16": True,
             },
         )

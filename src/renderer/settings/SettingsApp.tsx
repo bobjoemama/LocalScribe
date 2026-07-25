@@ -54,7 +54,7 @@ export function SettingsApp() {
     <main className="hub-shell">
       <aside className="hub-sidebar">
         <div className="window-drag-region" aria-hidden="true" />
-        <button className="local-brand" onClick={() => openSection("dictation")} aria-label="Open LocalScribe dictation history">
+        <button type="button" className="local-brand" onClick={() => openSection("dictation")} aria-label="Open LocalScribe dictation history">
           <span className="local-brand__mark">L</span>
           <span className="local-brand__name">LocalScribe</span>
           <span className="local-brand__local">Local</span>
@@ -64,8 +64,10 @@ export function SettingsApp() {
           {primaryNavigation.map((item) => (
             <button
               key={item.id}
+              type="button"
               className={section === item.id ? "hub-nav-item hub-nav-item--active" : "hub-nav-item"}
               onClick={() => openSection(item.id)}
+              aria-current={section === item.id ? "page" : undefined}
             >
               <Icon name={item.icon} />
               <span>{item.label}</span>
@@ -78,7 +80,13 @@ export function SettingsApp() {
             <span className="local-status__dot" />
             <span><strong>Local only</strong><small>No audio uploads</small></span>
           </div>
-          <button className="hub-nav-item" onClick={() => setSettingsOpen(true)}>
+          <button
+            className="hub-nav-item"
+            type="button"
+            onClick={() => setSettingsOpen(true)}
+            aria-haspopup="dialog"
+            aria-expanded={settingsOpen}
+          >
             <Icon name="settings" />
             <span>Settings</span>
           </button>

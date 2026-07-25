@@ -1,6 +1,7 @@
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  rendererUrlForRuntime,
   rendererUrlForSurface,
   resolvePackagedRendererPath,
 } from "../src/main/rendererProtocol";
@@ -16,6 +17,14 @@ describe("packaged renderer protocol", () => {
   it("keeps Vite's development-server origin and existing query parameters", () => {
     expect(rendererUrlForSurface("scratchpad", "http://127.0.0.1:5173/?token=dev"))
       .toBe("http://127.0.0.1:5173/?token=dev&surface=scratchpad");
+  });
+
+  it("ignores an injected development origin in packaged runtime mode", () => {
+    const injected = "https://untrusted.example.invalid/renderer";
+    expect(rendererUrlForRuntime("settings", true, injected))
+      .toBe("localscribe://app/index.html?surface=settings");
+    expect(rendererUrlForRuntime("settings", false, "http://127.0.0.1:5173/"))
+      .toBe("http://127.0.0.1:5173/?surface=settings");
   });
 
   it("maps only bundled paths below the renderer root", () => {

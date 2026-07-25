@@ -62,11 +62,17 @@ export class HoldShortcutGesture {
   }
 
   reset(): void {
+    const releaseActiveHold = this.holdStarted;
     this.cancelHoldTimer();
     this.keyPressed = false;
     this.holdStarted = false;
     this.cancelled = false;
     this.suppressUntilRelease = false;
+    // Lifecycle transitions (capture, reconfiguration, hook upgrades, and
+    // monitor failure) can remove the listener that would have delivered the
+    // physical key-up. Close an already-started hold exactly once before the
+    // service forgets it.
+    if (releaseActiveHold) this.callbacks.onHoldEnd();
   }
 
   get isHoldActive(): boolean {

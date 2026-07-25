@@ -11,6 +11,7 @@ import {
   modelSpecSchema,
   verifyModelDirectory,
   verifyRuntimeModelCatalog,
+  verifyRuntimePlatformModelCatalog,
 } from "../src/main/modelSpec";
 
 const temporaryRoots: string[] = [];
@@ -24,6 +25,37 @@ function sha256(value: string): string {
 }
 
 describe("packaged model specifications", () => {
+  it("accepts repository IDs but rejects manifest-supplied URLs and local paths", () => {
+    const base = {
+      schemaVersion: 1,
+      familyId: "whisper-large-v3",
+      artifactId: "test-artifact",
+      platform: "darwin-arm64",
+      backend: "MLX Whisper",
+      displayName: "Test model",
+      storageDirectory: "test-model",
+      revision: "a".repeat(40),
+      license: "MIT",
+      files: {
+        "weights.npz": { bytes: 1, sha256: "b".repeat(64) },
+      },
+    } as const;
+    expect(modelSpecSchema.parse({
+      ...base,
+      modelId: "trusted-owner/trusted-model",
+    }).modelId).toBe("trusted-owner/trusted-model");
+    for (const modelId of [
+      "https://untrusted.invalid/model",
+      "file:///tmp/model",
+      "../outside/model",
+      "/absolute/model",
+    ]) {
+      expect(() => modelSpecSchema.parse({ ...base, modelId })).toThrow(
+        /Hugging Face repository ID/,
+      );
+    }
+  });
+
   it("loads default v3 and addable v2 pinned tiers for both packaged platforms", () => {
     const manifestDirectory = path.resolve("resources/model-manifest");
     const mac = loadRuntimeModelCatalog(manifestDirectory, "darwin", "arm64");
@@ -207,6 +239,75 @@ describe("packaged model specifications", () => {
     expect(verifier).toHaveBeenCalledOnce();
   });
 
+  it("reports one verification per distinct family artifact across each platform", async () => {
+    const manifestDirectory = path.resolve("resources/model-manifest");
+    const mac = loadRuntimePlatformModelCatalog(manifestDirectory, "darwin", "arm64");
+    const windows = loadRuntimePlatformModelCatalog(manifestDirectory, "win32", "x64");
+    const verification = {
+      present: false,
+      verified: false,
+      verificationStatus: "missing" as const,
+      sizeBytes: 0,
+      expectedBytes: 1,
+      verifiedFiles: 0,
+      expectedFiles: 1,
+    };
+    const macVerifier = vi.fn(async () => verification);
+    const windowsVerifier = vi.fn(async () => verification);
+
+    await expect(
+      verifyRuntimePlatformModelCatalog("/models", mac, macVerifier),
+    ).resolves.toEqual([
+      expect.objectContaining({ familyId: "whisper-large-v3", artifactId: "whisper-large-v3-mlx-fp16" }),
+      expect.objectContaining({ familyId: "whisper-large-v3", artifactId: "whisper-large-v3-mlx-int8" }),
+      expect.objectContaining({ familyId: "whisper-large-v3", artifactId: "whisper-large-v3-mlx-int4" }),
+      expect.objectContaining({ familyId: "whisper-large-v2", artifactId: "whisper-large-v2-mlx-fp16" }),
+      expect.objectContaining({ familyId: "whisper-large-v2", artifactId: "whisper-large-v2-mlx-int8" }),
+      expect.objectContaining({ familyId: "whisper-large-v2", artifactId: "whisper-large-v2-mlx-int4" }),
+    ]);
+    expect(macVerifier).toHaveBeenCalledTimes(6);
+
+    await expect(
+      verifyRuntimePlatformModelCatalog("/models", windows, windowsVerifier),
+    ).resolves.toEqual([
+      expect.objectContaining({ familyId: "whisper-large-v3", artifactId: "whisper-large-v3-ctranslate2" }),
+      expect.objectContaining({ familyId: "whisper-large-v2", artifactId: "whisper-large-v2-ctranslate2" }),
+    ]);
+    expect(windowsVerifier).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects cross-family storage aliasing before verification or removal can target it", async () => {
+    const manifestDirectory = path.resolve("resources/model-manifest");
+    const windows = loadRuntimePlatformModelCatalog(manifestDirectory, "win32", "x64");
+    const sharedDirectory = windows.families["whisper-large-v3"].tiers.high.manifest.storageDirectory;
+    const v2 = windows.families["whisper-large-v2"];
+    const crossed = {
+      ...windows,
+      families: {
+        ...windows.families,
+        "whisper-large-v2": {
+          ...v2,
+          tiers: Object.fromEntries(Object.entries(v2.tiers).map(([tier, spec]) => [
+            tier,
+            {
+              ...spec,
+              manifest: {
+                ...spec.manifest,
+                storageDirectory: sharedDirectory,
+              },
+            },
+          ])) as typeof v2.tiers,
+        },
+      },
+    };
+    const verifier = vi.fn();
+
+    await expect(
+      verifyRuntimePlatformModelCatalog("/models", crossed, verifier),
+    ).rejects.toThrow(/share a storage directory/);
+    expect(verifier).not.toHaveBeenCalled();
+  });
+
   it("rejects a cross-engine manifest even when its schema and platform are valid", async () => {
     const sourceDirectory = path.resolve("resources/model-manifest");
     const root = await mkdtemp(path.join(os.tmpdir(), "localscribe-model-catalog-"));
@@ -232,6 +333,52 @@ describe("packaged model specifications", () => {
 
     expect(() => loadRuntimeModelCatalog(root, "darwin", "arm64")).toThrow(
       /medium model manifest backend mismatch/,
+    );
+  });
+
+  it("derives immutable artifact identity from the curated packaged manifest", async () => {
+    const sourceDirectory = path.resolve("resources/model-manifest");
+    const root = await mkdtemp(path.join(os.tmpdir(), "localscribe-manifest-driven-"));
+    temporaryRoots.push(root);
+    const filenames = [
+      "whisper-large-v3-mlx.json",
+      "whisper-large-v3-mlx-8bit.json",
+      "whisper-large-v3-mlx-4bit.json",
+      "whisper-large-v2-mlx.json",
+      "whisper-large-v2-mlx-8bit.json",
+      "whisper-large-v2-mlx-4bit.json",
+    ];
+    for (const filename of filenames) {
+      await writeFile(
+        path.join(root, filename),
+        await readFile(path.join(sourceDirectory, filename)),
+      );
+    }
+    const lowPath = path.join(root, "whisper-large-v2-mlx-4bit.json");
+    const low = JSON.parse(await readFile(lowPath, "utf8")) as Record<string, unknown>;
+    low.modelId = "curated-owner/whisper-large-v2-custom";
+    low.artifactId = "whisper-large-v2-mlx-int4-custom";
+    low.storageDirectory = "whisper-large-v2-mlx-int4-custom";
+    low.revision = "c".repeat(40);
+    await writeFile(lowPath, JSON.stringify(low));
+
+    const tier = loadRuntimeModelCatalog(
+      root,
+      "darwin",
+      "arm64",
+      "whisper-large-v2",
+    ).tiers.low;
+    expect(tier).toMatchObject({
+      artifactId: "whisper-large-v2-mlx-int4-custom",
+      expectedDownloadBytes: 973_192_389,
+      manifest: {
+        modelId: "curated-owner/whisper-large-v2-custom",
+        storageDirectory: "whisper-large-v2-mlx-int4-custom",
+        revision: "c".repeat(40),
+      },
+    });
+    expect(tier.downloadEvidence.source).toContain(
+      "curated-owner/whisper-large-v2-custom/tree/",
     );
   });
 

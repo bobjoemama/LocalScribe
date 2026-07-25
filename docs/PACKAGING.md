@@ -35,25 +35,50 @@ model-manifest/faster-whisper-large-v2.json
 No `auto` manifest exists. Large-v3 is the default catalog family; large-v2 is
 curated and addable, not an extension point. Mac packages carry exactly three
 MLX manifests per family. Windows tiers share one physical manifest per family
-and use a trusted TypeScript/Python compute-profile allowlist. Packaging does
-not accept plugins, arbitrary model URLs, custom code/loaders, or extra
-manifest paths. The catalog's revision and per-file SHA-256 pins are described
-in [MODEL_CATALOG.md](MODEL_CATALOG.md).
+and use a trusted compute-profile allowlist. Repository/revision/artifact
+identity is manifest-driven rather than duplicated in each worker, but the
+integrity-covered manifest filenames, family IDs, engines, and profile mapping
+remain curated code/package policy. Packaging does not accept plugins,
+arbitrary model URLs, user manifests, custom code/loaders, or extra manifest
+paths. The catalog's revision and per-file SHA-256 pins are described in
+[MODEL_CATALOG.md](MODEL_CATALOG.md).
 
 ## Gate order
 
-1. Vite builds main, preload, and renderer with source maps disabled.
-2. Forge prunes Node modules to the production dependency closure.
-3. The staged package manifest is reduced to runtime and release metadata.
-4. Package tests, maps, caches, shims, and lock/build files are removed.
-5. Platform runtime, worker, helper, icon, and manifests are checked before copy.
-6. Copied resources are reduced to the platform allowlist.
-7. ASAR, ASAR-unpacked, symlinks, and all custom resources are inventoried.
-8. Only a passing app enters platform signing/notarization.
-9. The final packaged directory is inventoried again before a maker runs.
+1. Forge hashes the exact platform release inputs before the production build.
+2. Vite builds main, preload, and renderer with source maps disabled.
+3. Forge rejects empty or stale Vite files that predate this package invocation.
+4. Forge prunes Node modules to the production dependency closure.
+5. The staged package manifest is reduced to runtime and release metadata.
+6. Package tests, maps, caches, shims, and lock/build files are removed.
+7. The source hash is embedded in `app.asar`; any input change during the build
+   fails the package instead of silently producing a mixed-source artifact.
+8. Platform runtime, worker, helper, icon, and manifests are checked before copy.
+9. Copied resources are reduced to the platform allowlist.
+10. ASAR, ASAR-unpacked, symlinks, and all custom resources are inventoried.
+11. Main, preload, renderer HTML, every renderer asset reference, package
+    identity, and embedded source provenance are checked inside `app.asar`.
+12. Only a passing app enters platform signing/notarization.
+13. The final packaged directory is inventoried again before a maker runs.
+14. On macOS the app identity and deployment floor from the central release
+    policy, icon, supported architecture slice,
+    Electron fuses, embedded ASAR header hash, entitlements, and deep signature
+    are verified from the artifact, not inferred from Forge configuration.
+15. Forge opens both the DMG and ZIP, verifies that each contains the exact
+    staged signed app, and requires the DMG `/Applications` link.
+16. On Windows Forge clears the exact ZIP and legacy-Squirrel maker targets
+    after rejecting linked/reparse parents, then requires artifacts created by
+    the current invocation.
+17. The Windows portable ZIP is extracted to a private directory and every
+    file is hashed against the staged app. Legacy Squirrel is disabled; its
+    diagnostic opt-in must pass exact PE DATA/#131 payload, RELEASES, nupkg,
+    and embedded source-provenance checks.
 
 The gate rejects:
 
+- stale renderer/main/preload output or source changes during packaging;
+- a missing, empty, externally referenced, or source-mapped renderer asset;
+- package version, product identity, target, or source-provenance drift;
 - an absent bundled Python executable or native helper;
 - missing worker entrypoints or model manifests;
 - opposite-platform worker/runtime/native payloads;
@@ -79,12 +104,16 @@ npm run test:packaging
 Mac app and installer:
 
 ```sh
-npm run make:mac
-codesign --verify --deep --strict --verbose=4 \
-  out/LocalScribe-darwin-arm64/LocalScribe.app
+npm run verify:local:macos
+node scripts/release-metadata.mjs --platform darwin --format json
+node scripts/verify-release-assets.mjs --platform darwin
 ```
 
-Windows app and installer must be produced on Windows:
+`verify-packaged-archive.mjs` compares the archive’s embedded source root with
+the current checkout. It intentionally rejects an old `out/` package after any
+release input changes; rebuild before treating that artifact as current.
+
+The Windows app and portable package must be produced on Windows:
 
 ```powershell
 npm run verify:local:windows
@@ -92,7 +121,15 @@ npm run verify:local:windows -- -RequireCuda
 ```
 
 The complete gate builds and smokes the package, validates the target-native
-module inventory and both SBOMs, and checks every packaged `.exe`, `.dll`, and
-`.node` plus Setup.exe. The Authenticode result is expected to be `NotSigned`
-or an existing valid vendor signature for a normal validation build, and
-`Valid` for every checked file in fail-closed public release mode.
+module inventory and both SBOMs, checks every packaged `.exe`, `.dll`, and
+`.node`, and proves the portable ZIP is an exact copy of the staged package.
+The Authenticode result may be `NotSigned` or an existing valid vendor
+signature for a validation build. Public Windows release mode is intentionally
+disabled until a supported installer, passwordless signing flow, and physical
+install/update/uninstall acceptance exist.
+
+Product name, package version, repository, bundle identity, supported target,
+artifact filenames, SBOM filenames, and checksum filename come from
+`package.json` plus `src/shared/releasePolicy.mts` through
+`scripts/release-metadata.mts`. Do not duplicate a current version or output
+filename in a release script.

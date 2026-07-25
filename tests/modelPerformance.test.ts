@@ -178,6 +178,71 @@ describe("automatic model performance resolution", () => {
     expect(result.tier.engine).toBe("mlx-whisper");
   });
 
+  it.each([
+    ["high", 4, 2],
+    ["medium", 4, 2],
+    ["low", 4, 2],
+  ] as const)(
+    "keeps explicit %s exact even when the current memory budget blocks it",
+    (preference, totalGiB, freeGiB) => {
+      expect(resolveModelPerformance({
+        preference,
+        catalog,
+        memory: {
+          totalBytes: totalGiB * GIBIBYTE,
+          freeBytes: freeGiB * GIBIBYTE,
+        },
+      })).toMatchObject({
+        preference,
+        effectiveTier: preference,
+        reason: "explicit",
+        fitsMemoryBudget: false,
+      });
+    },
+  );
+
+  it.each([
+    [8, 7, "medium", true],
+    [16, 12, "high", true],
+    [48, 16, "high", true],
+    [128, 26, "low", false],
+  ] as const)(
+    "derives Apple Auto from %d GiB total and %d GiB currently free",
+    (totalGiB, freeGiB, effectiveTier, fitsMemoryBudget) => {
+      expect(resolveModelPerformance({
+        preference: "auto",
+        catalog,
+        memory: {
+          totalBytes: totalGiB * GIBIBYTE,
+          freeBytes: freeGiB * GIBIBYTE,
+        },
+      })).toMatchObject({
+        effectiveTier,
+        fitsMemoryBudget,
+      });
+    },
+  );
+
+  it("applies the same telemetry policy to every curated model family", () => {
+    for (const familyId of ["whisper-large-v3", "whisper-large-v2"] as const) {
+      const family = loadRuntimeModelCatalog(
+        manifestDirectory,
+        "darwin",
+        "arm64",
+        familyId,
+      );
+      expect(resolveModelPerformance({
+        preference: "auto",
+        catalog: family,
+        memory: { totalBytes: 48 * GIBIBYTE, freeBytes: 20 * GIBIBYTE },
+      })).toMatchObject({
+        effectiveTier: "high",
+        fitsMemoryBudget: true,
+        tier: { familyId },
+      });
+    }
+  });
+
   it("rejects a cross-engine tier instead of falling back across engines", () => {
     const crossedCatalog = {
       ...catalog,
@@ -192,6 +257,38 @@ describe("automatic model performance resolution", () => {
     expect(() => resolveModelPerformance({
       preference: "low",
       catalog: crossedCatalog,
+      memory: { totalBytes: 16 * GIBIBYTE, freeBytes: 12 * GIBIBYTE },
+    })).toThrow(/crosses a platform, engine, or tier routing boundary/);
+  });
+
+  it("binds the complete catalog engine and tier precisions to the runtime platform", () => {
+    const crossedEngine = {
+      ...catalog,
+      engine: "faster-whisper" as const,
+      tiers: Object.fromEntries(Object.entries(catalog.tiers).map(([tier, spec]) => [
+        tier,
+        { ...spec, engine: "faster-whisper" as const },
+      ])) as typeof catalog.tiers,
+    };
+    expect(() => resolveModelPerformance({
+      preference: "medium",
+      catalog: crossedEngine,
+      memory: { totalBytes: 16 * GIBIBYTE, freeBytes: 12 * GIBIBYTE },
+    })).toThrow(/crosses a platform, engine, or tier routing boundary/);
+
+    const crossedPrecision = {
+      ...catalog,
+      tiers: {
+        ...catalog.tiers,
+        high: {
+          ...catalog.tiers.high,
+          precision: "8-bit" as const,
+        },
+      },
+    };
+    expect(() => resolveModelPerformance({
+      preference: "high",
+      catalog: crossedPrecision,
       memory: { totalBytes: 16 * GIBIBYTE, freeBytes: 12 * GIBIBYTE },
     })).toThrow(/crosses a platform, engine, or tier routing boundary/);
   });
@@ -225,4 +322,107 @@ describe("automatic model performance resolution", () => {
     });
     expect(medium.tier.manifest).toEqual(high.tier.manifest);
   });
+
+  it("selects explicit RTX 3060 6 GB profiles without a hidden CPU or model fallback", () => {
+    const windowsCatalog = loadRuntimeModelCatalog(manifestDirectory, "win32", "x64");
+    const reportedFreeVram = 6_285_164_544;
+    const mediumRequired = (
+      windowsCatalog.tiers.medium.acceleratorMemory.maximumBytes
+      + 2 * GIBIBYTE
+    );
+    const lowRequired = (
+      windowsCatalog.tiers.low.acceleratorMemory.maximumBytes
+      + 2 * GIBIBYTE
+    );
+
+    expect(resolveModelPerformance({
+      preference: "auto",
+      catalog: windowsCatalog,
+      memory: { totalBytes: 6 * GIBIBYTE, freeBytes: reportedFreeVram },
+    })).toMatchObject({
+      effectiveTier: "medium",
+      reason: "auto-highest-fit",
+      fitsMemoryBudget: true,
+      requiredMemoryBytes: mediumRequired,
+      tier: {
+        engine: "faster-whisper",
+        precision: "int8_float16",
+        manifest: {
+          modelId: "Systran/faster-whisper-large-v3",
+        },
+      },
+    });
+
+    expect(resolveModelPerformance({
+      preference: "auto",
+      catalog: windowsCatalog,
+      memory: { totalBytes: 6 * GIBIBYTE, freeBytes: mediumRequired - 1 },
+    })).toMatchObject({
+      effectiveTier: "low",
+      reason: "auto-highest-fit",
+      fitsMemoryBudget: true,
+      requiredMemoryBytes: lowRequired,
+      tier: {
+        engine: "faster-whisper",
+        precision: "int8",
+      },
+    });
+
+    expect(resolveModelPerformance({
+      preference: "auto",
+      catalog: windowsCatalog,
+      memory: { totalBytes: 6 * GIBIBYTE, freeBytes: lowRequired - 1 },
+    })).toMatchObject({
+      effectiveTier: "low",
+      reason: "auto-insufficient-memory",
+      fitsMemoryBudget: false,
+    });
+
+    // An explicit High request stays High and blocked. It never silently
+    // substitutes a lower compute profile, CPU execution, or another model.
+    expect(resolveModelPerformance({
+      preference: "high",
+      catalog: windowsCatalog,
+      memory: { totalBytes: 6 * GIBIBYTE, freeBytes: reportedFreeVram },
+    })).toMatchObject({
+      preference: "high",
+      effectiveTier: "high",
+      reason: "explicit",
+      fitsMemoryBudget: false,
+      tier: {
+        engine: "faster-whisper",
+        precision: "float16",
+        manifest: {
+          modelId: "Systran/faster-whisper-large-v3",
+        },
+      },
+    });
+  });
+
+  it.each([
+    [4, 3.5, "low", false],
+    [6, 5.75, "medium", true],
+    [8, 7.5, "high", true],
+    [24, 20, "high", true],
+  ] as const)(
+    "derives Windows Auto from arbitrary numeric VRAM: %d GiB total / %d GiB free",
+    (totalGiB, freeGiB, effectiveTier, fitsMemoryBudget) => {
+      const windowsCatalog = loadRuntimeModelCatalog(
+        manifestDirectory,
+        "win32",
+        "x64",
+      );
+      expect(resolveModelPerformance({
+        preference: "auto",
+        catalog: windowsCatalog,
+        memory: {
+          totalBytes: totalGiB * GIBIBYTE,
+          freeBytes: freeGiB * GIBIBYTE,
+        },
+      })).toMatchObject({
+        effectiveTier,
+        fitsMemoryBudget,
+      });
+    },
+  );
 });

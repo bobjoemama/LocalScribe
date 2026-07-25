@@ -26,6 +26,7 @@ export function permissionSnapshotForPlatform(
   microphone: PermissionSnapshot["microphone"],
   accessibilityGranted: boolean,
   globalHoldReady: boolean,
+  automaticPasteReady: boolean,
 ): PermissionSnapshot {
   const isMac = platform === "darwin";
   const isWindows = platform === "win32";
@@ -39,7 +40,7 @@ export function permissionSnapshotForPlatform(
     },
     automaticPaste: {
       supported: isMac || isWindows,
-      ready: isMac ? accessibilityGranted : isWindows,
+      ready: isMac ? accessibilityGranted : isWindows && automaticPasteReady,
     },
     globalHold: {
       supported: isMac || isWindows,

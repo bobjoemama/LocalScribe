@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
-import type { Transcription } from "../src/shared/contracts";
+import { MAX_HISTORY_ITEMS, type Transcription } from "../src/shared/contracts";
 import {
   appCategory,
   calculateStreak,
   categoryBreakdown,
+  filterByRange,
   friendlyAppName,
+  rangeLabel,
   recentActivity,
 } from "../src/shared/insights";
 
@@ -43,6 +45,36 @@ describe("local Insights app attribution", () => {
     expect(appCategory("com.apple.Safari").key).toBe("browser");
   });
 
+  it("recognizes common Windows executable paths and presents useful app names", () => {
+    const cases = [
+      ["C:\\Users\\dev\\AppData\\Local\\Programs\\Microsoft VS Code\\Code.exe", "development", "Visual Studio Code"],
+      ["C:\\Program Files\\Microsoft Office\\root\\Office16\\WINWORD.EXE", "documents", "Microsoft Word"],
+      ["C:\\Windows\\System32\\notepad.exe", "documents", "Notepad"],
+      ["C:\\Program Files\\Microsoft Office\\root\\Office16\\EXCEL.EXE", "documents", "Microsoft Excel"],
+      ["C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe", "browser", "Microsoft Edge"],
+      ["C:\\Program Files\\Microsoft Office\\root\\Office16\\OUTLOOK.EXE", "email", "Microsoft Outlook"],
+      ["C:\\Program Files\\PowerShell\\7\\pwsh.exe", "development", "PowerShell"],
+      ["C:\\Program Files\\WindowsApps\\Microsoft.WindowsTerminal\\WindowsTerminal.exe", "development", "Windows Terminal"],
+    ] as const;
+
+    for (const [applicationId, category, name] of cases) {
+      expect(appCategory(applicationId).key).toBe(category);
+      expect(friendlyAppName(applicationId)).toBe(name);
+    }
+  });
+
+  it("uses only the Windows executable name and never path folders for attribution", () => {
+    expect(friendlyAppName("C:\\Users\\Alice\\app.exe")).toBe("App");
+    expect(friendlyAppName("  C:\\Programs\\Code.exe  ")).toBe("Visual Studio Code");
+    expect(appCategory("C:\\Users\\openai\\Tools\\paint.exe").key).toBe("other");
+    expect(appCategory("C:\\Tools\\Knowledge.exe").key).toBe("other");
+    expect(appCategory("C:\\Browsers\\msedge.exe").key).toBe("browser");
+  });
+
+  it("derives the recent-history label from the shared history limit", () => {
+    expect(rangeLabel("recent")).toBe(`Recent ${MAX_HISTORY_ITEMS}`);
+  });
+
   it("ranks categories by dictated words and retains session counts", () => {
     const breakdown = categoryBreakdown([
       transcript("one two three four", "com.cmuxterm.app.nightly"),
@@ -58,6 +90,18 @@ describe("local Insights app attribution", () => {
 });
 
 describe("local Insights activity", () => {
+  it("uses local calendar days for range cutoffs instead of fixed 24-hour subtraction", () => {
+    const now = new Date(2026, 2, 9, 12).getTime();
+    const firstDay = new Date(2026, 2, 3, 0).getTime();
+    const beforeFirstDay = new Date(2026, 2, 2, 23, 59).getTime();
+    const items = [
+      transcript("included", null, firstDay),
+      transcript("excluded", null, beforeFirstDay),
+    ];
+
+    expect(filterByRange(items, "7d", now).map((item) => item.text)).toEqual(["included"]);
+  });
+
   it("buckets exact word totals for each visible day", () => {
     const now = new Date(2026, 6, 22, 12).getTime();
     const yesterday = new Date(2026, 6, 21, 12).getTime();

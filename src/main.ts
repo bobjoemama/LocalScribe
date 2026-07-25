@@ -1,7 +1,7 @@
 import path from "node:path";
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
-import { mkdir, readdir, rm, writeFile } from "node:fs/promises";
+import { rm, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import {
   app,
@@ -28,7 +28,6 @@ import {
   dictionaryEntrySchema,
   IPC,
   MAX_HISTORY_ITEMS,
-  MODEL_FAMILY_IDS,
   modelFamilyLibraryRequestSchema,
   modelInstallRequestSchema,
   modelRemoveRequestSchema,
@@ -59,6 +58,7 @@ import {
 } from "./main/worker/workerSupervisor";
 import { HotkeyService } from "./main/hotkeys/hotkeyService";
 import { defaultMacControlMonitorPath, MacControlMonitor } from "./main/hotkeys/macControlMonitor";
+import { reconcileAccessibilityHotkeys } from "./main/hotkeys/accessibilityReconciler";
 import { InsertionService } from "./main/insertion/insertionService";
 import { buildDictionaryAsrContext } from "./shared/dictionaryContext";
 import { applyLocalTextRules } from "./shared/textPipeline";
@@ -73,12 +73,22 @@ import {
   type RuntimePlatformModelCatalog,
   type RuntimeModelTierSpec,
 } from "./main/modelSpec";
+import {
+  buildModelCatalogSnapshot,
+  modelRootForUserData,
+} from "./main/modelCatalogSnapshot";
+import {
+  assertSafeModelRoot,
+  installVerifiedModelArtifact,
+  modelArtifactDirectory,
+} from "./main/modelOperations";
 import { verifyPackagedResourceIntegrity } from "./main/resourceIntegrity";
 import {
   permissionSettingsUrl,
   permissionSnapshotForPlatform,
   runtimePlatformFor,
 } from "./main/platformCapabilities";
+import { SETTINGS_WINDOW_LAYOUT } from "./shared/windowLayout.mts";
 import {
   PILL_HOVER_HIT_PADDING,
   PILL_LAYOUT,
@@ -87,10 +97,23 @@ import {
 } from "./shared/pillLayout";
 import {
   RENDERER_PROTOCOL_SCHEME,
-  rendererUrlForSurface,
+  rendererUrlForRuntime,
   resolvePackagedRendererPath,
   type RendererSurface,
 } from "./main/rendererProtocol";
+import {
+  cleanStaleAudioCaches,
+  createAudioCache,
+  removeAudioCache,
+} from "./main/audioCache";
+import { assertRendererSurfaceCanInvoke } from "./main/ipcAuthorization";
+import {
+  launchAtLoginStatusFor,
+  loginItemQueryOptions,
+  loginItemSettings,
+  shouldOpenSettingsAtStartup,
+  WINDOWS_APP_USER_MODEL_ID,
+} from "./main/windowsLifecycle";
 
 declare const MAIN_WINDOW_VITE_DEV_SERVER_URL: string | undefined;
 declare const MAIN_WINDOW_VITE_NAME: string;
@@ -120,21 +143,29 @@ let tray: Tray | null = null;
 let pillDisplayTimer: NodeJS.Timeout | null = null;
 let accessibilityTimer: NodeJS.Timeout | null = null;
 let errorDismissTimer: NodeJS.Timeout | null = null;
+let audioCacheRoot: string | null = null;
 let pillMode: PillMode = "collapsed";
 // Environment-selected executable helpers are a useful development seam, but
 // must never override the helper bundled into a packaged application.
 const insertion = new InsertionService({
   allowNativeHelperEnvironmentOverride: !app.isPackaged,
+  nativeHelperWorkingDirectory: app.getAppPath(),
 });
 let session: SessionSnapshot = { state: "idle" };
 let quitting = false;
 let workerInitialized = false;
+let databaseInitialized = false;
 let startupPromise: Promise<void> | null = null;
+let runtimeReleasePromise: Promise<void> | null = null;
 let runtimeModelPlatformCatalog: RuntimePlatformModelCatalog | null = null;
 let modelResolution: ModelPerformanceResolution | null = null;
 let previousAutoTier: ModelPerformanceTier | undefined;
 let activeDictationTier: ModelPerformanceTier | undefined;
 let activeSessionId: string | null = null;
+let activeSessionModelResolution: {
+  sessionId: string;
+  promise: Promise<ModelPerformanceResolution>;
+} | null = null;
 let acceleratorSnapshot: WorkerAcceleratorSnapshot | null = null;
 let modelOperationTail: Promise<void> = Promise.resolve();
 let modelOperationCount = 0;
@@ -143,6 +174,14 @@ let modelOperationCount = 0;
 // Vite emits the Electron main process as CommonJS, where `import.meta.url`
 // is not available. Anchor createRequire to Electron's guaranteed-absolute
 // application path so the same bootstrap works in development and app.asar.
+if (process.platform === "win32") app.setAppUserModelId(WINDOWS_APP_USER_MODEL_ID);
+if (process.platform === "win32" && process.argv.includes("--squirrel-uninstall")) {
+  try {
+    app.setLoginItemSettings(loginItemSettings(false, process.platform, process.execPath));
+  } catch (error) {
+    console.warn("LocalScribe could not remove its login startup entry during uninstall", error);
+  }
+}
 const appRequire = createRequire(path.join(app.getAppPath(), "package.json"));
 const squirrelStartup = Boolean(appRequire("electron-squirrel-startup"));
 const hasSingleInstanceLock = !squirrelStartup && app.requestSingleInstanceLock();
@@ -204,46 +243,18 @@ function modelOperationInProgress(): boolean {
   return modelOperationCount > 0;
 }
 
-/** Returns static packaged metadata only; it intentionally does not probe hardware or the worker. */
-function collectModelCatalog(): ModelCatalog {
+/**
+ * Returns packaged metadata plus cryptographic disk status for every curated
+ * artifact. It intentionally does not probe hardware or start the worker.
+ */
+async function collectModelCatalog(): Promise<ModelCatalog> {
   const settings = database.getSettings();
   const catalog = platformModelCatalog();
-  return {
-    platform: catalog.platform,
-    activeModelFamilyId: settings.activeModelFamilyId,
-    modelLibraryFamilyIds: settings.modelLibraryFamilyIds,
-    families: MODEL_FAMILY_IDS.map((familyId) => {
-      const family = catalog.families[familyId];
-      const artifacts = new Map<string, RuntimeModelTierSpec>();
-      for (const tier of Object.values(family.tiers)) artifacts.set(tier.artifactId, tier);
-      return {
-        familyId,
-        displayName: family.displayName,
-        active: familyId === settings.activeModelFamilyId,
-        inLibrary: settings.modelLibraryFamilyIds.includes(familyId),
-        artifacts: [...artifacts.values()].map((tier) => ({
-          artifactId: tier.artifactId,
-          displayName: tier.manifest.displayName,
-          backend: tier.manifest.backend,
-          modelId: tier.manifest.modelId,
-          storageDirectory: tier.manifest.storageDirectory,
-          revision: tier.manifest.revision,
-          license: tier.manifest.license,
-          expectedDownloadBytes: tier.expectedDownloadBytes,
-        })),
-        profiles: Object.values(family.tiers).map((tier) => ({
-          profileId: tier.profileId,
-          tier: tier.tier,
-          artifactId: tier.artifactId,
-          engine: tier.engine,
-          precision: tier.precision,
-          expectedMemoryMinBytes: tier.acceleratorMemory.minimumBytes,
-          expectedMemoryMaxBytes: tier.acceleratorMemory.maximumBytes,
-          memoryBasis: tier.acceleratorMemory.evidence.kind,
-        })),
-      };
-    }),
-  };
+  return buildModelCatalogSnapshot({
+    settings,
+    catalog,
+    modelRoot: modelRootForUserData(app.getPath("userData")),
+  });
 }
 
 function unavailableAccelerator(): Diagnostics["accelerator"] {
@@ -294,10 +305,13 @@ function memorySnapshot() {
   };
 }
 
-async function refreshModelResolution(): Promise<ModelPerformanceResolution> {
-  // Hardware-driven Auto may only move at an idle boundary. During dictation
-  // the previously selected tier remains pinned from recording through insert.
-  if (session.state === "idle") {
+async function refreshModelResolution(
+  probeAtDictationBoundary = false,
+): Promise<ModelPerformanceResolution> {
+  // Hardware-driven Auto may move only while idle or at the transition into a
+  // new recording. Once that boundary resolves, the tier is pinned through
+  // transcription and insertion.
+  if (session.state === "idle" || probeAtDictationBoundary) {
     // Probe an unloaded device so Auto is not biased downward by the memory
     // consumed by whichever tier happened to run most recently.
     await worker.shutdown();
@@ -317,13 +331,23 @@ async function refreshModelResolution(): Promise<ModelPerformanceResolution> {
     activeDictationTier,
   });
   modelResolution = next;
-  if (session.state === "idle" && preference === "auto" && next.fitsMemoryBudget) {
+  if (
+    (session.state === "idle" || probeAtDictationBoundary)
+    && preference === "auto"
+    && next.fitsMemoryBudget
+  ) {
     previousAutoTier = next.effectiveTier;
   }
   return next;
 }
 
 async function currentModelResolution(): Promise<ModelPerformanceResolution> {
+  if (
+    activeSessionModelResolution
+    && activeSessionModelResolution.sessionId === activeSessionId
+  ) {
+    return activeSessionModelResolution.promise;
+  }
   if (session.state === "idle" || !modelResolution) return refreshModelResolution();
   return resolveModelPerformance({
     preference: database.getSettings().modelPerformanceMode,
@@ -450,7 +474,11 @@ async function collectDiagnostics(): Promise<Diagnostics> {
 }
 
 function rendererUrl(surface: RendererSurface): string {
-  return rendererUrlForSurface(surface, MAIN_WINDOW_VITE_DEV_SERVER_URL);
+  return rendererUrlForRuntime(
+    surface,
+    app.isPackaged,
+    MAIN_WINDOW_VITE_DEV_SERVER_URL,
+  );
 }
 
 function packagedRendererRoot(): string {
@@ -499,10 +527,10 @@ function hideWindowInsteadOfClosing(window: BrowserWindow): void {
 
 function createSettingsWindow(): BrowserWindow {
   const window = new BrowserWindow({
-    width: 1220,
-    height: 760,
-    minWidth: 900,
-    minHeight: 640,
+    width: SETTINGS_WINDOW_LAYOUT.defaultWidth,
+    height: SETTINGS_WINDOW_LAYOUT.defaultHeight,
+    minWidth: SETTINGS_WINDOW_LAYOUT.minimumWidth,
+    minHeight: SETTINGS_WINDOW_LAYOUT.minimumHeight,
     title: "LocalScribe",
     show: false,
     backgroundColor: "#f3f1ed",
@@ -622,13 +650,11 @@ function startPillDisplayFollowing(): void {
 function startAccessibilityUpgradeCheck(): void {
   if (process.platform !== "darwin" || accessibilityTimer) return;
   accessibilityTimer = setInterval(() => {
-    if (!hotkeys || !systemPreferences.isTrustedAccessibilityClient(false)) return;
-    try {
-      hotkeys.start();
-    } catch (error) {
-      console.warn("Global hold-to-talk could not start after Accessibility changed", error);
-      hotkeys.startFallback();
-    }
+    if (!hotkeys) return;
+    reconcileAccessibilityHotkeys(
+      systemPreferences.isTrustedAccessibilityClient(false),
+      hotkeys,
+    );
   }, 2_000);
   accessibilityTimer.unref();
 }
@@ -656,6 +682,15 @@ function createPillWindow(): BrowserWindow {
   hardenWindow(window);
   window.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
   if (process.platform === "darwin") window.setHiddenInMissionControl(true);
+  if (process.platform === "win32") {
+    // Electron does not emit app.before-quit for Windows logout, restart, or
+    // shutdown. BrowserWindow session-end is the only in-process cleanup
+    // opportunity before the OS tears the process down.
+    window.once("session-end", () => {
+      if (!beginShutdown()) return;
+      void releaseRuntimeResources();
+    });
+  }
   void window.loadURL(rendererUrl("pill"));
   window.once("ready-to-show", () => {
     syncPillVisibility();
@@ -686,6 +721,7 @@ function setSession(next: SessionSnapshot): SessionSnapshot {
   if (session.state === "idle" || session.state === "success" || session.state === "error") {
     activeDictationTier = undefined;
     activeSessionId = null;
+    activeSessionModelResolution = null;
   }
   if (session.state !== "idle") pillMode = "collapsed";
   resizePill();
@@ -721,7 +757,12 @@ function notifyHistoryChanged(): void {
 /** Broadcast only validated, persisted settings after a successful save. */
 function notifySettingsChanged(settings: ReturnType<LocalDatabase["getSettings"]>): void {
   for (const window of [pillWindow, settingsWindow, scratchpadWindow]) {
-    if (window && !window.isDestroyed()) window.webContents.send(IPC.settingsChanged, settings);
+    if (!window || window.isDestroyed()) continue;
+    try {
+      window.webContents.send(IPC.settingsChanged, settings);
+    } catch (error) {
+      console.warn("LocalScribe could not deliver a persisted settings update to one window", error);
+    }
   }
 }
 
@@ -747,17 +788,41 @@ function beginListening(activation: "hold" | "toggle" = "toggle"): SessionSnapsh
   if (modelOperationInProgress()) {
     return failSession("Wait for the local model operation to finish before dictating.");
   }
-  if (!modelResolution) {
-    return failSession("Local model selection is still initializing. Try dictating again in a moment.");
-  }
-  try {
-    assertResolutionFitsMemory(modelResolution);
-  } catch (error) {
-    return failSession(error);
+  const preference = database.getSettings().modelPerformanceMode;
+  if (preference !== "auto") {
+    if (!modelResolution) {
+      return failSession("Local model selection is still initializing. Try dictating again in a moment.");
+    }
+    try {
+      assertResolutionFitsMemory(modelResolution);
+    } catch (error) {
+      return failSession(error);
+    }
   }
   const sessionId = randomUUID();
   activeSessionId = sessionId;
-  activeDictationTier = modelResolution.effectiveTier;
+  if (preference === "auto") {
+    // Free VRAM/unified memory is dynamic. Probe at every recording boundary
+    // while audio is captured, after unloading the previous model so its own
+    // allocation cannot bias Auto downward. The chosen tier is then pinned
+    // for this session; explicit modes remain exact and do not auto-fallback.
+    const promise = refreshModelResolution(true).then((resolution) => {
+      if (activeSessionId === sessionId) {
+        activeDictationTier = resolution.effectiveTier;
+      }
+      return resolution;
+    });
+    // A cancelled recording may never submit audio. Attach a rejection
+    // observer now so a failed hardware probe cannot become unhandled.
+    void promise.catch(() => undefined);
+    activeSessionModelResolution = { sessionId, promise };
+  } else {
+    activeDictationTier = modelResolution!.effectiveTier;
+    activeSessionModelResolution = {
+      sessionId,
+      promise: Promise.resolve(modelResolution!),
+    };
+  }
   insertion.beginSession();
   positionPill(pillWindow!);
   pillWindow?.showInactive();
@@ -785,11 +850,26 @@ function assertActiveSession(sessionId: string): void {
   }
 }
 
-function assertTrustedSender(event: IpcMainInvokeEvent): void {
-  const url = event.senderFrame?.url;
-  if (!url) throw new Error("Rejected IPC without a sender frame");
-  const trusted = (["settings", "pill", "scratchpad"] as const).some((surface) => url === rendererUrl(surface));
-  if (!trusted) throw new Error("Rejected IPC from an untrusted renderer");
+function trustedSurfaceForEvent(event: IpcMainInvokeEvent): RendererSurface {
+  if (quitting) throw new Error("LocalScribe is shutting down");
+  const frame = event.senderFrame;
+  if (!frame || frame !== event.sender.mainFrame) {
+    throw new Error("Rejected IPC outside a live main renderer frame");
+  }
+  const candidates: Array<[RendererSurface, BrowserWindow | null]> = [
+    ["settings", settingsWindow],
+    ["pill", pillWindow],
+    ["scratchpad", scratchpadWindow],
+  ];
+  for (const [surface, window] of candidates) {
+    if (!window || window.isDestroyed() || window.webContents !== event.sender) continue;
+    const expectedUrl = rendererUrl(surface);
+    if (frame.url !== expectedUrl || event.sender.getURL() !== expectedUrl) {
+      throw new Error("Rejected IPC from an unexpected renderer URL");
+    }
+    return surface;
+  }
+  throw new Error("Rejected IPC from a renderer that is not owned by a live LocalScribe window");
 }
 
 function registerIpc(): void {
@@ -798,7 +878,8 @@ function registerIpc(): void {
     handler: (event: IpcMainInvokeEvent, ...args: T) => unknown,
   ) => {
     ipcMain.handle(channel, (event, ...args: T) => {
-      assertTrustedSender(event);
+      const surface = trustedSurfaceForEvent(event);
+      assertRendererSurfaceCanInvoke(surface, channel);
       return handler(event, ...args);
     });
   };
@@ -826,8 +907,8 @@ function registerIpc(): void {
     }
     assertActiveSession(input.sessionId);
     const settings = database.getSettings();
-    const cacheRoot = path.join(app.getPath("temp"), "localscribe-audio");
-    await mkdir(cacheRoot, { recursive: true, mode: 0o700 });
+    const cacheRoot = audioCacheRoot;
+    if (!cacheRoot) throw new Error("Private audio storage is not ready.");
     const audioPath = path.join(cacheRoot, `${randomUUID()}.wav`);
     await writeFile(audioPath, new Uint8Array(input.wav), { mode: 0o600, flag: "wx" });
     setSession({
@@ -883,9 +964,7 @@ function registerIpc(): void {
           message: outcome === "copied" ? "Copied to clipboard" : "Inserted",
         });
       } else {
-        const automaticPasteReady = process.platform === "darwin"
-          ? await insertion.accessibilityReady()
-          : process.platform === "win32";
+        const automaticPasteReady = await insertion.automaticPasteReady();
         const canAutoPaste = settings.autoPaste && automaticPasteReady;
         setSession({
           state: "inserting",
@@ -997,22 +1076,71 @@ function registerIpc(): void {
   handle(IPC.settingsGet, () => database.getSettings());
   handle(IPC.settingsPatch, async (_event, input: unknown) => {
     const patch = appSettingsPatchSchema.parse(input);
+    if (
+      trustedSurfaceForEvent(_event) === "pill"
+      && Object.keys(patch).some((key) => key !== "microphoneId")
+    ) {
+      throw new Error("The pill may update only its selected microphone.");
+    }
     const previous = database.getSettings();
     const preview = appSettingsSchema.parse({ ...previous, ...patch });
     assertGenericSettingsPreserveModelLibrary(previous, preview);
     const modelPreferenceChanged = preview.modelPerformanceMode !== previous.modelPerformanceMode;
     if (modelPreferenceChanged) assertModelSwitchAllowed();
-    const settings = applySettingsPatchTransaction({ database, hotkeys }, patch);
-    if (modelPreferenceChanged) {
-      await worker.shutdown();
-      modelResolution = null;
-      await refreshModelResolution();
+    const launchAtLoginRequested = Object.prototype.hasOwnProperty.call(patch, "launchAtLogin");
+    if (launchAtLoginRequested) {
+      app.setLoginItemSettings(loginItemSettings(
+        preview.launchAtLogin,
+        process.platform,
+        process.execPath,
+      ));
     }
-    const purged = database.purgeExpiredTranscriptions(settings.historyRetentionDays);
-    if (purged > 0) notifyHistoryChanged();
-    app.setLoginItemSettings({ openAtLogin: settings.launchAtLogin });
-    syncPillVisibility();
-    installApplicationMenu();
+    let settings: ReturnType<LocalDatabase["getSettings"]>;
+    try {
+      settings = applySettingsPatchTransaction({ database, hotkeys }, patch);
+    } catch (error) {
+      if (launchAtLoginRequested) {
+        try {
+          app.setLoginItemSettings(loginItemSettings(
+            previous.launchAtLogin,
+            process.platform,
+            process.execPath,
+          ));
+        } catch (rollbackError) {
+          console.error("Could not restore the previous login startup setting", rollbackError);
+        }
+      }
+      throw error;
+    }
+    if (modelPreferenceChanged) {
+      try {
+        await worker.shutdown();
+        modelResolution = null;
+        await refreshModelResolution();
+      } catch (error) {
+        // The preference is already durable at this point. A worker or
+        // telemetry refresh failure must not turn a successful settings write
+        // into a false rejection that leaves renderers showing stale values.
+        modelResolution = null;
+        console.warn("LocalScribe could not refresh the model after saving its performance mode", error);
+      }
+    }
+    try {
+      const purged = database.purgeExpiredTranscriptions(settings.historyRetentionDays);
+      if (purged > 0) notifyHistoryChanged();
+    } catch (error) {
+      console.warn("LocalScribe could not apply transcript retention immediately after saving", error);
+    }
+    try {
+      syncPillVisibility();
+    } catch (error) {
+      console.warn("LocalScribe could not refresh floating-bar visibility after saving", error);
+    }
+    try {
+      installApplicationMenu();
+    } catch (error) {
+      console.warn("LocalScribe could not refresh its menu after saving", error);
+    }
     notifySettingsChanged(settings);
     return settings;
   });
@@ -1026,7 +1154,11 @@ function registerIpc(): void {
     // The transaction only returns after the new hotkeys are active and the
     // settings row is durable. Every surface receives that same value now.
     notifySettingsChanged(settings);
-    installApplicationMenu();
+    try {
+      installApplicationMenu();
+    } catch (error) {
+      console.warn("LocalScribe could not refresh its menu after saving a shortcut", error);
+    }
     return settings;
   });
   handle(IPC.windowShowSettings, (_event, rawTarget: unknown) => {
@@ -1050,13 +1182,21 @@ function registerIpc(): void {
     const accessibilityGranted = platform === "darwin"
       ? await insertion.accessibilityReady()
       : false;
+    const automaticPasteReady = platform === "darwin"
+      ? accessibilityGranted
+      : await insertion.automaticPasteReady();
     return permissionSnapshotForPlatform(
       platform,
       microphone,
       accessibilityGranted,
       hotkeys?.isGlobalHoldReady() ?? false,
+      automaticPasteReady,
     );
   });
+  handle(IPC.systemGetLaunchAtLoginStatus, () => launchAtLoginStatusFor(
+    process.platform,
+    app.getLoginItemSettings(loginItemQueryOptions(process.platform, process.execPath)),
+  ));
   handle(IPC.systemOpenPermission, async (_event, kind: unknown) => {
     const permission = z.enum(["microphone", "accessibility"]).parse(kind);
     const platform = runtimePlatformFor(process.platform);
@@ -1077,7 +1217,7 @@ function registerIpc(): void {
   }));
   handle(IPC.systemDiagnostics, () => collectDiagnostics());
   handle(IPC.systemModelCatalog, () => collectModelCatalog());
-  handle(IPC.systemAddModelFamily, (_event, rawRequest: unknown) => {
+  handle(IPC.systemAddModelFamily, async (_event, rawRequest: unknown) => {
     const request = modelFamilyLibraryRequestSchema.parse(rawRequest);
     // The schema is an allowlist, and the packaged runtime catalog must also
     // provide the family for this platform before it can be persisted.
@@ -1121,11 +1261,17 @@ function registerIpc(): void {
       assertFamilyInLibrary(request.familyId);
       const catalog = modelCatalog(request.familyId);
       const tier = catalog.tiers[request.tier];
+      const modelRoot = modelRootForUserData(app.getPath("userData"));
       // Installation is a disk/network data operation, not model activation.
       // It remains available when accelerator telemetry is missing or the
       // requested tier cannot currently fit in memory. The worker stages and
       // verifies repairs before promotion; do not delete the current artifact.
-      await worker.installModel(workerSelection(tier));
+      await installVerifiedModelArtifact({
+        modelRoot,
+        model: tier.manifest,
+        replaceExisting: request.replaceExisting,
+        install: () => worker.installModel(workerSelection(tier)),
+      });
       return collectDiagnostics();
     });
   });
@@ -1134,14 +1280,19 @@ function registerIpc(): void {
     return runExclusiveModelOperation(async () => {
       assertModelSwitchAllowed();
       assertFamilyInLibrary(request.familyId);
-      await worker.shutdown();
       const tier = modelCatalog(request.familyId).tiers[request.tier];
-      await rm(path.join(app.getPath("userData"), "models", tier.manifest.storageDirectory), {
-        recursive: true,
-        force: true,
-      });
+      const modelRoot = modelRootForUserData(app.getPath("userData"));
+      const rootStatus = await assertSafeModelRoot(modelRoot, true);
+      await worker.shutdown();
+      if (rootStatus === "safe") {
+        await rm(modelArtifactDirectory(modelRoot, tier.manifest), {
+          recursive: true,
+          force: true,
+        });
+      }
       modelResolution = null;
-      if (session.state === "idle") await refreshModelResolution();
+      // collectDiagnostics performs the one post-removal hardware refresh.
+      // Avoid a second worker startup/probe cycle here.
       return collectDiagnostics();
     });
   });
@@ -1231,25 +1382,28 @@ function installApplicationMenu(): void {
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
 
-async function cleanStaleAudio(): Promise<void> {
-  const root = path.join(app.getPath("temp"), "localscribe-audio");
-  try {
-    const entries = await readdir(root);
-    await Promise.all(entries.filter((entry) => entry.endsWith(".wav")).map((entry) => rm(path.join(root, entry), { force: true })));
-  } catch {
-    // The directory does not exist on first launch.
-  }
-}
-
 startupPromise = app.whenReady().then(async () => {
-  if (!hasSingleInstanceLock) return;
+  if (!hasSingleInstanceLock || quitting) return;
   verifyPackagedResourceIntegrity({ isPackaged: app.isPackaged });
+  const nativeHelperPinned = insertion.pinNativeHelperIntegrity();
+  if (
+    app.isPackaged
+    && (process.platform === "darwin" || process.platform === "win32")
+    && !nativeHelperPinned
+  ) {
+    throw new Error("The packaged native input helper could not be integrity-pinned.");
+  }
   app.setName("LocalScribe");
   installRendererProtocol();
   runtimeModelPlatformCatalog = loadRuntimePlatformModelCatalog(runtimeModelManifestDirectory());
   database = new LocalDatabase(path.join(app.getPath("userData"), "localscribe.db"));
+  databaseInitialized = true;
   database.purgeExpiredTranscriptions(database.getSettings().historyRetentionDays);
-  await cleanStaleAudio();
+  const temporaryDirectory = app.getPath("temp");
+  await cleanStaleAudioCaches(temporaryDirectory);
+  if (quitting) return;
+  audioCacheRoot = await createAudioCache(temporaryDirectory);
+  if (quitting) return;
   const baseWorkerDirectory = app.isPackaged
     ? path.join(process.resourcesPath, "worker")
     : path.join(app.getAppPath(), "worker");
@@ -1266,6 +1420,7 @@ startupPromise = app.whenReady().then(async () => {
       ? path.join(process.resourcesPath, process.platform === "win32" ? "python-runtime-windows" : "python-runtime")
       : null,
     process.platform === "win32" ? "localscribe_windows_worker" : "localscribe_worker",
+    audioCacheRoot,
   );
   workerInitialized = true;
   await refreshModelResolution();
@@ -1276,7 +1431,13 @@ startupPromise = app.whenReady().then(async () => {
   registerIpc();
   pillWindow = createPillWindow();
   startPillDisplayFollowing();
-  if (!app.getLoginItemSettings().wasOpenedAtLogin) settingsWindow = createSettingsWindow();
+  if (shouldOpenSettingsAtStartup(
+    process.platform,
+    process.argv,
+    app.getLoginItemSettings().wasOpenedAtLogin,
+  )) {
+    settingsWindow = createSettingsWindow();
+  }
   tray = createTray();
   installApplicationMenu();
   const shortcutSettings = database.getSettings();
@@ -1289,6 +1450,7 @@ startupPromise = app.whenReady().then(async () => {
     process.platform === "darwin"
       ? new MacControlMonitor(defaultMacControlMonitorPath({
         allowEnvironmentOverride: !app.isPackaged,
+        workingDirectory: app.getAppPath(),
       }))
       : null,
     shortcutSettings.holdShortcut,
@@ -1310,23 +1472,62 @@ startupPromise = app.whenReady().then(async () => {
     showHub("dictation");
   });
 });
-void startupPromise.catch((error: unknown) => {
+void startupPromise.catch(async (error: unknown) => {
   if (quitting) return;
+  quitting = true;
   console.error("LocalScribe startup failed", error);
   dialog.showErrorBox(
     "LocalScribe could not start",
     "The local application could not initialize. Quit LocalScribe and try opening it again.",
   );
+  await releaseRuntimeResources();
   app.exit(1);
 });
 
 app.on("second-instance", () => {
-  showHub("dictation");
+  void startupPromise?.then(() => {
+    if (!quitting) showHub("dictation");
+  }).catch(() => {
+    // The startup error path already owns user-visible failure reporting.
+  });
 });
 
 app.on("window-all-closed", () => {
   // The pill and global dictation service keep the app resident.
 });
+
+function releaseRuntimeResources(): Promise<void> {
+  runtimeReleasePromise ??= (async () => {
+    const workerShutdown = workerInitialized
+      ? worker.shutdown().catch((error: unknown) => {
+          console.warn("LocalScribe worker could not shut down cleanly", error);
+        })
+      : Promise.resolve();
+    workerInitialized = false;
+
+    // Close synchronous local state immediately. On Windows session-end the OS
+    // may terminate the process before an asynchronous worker wait completes.
+    if (databaseInitialized) {
+      try {
+        database.close();
+      } catch (error) {
+        console.warn("LocalScribe database could not close cleanly", error);
+      }
+      databaseInitialized = false;
+    }
+    tray?.destroy();
+    tray = null;
+
+    await workerShutdown;
+    try {
+      await removeAudioCache(app.getPath("temp"), audioCacheRoot);
+      audioCacheRoot = null;
+    } catch (error) {
+      console.warn("LocalScribe temporary audio could not be removed cleanly", error);
+    }
+  })();
+  return runtimeReleasePromise;
+}
 
 async function finishShutdown(): Promise<void> {
   try {
@@ -1334,24 +1535,19 @@ async function finishShutdown(): Promise<void> {
   } catch (error) {
     console.warn("LocalScribe startup was interrupted by shutdown", error);
   }
-  try {
-    await worker.shutdown();
-  } catch (error) {
-    console.warn("LocalScribe worker could not shut down cleanly", error);
-  }
-  try {
-    database.close();
-  } catch (error) {
-    console.warn("LocalScribe database could not close cleanly", error);
-  }
-  tray?.destroy();
-  tray = null;
+  await releaseRuntimeResources();
   app.exit(0);
 }
 
 app.on("before-quit", (event) => {
-  if (quitting || !workerInitialized) return;
+  if (quitting) return;
   event.preventDefault();
+  beginShutdown();
+  void finishShutdown();
+});
+
+function beginShutdown(): boolean {
+  if (quitting) return false;
   quitting = true;
   if (pillDisplayTimer) clearInterval(pillDisplayTimer);
   if (accessibilityTimer) clearInterval(accessibilityTimer);
@@ -1359,7 +1555,21 @@ app.on("before-quit", (event) => {
   pillDisplayTimer = null;
   accessibilityTimer = null;
   errorDismissTimer = null;
-  hotkeys?.stop();
-  worker.abort("LocalScribe is quitting");
-  void finishShutdown();
-});
+  // Prevent a forced hotkey reset from turning a held key into a new
+  // finalization request while the app is already shutting down.
+  insertion.cancelSession();
+  activeSessionId = null;
+  activeDictationTier = undefined;
+  session = { state: "idle" };
+  try {
+    hotkeys?.stop();
+  } catch (error) {
+    console.warn("LocalScribe hotkeys could not stop cleanly", error);
+  }
+  try {
+    if (workerInitialized) worker.abort("LocalScribe is quitting");
+  } catch (error) {
+    console.warn("LocalScribe worker could not be aborted cleanly", error);
+  }
+  return true;
+}

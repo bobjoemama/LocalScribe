@@ -4,6 +4,7 @@ import { existsSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import { modelPerformanceTierSchema, type ModelPerformanceTier } from "../../shared/modelPerformance";
+import { validatedWindowsRuntimeEnvironment } from "../nativeHelperEnvironment";
 
 const computeTypeSchema = z.enum([
   "float16",
@@ -52,17 +53,27 @@ const macDeviceInfoMessageSchema = z.object({
       memoryBasis: z.literal("vm_stat_free_inactive_speculative"),
     }).strict(),
   }).strict(),
-}).strict();
+}).strict().refine(
+  (message) => (
+    message.hardware.unifiedMemory.availableBytes
+    <= message.hardware.unifiedMemory.totalBytes
+  ),
+  "Available unified memory cannot exceed total unified memory.",
+);
 
 const windowsDeviceInfoMessageSchema = z.object({
   type: z.literal("device_info"),
   id: z.string().uuid(),
   acceleratorKind: z.literal("nvidia-cuda"),
   deviceName: z.string().min(1).max(200),
+  deviceIndex: z.number().int().nonnegative().max(255),
   totalVramBytes: z.number().int().positive(),
   freeVramBytes: z.number().int().nonnegative(),
   memoryBasis: z.literal("nvml-current"),
-}).strict();
+}).strict().refine(
+  (message) => message.freeVramBytes <= message.totalVramBytes,
+  "Free NVIDIA VRAM cannot exceed total NVIDIA VRAM.",
+);
 
 const workerMessageSchema = z.union([
   helloMessageSchema,
@@ -76,7 +87,7 @@ const workerMessageSchema = z.union([
   z.object({
     type: z.literal("final"),
     id: z.string().uuid(),
-    text: z.string(),
+    text: z.string().max(100_000),
     language: z.string().nullable().optional(),
     inferenceMs: z.number().nonnegative(),
   }).strict(),
@@ -117,16 +128,38 @@ export interface WorkerTranscription {
 export interface WorkerAcceleratorSnapshot {
   kind: "apple-unified" | "nvidia-cuda";
   displayName: string;
+  /** CUDA/NVML ordinal selected inside the isolated Windows worker. */
+  deviceIndex?: number;
   totalMemoryBytes: number;
   freeMemoryBytes: number;
   memoryBasis: "measured" | "estimated";
   sourceBasis: "vm_stat_free_inactive_speculative" | "nvml-current";
 }
 
-const MAX_WORKER_STDOUT_LINE_BYTES = 64 * 1024;
+// Both workers permit up to 100,000 result characters. JSON control-character
+// escaping can expand one character to six bytes, so the supervisor's byte
+// boundary must exceed that valid worker output while remaining bounded.
+const MAX_WORKER_STDOUT_LINE_BYTES = 1024 * 1024;
+
+export const WORKER_RUNTIME_IDENTITIES = {
+  localscribe_worker: {
+    backend: "mlx-whisper",
+    version: "0.4.3",
+    acceleratorKind: "apple-unified",
+  },
+  localscribe_windows_worker: {
+    backend: "faster-whisper-ctranslate2",
+    version: "1.2.1",
+    acceleratorKind: "nvidia-cuda",
+  },
+} as const;
 
 export class WorkerSupervisor {
   private process: ChildProcessWithoutNullStreams | null = null;
+  private readonly retiringProcesses = new Map<
+    ChildProcessWithoutNullStreams,
+    Promise<void>
+  >();
   private readonly pending = new Map<string, PendingRequest>();
   private hello: Promise<void> | null = null;
   private resolveHello: (() => void) | null = null;
@@ -141,7 +174,12 @@ export class WorkerSupervisor {
     private readonly environmentDirectory: string,
     private readonly bundledRuntimeDirectory: string | null = null,
     private readonly workerModule = "localscribe_worker",
-  ) {}
+    private readonly temporaryDirectory: string | null = null,
+  ) {
+    if (temporaryDirectory !== null && !path.isAbsolute(temporaryDirectory)) {
+      throw new Error("ASR worker temporary storage must be an absolute path");
+    }
+  }
 
   ensureReady(selection: WorkerModelSelection): Promise<void> {
     return this.serialize(() => this.ensureReadyUnlocked(selection));
@@ -210,7 +248,9 @@ export class WorkerSupervisor {
         120_000,
       );
       if (response.type !== "final") {
-        throw new Error(`Unexpected worker response: ${response.type}`);
+        const error = new Error(`Unexpected worker response: ${response.type}`);
+        this.abort(error.message);
+        throw error;
       }
       return {
         text: response.text,
@@ -224,8 +264,18 @@ export class WorkerSupervisor {
     return this.serialize(async () => {
       await this.ensureStarted();
       const response = await this.request({ type: "device_info" }, 30_000);
-      const mac = macDeviceInfoMessageSchema.safeParse(response);
-      if (mac.success) {
+      const identity = WORKER_RUNTIME_IDENTITIES[
+        this.workerModule as keyof typeof WORKER_RUNTIME_IDENTITIES
+      ];
+      if (identity?.acceleratorKind === "apple-unified") {
+        const mac = macDeviceInfoMessageSchema.safeParse(response);
+        if (!mac.success) {
+          const error = new Error(
+            "ASR worker reported accelerator telemetry for the wrong runtime platform",
+          );
+          this.abort(error.message);
+          throw error;
+        }
         const memory = mac.data.hardware.unifiedMemory;
         return {
           kind: "apple-unified",
@@ -236,18 +286,28 @@ export class WorkerSupervisor {
           sourceBasis: memory.memoryBasis,
         };
       }
-      const windows = windowsDeviceInfoMessageSchema.safeParse(response);
-      if (windows.success) {
+      if (identity?.acceleratorKind === "nvidia-cuda") {
+        const windows = windowsDeviceInfoMessageSchema.safeParse(response);
+        if (!windows.success) {
+          const error = new Error(
+            "ASR worker reported accelerator telemetry for the wrong runtime platform",
+          );
+          this.abort(error.message);
+          throw error;
+        }
         return {
           kind: "nvidia-cuda",
           displayName: windows.data.deviceName,
+          deviceIndex: windows.data.deviceIndex,
           totalMemoryBytes: windows.data.totalVramBytes,
           freeMemoryBytes: windows.data.freeVramBytes,
           memoryBasis: "measured",
           sourceBasis: windows.data.memoryBasis,
         };
       }
-      throw new Error(`Unexpected worker response: ${response.type}`);
+      const error = new Error(`ASR worker has no accelerator policy: ${this.workerModule}`);
+      this.abort(error.message);
+      throw error;
     });
   }
 
@@ -300,6 +360,10 @@ export class WorkerSupervisor {
         20 * 60_000,
       );
     } catch (error) {
+      // Model-load failures can leave partially initialized CUDA/Metal native
+      // state even when the worker returned a structured error. Never reuse
+      // that process for a later selection.
+      this.abort(error instanceof Error ? error.message : "ASR model load failed");
       if (error instanceof Error && error.message.includes("model_not_installed")) {
         throw new Error(
           "Local speech model is not installed. Open LocalScribe Settings > Model & Performance to install it before dictating.",
@@ -310,19 +374,26 @@ export class WorkerSupervisor {
     }
     const ready = modelReadyMessageSchema.safeParse(response);
     if (!ready.success) {
-      throw new Error(`Unexpected worker response: ${response.type}`);
+      const error = new Error(`Unexpected worker response: ${response.type}`);
+      this.abort(error.message);
+      throw error;
     }
     if (
       ready.data.modelId !== selection.modelId
       || ready.data.tier !== selection.tier
       || ready.data.computeType !== selection.computeType
     ) {
-      throw new Error("ASR worker acknowledged a model selection other than the validated catalog tier");
+      const error = new Error(
+        "ASR worker acknowledged a model selection other than the validated catalog tier",
+      );
+      this.abort(error.message);
+      throw error;
     }
     this.activeModel = { ...selection };
   }
 
   private async ensureStarted(): Promise<void> {
+    await this.waitForRetiringProcesses();
     if (this.process && this.hello) return this.hello;
     this.hello = new Promise<void>((resolve, reject) => {
       this.resolveHello = resolve;
@@ -344,6 +415,7 @@ export class WorkerSupervisor {
         cwd: this.workerDirectory,
         env: this.workerEnvironment(Boolean(bundledPython)),
         shell: false,
+        windowsHide: true,
         stdio: ["pipe", "pipe", "pipe"],
       },
     );
@@ -373,6 +445,10 @@ export class WorkerSupervisor {
     const environment: NodeJS.ProcessEnv = {
       PYTHONUNBUFFERED: "1",
       PYTHONDONTWRITEBYTECODE: "1",
+      // Redirected stdio on Windows can otherwise inherit a legacy ANSI code
+      // page and fail when a transcription contains non-Latin text.
+      PYTHONUTF8: "1",
+      PYTHONIOENCODING: "utf-8:strict",
       HF_HUB_DISABLE_TELEMETRY: "1",
       HF_HUB_DISABLE_IMPLICIT_TOKEN: "1",
       UV_PROJECT_ENVIRONMENT: this.environmentDirectory,
@@ -386,8 +462,29 @@ export class WorkerSupervisor {
     if (process.platform === "win32") {
       // These are OS runtime locations, not credentials. CPython and native
       // Windows DLL loading require them even when python.exe is absolute.
-      if (process.env.SystemRoot) environment.SystemRoot = process.env.SystemRoot;
-      if (process.env.WINDIR) environment.WINDIR = process.env.WINDIR;
+      Object.assign(environment, validatedWindowsRuntimeEnvironment(process.env));
+    }
+    if (this.temporaryDirectory) {
+      // Do not forward ambient TEMP/TMP values into the restricted worker.
+      // Main supplies a freshly-created app-owned directory, which prevents
+      // Python or native dependencies from falling back to an unwritable
+      // packaged-resource/current-working directory.
+      environment.TMPDIR = this.temporaryDirectory;
+      environment.TEMP = this.temporaryDirectory;
+      environment.TMP = this.temporaryDirectory;
+      // Keep Hugging Face/Xet transfer metadata out of the user's ambient
+      // profile and inside the same app-owned cache removed after shutdown.
+      environment.HF_HOME = path.join(this.temporaryDirectory, "huggingface");
+      environment.HF_HUB_CACHE = path.join(
+        this.temporaryDirectory,
+        "huggingface",
+        "hub",
+      );
+      environment.HF_XET_CACHE = path.join(
+        this.temporaryDirectory,
+        "huggingface",
+        "xet",
+      );
     }
     return environment;
   }
@@ -414,19 +511,32 @@ export class WorkerSupervisor {
     const id = randomUUID();
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
-        this.pending.delete(id);
-        reject(new Error(`ASR worker request timed out: ${String(payload.type)}`));
+        if (!this.pending.has(id) || this.process !== child) return;
+        // A timeout leaves the worker's execution state unknowable: it may
+        // still be loading a model, reading an audio file, or downloading
+        // data. Terminate the whole process so no later serialized operation
+        // can accidentally reuse that stale state.
+        this.terminateWorker(
+          child,
+          new Error(`ASR worker request timed out: ${String(payload.type)}`),
+        );
       }, timeoutMs);
       timeout.unref();
       this.pending.set(id, { resolve, reject, timeout });
-      child.stdin.write(`${JSON.stringify({ ...payload, id })}\n`, (error) => {
-        if (!error) return;
-        const pending = this.pending.get(id);
-        if (!pending) return;
-        clearTimeout(pending.timeout);
-        this.pending.delete(id);
-        pending.reject(error);
-      });
+      try {
+        child.stdin.write(`${JSON.stringify({ ...payload, id })}\n`, (error) => {
+          if (!error || this.process !== child) return;
+          // A broken stdin makes the process unusable and its execution state
+          // unknowable. Reject every pending operation and force the next
+          // serialized request to start a fresh worker.
+          this.terminateWorker(child, error);
+        });
+      } catch (error) {
+        this.terminateWorker(
+          child,
+          error instanceof Error ? error : new Error("ASR worker stdin write failed"),
+        );
+      }
     });
   }
 
@@ -473,6 +583,23 @@ export class WorkerSupervisor {
         this.terminateWorker(child, new Error("ASR worker emitted an unexpected duplicate handshake"));
         return;
       }
+      const expectedIdentity = WORKER_RUNTIME_IDENTITIES[
+        this.workerModule as keyof typeof WORKER_RUNTIME_IDENTITIES
+      ];
+      if (
+        !expectedIdentity
+        || message.backend !== expectedIdentity.backend
+        || message.version !== expectedIdentity.version
+      ) {
+        this.terminateWorker(
+          child,
+          new Error(
+            `ASR worker identity mismatch for ${this.workerModule}: `
+            + `received ${message.backend}@${message.version}`,
+          ),
+        );
+        return;
+      }
       this.resolveHello();
       this.resolveHello = null;
       this.rejectHello = null;
@@ -488,7 +615,13 @@ export class WorkerSupervisor {
     }
     if (!message.id) return;
     const pending = this.pending.get(message.id);
-    if (!pending) return;
+    if (!pending) {
+      this.terminateWorker(
+        child,
+        new Error("ASR worker emitted a response for an unknown request"),
+      );
+      return;
+    }
     clearTimeout(pending.timeout);
     this.pending.delete(message.id);
     if (message.type === "error") {
@@ -500,7 +633,10 @@ export class WorkerSupervisor {
 
   private async stopProcessUnlocked(): Promise<void> {
     const child = this.process;
-    if (!child) return;
+    if (!child) {
+      await this.waitForRetiringProcesses();
+      return;
+    }
     const exited = new Promise<void>((resolve) => {
       if (child.exitCode !== null || child.signalCode !== null) resolve();
       else child.once("exit", () => resolve());
@@ -511,14 +647,68 @@ export class WorkerSupervisor {
       // The process is force-killed below if it does not acknowledge shutdown.
     }
     await Promise.race([exited, delay(250)]);
-    if (child.exitCode === null && child.signalCode === null) child.kill();
+    if (child.exitCode === null && child.signalCode === null) {
+      this.terminateWorker(child, new Error("ASR worker did not shut down cleanly"));
+    }
     await Promise.race([exited, delay(2_000)]);
     if (this.process === child) this.resetProcessState();
+    await this.waitForRetiringProcesses();
   }
 
   private terminateWorker(child: ChildProcessWithoutNullStreams, error: Error): void {
     this.handleExit(child, error);
-    if (child.exitCode === null && child.signalCode === null) child.kill();
+    if (child.exitCode === null && child.signalCode === null) {
+      this.trackRetiringProcess(child);
+      try {
+        child.kill();
+      } catch {
+        // The process remains tracked and blocks replacement until an actual
+        // exit event is observed.
+      }
+    }
+  }
+
+  private trackRetiringProcess(child: ChildProcessWithoutNullStreams): void {
+    if (this.retiringProcesses.has(child)) return;
+    const exited = new Promise<void>((resolve) => {
+      if (child.exitCode !== null || child.signalCode !== null) {
+        resolve();
+        return;
+      }
+      child.once("exit", () => resolve());
+    }).finally(() => {
+      this.retiringProcesses.delete(child);
+    });
+    this.retiringProcesses.set(child, exited);
+  }
+
+  private async waitForRetiringProcesses(): Promise<void> {
+    const active = [...this.retiringProcesses.keys()].filter((child) => (
+      child.exitCode === null && child.signalCode === null
+    ));
+    for (const child of active) {
+      try {
+        child.kill();
+      } catch {
+        // Wait for the bounded exit observation below.
+      }
+    }
+    if (active.length > 0) {
+      await Promise.race([
+        Promise.all(active.map((child) => this.retiringProcesses.get(child))),
+        delay(2_000),
+      ]);
+    }
+    for (const child of [...this.retiringProcesses.keys()]) {
+      if (child.exitCode !== null || child.signalCode !== null) {
+        this.retiringProcesses.delete(child);
+      }
+    }
+    if (this.retiringProcesses.size > 0) {
+      throw new Error(
+        "The previous ASR worker could not be terminated; refusing to start an overlapping model process",
+      );
+    }
   }
 
   private handleExit(child: ChildProcessWithoutNullStreams, error: Error): void {

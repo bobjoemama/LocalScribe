@@ -22,6 +22,10 @@
   outline: 2px solid #1b7467;
   outline-offset: 2px;
 }
+.ls-settings-scroll:focus-visible {
+  outline: 2px solid #1b7467;
+  outline-offset: -2px;
+}
 
 .ls-screen-header > span {
   color: #6e6963;
@@ -216,6 +220,7 @@
 
 .ls-settings-modal {
   display: grid;
+  min-height: 0;
   grid-template-columns: 184px minmax(0, 1fr);
   width: min(900px, 100%);
   height: min(680px, calc(100vh - 52px));
@@ -227,27 +232,27 @@
   box-shadow: 0 24px 90px rgb(25 23 20 / 26%);
 }
 
-.ls-settings-sidebar { display: flex; flex-direction: column; border-right: 1px solid #e6e2dc; background: #f1efeb; padding: 16px 10px 13px; }
+.ls-settings-sidebar { display: grid; min-height: 0; grid-template-rows: auto minmax(0, 1fr) auto; border-right: 1px solid #e6e2dc; background: #f1efeb; padding: 16px 10px 13px; }
 .ls-settings-brand { display: flex; align-items: center; gap: 9px; padding: 2px 8px 18px; }
 .ls-settings-brand > span { display: grid; place-items: center; width: 27px; height: 27px; border-radius: 8px; background: #111; color: #fff; font-size: 14px; font-weight: 850; }
 .ls-settings-brand strong { font-size: 13px; }
-.ls-settings-sidebar nav { display: grid; gap: 3px; }
+.ls-settings-sidebar nav { display: grid; min-height: 0; align-content: start; gap: 3px; overflow-y: auto; overscroll-behavior: contain; }
 .ls-settings-sidebar nav button { display: flex; align-items: center; gap: 9px; width: 100%; border: 0; border-radius: 8px; background: transparent; padding: 8px 9px; color: #716c66; font-size: 11px; text-align: left; cursor: pointer; }
 .ls-settings-sidebar nav button:hover { background: #e9e6e1; color: #292724; }
 .ls-settings-sidebar nav button.is-active { background: #fff; color: #1c1b19; box-shadow: 0 1px 3px rgb(44 39 31 / 7%); font-weight: 650; }
 .ls-settings-sidebar nav svg { width: 15px; }
-.ls-settings-local { display: grid; grid-template-columns: auto 1fr; align-items: center; gap: 6px; margin: auto 8px 0; color: #2b7669; font-size: 10px; font-weight: 650; }
+.ls-settings-local { display: grid; grid-template-columns: auto 1fr; align-items: center; gap: 6px; margin: 0 8px; padding-top: 10px; color: #2b7669; font-size: 10px; font-weight: 650; }
 .ls-settings-local > span { width: 6px; height: 6px; border-radius: 50%; background: #399b86; }
 .ls-settings-local small { grid-column: 2; color: #8b867f; font-size: 10px; font-weight: 400; }
 
-.ls-settings-main { min-width: 0; display: grid; grid-template-rows: auto 1fr auto; background: #fff; }
+.ls-settings-main { min-width: 0; min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; overflow: hidden; background: #fff; }
 .ls-settings-header { display: flex; align-items: flex-start; justify-content: space-between; border-bottom: 1px solid #ede9e4; padding: 20px 24px 15px; }
 .ls-settings-header > div > span { color: #918b84; font-size: 10px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; }
 .ls-settings-header h1 { margin: 4px 0 0; font-size: 22px; line-height: 1.15; letter-spacing: -.025em; }
 .ls-close-button { display: grid; place-items: center; width: 29px; height: 29px; border-radius: 8px; background: #f3f1ed; color: #6f6a64 !important; }
 .ls-close-button:hover { background: #e9e6e1; color: #1e1d1b !important; }
 .ls-close-button svg { width: 15px; }
-.ls-settings-scroll { overflow-y: auto; padding: 22px 24px 38px; }
+.ls-settings-scroll { min-width: 0; min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; padding: 22px 24px 38px; }
 .ls-settings-group + .ls-settings-group { margin-top: 24px; }
 .ls-settings-group > h2 { margin: 0 0 8px 2px; color: #7d7770; font-size: 10px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
 .ls-settings-group > div { overflow: hidden; border: 1px solid #e6e2dc; border-radius: 11px; background: #fff; }
@@ -427,6 +432,21 @@
 }
 .ls-model-empty.is-error { border-color: #edcdc7; background: #fff2f0; color: #963d34; }
 .ls-model-family-list { display: grid; gap: 12px; }
+.ls-model-unmanaged {
+  display: grid;
+  gap: 11px;
+  margin-top: 14px;
+  border: 1px solid #e4d8bd;
+  border-radius: 11px;
+  background: #fbf7ed;
+  padding: 13px;
+}
+.ls-model-unmanaged h3 { margin: 0 0 4px; color: #5e4b28; font-size: 12px; }
+.ls-model-unmanaged p { margin: 0; color: #7b6b4d; font-size: 11px; line-height: 1.45; }
+.ls-model-unmanaged ul { display: grid; gap: 7px; margin: 0; padding: 0; list-style: none; }
+.ls-model-unmanaged li { display: grid; gap: 3px; border-top: 1px solid #eadfc8; padding-top: 7px; }
+.ls-model-unmanaged li strong { overflow-wrap: anywhere; color: #4f432e; font-size: 11px; }
+.ls-model-unmanaged li span { color: #857658; font-size: 10px; text-transform: capitalize; }
 .ls-model-family-card { display: grid; gap: 12px; border: 1px solid #ded9d2; border-radius: 12px; background: #fbfaf8; padding: 13px; }
 .ls-model-family-card.is-active { border-color: #9bbdb5; background: linear-gradient(135deg, #f8fcfa, #fbfaf8); box-shadow: inset 0 0 0 1px #d7e8e2; }
 .ls-model-family-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; }

@@ -14,6 +14,11 @@ export interface InsertionServiceDependencies {
   pasteInjector?: PasteInjector;
   pasteSettleMs?: number;
   allowNativeHelperEnvironmentOverride?: boolean;
+  /**
+   * Electron's application root. Development launches must not depend on the
+   * shell's current working directory to discover the source-tree helper.
+   */
+  nativeHelperWorkingDirectory?: string;
   /** Test seam; production callers use the current Node platform. */
   platform?: NodeJS.Platform;
 }
@@ -27,12 +32,16 @@ export class InsertionService {
     this.platform = dependencies.platform ?? process.platform;
     this.platformBridge = dependencies.platformBridge ?? createDefaultInsertionBridge({
       allowEnvironmentOverride: dependencies.allowNativeHelperEnvironmentOverride,
+      workingDirectory: dependencies.nativeHelperWorkingDirectory,
     });
     const pasteInjector: PasteInjector = dependencies.pasteInjector ?? {
-      paste: async (expectedTarget) => {
+      paste: async (expectedTarget, expectedClipboardSequence) => {
         // Native auto-paste owns the final editable-target recheck on both
         // platforms. A missing helper deliberately degrades to copy-only.
-        return this.platformBridge.paste?.(expectedTarget) ?? { status: "failed" };
+        return this.platformBridge.paste?.(
+          expectedTarget,
+          expectedClipboardSequence,
+        ) ?? { status: "failed" };
       },
     };
     this.coordinator = new SafeInsertionCoordinator(
@@ -59,6 +68,18 @@ export class InsertionService {
 
   copyAndPaste(text: string, autoPaste: boolean): Promise<InsertionOutcome> {
     return this.coordinator.insert(text, autoPaste);
+  }
+
+  pinNativeHelperIntegrity(): boolean {
+    return this.platformBridge.pinExecutableIntegrity?.() ?? false;
+  }
+
+  automaticPasteReady(): Promise<boolean> {
+    if (this.platform === "darwin") return this.accessibilityReady();
+    if (this.platform === "win32") {
+      return this.platformBridge.ready?.() ?? Promise.resolve(false);
+    }
+    return Promise.resolve(false);
   }
 
   accessibilityReady(): Promise<boolean> {

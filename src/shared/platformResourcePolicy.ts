@@ -1,3 +1,5 @@
+import { RELEASE_POLICY } from "./releasePolicy.mts";
+
 export type PackagedPlatform = "darwin" | "win32";
 
 export interface PlatformResourcePolicy {
@@ -52,7 +54,7 @@ export function resourcePolicyFor(
   platform: PackagedPlatform,
   arch: string,
 ): PlatformResourcePolicy {
-  if (platform === "darwin" && arch === "arm64") {
+  if (platform === "darwin" && arch === RELEASE_POLICY.targets.darwin.arch) {
     return {
       platform,
       arch,
@@ -64,7 +66,7 @@ export function resourcePolicyFor(
       brandingFiles: [],
     };
   }
-  if (platform === "win32" && arch === "x64") {
+  if (platform === "win32" && arch === RELEASE_POLICY.targets.win32.arch) {
     return {
       platform,
       arch,

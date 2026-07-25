@@ -1,3 +1,5 @@
+import { rendererSafeErrorMessage } from "./rendererErrors";
+
 export const ERROR_NOTICE_DURATION_MS = 8_000;
 
 export interface DictationErrorPresentation {
@@ -8,6 +10,7 @@ export interface DictationErrorPresentation {
 export type DictationErrorPlatform = "darwin" | "win32" | "linux" | "unsupported";
 
 const FALLBACK_MESSAGE = "Dictation could not finish";
+const FALLBACK_DETAIL = "Try again. If this keeps happening, quit and reopen LocalScribe.";
 
 export function normalizeDictationErrorMessage(error: unknown): string {
   const raw = error instanceof Error
@@ -65,13 +68,13 @@ export function presentDictationError(
   if (/model_not_installed|model.*not installed|speech model.*missing/.test(normalized)) {
     return {
       title: "Local model is not installed",
-      detail: "Open Settings > Model & Performance and install the selected Whisper tier before dictating.",
+      detail: "Open Settings > Model & Performance and install the selected local model before dictating.",
     };
   }
   if (/model_not_loaded|model.*not (ready|loaded)|asr model.*not ready/.test(normalized)) {
     return {
       title: "Local model is not ready",
-      detail: "Wait a moment and try again. If this repeats, open Settings > Model & Performance and recheck the selected Whisper tier.",
+      detail: "Wait a moment and try again. If this repeats, open Settings > Model & Performance and recheck the selected local model.",
     };
   }
   if (/bundled python runtime.*missing/.test(normalized)) {
@@ -83,7 +86,7 @@ export function presentDictationError(
   if (/model_checksum_failed|model.*verification failed|checksum/.test(normalized)) {
     return {
       title: "Local model is damaged",
-      detail: "Open Settings > Model & Performance and repair the selected Whisper tier.",
+      detail: "Open Settings > Model & Performance and repair the selected local model.",
     };
   }
   if (/worker.*(timed out|did not start|exited|not running)|speech engine.*(stopped|timeout)/.test(normalized)) {
@@ -98,7 +101,7 @@ export function presentDictationError(
       detail: "The local speech engine returned an invalid response. Try again.",
     };
   }
-  if (/recording is too large/.test(normalized)) {
+  if (/recording is too (?:large|long)/.test(normalized)) {
     return {
       title: "Recording is too long",
       detail: "Finish the dictation sooner, then continue in a new recording.",
@@ -122,9 +125,7 @@ export function microphonePermissionRecovery(platform?: DictationErrorPlatform):
 }
 
 function safeDetail(message: string): string {
-  const containsPrivateOrTechnicalData = /(?:file:\/\/|[A-Za-z]:\\|\/(?:Users|home|tmp|var)\/|\n|\bat\s+\w+.*:\d+)/.test(message);
-  if (containsPrivateOrTechnicalData || message === FALLBACK_MESSAGE) {
-    return "Try again. If this keeps happening, quit and reopen LocalScribe.";
-  }
-  return message.length > 132 ? `${message.slice(0, 129)}...` : message;
+  return message === FALLBACK_MESSAGE
+    ? FALLBACK_DETAIL
+    : rendererSafeErrorMessage(message, FALLBACK_DETAIL);
 }

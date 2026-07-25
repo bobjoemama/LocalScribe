@@ -63,8 +63,8 @@ native OS integrations differ:
 | Python | CPython 3.12.13, relocatable arm64 runtime | CPython 3.12.13, relocatable x64 runtime |
 | Accelerator memory | Apple unified memory reported by the worker | NVIDIA total/free VRAM via NVML |
 | Target/paste helper | Swift Mach-O helper | MSVC Win32 helper |
-| Installer | DMG and ZIP | Squirrel `LocalScribe-Setup.exe`, `.nupkg`, `RELEASES` |
-| Production trust | Developer ID, hardened runtime, notarization, stapling | Authenticode certificate and HTTPS timestamp |
+| Distribution | DMG and ZIP | verified portable ZIP; no supported installer |
+| Production trust | Developer ID, hardened runtime, notarization, stapling | public Windows release is fail-closed pending signing/installer acceptance |
 
 The main process supervises one bounded NDJSON worker over stdin/stdout. There
 is no transcription HTTP service, listener socket, account, or intended
@@ -87,10 +87,11 @@ global shortcut
 
 ## Exact technology and dependency baseline
 
-Check these values against the reviewed commit rather than trusting this list:
+Treat the reviewed commit as the authority rather than trusting a copied
+version list:
 
-- Node.js 24.18.0
-- npm 11.16.0, exactly pinned and verified by the local gate
+- Node.js: `.nvmrc`
+- npm: `package.json` `packageManager`
 - Electron 43.2.0
 - React / React DOM 19.2.8
 - TypeScript 5.9.3
@@ -98,7 +99,7 @@ Check these values against the reviewed commit rather than trusting this list:
 - Vitest 4.1.0
 - better-sqlite3 13.0.1
 - uiohook-napi 1.5.5
-- uv 0.11.11
+- uv: `.uv-version`
 - Python 3.12.13
 - MLX 0.32.0
 - MLX Whisper 0.4.3
@@ -157,8 +158,9 @@ requests, and manifest identity preserve that distinction.
 
 Auto is policy, not a model and not a fallback chain. It:
 
-- reads total and currently free accelerator memory;
-- reserves the greater of 2 GiB or 20% of total memory;
+- unloads the prior model and re-reads total/currently free accelerator memory
+  at each recording boundary so an old startup snapshot cannot drive a later
+  dictation;
 - evaluates each tier against its conservative maximum estimate;
 - requires an additional 1 GiB before upgrading;
 - downgrades immediately if the current tier no longer fits;
@@ -166,7 +168,9 @@ Auto is policy, not a model and not a fallback chain. It:
 - resolves to Low with an explicit insufficient/unknown-memory condition when
   diagnostics cannot establish a fit.
 
-Explicit High, Medium, or Low must not silently change tier or family. Confirm
+Every mode reserves the greater of 2 GiB or 20% of total memory above the
+model's maximum estimate. Explicit High, Medium, or Low fail closed when that
+exact tier does not fit and must not silently change tier or family. Confirm
 there is no hidden Whisper.cpp, CPU, cloud, alternate-family, or cross-engine
 fallback.
 
@@ -349,7 +353,8 @@ Required boundary:
 - temporary file under a main-process-owned permitted root;
 - deletion in a `finally` path;
 - main-to-worker requests capped at 16 KiB and worker-to-main response lines
-  capped at 64 KiB;
+  capped at 1 MiB, which covers the bounded 100,000-character result under
+  worst-case JSON escaping;
 - stdout protocol-only, stderr diagnostic-only;
 - no arbitrary media/container parsing from renderer-controlled input.
 
@@ -421,7 +426,7 @@ Review:
 
 - absence of hosted workflow files and paid CI/CD dependencies;
 - exact Node, npm, uv, CPython, npm lock, uv locks, and audit-tool lock;
-- exact npm 11.16.0 installation and fail-closed version verification;
+- exact Node/npm/uv pin resolution and fail-closed version verification;
 - `npm ci --strict-allow-scripts` and exact dependency-script allowlist;
 - production and full npm audits;
 - Python lock export and `pip-audit` with dependency resolution disabled;
@@ -491,11 +496,15 @@ Assess:
 - GPU capability failures;
 - NVML absence/permission behavior;
 - Auto under competing VRAM load;
-- clean Windows 11 x64 install/update/uninstall;
+- portable extraction, hidden login startup, and manual replacement;
+- future installer clean install/update/uninstall;
 - at least the claimed minimum GPU and one current RTX generation.
 
-A Windows installer built without real NVIDIA inference is not Windows CUDA
-validation.
+A Windows portable package built without real NVIDIA inference is not Windows
+CUDA model validation. Squirrel must not be treated as a viable installer:
+its 32-bit payload embedder silently produced a dummy Setup.exe for the
+1.588 GB package. Review the portable exact-copy gate and the legacy
+fail-closed payload regression separately.
 
 ### Accuracy
 
@@ -524,8 +533,7 @@ Run from a fresh clone or clean worktree at the reviewed SHA:
 git status --short
 git rev-parse HEAD
 git rev-parse origin/main
-npm install --global npm@11.16.0
-npm run toolchain:verify:npm
+npm run toolchain:verify
 npm ci --strict-allow-scripts
 npm run verify:local
 git diff --check
@@ -560,9 +568,11 @@ reported as unsigned.
 
 At handoff, none of these should be rounded up:
 
-1. No physical Windows/NVIDIA/CUDA model load, inference, VRAM measurement,
-   hotkey/paste smoke, clean installation, update, or uninstall has been
-   established.
+1. A physical RTX 3060 Laptop validation established CUDA device discovery,
+   current/free VRAM telemetry, CTranslate2/faster-whisper imports, and all
+   three advertised compute profiles. It did not establish model load,
+   inference, peak VRAM, microphone, hotkey/paste, manual update, or any
+   installer lifecycle.
 2. No production Developer ID/notarized/stapled artifact or timestamped
    Authenticode artifact has been established.
 3. The five `Undeclared` MLX model revisions require real legal review. A
@@ -590,8 +600,8 @@ Claude Fable may adjust the decomposition, but should avoid overlap:
 2. Model catalog, manifests, install/load transactions, Auto policy, and
    platform separation.
 3. macOS MLX worker, memory behavior, native helper, signing, and DMG.
-4. Windows CUDA worker, WAV snapshot, native helper, Squirrel, and
-   Authenticode.
+4. Windows CUDA worker, WAV snapshot, native helper, portable ZIP, legacy
+   Squirrel failure gate, and future Authenticode design.
 5. Electron renderer/IPC/CSP/fuses/navigation and subprocess boundaries.
 6. SQLite, keychain/credential manager, privacy, filesystem permissions, temp
    audio, clipboard, and logging.

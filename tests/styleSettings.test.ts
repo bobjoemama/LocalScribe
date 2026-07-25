@@ -2,17 +2,31 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import {
+  DEFAULT_SETTINGS,
+  type AppSettingsPatch,
+} from "../src/shared/contracts";
+import {
+  appProfilePresentation,
+  automaticPasteSettingsPresentation,
   cleanupSelectionForSettings,
   GENERATIVE_TEXT_MODEL_REQUIRED_NOTICE,
   modelActionFailureMessage,
+  modelArtifactScopePresentation,
   modelInstallRequest,
   modelPerformanceSaveMessage,
   modelRemoveRequest,
   modelRuntimeTierStatuses,
+  launchAtLoginSettingsPresentation,
+  pendingSettingsAfterSave,
+  profileCleanupDefaults,
+  resolvedModelEngine,
+  selectedMicrophoneIsUnavailable,
   SettingsModal,
   SETTINGS_TABS,
   settingsControlAvailability,
   settingsLoadPresentation,
+  settingsWithPendingDraft,
+  shortcutHelpText,
   shortcutCommitErrorMessage,
   StyleScreen,
   TransformsScreen,
@@ -21,6 +35,7 @@ import {
 import {
   DICTATION_LANGUAGE_DETAIL,
   DICTATION_LANGUAGE_OPTIONS,
+  dictationLanguageOptionsFor,
 } from "../src/renderer/settings/dictationLanguages";
 import {
   formatAcceleratorBytes,
@@ -34,9 +49,47 @@ import {
 describe("feature availability copy", () => {
   it("keeps model-gated and unimplemented features distinct", () => {
     expect(GENERATIVE_TEXT_MODEL_REQUIRED_NOTICE).toBe(
-      "Additional generative text model required — not installed",
+      "Unavailable in this build — no local text-model integration",
     );
     expect(UNAVAILABLE_IN_THIS_BUILD_NOTICE).toBe("Unavailable in this build");
+  });
+});
+
+describe("app profile presentation", () => {
+  it("uses runtime-platform app identity examples instead of a macOS-only fixture", () => {
+    expect(appProfilePresentation("darwin")).toEqual({
+      detail: "Override cleanup for a macOS app bundle identifier.",
+      labelPlaceholder: "TextEdit",
+      appIdPlaceholder: "com.apple.TextEdit",
+    });
+    expect(appProfilePresentation("win32")).toEqual({
+      detail: "Override cleanup for a Windows executable name.",
+      labelPlaceholder: "Notepad",
+      appIdPlaceholder: "notepad.exe",
+    });
+    expect(appProfilePresentation(null)).toEqual({
+      detail: "Override cleanup for an application identifier reported by this platform.",
+      labelPlaceholder: "App name",
+      appIdPlaceholder: "Application identifier",
+    });
+  });
+
+  it("inherits new profile cleanup choices from the loaded global settings", () => {
+    expect(profileCleanupDefaults({
+      ...DEFAULT_SETTINGS,
+      removeFillers: false,
+      spokenCommands: true,
+      smartPunctuation: false,
+    })).toEqual({
+      removeFillers: false,
+      spokenCommands: true,
+      smartPunctuation: false,
+    });
+    expect(profileCleanupDefaults(null)).toEqual({
+      removeFillers: DEFAULT_SETTINGS.removeFillers,
+      spokenCommands: DEFAULT_SETTINGS.spokenCommands,
+      smartPunctuation: DEFAULT_SETTINGS.smartPunctuation,
+    });
   });
 });
 
@@ -102,6 +155,66 @@ describe("settings loading truthfulness", () => {
     );
     expect(shortcutCommitErrorMessage()).not.toMatch(/macOS|Windows|System Settings/i);
   });
+
+  it("keeps Windows automatic paste copy-only until its local helper is ready", () => {
+    const unavailable = automaticPasteSettingsPresentation({
+      platform: "win32",
+      automaticPaste: { supported: true, ready: false },
+    } as never);
+    expect(unavailable).toEqual({
+      editable: false,
+      detail: "The local Windows paste helper is unavailable. Completed dictation will be copied until the helper is available.",
+      value: "Copy only",
+    });
+
+    expect(automaticPasteSettingsPresentation({
+      platform: "win32",
+      automaticPaste: { supported: true, ready: true },
+    } as never)).toMatchObject({
+      editable: true,
+      value: null,
+    });
+    expect(automaticPasteSettingsPresentation(null)).toMatchObject({
+      editable: false,
+      value: "Checking",
+    });
+  });
+
+  it("redacts machine paths and technical details from visible Settings errors", () => {
+    expect(settingsLoadPresentation(
+      null,
+      new Error("SQLITE_CANTOPEN: C:\\Users\\Alice\\AppData\\Local\\LocalScribe\\localscribe.db"),
+    )).toEqual({
+      title: "Settings unavailable",
+      detail: "Could not load saved settings: The local operation failed. Try again.",
+      isError: true,
+    });
+    expect(modelActionFailureMessage(
+      "install",
+      new Error("Error\n    at installModel (C:\\Users\\Alice\\LocalScribe\\model.ts:42:7)"),
+      null,
+    )).toBe(
+      "Could not download this curated model profile: The local operation failed. Try again.",
+    );
+  });
+
+  it("uses the trusted runtime platform for push-to-talk labels and Windows recovery", () => {
+    const windowsPermissions = {
+      platform: "win32",
+      globalHold: { ready: false },
+      accessibility: { granted: false },
+    } as const;
+    expect(shortcutHelpText(windowsPermissions as never, "Control+Shift")).toBe(
+      "The current push-to-talk key is Control + Shift. The Windows global keyboard hook is not running; restart LocalScribe or use the toggle shortcut.",
+    );
+    expect(shortcutHelpText({
+      platform: "win32",
+      globalHold: { ready: true },
+      accessibility: { granted: false },
+    } as never, "Control")).toBe(
+      "Shortcut changes apply immediately. Hold Control to dictate from any app.",
+    );
+  });
 });
 
 describe("dictation language choices", () => {
@@ -117,6 +230,92 @@ describe("dictation language choices", () => {
     expect(DICTATION_LANGUAGE_DETAIL).toBe(
       "Auto-detect or select one of the languages supported in this build.",
     );
+  });
+
+  it("keeps an older saved language visible instead of rendering a blank selection", () => {
+    expect(dictationLanguageOptionsFor("German")).toBe(DICTATION_LANGUAGE_OPTIONS);
+    expect(dictationLanguageOptionsFor("Italian")[0]).toEqual({
+      value: "Italian",
+      label: "Italian (saved; not offered in this build)",
+    });
+  });
+});
+
+describe("settings draft reconciliation", () => {
+  it("merges external persisted changes without discarding pending local fields", () => {
+    expect(settingsWithPendingDraft(
+      { ...DEFAULT_SETTINGS, microphoneId: "external-device" },
+      { language: "German", showPillWhenIdle: false },
+    )).toMatchObject({
+      microphoneId: "external-device",
+      language: "German",
+      showPillWhenIdle: false,
+    });
+  });
+
+  it("acknowledges only submitted values that were not edited again during save", () => {
+    const submitted: AppSettingsPatch = {
+      language: "German",
+      showPillWhenIdle: false,
+    };
+    expect(pendingSettingsAfterSave({
+      language: "French",
+      showPillWhenIdle: false,
+      autoPaste: false,
+    }, submitted)).toEqual({
+      language: "French",
+      autoPaste: false,
+    });
+  });
+
+  it("marks a persisted microphone that is no longer enumerated as unavailable", () => {
+    expect(selectedMicrophoneIsUnavailable("usb-mic", [{ deviceId: "built-in" }])).toBe(true);
+    expect(selectedMicrophoneIsUnavailable("usb-mic", [{ deviceId: "usb-mic" }])).toBe(false);
+    expect(selectedMicrophoneIsUnavailable(null, [])).toBe(false);
+  });
+});
+
+describe("launch-at-login operating system state", () => {
+  it("does not claim enabled while macOS still requires approval", () => {
+    expect(launchAtLoginSettingsPresentation(true, {
+      supported: true,
+      registered: true,
+      effective: false,
+      requiresApproval: true,
+      status: "requires-approval",
+    })).toEqual({
+      editable: true,
+      value: false,
+      detail: "Saved as on, but macOS requires approval in System Settings. Turn this on and save to request registration again.",
+    });
+  });
+
+  it("does not claim enabled when Windows externally disabled the startup item", () => {
+    expect(launchAtLoginSettingsPresentation(true, {
+      supported: true,
+      registered: true,
+      effective: false,
+      requiresApproval: false,
+      status: "disabled",
+    })).toEqual({
+      editable: true,
+      value: false,
+      detail: "Saved as on, but disabled in the operating system's startup settings. Turn this on and save to register it again.",
+    });
+  });
+
+  it("shows a staged re-registration request before it is saved", () => {
+    expect(launchAtLoginSettingsPresentation(true, {
+      supported: true,
+      registered: true,
+      effective: false,
+      requiresApproval: false,
+      status: "disabled",
+    }, true)).toEqual({
+      editable: true,
+      value: true,
+      detail: "Save changes to apply this login startup setting to the operating system.",
+    });
   });
 });
 
@@ -174,15 +373,35 @@ describe("model and performance presentation", () => {
     ]);
   });
 
-  it("uses platform-accurate backend and memory language", () => {
+  it("uses platform-accurate memory language without assuming a model backend", () => {
     expect(platformModelCopy("darwin")).toEqual({
-      summary: "Auto uses available unified memory to choose the best MLX tier for this Mac.",
+      summary: "Auto uses available unified memory to choose the highest profile that fits in the active family.",
       memoryLabel: "Unified memory",
     });
     expect(platformModelCopy("win32")).toEqual({
-      summary: "Auto uses available NVIDIA VRAM to choose the best faster-whisper tier for this PC.",
+      summary: "Auto uses available NVIDIA VRAM to choose the highest profile that fits in the active family.",
       memoryLabel: "NVIDIA VRAM",
     });
+  });
+
+  it("shows the backend reported by diagnostics instead of inferring one from a tier or platform", () => {
+    expect(resolvedModelEngine(null)).toBe("Checking");
+    expect(resolvedModelEngine({
+      platform: "darwin",
+      backend: "MLX Whisper from the active manifest",
+      performance: {
+        resolvedTier: "medium",
+        options: [{ tier: "medium", engine: "internal-engine-slug" }],
+      },
+    } as never)).toBe("MLX Whisper from the active manifest");
+    expect(resolvedModelEngine({
+      platform: "win32",
+      backend: "faster-whisper/CTranslate2 from the active manifest",
+      performance: {
+        resolvedTier: "low",
+        options: [],
+      },
+    } as never)).toBe("faster-whisper/CTranslate2 from the active manifest");
   });
 
   it("distinguishes verified, missing, and damaged installations", () => {
@@ -261,6 +480,123 @@ describe("model and performance presentation", () => {
       qualityNote: "Curated v2 profile.",
       verificationStatus: "verified",
     }]);
+  });
+
+  it("uses artifact verification for inactive families and every profile sharing model data", () => {
+    const statuses = modelRuntimeTierStatuses(
+      {
+        model: { familyId: "whisper-large-v3" },
+        performance: {
+          options: [{
+            tier: "high",
+            artifactId: "whisper-large-v3-high",
+            qualityNote: "Active v3 profile.",
+            verificationStatus: "verified",
+          }],
+        },
+      } as never,
+      {
+        families: [
+          {
+            familyId: "whisper-large-v3",
+            profiles: [{
+              tier: "high",
+              artifactId: "whisper-large-v3-high",
+            }],
+          },
+          {
+            familyId: "whisper-large-v2",
+            profiles: (["high", "medium", "low"] as const).map((tier) => ({
+              tier,
+              artifactId: "whisper-large-v2-shared",
+            })),
+          },
+        ],
+        verifications: [
+          {
+            familyId: "whisper-large-v3",
+            artifactId: "whisper-large-v3-high",
+            verificationStatus: "verified",
+          },
+          {
+            familyId: "whisper-large-v2",
+            artifactId: "whisper-large-v2-shared",
+            verificationStatus: "invalid",
+          },
+        ],
+      } as never,
+    );
+
+    expect(statuses).toEqual([
+      {
+        familyId: "whisper-large-v3",
+        tier: "high",
+        artifactId: "whisper-large-v3-high",
+        qualityNote: "Active v3 profile.",
+        verificationStatus: "verified",
+      },
+      {
+        familyId: "whisper-large-v2",
+        tier: "high",
+        artifactId: "whisper-large-v2-shared",
+        qualityNote: undefined,
+        verificationStatus: "invalid",
+      },
+      {
+        familyId: "whisper-large-v2",
+        tier: "medium",
+        artifactId: "whisper-large-v2-shared",
+        qualityNote: undefined,
+        verificationStatus: "invalid",
+      },
+      {
+        familyId: "whisper-large-v2",
+        tier: "low",
+        artifactId: "whisper-large-v2-shared",
+        qualityNote: undefined,
+        verificationStatus: "invalid",
+      },
+    ]);
+  });
+
+  it("explains when one physical model artifact is shared by every performance profile", () => {
+    const shared = modelArtifactScopePresentation({
+      families: [{
+        familyId: "whisper-large-v3",
+        displayName: "Whisper large-v3",
+        profiles: (["high", "medium", "low"] as const).map((tier) => ({
+          tier,
+          artifactId: "whisper-large-v3-shared",
+        })),
+        artifacts: [{
+          artifactId: "whisper-large-v3-shared",
+        }],
+      }],
+    } as never, "whisper-large-v3", "high");
+    const distinct = modelArtifactScopePresentation({
+      families: [{
+        familyId: "whisper-large-v3",
+        displayName: "Whisper large-v3",
+        profiles: [{
+          tier: "high",
+          artifactId: "whisper-large-v3-high",
+        }],
+        artifacts: [{
+          artifactId: "whisper-large-v3-high",
+        }],
+      }],
+    } as never, "whisper-large-v3", "high");
+
+    expect(shared).toMatchObject({
+      sharedAcrossTiers: true,
+      confirmationTarget: "Whisper large-v3 shared model data for all performance profiles",
+      removalTarget: "the Whisper large-v3 shared local model data used by all performance profiles",
+    });
+    expect(distinct).toMatchObject({
+      sharedAcrossTiers: false,
+      confirmationTarget: "Whisper large-v3 High profile",
+      removalTarget: "the Whisper large-v3 High profile",
+    });
   });
 
   it("makes a known insufficient-memory failure show the reported requirement and reserve", () => {

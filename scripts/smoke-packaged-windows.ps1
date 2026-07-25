@@ -1,9 +1,18 @@
 param(
-  [string]$AppPath = "out/LocalScribe-win32-x64/LocalScribe.exe"
+  [string]$AppPath = ""
 )
 
 $ErrorActionPreference = "Stop"
-$ResolvedApp = (Resolve-Path $AppPath).Path
+$ProjectRoot = Split-Path -Parent $PSScriptRoot
+Set-Location $ProjectRoot
+if ([string]::IsNullOrWhiteSpace($AppPath)) {
+  $ReleaseJson = (& node scripts/release-metadata.mjs --platform win32 --format json) -join "`n"
+  if ($LASTEXITCODE -ne 0) {
+    throw "Windows release metadata resolution failed."
+  }
+  $AppPath = ($ReleaseJson | ConvertFrom-Json).applicationPath
+}
+$ResolvedApp = (Resolve-Path -LiteralPath $AppPath).Path
 $ResourcesPath = Join-Path (Split-Path $ResolvedApp -Parent) "resources"
 $AsarPath = Join-Path $ResourcesPath "app.asar"
 
@@ -29,8 +38,12 @@ function Stop-SmokeProcessTree {
     return
   }
 
+  $TaskKillPath = Join-Path ([Environment]::SystemDirectory) "taskkill.exe"
+  if (-not (Test-Path -LiteralPath $TaskKillPath -PathType Leaf)) {
+    throw "System taskkill.exe was not found."
+  }
   $TaskKill = Start-Process `
-    -FilePath "taskkill.exe" `
+    -FilePath $TaskKillPath `
     -ArgumentList @("/PID", $Process.Id.ToString(), "/T", "/F") `
     -NoNewWindow `
     -Wait `
@@ -64,9 +77,13 @@ function Remove-SmokeDirectory {
 }
 
 try {
+  # Start-Process joins ArgumentList values into a single command line. Keep
+  # the complete switch quoted so a TEMP/profile path containing spaces cannot
+  # become multiple Chromium arguments.
+  $QuotedProfileArgument = '"--user-data-dir={0}"' -f $ProfilePath
   $Candidate = Start-Process `
     -FilePath $ResolvedApp `
-    -ArgumentList "--user-data-dir=$ProfilePath" `
+    -ArgumentList $QuotedProfileArgument `
     -RedirectStandardOutput $StdoutPath `
     -RedirectStandardError $StderrPath `
     -PassThru

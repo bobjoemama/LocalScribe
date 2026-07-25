@@ -9,6 +9,10 @@ import {
   readdirSync,
 } from "node:fs";
 import path from "node:path";
+import {
+  loadReleaseMetadata,
+  releaseLayout,
+} from "./release-metadata.mts";
 
 const MACH_O_MAGICS = new Set([
   "feedface",
@@ -75,7 +79,8 @@ function assertNoEntitlementKeys(filePath) {
   }
 }
 
-const appPath = path.resolve(process.argv[2] ?? "out/LocalScribe-darwin-arm64/LocalScribe.app");
+const releaseLayout_ = releaseLayout(loadReleaseMetadata(), "darwin");
+const appPath = path.resolve(process.argv[2] ?? releaseLayout_.applicationPath);
 const resourcesPath = path.join(appPath, "Contents", "Resources");
 const activeTarget = path.join(resourcesPath, "native", "macos", "active-target");
 const runtimeRoot = path.join(resourcesPath, "python-runtime");

@@ -11,6 +11,7 @@ private struct TargetPayload: Encodable {
     let applicationId: String
     let windowFingerprint: String?
     let focusedEditable: Bool?
+    let focusedElementFingerprint: String?
 
     private enum CodingKeys: String, CodingKey {
         case platform
@@ -18,6 +19,7 @@ private struct TargetPayload: Encodable {
         case applicationId
         case windowFingerprint
         case focusedEditable
+        case focusedElementFingerprint
     }
 
     func encode(to encoder: Encoder) throws {
@@ -35,10 +37,16 @@ private struct TargetPayload: Encodable {
         } else {
             try container.encodeNil(forKey: .focusedEditable)
         }
+        if let focusedElementFingerprint {
+            try container.encode(focusedElementFingerprint, forKey: .focusedElementFingerprint)
+        } else {
+            try container.encodeNil(forKey: .focusedElementFingerprint)
+        }
     }
 }
 
 private struct ClipboardSequencePayload: Encodable {
+    let platform = "darwin"
     let sequence: Int
 }
 
@@ -64,6 +72,13 @@ private struct PasteExpectation {
     let processId: Int32
     let applicationId: String
     let windowFingerprint: String
+    let focusedElementFingerprint: String
+    let clipboardSequence: Int
+}
+
+private struct FocusedElementState {
+    let editable: Bool?
+    let fingerprint: String?
 }
 
 private enum HelperError: Error {
@@ -83,6 +98,59 @@ private func attributeString(_ element: AXUIElement, _ attribute: CFString) -> S
     var value: CFTypeRef?
     guard AXUIElementCopyAttributeValue(element, attribute, &value) == .success else { return nil }
     return value as? String
+}
+
+private func attributeElement(_ element: AXUIElement, _ attribute: CFString) -> AXUIElement? {
+    var value: CFTypeRef?
+    guard
+        AXUIElementCopyAttributeValue(element, attribute, &value) == .success,
+        let value,
+        CFGetTypeID(value) == AXUIElementGetTypeID()
+    else {
+        return nil
+    }
+    return unsafeBitCast(value, to: AXUIElement.self)
+}
+
+private func attributeElements(_ element: AXUIElement, _ attribute: CFString) -> [AXUIElement]? {
+    var value: CFTypeRef?
+    guard
+        AXUIElementCopyAttributeValue(element, attribute, &value) == .success,
+        let values = value as? [AXUIElement]
+    else {
+        return nil
+    }
+    return values
+}
+
+private func attributePoint(_ element: AXUIElement, _ attribute: CFString) -> CGPoint? {
+    var value: CFTypeRef?
+    guard
+        AXUIElementCopyAttributeValue(element, attribute, &value) == .success,
+        let value,
+        CFGetTypeID(value) == AXValueGetTypeID()
+    else {
+        return nil
+    }
+    let axValue = unsafeBitCast(value, to: AXValue.self)
+    guard AXValueGetType(axValue) == .cgPoint else { return nil }
+    var point = CGPoint.zero
+    return AXValueGetValue(axValue, .cgPoint, &point) ? point : nil
+}
+
+private func attributeSize(_ element: AXUIElement, _ attribute: CFString) -> CGSize? {
+    var value: CFTypeRef?
+    guard
+        AXUIElementCopyAttributeValue(element, attribute, &value) == .success,
+        let value,
+        CFGetTypeID(value) == AXValueGetTypeID()
+    else {
+        return nil
+    }
+    let axValue = unsafeBitCast(value, to: AXValue.self)
+    guard AXValueGetType(axValue) == .cgSize else { return nil }
+    var size = CGSize.zero
+    return AXValueGetValue(axValue, .cgSize, &size) ? size : nil
 }
 
 private func hashFingerprint(_ descriptor: String) -> String {
@@ -106,21 +174,42 @@ private func parseProcessId(_ argument: String) -> Int32? {
     return processId
 }
 
+private func parseClipboardSequence(_ argument: String) -> Int? {
+    let bytes = Array(argument.utf8)
+    guard
+        !bytes.isEmpty,
+        bytes.count <= 16,
+        bytes.allSatisfy({ $0 >= 0x30 && $0 <= 0x39 }),
+        (bytes.count == 1 || bytes[0] != 0x30),
+        let sequence = Int(argument),
+        sequence >= 0
+    else {
+        return nil
+    }
+    return sequence
+}
+
 private func parsePasteExpectation(_ arguments: [String]) -> PasteExpectation? {
     guard
-        arguments.count == 4,
+        arguments.count == 6,
         arguments[0] == "darwin",
         let processId = parseProcessId(arguments[1]),
         !arguments[2].isEmpty,
-        arguments[2].utf8.count <= 1_024
+        arguments[2].utf8.count <= 1_024,
+        let clipboardSequence = parseClipboardSequence(arguments[5])
     else {
         return nil
     }
 
     let fingerprintBytes = Array(arguments[3].utf8)
+    let focusedElementFingerprintBytes = Array(arguments[4].utf8)
     guard
         fingerprintBytes.count == 64,
         fingerprintBytes.allSatisfy({
+            ($0 >= 0x30 && $0 <= 0x39) || ($0 >= 0x61 && $0 <= 0x66)
+        }),
+        focusedElementFingerprintBytes.count == 64,
+        focusedElementFingerprintBytes.allSatisfy({
             ($0 >= 0x30 && $0 <= 0x39) || ($0 >= 0x61 && $0 <= 0x66)
         })
     else {
@@ -130,7 +219,9 @@ private func parsePasteExpectation(_ arguments: [String]) -> PasteExpectation? {
     return PasteExpectation(
         processId: processId,
         applicationId: arguments[2],
-        windowFingerprint: arguments[3]
+        windowFingerprint: arguments[3],
+        focusedElementFingerprint: arguments[4],
+        clipboardSequence: clipboardSequence
     )
 }
 
@@ -192,14 +283,82 @@ private func focusedWindowFingerprint(for processId: pid_t) -> String? {
     }
 
     let focusedWindow = unsafeBitCast(focusedWindowValue, to: AXUIElement.self)
+    guard
+        let position = attributePoint(focusedWindow, kAXPositionAttribute as CFString),
+        let size = attributeSize(focusedWindow, kAXSizeAttribute as CFString),
+        let windowInfo = CGWindowListCopyWindowInfo(
+            [.optionOnScreenOnly, .excludeDesktopElements],
+            kCGNullWindowID
+        ) as? [[String: Any]]
+    else {
+        return nil
+    }
     let title = attributeString(focusedWindow, kAXTitleAttribute as CFString) ?? ""
-    let role = attributeString(focusedWindow, kAXRoleAttribute as CFString) ?? ""
-    let subrole = attributeString(focusedWindow, kAXSubroleAttribute as CFString) ?? ""
-    let descriptor = "\(processId)\u{0}\(title)\u{0}\(role)\u{0}\(subrole)"
-    return hashFingerprint(descriptor)
+    let tolerance: CGFloat = 1
+    var matchingWindowNumbers: [CGWindowID] = []
+    for window in windowInfo {
+        guard
+            let ownerPid = window[kCGWindowOwnerPID as String] as? pid_t,
+            ownerPid == processId,
+            let layer = window[kCGWindowLayer as String] as? Int,
+            layer == 0,
+            let windowNumber = window[kCGWindowNumber as String] as? CGWindowID,
+            let rawBounds = window[kCGWindowBounds as String] as? [String: Any],
+            let bounds = CGRect(dictionaryRepresentation: rawBounds as CFDictionary)
+        else {
+            continue
+        }
+        if
+            abs(bounds.origin.x - position.x) > tolerance
+                || abs(bounds.origin.y - position.y) > tolerance
+                || abs(bounds.size.width - size.width) > tolerance
+                || abs(bounds.size.height - size.height) > tolerance
+        {
+            continue
+        }
+        if
+            !title.isEmpty,
+            let windowTitle = window[kCGWindowName as String] as? String,
+            windowTitle != title
+        {
+            continue
+        }
+        matchingWindowNumbers.append(windowNumber)
+    }
+    // Ambiguous geometry is safer as copy-only than guessing the first window
+    // of the process (two same-titled documents are a common collision).
+    guard matchingWindowNumbers.count == 1, let windowNumber = matchingWindowNumbers.first else {
+        return nil
+    }
+    return hashFingerprint("\(processId)\u{0}cg-window:\(windowNumber)")
 }
 
-private func focusedElementIsEditable(for processId: pid_t) -> Bool? {
+private func accessibilityPathDescriptor(for element: AXUIElement) -> String? {
+    var current = element
+    var components: [String] = []
+    for _ in 0..<32 {
+        guard
+            let parent = attributeElement(current, kAXParentAttribute as CFString),
+            let siblings = attributeElements(parent, kAXChildrenAttribute as CFString),
+            let siblingIndex = siblings.firstIndex(where: { CFEqual($0, current) })
+        else {
+            return nil
+        }
+        let role = attributeString(current, kAXRoleAttribute as CFString) ?? ""
+        let subrole = attributeString(current, kAXSubroleAttribute as CFString) ?? ""
+        components.append("\(siblingIndex):\(role):\(subrole)")
+        if attributeString(parent, kAXRoleAttribute as CFString) == (kAXWindowRole as String) {
+            return components.reversed().joined(separator: "/")
+        }
+        current = parent
+    }
+    return nil
+}
+
+private func focusedElementState(
+    for processId: pid_t,
+    windowFingerprint: String?
+) -> FocusedElementState {
     let systemWide = AXUIElementCreateSystemWide()
     var focusedElementValue: CFTypeRef?
     guard AXUIElementCopyAttributeValue(
@@ -209,18 +368,20 @@ private func focusedElementIsEditable(for processId: pid_t) -> Bool? {
     ) == .success,
     let focusedElementValue,
     CFGetTypeID(focusedElementValue) == AXUIElementGetTypeID() else {
-        return nil
+        return FocusedElementState(editable: nil, fingerprint: nil)
     }
 
     let focusedElement = unsafeBitCast(focusedElementValue, to: AXUIElement.self)
     var focusedPid: pid_t = 0
     guard AXUIElementGetPid(focusedElement, &focusedPid) == .success,
           focusedPid == processId else {
-        return nil
+        return FocusedElementState(editable: nil, fingerprint: nil)
     }
 
     let subrole = attributeString(focusedElement, kAXSubroleAttribute as CFString)
-    if subrole == (kAXSecureTextFieldSubrole as String) { return false }
+    if subrole == (kAXSecureTextFieldSubrole as String) {
+        return FocusedElementState(editable: false, fingerprint: nil)
+    }
 
     let role = attributeString(focusedElement, kAXRoleAttribute as CFString)
     let knownEditableRoles: Set<String> = [
@@ -228,17 +389,33 @@ private func focusedElementIsEditable(for processId: pid_t) -> Bool? {
         kAXTextAreaRole as String,
         kAXComboBoxRole as String,
     ]
-    if let role, knownEditableRoles.contains(role) { return true }
-
-    var settable = DarwinBoolean(false)
-    if AXUIElementIsAttributeSettable(
-        focusedElement,
-        kAXValueAttribute as CFString,
-        &settable
-    ) == .success {
-        return settable.boolValue
+    var editable = false
+    if let role, knownEditableRoles.contains(role) {
+        editable = true
+    } else {
+        var settable = DarwinBoolean(false)
+        if AXUIElementIsAttributeSettable(
+            focusedElement,
+            kAXValueAttribute as CFString,
+            &settable
+        ) == .success {
+            editable = settable.boolValue
+        }
     }
-    return false
+
+    guard
+        editable,
+        let windowFingerprint,
+        let pathDescriptor = accessibilityPathDescriptor(for: focusedElement)
+    else {
+        return FocusedElementState(editable: editable, fingerprint: nil)
+    }
+    return FocusedElementState(
+        editable: true,
+        fingerprint: hashFingerprint(
+            "\(processId)\u{0}\(windowFingerprint)\u{0}\(pathDescriptor)"
+        )
+    )
 }
 
 private func captureTarget() throws -> TargetPayload {
@@ -248,12 +425,19 @@ private func captureTarget() throws -> TargetPayload {
     let applicationId = application.bundleIdentifier
         ?? application.executableURL?.path
         ?? "pid:\(application.processIdentifier)"
+    let windowFingerprint = AXIsProcessTrusted()
+        ? focusedWindowFingerprint(for: application.processIdentifier)
+        : coreGraphicsWindowFingerprint(for: application.processIdentifier)
+    let focusedElement = focusedElementState(
+        for: application.processIdentifier,
+        windowFingerprint: windowFingerprint
+    )
     let payload = TargetPayload(
         processId: application.processIdentifier,
         applicationId: applicationId,
-        windowFingerprint: focusedWindowFingerprint(for: application.processIdentifier)
-            ?? coreGraphicsWindowFingerprint(for: application.processIdentifier),
-        focusedEditable: focusedElementIsEditable(for: application.processIdentifier)
+        windowFingerprint: windowFingerprint,
+        focusedEditable: focusedElement.editable,
+        focusedElementFingerprint: focusedElement.fingerprint
     )
     guard
         let confirmedApplication = NSWorkspace.shared.frontmostApplication,
@@ -289,6 +473,7 @@ private func targetMatches(_ target: TargetPayload, expectation: PasteExpectatio
         && target.applicationId == expectation.applicationId
         && target.windowFingerprint == expectation.windowFingerprint
         && target.focusedEditable == true
+        && target.focusedElementFingerprint == expectation.focusedElementFingerprint
 }
 
 private func pasteIntoFocusedControl(expectation: PasteExpectation) -> PastePayload {
@@ -297,7 +482,8 @@ private func pasteIntoFocusedControl(expectation: PasteExpectation) -> PastePayl
     }
     guard
         let currentTarget = try? captureTarget(),
-        targetMatches(currentTarget, expectation: expectation)
+        targetMatches(currentTarget, expectation: expectation),
+        NSPasteboard.general.changeCount == expectation.clipboardSequence
     else {
         return PastePayload(injected: false)
     }
@@ -314,6 +500,9 @@ private func pasteIntoFocusedControl(expectation: PasteExpectation) -> PastePayl
     }
     keyDown.flags = .maskCommand
     keyUp.flags = .maskCommand
+    guard NSPasteboard.general.changeCount == expectation.clipboardSequence else {
+        return PastePayload(injected: false)
+    }
     keyDown.post(tap: .cghidEventTap)
     Thread.sleep(forTimeInterval: 0.012)
     keyUp.post(tap: .cghidEventTap)
@@ -322,30 +511,55 @@ private func pasteIntoFocusedControl(expectation: PasteExpectation) -> PastePayl
 
 private func selfTest() -> Bool {
     let fingerprint = String(repeating: "a", count: 64)
+    let elementFingerprint = String(repeating: "b", count: 64)
     guard
         let expectation = parsePasteExpectation([
             "darwin",
             "42",
             "com.example.Editor",
             fingerprint,
+            elementFingerprint,
+            "7",
         ]),
         parsePasteExpectation([
             "win32",
             "42",
             "com.example.Editor",
             fingerprint,
+            elementFingerprint,
+            "7",
         ]) == nil,
         parsePasteExpectation([
             "darwin",
             "042",
             "com.example.Editor",
             fingerprint,
+            elementFingerprint,
+            "7",
         ]) == nil,
         parsePasteExpectation([
             "darwin",
             "42",
             "com.example.Editor",
             String(repeating: "A", count: 64),
+            elementFingerprint,
+            "7",
+        ]) == nil,
+        parsePasteExpectation([
+            "darwin",
+            "42",
+            "com.example.Editor",
+            fingerprint,
+            String(repeating: "A", count: 64),
+            "7",
+        ]) == nil,
+        parsePasteExpectation([
+            "darwin",
+            "42",
+            "com.example.Editor",
+            fingerprint,
+            elementFingerprint,
+            "07",
         ]) == nil
     else {
         return false
@@ -355,16 +569,26 @@ private func selfTest() -> Bool {
         processId: 42,
         applicationId: "com.example.Editor",
         windowFingerprint: fingerprint,
-        focusedEditable: true
+        focusedEditable: true,
+        focusedElementFingerprint: elementFingerprint
     )
     let nonEditableTarget = TargetPayload(
         processId: 42,
         applicationId: "com.example.Editor",
         windowFingerprint: fingerprint,
-        focusedEditable: false
+        focusedEditable: false,
+        focusedElementFingerprint: elementFingerprint
+    )
+    let otherFocusedElement = TargetPayload(
+        processId: 42,
+        applicationId: "com.example.Editor",
+        windowFingerprint: fingerprint,
+        focusedEditable: true,
+        focusedElementFingerprint: String(repeating: "c", count: 64)
     )
     return targetMatches(matchingTarget, expectation: expectation)
         && !targetMatches(nonEditableTarget, expectation: expectation)
+        && !targetMatches(otherFocusedElement, expectation: expectation)
 }
 
 private let controlKeyCodes: Set<CGKeyCode> = [59, 62]
@@ -439,8 +663,8 @@ do {
         try writeJSON(accessibilityStatus(prompt: true))
     case "paste":
         guard
-            CommandLine.arguments.count == 6,
-            let expectation = parsePasteExpectation(Array(CommandLine.arguments[2...5]))
+            CommandLine.arguments.count == 8,
+            let expectation = parsePasteExpectation(Array(CommandLine.arguments[2...7]))
         else {
             throw HelperError.invalidCommand
         }

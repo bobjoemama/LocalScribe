@@ -2,14 +2,22 @@
 
 set -euo pipefail
 
-app_path="${1:-out/LocalScribe-darwin-arm64/LocalScribe.app}"
+project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$project_root"
+release_json="$(node scripts/release-metadata.mjs --platform darwin --format json)"
+default_app_path="$(node -e 'const value=JSON.parse(process.argv[1]); process.stdout.write(value.applicationPath)' "$release_json")"
+target_arch="$(node -e 'const value=JSON.parse(process.argv[1]); process.stdout.write(value.arch)' "$release_json")"
+product_name="$(node -e 'const value=JSON.parse(process.argv[1]); process.stdout.write(value.productName)' "$release_json")"
+app_path="${1:-$default_app_path}"
 app_path="$(cd "$(dirname "$app_path")" && pwd)/$(basename "$app_path")"
 asar_path="$app_path/Contents/Resources/app.asar"
-executable="$app_path/Contents/MacOS/LocalScribe"
+executable="$app_path/Contents/MacOS/$product_name"
 
 node scripts/verify-packaged-main.mjs "$asar_path"
+node scripts/verify-packaged-archive.mjs "$asar_path" darwin "$target_arch"
 codesign --verify --deep --strict "$app_path"
 node scripts/verify-macos-entitlements.mjs "$app_path"
+node scripts/verify-macos-bundle.mjs "$app_path"
 
 smoke_root="$(mktemp -d "${TMPDIR:-/tmp}/localscribe-macos-smoke.XXXXXX")"
 profile_path="$smoke_root/profile"

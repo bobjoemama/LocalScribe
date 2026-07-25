@@ -27,11 +27,32 @@ function sameTarget(expected: ActiveTarget, current: ActiveTarget): boolean {
   // Process identity alone cannot distinguish two windows in the same app.
   // Auto-paste therefore fails closed unless the bridge identified a focused
   // window at both boundaries.
-  return (
+  const sameWindow = (
     expected.windowFingerprint !== null &&
     current.windowFingerprint !== null &&
     expected.windowFingerprint === current.windowFingerprint
   );
+  if (!sameWindow) return false;
+  if (expected.platform !== "darwin") return true;
+  return (
+    typeof expected.focusedElementFingerprint === "string"
+    && typeof current.focusedElementFingerprint === "string"
+    && expected.focusedElementFingerprint === current.focusedElementFingerprint
+  );
+}
+
+function clipboardAdvancedExactlyOnce(
+  before: number,
+  after: number,
+  platform: ActiveTarget["platform"],
+): boolean {
+  if (!Number.isSafeInteger(before) || !Number.isSafeInteger(after)) return false;
+  if (platform === "win32") {
+    // Windows uses a DWORD sequence. Fail closed at wrap instead of treating
+    // zero (also the access-denied sentinel) as a trustworthy write.
+    return before > 0 && before < 4_294_967_295 && after === before + 1;
+  }
+  return before >= 0 && after === before + 1;
 }
 
 export class SafeInsertionCoordinator {
@@ -168,6 +189,19 @@ export class SafeInsertionCoordinator {
       this.clipboard.writeText(text);
       const sequenceAfterWrite = await this.platformBridge.clipboardSequence().catch(() => null);
       if (!this.isCurrentSession(insertionGeneration)) return "copied";
+      if (
+        sequenceAfterWrite === null ||
+        !clipboardAdvancedExactlyOnce(
+          sequenceAfterSnapshot,
+          sequenceAfterWrite,
+          expectedTarget.platform,
+        )
+      ) {
+        // Our synchronous clipboard write must be the only change since the
+        // stable snapshot boundary. Otherwise a concurrent writer may have
+        // replaced the text before this first post-write sequence read.
+        return "copied";
+      }
       const currentTarget = await this.platformBridge.captureActiveTarget().catch(() => null);
       if (!this.isCurrentSession(insertionGeneration)) return "copied";
       const sequenceBeforePaste = await this.platformBridge.clipboardSequence().catch(() => null);
@@ -195,7 +229,10 @@ export class SafeInsertionCoordinator {
         // Carry the target captured at dictation start across the final native
         // boundary. The helper recaptures and compares it immediately before
         // dispatch, closing the focus-change gap after this TypeScript check.
-        injection = await this.pasteInjector.paste(expectedTarget);
+        injection = await this.pasteInjector.paste(
+          expectedTarget,
+          sequenceBeforePaste,
+        );
       } catch {
         return "copied";
       }
@@ -235,4 +272,4 @@ export class SafeInsertionCoordinator {
   }
 }
 
-export { sameTarget };
+export { clipboardAdvancedExactlyOnce, sameTarget };

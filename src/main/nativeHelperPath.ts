@@ -22,8 +22,11 @@ export function resolveNativeActiveTargetHelperPath(
   options: NativeActiveTargetHelperPathOptions = {},
 ): string | null {
   const environment = options.environment ?? process.env;
+  const workingDirectory = options.workingDirectory ?? process.cwd();
   const override = environment[NATIVE_ACTIVE_TARGET_HELPER_OVERRIDE];
-  if (override && options.allowEnvironmentOverride === true) return path.resolve(override);
+  if (override && options.allowEnvironmentOverride === true) {
+    return path.resolve(workingDirectory, override);
+  }
 
   const platform = options.platform ?? process.platform;
   const relativePath = platform === "darwin"
@@ -34,7 +37,6 @@ export function resolveNativeActiveTargetHelperPath(
   if (!relativePath) return null;
 
   const resourcesPath = options.resourcesPath ?? process.resourcesPath;
-  const workingDirectory = options.workingDirectory ?? process.cwd();
   const exists = options.exists ?? existsSync;
   const packagedPath = path.join(resourcesPath, ...relativePath);
   if (exists(packagedPath)) return packagedPath;

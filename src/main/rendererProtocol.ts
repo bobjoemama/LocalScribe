@@ -33,6 +33,22 @@ export function rendererUrlForSurface(
   );
 }
 
+/**
+ * Selects the renderer origin for the current application mode. Packaged
+ * builds must ignore an accidentally injected Vite URL and remain on the
+ * local, allow-listed custom protocol.
+ */
+export function rendererUrlForRuntime(
+  surface: RendererSurface,
+  isPackaged: boolean,
+  developmentServerUrl?: string,
+): string {
+  return rendererUrlForSurface(
+    surface,
+    isPackaged ? undefined : developmentServerUrl,
+  );
+}
+
 function rawPathFromRendererUrl(url: string): string | null {
   const schemePrefix = `${RENDERER_PROTOCOL_SCHEME}://`;
   if (!url.toLowerCase().startsWith(schemePrefix)) return null;

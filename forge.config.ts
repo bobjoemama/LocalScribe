@@ -25,12 +25,35 @@ import {
   type PackagedPlatform,
 } from "./scripts/package-inventory";
 import {
+  assertFreshViteBuild,
+  assertPackageProvenanceMatches,
+  assertPackagedArchive,
+  buildPackageProvenance,
+  writePackageProvenance,
+  type PackageProvenance,
+} from "./scripts/package-provenance.mts";
+import {
   assertPackagedResourceIntegrity,
   prepareGeneratedResourceIntegrity,
   type PreparedResourceIntegrity,
 } from "./src/main/resourceIntegrity";
+import {
+  assertFreshOrdinaryArtifact,
+  clearWindowsMakerOutput,
+} from "./scripts/windows-artifact-safety.mts";
+import { assertExpectedMakeResults } from "./scripts/make-result-safety.mts";
+import {
+  loadReleaseMetadata,
+  releaseLayout,
+} from "./scripts/release-metadata.mts";
 
-const APP_BUNDLE_ID = "com.localscribe.desktop";
+const RELEASE_METADATA = loadReleaseMetadata(path.resolve("."));
+const MAC_RELEASE = releaseLayout(RELEASE_METADATA, "darwin", path.resolve("."));
+const WINDOWS_RELEASE = releaseLayout(RELEASE_METADATA, "win32", path.resolve("."));
+const PRODUCT_NAME = RELEASE_METADATA.productName;
+const MAC_APP_NAME = MAC_RELEASE.applicationName;
+const WINDOWS_EXE_NAME = WINDOWS_RELEASE.applicationName;
+const APP_BUNDLE_ID = RELEASE_METADATA.macBundleId;
 const MAC_ENTITLEMENTS = path.resolve("resources/entitlements.mac.plist");
 const MAC_HELPER_ENTITLEMENTS = path.resolve("resources/entitlements.mac.helper.plist");
 const MAC_PLUGIN_ENTITLEMENTS = path.resolve("resources/entitlements.mac.plugin.plist");
@@ -39,6 +62,13 @@ const MAC_ACTIVE_TARGET_ENTITLEMENTS = path.resolve(
 );
 const MAC_RUNTIME_ENTITLEMENTS = path.resolve("resources/entitlements.mac.runtime.plist");
 const PUBLIC_RELEASE = process.env.LOCALSCRIBE_RELEASE === "1";
+// Squirrel's 32-bit WriteZipToSetup helper silently leaves its dummy payload
+// in Setup.exe once LocalScribe's CUDA runtime pushes the package near 1 GiB.
+// Portable ZIP is the supported Windows output. This opt-in exists only so
+// the fail-closed regression gate can diagnose a future smaller package or
+// upstream replacement; it is never a supported release path.
+const BUILD_LEGACY_SQUIRREL =
+  process.env.LOCALSCRIBE_BUILD_LEGACY_SQUIRREL === "1";
 
 function requireReleaseEnvironment(name: string): string {
   const value = process.env[name]?.trim();
@@ -65,6 +95,9 @@ function resolveSigningIdentity(): string {
 
 const MAC_SIGNING_IDENTITY = resolveSigningIdentity();
 let resourceIntegrityPreparation: PreparedResourceIntegrity | null = null;
+let packageProvenanceExpectation: PackageProvenance | null = null;
+let packageBuildStartedAtMs = 0;
+let makeBuildStartedAtMs = 0;
 
 function validatePublicReleaseConfiguration(): void {
   if (!PUBLIC_RELEASE) return;
@@ -74,9 +107,7 @@ function validatePublicReleaseConfiguration(): void {
         "Public macOS releases require LOCALSCRIBE_CODESIGN_IDENTITY to name a Developer ID Application identity.",
       );
     }
-    requireReleaseEnvironment("APPLE_ID");
-    requireReleaseEnvironment("APPLE_APP_SPECIFIC_PASSWORD");
-    requireReleaseEnvironment("APPLE_TEAM_ID");
+    requireReleaseEnvironment("APPLE_KEYCHAIN_PROFILE");
     if (process.env.LOCALSCRIBE_UNDECLARED_MLX_LICENSE_APPROVED !== "1") {
       throw new Error(
         "Public macOS releases require documented legal approval for every packaged MLX artifact with Undeclared license metadata.",
@@ -85,16 +116,10 @@ function validatePublicReleaseConfiguration(): void {
     return;
   }
   if (process.platform === "win32") {
-    const signWithParams = process.env.WINDOWS_SIGN_WITH_PARAMS?.trim();
-    if (!signWithParams) {
-      requireReleaseEnvironment("WINDOWS_CERTIFICATE_FILE");
-      requireReleaseEnvironment("WINDOWS_CERTIFICATE_PASSWORD");
-    }
-    const timestampServer = requireReleaseEnvironment("WINDOWS_TIMESTAMP_SERVER");
-    if (!timestampServer.startsWith("https://")) {
-      throw new Error("WINDOWS_TIMESTAMP_SERVER must use HTTPS.");
-    }
-    return;
+    throw new Error(
+      "Public Windows publication is disabled until the portable package has passed " +
+      "physical install/launch/CUDA acceptance and a supported signed installer/update path exists.",
+    );
   }
   throw new Error(`Public LocalScribe releases cannot be built on ${process.platform}.`);
 }
@@ -223,34 +248,12 @@ function platformResources(): string[] {
   return [];
 }
 
-function windowsSignOptions(): {
-  signWithParams?: string;
-  certificateFile?: string;
-  certificatePassword?: string;
-  timestampServer: string;
-  description: string;
-} | undefined {
-  if (!PUBLIC_RELEASE || process.platform !== "win32") return undefined;
-  const timestampServer = requireReleaseEnvironment("WINDOWS_TIMESTAMP_SERVER");
-  const signWithParams = process.env.WINDOWS_SIGN_WITH_PARAMS?.trim();
-  return {
-    ...(signWithParams
-      ? { signWithParams }
-      : {
-          certificateFile: requireReleaseEnvironment("WINDOWS_CERTIFICATE_FILE"),
-          certificatePassword: requireReleaseEnvironment("WINDOWS_CERTIFICATE_PASSWORD"),
-        }),
-    timestampServer,
-    description: "LocalScribe",
-  };
-}
-
 function resourcesPathInStaging(
   stagingPath: string,
   platform: PackagedPlatform,
 ): string {
   return platform === "darwin"
-    ? path.join(stagingPath, "LocalScribe.app", "Contents", "Resources")
+    ? path.join(stagingPath, MAC_APP_NAME, "Contents", "Resources")
     : path.join(stagingPath, "resources");
 }
 
@@ -258,7 +261,7 @@ function packagedResourcesPath(outputPath: string, platform: PackagedPlatform): 
   if (platform === "darwin") {
     const appPath = outputPath.endsWith(".app")
       ? outputPath
-      : path.join(outputPath, "LocalScribe.app");
+      : path.join(outputPath, MAC_APP_NAME);
     return path.join(appPath, "Contents", "Resources");
   }
   return path.join(outputPath, "resources");
@@ -283,24 +286,36 @@ function assertSourceResources(platform: PackagedPlatform, arch: string): void {
 }
 
 function notarizeAndStapleDmg(dmgPath: string): void {
+  const keychainProfile = requireReleaseEnvironment("APPLE_KEYCHAIN_PROFILE");
+  const keychainPath = process.env.APPLE_KEYCHAIN_PATH?.trim();
   execFileSync(
     "xcrun",
     [
       "notarytool",
       "submit",
       dmgPath,
-      "--apple-id",
-      requireReleaseEnvironment("APPLE_ID"),
-      "--password",
-      requireReleaseEnvironment("APPLE_APP_SPECIFIC_PASSWORD"),
-      "--team-id",
-      requireReleaseEnvironment("APPLE_TEAM_ID"),
+      "--keychain-profile",
+      keychainProfile,
+      ...(keychainPath ? ["--keychain", keychainPath] : []),
       "--wait",
     ],
     { stdio: "inherit" },
   );
   execFileSync("xcrun", ["stapler", "staple", dmgPath], { stdio: "inherit" });
   execFileSync("xcrun", ["stapler", "validate", dmgPath], { stdio: "inherit" });
+  execFileSync(
+    "spctl",
+    [
+      "--assess",
+      "--type",
+      "open",
+      "--context",
+      "context:primary-signature",
+      "--verbose=4",
+      dmgPath,
+    ],
+    { stdio: "inherit" },
+  );
 }
 
 function verifyAuthenticode(filePath: string): void {
@@ -316,8 +331,6 @@ function verifyAuthenticode(filePath: string): void {
     { stdio: "inherit" },
   );
 }
-
-const windowsSigning = windowsSignOptions();
 
 const config: ForgeConfig = {
   packagerConfig: {
@@ -340,11 +353,31 @@ const config: ForgeConfig = {
       );
     },
     afterPrune: [
-      (buildPath, _electronVersion, _platform, _arch, callback) => {
-        pruneStagedNodeModules(buildPath).then(
-          () => callback(),
-          (error: unknown) => callback(error instanceof Error ? error : new Error(String(error))),
-        );
+      (buildPath, _electronVersion, platform, arch, callback) => {
+        void (async () => {
+          try {
+            await pruneStagedNodeModules(buildPath);
+            if (platform !== "darwin" && platform !== "win32") {
+              throw new Error(`Unsupported package platform: ${platform}`);
+            }
+            if (!packageProvenanceExpectation || packageBuildStartedAtMs <= 0) {
+              throw new Error("Package provenance was not prepared before the Vite build.");
+            }
+            assertFreshViteBuild(buildPath, packageBuildStartedAtMs);
+            assertPackageProvenanceMatches(
+              buildPackageProvenance({
+                projectPath: path.resolve("."),
+                platform,
+                arch,
+              }),
+              packageProvenanceExpectation,
+            );
+            writePackageProvenance(buildPath, packageProvenanceExpectation);
+            callback();
+          } catch (error) {
+            callback(error instanceof Error ? error : new Error(String(error)));
+          }
+        })();
       },
     ],
     afterCopyExtraResources: [
@@ -358,7 +391,7 @@ const config: ForgeConfig = {
           prunePackagedNativeModules(resourcesPath, platform, arch);
 
           if (platform === "darwin") {
-            const infoPlist = path.join(stagingPath, "LocalScribe.app", "Contents", "Info.plist");
+            const infoPlist = path.join(stagingPath, MAC_APP_NAME, "Contents", "Info.plist");
             removeInfoPlistKeyIfPresent(infoPlist, "NSAppTransportSecurity.NSAllowsArbitraryLoads");
             removeInfoPlistKeyIfPresent(infoPlist, "NSBluetoothAlwaysUsageDescription");
             removeInfoPlistKeyIfPresent(infoPlist, "NSBluetoothPeripheralUsageDescription");
@@ -391,13 +424,16 @@ const config: ForgeConfig = {
     win32metadata: {
       CompanyName: "Devesh",
       FileDescription: "Private local-first desktop dictation",
-      ProductName: "LocalScribe",
-      InternalName: "LocalScribe",
-      OriginalFilename: "LocalScribe.exe",
+      ProductName: PRODUCT_NAME,
+      InternalName: PRODUCT_NAME,
+      OriginalFilename: WINDOWS_EXE_NAME,
       "requested-execution-level": "asInvoker",
     },
     extendInfo: {
+      LSMinimumSystemVersion: RELEASE_METADATA.minimumMacOSVersion,
       NSMicrophoneUsageDescription:
+        "LocalScribe records audio only while you dictate and processes it locally on this Mac.",
+      NSAudioCaptureUsageDescription:
         "LocalScribe records audio only while you dictate and processes it locally on this Mac.",
     },
     ...(process.platform === "darwin"
@@ -415,26 +451,45 @@ const config: ForgeConfig = {
           ...(PUBLIC_RELEASE
             ? {
                 osxNotarize: {
-                  appleId: requireReleaseEnvironment("APPLE_ID"),
-                  appleIdPassword: requireReleaseEnvironment("APPLE_APP_SPECIFIC_PASSWORD"),
-                  teamId: requireReleaseEnvironment("APPLE_TEAM_ID"),
+                  keychainProfile: requireReleaseEnvironment("APPLE_KEYCHAIN_PROFILE"),
+                  ...(process.env.APPLE_KEYCHAIN_PATH?.trim()
+                    ? { keychain: process.env.APPLE_KEYCHAIN_PATH.trim() }
+                    : {}),
                 },
               }
             : {}),
         }
       : {}),
-    ...(windowsSigning ? { windowsSign: windowsSigning } : {}),
   },
   hooks: {
+    preMake: async () => {
+      makeBuildStartedAtMs = Date.now();
+      if (process.platform !== "win32") return;
+      clearWindowsMakerOutput(
+        path.resolve("."),
+        path.relative(path.resolve("."), WINDOWS_RELEASE.makerDirectory),
+      );
+      clearWindowsMakerOutput(
+        path.resolve("."),
+        path.join(
+          "out",
+          "make",
+          "squirrel.windows",
+          WINDOWS_RELEASE.target.arch,
+        ),
+      );
+    },
     prePackage: async (_config, platform, arch) => {
+      packageBuildStartedAtMs = Date.now();
       if (platform === "darwin") {
-        const targetArchitecture = arch === "arm64" ? "arm64" : null;
+        const targetArchitecture =
+          arch === MAC_RELEASE.target.arch ? MAC_RELEASE.target.arch : null;
         if (!targetArchitecture) throw new Error(`Unsupported macOS helper architecture: ${arch}`);
         execFileSync("xcrun", [
           "swiftc",
           "-O",
           "-target",
-          `${targetArchitecture}-apple-macos13.0`,
+          `${targetArchitecture}-apple-macos${RELEASE_METADATA.minimumMacOSVersion}`,
           path.resolve("resources/native/macos/active-target.swift"),
           "-o",
           path.resolve("resources/native/macos/active-target"),
@@ -445,6 +500,11 @@ const config: ForgeConfig = {
         throw new Error(`LocalScribe cannot be packaged for ${platform}.`);
       }
       assertSourceResources(platform, arch);
+      packageProvenanceExpectation = buildPackageProvenance({
+        projectPath: path.resolve("."),
+        platform,
+        arch,
+      });
       resourceIntegrityPreparation?.restore();
       resourceIntegrityPreparation = prepareGeneratedResourceIntegrity({
         resourcesPath: path.resolve("resources"),
@@ -464,7 +524,20 @@ const config: ForgeConfig = {
         }
         for (const outputPath of result.outputPaths) {
           const resourcesPath = packagedResourcesPath(outputPath, result.platform);
+          const asarPath = path.join(resourcesPath, "app.asar");
           assertPackagedAppInventory(resourcesPath, result.platform, result.arch);
+          assertPackagedArchive({
+            asarPath,
+            projectPath: path.resolve("."),
+            platform: result.platform,
+            arch: result.arch,
+            expected: packageProvenanceExpectation ?? undefined,
+          });
+          execFileSync(
+            process.execPath,
+            [path.resolve("scripts/verify-packaged-main.mjs"), asarPath],
+            { stdio: "inherit" },
+          );
           assertPackagedResourceIntegrity(
             resourcesPath,
             result.platform,
@@ -475,13 +548,22 @@ const config: ForgeConfig = {
           if (result.platform === "darwin") {
             const appPath = outputPath.endsWith(".app")
               ? outputPath
-              : path.join(outputPath, "LocalScribe.app");
+              : path.join(outputPath, MAC_APP_NAME);
             execFileSync("codesign", ["--verify", "--deep", "--strict", "--verbose=4", appPath], {
               stdio: "inherit",
             });
             execFileSync(
               process.execPath,
               [path.resolve("scripts/verify-macos-entitlements.mjs"), appPath],
+              { stdio: "inherit" },
+            );
+            execFileSync(
+              process.execPath,
+              [
+                path.resolve("scripts/verify-macos-bundle.mjs"),
+                appPath,
+                ...(PUBLIC_RELEASE ? ["--public-release"] : []),
+              ],
               { stdio: "inherit" },
             );
             if (PUBLIC_RELEASE) {
@@ -492,7 +574,7 @@ const config: ForgeConfig = {
               });
             }
           } else if (PUBLIC_RELEASE) {
-            verifyAuthenticode(path.join(outputPath, "LocalScribe.exe"));
+            verifyAuthenticode(path.join(outputPath, WINDOWS_EXE_NAME));
             verifyAuthenticode(
               path.join(outputPath, "resources", "native", "windows", "active-target.exe"),
             );
@@ -501,28 +583,99 @@ const config: ForgeConfig = {
       } finally {
         resourceIntegrityPreparation?.restore();
         resourceIntegrityPreparation = null;
+        packageProvenanceExpectation = null;
+        packageBuildStartedAtMs = 0;
       }
     },
     postMake: async (_config, makeResults: ForgeMakeResult[]) => {
-      const macArtifacts = makeResults
-        .filter((result) => result.platform === "darwin")
-        .flatMap((result) => result.artifacts);
+      assertExpectedMakeResults(makeResults, process.platform);
+      const macResults = makeResults.filter((result) => result.platform === "darwin");
+      const macArtifacts = macResults.flatMap((result) => result.artifacts);
       if (macArtifacts.length > 0) {
         const dmgs = macArtifacts.filter((artifact) => artifact.endsWith(".dmg"));
-        if (dmgs.length === 0) throw new Error("macOS make did not produce a DMG.");
+        const zips = macArtifacts.filter((artifact) => artifact.endsWith(".zip"));
+        const macTargets = new Set(
+          macResults.map((result) => `${result.platform}/${result.arch}`),
+        );
+        if (dmgs.length !== 1 || zips.length !== 1 || macTargets.size !== 1) {
+          throw new Error(
+            `macOS make expected one DMG and one ZIP from one target; received ` +
+              `${dmgs.length} DMG, ${zips.length} ZIP, ${macTargets.size} target(s).`,
+          );
+        }
         if (PUBLIC_RELEASE) dmgs.forEach(notarizeAndStapleDmg);
+        const macResult = macResults[0];
+        if (!macResult) throw new Error("macOS make result disappeared during verification.");
+        const stagedApp = path.resolve(
+          "out",
+          `${PRODUCT_NAME}-darwin-${macResult.arch}`,
+          MAC_APP_NAME,
+        );
+        execFileSync(
+          process.execPath,
+          [
+            path.resolve("scripts/verify-macos-artifacts.mjs"),
+            stagedApp,
+            dmgs[0]!,
+            zips[0]!,
+            ...(PUBLIC_RELEASE ? ["--public-release"] : []),
+          ],
+          { stdio: "inherit" },
+        );
       }
 
       const windowsArtifacts = makeResults
         .filter((result) => result.platform === "win32")
         .flatMap((result) => result.artifacts);
       if (windowsArtifacts.length > 0) {
-        const installers = windowsArtifacts.filter((artifact) => /Setup\.exe$/i.test(artifact));
-        if (installers.length !== 1) {
-          throw new Error(`Windows make expected one Squirrel Setup.exe; received ${installers.length}.`);
+        const portableZips = windowsArtifacts.filter((artifact) => artifact.endsWith(".zip"));
+        if (portableZips.length !== 1) {
+          throw new Error(
+            `Windows make expected one portable ZIP; received ${portableZips.length}.`,
+          );
         }
-        if (PUBLIC_RELEASE) installers.forEach(verifyAuthenticode);
+        assertFreshOrdinaryArtifact(portableZips[0]!, makeBuildStartedAtMs);
+        execFileSync(
+          process.execPath,
+          [
+            path.resolve("scripts/verify-windows-portable.mjs"),
+            WINDOWS_RELEASE.packageDirectory,
+            portableZips[0]!,
+          ],
+          { stdio: "inherit" },
+        );
+
+        const installers = windowsArtifacts.filter((artifact) => /Setup\.exe$/i.test(artifact));
+        const packages = windowsArtifacts.filter((artifact) => artifact.endsWith(".nupkg"));
+        const releases = windowsArtifacts.filter(
+          (artifact) => path.basename(artifact).toUpperCase() === "RELEASES",
+        );
+        if (BUILD_LEGACY_SQUIRREL) {
+          if (installers.length !== 1 || packages.length !== 1 || releases.length !== 1) {
+            throw new Error(
+              "Opt-in legacy Squirrel make expected exactly one Setup.exe, .nupkg, and RELEASES.",
+            );
+          }
+          for (const artifact of [installers[0]!, packages[0]!, releases[0]!]) {
+            assertFreshOrdinaryArtifact(artifact, makeBuildStartedAtMs);
+          }
+          execFileSync(
+            process.execPath,
+            [
+              path.resolve("scripts/verify-squirrel-artifacts.mjs"),
+              installers[0]!,
+              packages[0]!,
+              releases[0]!,
+            ],
+            { stdio: "inherit" },
+          );
+        } else if (installers.length > 0 || packages.length > 0 || releases.length > 0) {
+          throw new Error(
+            "Unsupported Squirrel artifacts appeared in the portable-only Windows build.",
+          );
+        }
       }
+      makeBuildStartedAtMs = 0;
     },
   },
   rebuildConfig: {},
@@ -540,18 +693,21 @@ const config: ForgeConfig = {
           }
         : {}),
     }, ["darwin"]),
-    new MakerZIP({}, ["darwin"]),
-    new MakerSquirrel({
-      name: "localscribe",
-      authors: "Devesh",
-      owners: "Devesh",
-      description: "Private local-first desktop dictation",
-      exe: "LocalScribe.exe",
-      setupExe: "LocalScribe-Setup.exe",
-      setupIcon: path.resolve("resources/branding/LocalScribe.ico"),
-      noMsi: true,
-      ...(windowsSigning ? { windowsSign: windowsSigning } : {}),
-    }, ["win32"]),
+    new MakerZIP({}, ["darwin", "win32"]),
+    ...(BUILD_LEGACY_SQUIRREL
+      ? [
+          new MakerSquirrel({
+            name: "localscribe",
+            authors: "Devesh",
+            owners: "Devesh",
+            description: "Private local-first desktop dictation",
+            exe: WINDOWS_EXE_NAME,
+            setupExe: `${PRODUCT_NAME}-Setup.exe`,
+            setupIcon: path.resolve("resources/branding/LocalScribe.ico"),
+            noMsi: true,
+          }, ["win32"]),
+        ]
+      : []),
   ],
   plugins: [
     new AutoUnpackNativesPlugin({}),

@@ -65,4 +65,15 @@ describe("settings patch and shortcut transactions", () => {
     expect(harness.hotkeys.reconfigure).toHaveBeenNthCalledWith(1, "Command+Control", "Control+Space");
     expect(harness.hotkeys.reconfigure).toHaveBeenNthCalledWith(2, "Control", "Control+Space");
   });
+
+  it("validates the full replacement before changing active shortcuts or storage", () => {
+    const harness = transactionHarness();
+    expect(() => applySettingsPatchTransaction(
+      { database: harness.database, hotkeys: harness.hotkeys },
+      { historyRetentionDays: 14 } as never,
+    )).toThrow();
+    expect(harness.hotkeys.reconfigure).not.toHaveBeenCalled();
+    expect(harness.database.saveSettings).not.toHaveBeenCalled();
+    expect(harness.persisted).toEqual(DEFAULT_SETTINGS);
+  });
 });

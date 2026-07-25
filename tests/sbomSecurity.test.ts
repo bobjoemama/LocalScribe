@@ -37,15 +37,14 @@ describe("platform SBOM generation", () => {
     expect(localMacVerification.match(
       /npm run --silent sbom:python:macos/g,
     )).toHaveLength(1);
-    expect(localMacVerification).toContain(
-      "out/localscribe-core-runtime-macos-sbom.cdx.json",
-    );
-    expect(localMacVerification).toContain(
-      "out/localscribe-python-macos-sbom.cdx.json",
-    );
+    expect(localMacVerification).toContain("core_sbom");
+    expect(localMacVerification).toContain("python_sbom");
+    expect(localMacVerification).toContain("release-metadata.mjs");
     expect(localMacVerification).toContain("set -euo pipefail");
-    expect(localMacVerification).toContain("SHA256SUMS.txt");
-    expect(localMacVerification).toContain("shasum -a 256 -c SHA256SUMS.txt");
+    expect(localMacVerification).toContain("checksum_path");
+    expect(localMacVerification).toContain(
+      'shasum -a 256 -c "$(basename "$checksum_path")"',
+    );
   });
 
   it("generates and checksums the Windows SBOM pair during local verification", () => {
@@ -57,13 +56,9 @@ describe("platform SBOM generation", () => {
     expect(localWindowsVerification.match(
       /sbom:python:windows/g,
     )).toHaveLength(1);
-    expect(localWindowsVerification).toContain(
-      "out\\localscribe-core-runtime-windows-sbom.cdx.json",
-    );
-    expect(localWindowsVerification).toContain(
-      "out\\localscribe-python-windows-sbom.cdx.json",
-    );
-    expect(localWindowsVerification).toContain("SHA256SUMS-windows.txt");
+    expect(localWindowsVerification).toContain("$Release.coreSbomPath");
+    expect(localWindowsVerification).toContain("$Release.pythonSbomPath");
+    expect(localWindowsVerification).toContain("$Release.checksumPath");
     expect(localWindowsVerification).toContain("Get-FileHash -Algorithm SHA256");
   });
 });

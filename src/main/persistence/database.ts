@@ -14,6 +14,7 @@ import {
   DEFAULT_SETTINGS,
   MAX_HISTORY_ITEMS,
   appSettingsSchema,
+  migratePersistedAppSettings,
   type AppSettings,
   type AppProfile,
   type DictionaryEntry,
@@ -130,6 +131,7 @@ export class LocalDatabase {
     this.db.pragma("busy_timeout = 5000");
     this.db.pragma("synchronous = NORMAL");
     this.migrate();
+    this.normalizePersistedSettings();
     hardenDatabasePermissions(path);
   }
 
@@ -396,18 +398,19 @@ export class LocalDatabase {
       .prepare("SELECT value_json FROM settings WHERE key = 'app'")
       .get() as { value_json: string } | undefined;
     return row
-      ? appSettingsSchema.parse({ ...DEFAULT_SETTINGS, ...JSON.parse(row.value_json) })
-      : DEFAULT_SETTINGS;
+      ? migratePersistedAppSettings(JSON.parse(row.value_json))
+      : appSettingsSchema.parse(DEFAULT_SETTINGS);
   }
 
   saveSettings(settings: AppSettings): AppSettings {
+    const validated = appSettingsSchema.parse(settings);
     this.db
       .prepare(
         `INSERT INTO settings (key, value_json, updated_at) VALUES ('app', ?, ?)
          ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at`,
       )
-      .run(JSON.stringify(settings), Date.now());
-    return settings;
+      .run(JSON.stringify(validated), Date.now());
+    return validated;
   }
 
   private migrate(): void {
@@ -432,6 +435,44 @@ export class LocalDatabase {
           .run(migration.version, migration.name, Date.now());
       })();
     }
+  }
+
+  /**
+   * Persist the field-level settings upgrade once after schema migrations so
+   * future reads do not repeatedly depend on a legacy or partially invalid
+   * JSON shape.
+   */
+  private normalizePersistedSettings(): void {
+    const row = this.db
+      .prepare("SELECT value_json FROM settings WHERE key = 'app'")
+      .get() as { value_json: string } | undefined;
+    if (!row) return;
+    let raw: unknown;
+    try {
+      raw = JSON.parse(row.value_json) as unknown;
+    } catch {
+      // A truncated settings value must not brick the entire desktop app.
+      // Preserve the exact unreadable value under a non-active key before
+      // replacing only the active settings row with current validated policy
+      // defaults. This keeps recovery evidence without repeatedly failing
+      // every startup.
+      const recovered = appSettingsSchema.parse(DEFAULT_SETTINGS);
+      this.db.transaction(() => {
+        this.db
+          .prepare("INSERT INTO settings (key, value_json, updated_at) VALUES (?, ?, ?)")
+          .run(`app.corrupt.${Date.now()}.${randomUUID()}`, row.value_json, Date.now());
+        this.db
+          .prepare("UPDATE settings SET value_json = ?, updated_at = ? WHERE key = 'app'")
+          .run(JSON.stringify(recovered), Date.now());
+      })();
+      return;
+    }
+    const normalized = migratePersistedAppSettings(raw);
+    const value = JSON.stringify(normalized);
+    if (value === row.value_json) return;
+    this.db
+      .prepare("UPDATE settings SET value_json = ?, updated_at = ? WHERE key = 'app'")
+      .run(value, Date.now());
   }
 
   private encrypt(value: string): Buffer {

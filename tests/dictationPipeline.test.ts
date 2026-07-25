@@ -19,11 +19,11 @@ describe("end-to-end deterministic dictation text pipeline", () => {
     const finalText = applyLocalTextRules(
       transformed.text,
       [{ phrase: "q when asr", replacement: "Qwen3-ASR" }],
-      [{ trigger: "my sign off", expansion: "Best,\nDevesh" }],
+      [{ trigger: "my sign off", expansion: "Best,\nAlice" }],
     );
 
     expect(transformed.stats.removedFillers).toBe(1);
     expect(transformed.stats.punctuationCommands).toBe(1);
-    expect(finalText).toBe("Send Qwen3-ASR, then Best,\nDevesh.");
+    expect(finalText).toBe("Send Qwen3-ASR, then Best,\nAlice.");
   });
 });

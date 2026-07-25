@@ -16,7 +16,7 @@ describe("application identity normalization", () => {
 
   it("matches a configured Windows executable name to its captured full path", () => {
     expect(
-      applicationIdsMatch("Slack.exe", "C:\\Users\\Devesh\\AppData\\Local\\slack\\SLACK.EXE"),
+      applicationIdsMatch("Slack.exe", "C:\\Users\\Alice\\AppData\\Local\\slack\\SLACK.EXE"),
     ).toBe(true);
     expect(applicationIdsMatch("Teams.exe", "C:\\Apps\\Slack.exe")).toBe(false);
   });

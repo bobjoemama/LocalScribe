@@ -199,6 +199,21 @@ export const appInfoSchema = z.object({
 });
 export type AppInfo = z.infer<typeof appInfoSchema>;
 
+export const launchAtLoginStatusSchema = z.object({
+  supported: z.boolean(),
+  registered: z.boolean(),
+  effective: z.boolean(),
+  requiresApproval: z.boolean(),
+  status: z.enum([
+    "enabled",
+    "disabled",
+    "requires-approval",
+    "not-registered",
+    "unavailable",
+  ]),
+}).strict();
+export type LaunchAtLoginStatus = z.infer<typeof launchAtLoginStatusSchema>;
+
 const modelVerificationStatusSchema = z.enum(["missing", "invalid", "verified"]);
 const acceleratorMemoryBasisSchema = z.enum(["measured", "estimated", "unavailable"]);
 const modelMemoryBasisSchema = z.enum(["measured", "estimated"]);
@@ -243,7 +258,7 @@ export const diagnosticsSchema = z.object({
     fitsMemoryBudget: z.boolean(),
     resolutionReason: z.string().nullable(),
     // `requiredFreeMemoryBytes` is maximum model working memory plus the
-    // explicitly reported Auto headroom, never merely the download size.
+    // explicitly reported system safety headroom, never merely download size.
     reservedHeadroomBytes: z.number().int().nonnegative().nullable(),
     requiredFreeMemoryBytes: z.number().int().nonnegative().nullable(),
     options: z.array(z.object({
@@ -291,6 +306,54 @@ const modelCatalogProfileSchema = z.object({
   memoryBasis: modelMemoryBasisSchema,
 }).strict();
 
+const modelCatalogVerificationSchema = z.object({
+  familyId: modelFamilyIdSchema,
+  artifactId: z.string().regex(/^[a-z0-9][a-z0-9-]*$/),
+  present: z.boolean(),
+  verified: z.boolean(),
+  verificationStatus: modelVerificationStatusSchema,
+  sizeBytes: z.number().int().nonnegative(),
+  expectedBytes: z.number().int().nonnegative(),
+  verifiedFiles: z.number().int().nonnegative(),
+  expectedFiles: z.number().int().positive(),
+}).strict().superRefine((verification, context) => {
+  if (verification.verified !== (verification.verificationStatus === "verified")) {
+    context.addIssue({
+      code: "custom",
+      path: ["verified"],
+      message: "Artifact verified state is inconsistent.",
+    });
+  }
+  if (verification.present !== (verification.verificationStatus !== "missing")) {
+    context.addIssue({
+      code: "custom",
+      path: ["present"],
+      message: "Artifact presence state is inconsistent.",
+    });
+  }
+  if (verification.verifiedFiles > verification.expectedFiles) {
+    context.addIssue({
+      code: "custom",
+      path: ["verifiedFiles"],
+      message: "Verified file count exceeds the manifest.",
+    });
+  }
+  if (verification.verified && verification.verifiedFiles !== verification.expectedFiles) {
+    context.addIssue({
+      code: "custom",
+      path: ["verifiedFiles"],
+      message: "A verified artifact must verify every manifest file.",
+    });
+  }
+});
+
+const unmanagedModelEntrySchema = z.object({
+  name: z.string().min(1).max(255).regex(/^[^/\\\0]+$/),
+  kind: z.enum(["directory", "file", "symlink", "other"]),
+  reason: z.enum(["unmanaged", "interrupted-install"]),
+  sizeBytes: z.number().int().nonnegative().nullable(),
+}).strict();
+
 const modelCatalogFamilySchema = z.object({
   familyId: modelFamilyIdSchema,
   displayName: z.string().min(1).max(200),
@@ -306,6 +369,14 @@ export const modelCatalogSchema = z.object({
   activeModelFamilyId: modelFamilyIdSchema,
   modelLibraryFamilyIds: modelLibraryFamilyIdsSchema,
   families: z.array(modelCatalogFamilySchema).length(MODEL_FAMILY_IDS.length),
+  /**
+   * Current cryptographic disk status for every distinct curated artifact.
+   * Profiles join through artifactId, so Windows' shared model data appears
+   * once per family even though it powers three compute profiles.
+   */
+  verifications: z.array(modelCatalogVerificationSchema),
+  /** Unexpected app-owned model-root entries are reported, never auto-deleted. */
+  unmanagedEntries: z.array(unmanagedModelEntrySchema).max(1_000),
 }).strict().superRefine((catalog, context) => {
   if (!catalog.modelLibraryFamilyIds.includes(catalog.activeModelFamilyId)) {
     context.addIssue({
@@ -315,6 +386,7 @@ export const modelCatalogSchema = z.object({
     });
   }
   const seenFamilies = new Set<string>();
+  const expectedArtifacts = new Map<string, number>();
   for (const [index, family] of catalog.families.entries()) {
     if (seenFamilies.has(family.familyId)) {
       context.addIssue({ code: "custom", path: ["families", index, "familyId"], message: "Duplicate family." });
@@ -326,6 +398,95 @@ export const modelCatalogSchema = z.object({
     if (family.inLibrary !== catalog.modelLibraryFamilyIds.includes(family.familyId)) {
       context.addIssue({ code: "custom", path: ["families", index, "inLibrary"], message: "Family library flag is inconsistent." });
     }
+    const familyArtifactIds = new Set<string>();
+    for (const [artifactIndex, artifact] of family.artifacts.entries()) {
+      if (familyArtifactIds.has(artifact.artifactId)) {
+        context.addIssue({
+          code: "custom",
+          path: ["families", index, "artifacts", artifactIndex, "artifactId"],
+          message: "Duplicate curated artifact.",
+        });
+      }
+      familyArtifactIds.add(artifact.artifactId);
+      expectedArtifacts.set(
+        `${family.familyId}\u0000${artifact.artifactId}`,
+        artifact.expectedDownloadBytes,
+      );
+    }
+    const familyProfileIds = new Set<string>();
+    const familyTiers = new Set<string>();
+    for (const [profileIndex, profile] of family.profiles.entries()) {
+      if (familyProfileIds.has(profile.profileId)) {
+        context.addIssue({
+          code: "custom",
+          path: ["families", index, "profiles", profileIndex, "profileId"],
+          message: "Duplicate curated profile.",
+        });
+      }
+      familyProfileIds.add(profile.profileId);
+      if (familyTiers.has(profile.tier)) {
+        context.addIssue({
+          code: "custom",
+          path: ["families", index, "profiles", profileIndex, "tier"],
+          message: "Each performance tier must appear once per family.",
+        });
+      }
+      familyTiers.add(profile.tier);
+      if (!familyArtifactIds.has(profile.artifactId)) {
+        context.addIssue({
+          code: "custom",
+          path: ["families", index, "profiles", profileIndex, "artifactId"],
+          message: "Profile does not reference a curated family artifact.",
+        });
+      }
+    }
+  }
+  const seenVerifications = new Set<string>();
+  for (const [index, verification] of catalog.verifications.entries()) {
+    const key = `${verification.familyId}\u0000${verification.artifactId}`;
+    if (seenVerifications.has(key)) {
+      context.addIssue({
+        code: "custom",
+        path: ["verifications", index],
+        message: "Duplicate artifact verification.",
+      });
+    }
+    seenVerifications.add(key);
+    const expectedBytes = expectedArtifacts.get(key);
+    if (expectedBytes === undefined) {
+      context.addIssue({
+        code: "custom",
+        path: ["verifications", index, "artifactId"],
+        message: "Verification does not reference a curated artifact.",
+      });
+    } else if (verification.expectedBytes !== expectedBytes) {
+      context.addIssue({
+        code: "custom",
+        path: ["verifications", index, "expectedBytes"],
+        message: "Verification byte total does not match the curated artifact.",
+      });
+    }
+  }
+  for (const expected of expectedArtifacts.keys()) {
+    if (!seenVerifications.has(expected)) {
+      context.addIssue({
+        code: "custom",
+        path: ["verifications"],
+        message: "Every curated artifact must have one verification result.",
+      });
+      break;
+    }
+  }
+  const seenUnmanagedEntries = new Set<string>();
+  for (const [index, entry] of catalog.unmanagedEntries.entries()) {
+    if (seenUnmanagedEntries.has(entry.name)) {
+      context.addIssue({
+        code: "custom",
+        path: ["unmanagedEntries", index, "name"],
+        message: "Duplicate unmanaged model-root entry.",
+      });
+    }
+    seenUnmanagedEntries.add(entry.name);
   }
 });
 export type ModelCatalog = z.infer<typeof modelCatalogSchema>;
@@ -385,6 +546,56 @@ export const DEFAULT_SETTINGS: AppSettings = {
   toggleShortcut: "Control+Space",
 };
 
+/**
+ * Upgrade a persisted settings object field by field.
+ *
+ * Settings live longer than any one application build. A removed enum value
+ * or one damaged field must not make every unrelated preference unreadable.
+ * Valid saved values win, new fields receive current policy defaults, unknown
+ * legacy fields are discarded, and cross-field invariants are repaired
+ * deterministically before the complete object is validated.
+ */
+export function migratePersistedAppSettings(raw: unknown): AppSettings {
+  const source = raw !== null && typeof raw === "object" && !Array.isArray(raw)
+    ? raw as Record<string, unknown>
+    : {};
+  const defaults = appSettingsSchema.parse(DEFAULT_SETTINGS);
+  const candidate: Record<keyof AppSettings, unknown> = { ...defaults };
+  const fieldSchemas = appSettingsFieldsSchema.shape;
+
+  for (const key of Object.keys(fieldSchemas) as Array<keyof typeof fieldSchemas>) {
+    if (!Object.prototype.hasOwnProperty.call(source, key)) continue;
+    const parsed = fieldSchemas[key].safeParse(source[key]);
+    if (parsed.success) candidate[key] = parsed.data;
+  }
+
+  const library = candidate.modelLibraryFamilyIds as AppSettings["modelLibraryFamilyIds"];
+  const activeFamily = candidate.activeModelFamilyId as AppSettings["activeModelFamilyId"];
+  if (!library.includes(activeFamily)) {
+    candidate.activeModelFamilyId = library.includes(DEFAULT_MODEL_FAMILY_ID)
+      ? DEFAULT_MODEL_FAMILY_ID
+      : library[0];
+  }
+
+  if (shortcutsUseSamePhysicalKeys(
+    candidate.holdShortcut as AppSettings["holdShortcut"],
+    candidate.toggleShortcut as AppSettings["toggleShortcut"],
+  )) {
+    candidate.toggleShortcut = defaults.toggleShortcut;
+    // A legacy hold shortcut may itself equal today's default toggle. In that
+    // case resetting only the toggle reproduces the conflict, so restore the
+    // hold policy default as the second deterministic repair.
+    if (shortcutsUseSamePhysicalKeys(
+      candidate.holdShortcut as AppSettings["holdShortcut"],
+      candidate.toggleShortcut as AppSettings["toggleShortcut"],
+    )) {
+      candidate.holdShortcut = defaults.holdShortcut;
+    }
+  }
+
+  return appSettingsSchema.parse(candidate);
+}
+
 export const transcribeAudioSchema = z.object({
   sessionId: z.string().uuid(),
   wav: z.instanceof(ArrayBuffer)
@@ -432,6 +643,7 @@ export const IPC = {
   windowToggleScratchpadSize: "window:toggle-scratchpad-size",
   windowNavigate: "window:navigate",
   systemGetPermissions: "system:get-permissions",
+  systemGetLaunchAtLoginStatus: "system:get-launch-at-login-status",
   systemOpenPermission: "system:open-permission",
   systemAppInfo: "system:app-info",
   systemDiagnostics: "system:diagnostics",
@@ -499,6 +711,7 @@ export interface LocalScribeApi {
   };
   system: {
     getPermissions(): Promise<PermissionSnapshot>;
+    getLaunchAtLoginStatus(): Promise<LaunchAtLoginStatus>;
     openPermission(kind: "microphone" | "accessibility"): Promise<void>;
     appInfo(): Promise<AppInfo>;
     diagnostics(): Promise<Diagnostics>;

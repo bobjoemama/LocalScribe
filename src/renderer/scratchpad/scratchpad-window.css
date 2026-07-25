@@ -52,9 +52,9 @@ html[data-surface="scratchpad"] #root {
 .scratchpad-window__window-action svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.7; }
 .scratchpad-window__title-spacer { flex: 1; }
 
-.scratchpad-window__workspace { display: grid; min-height: 0; grid-template-columns: 172px minmax(0, 1fr); transition: grid-template-columns 160ms ease; }
+.scratchpad-window__workspace { display: grid; min-height: 0; overflow: hidden; grid-template-columns: 172px minmax(0, 1fr); transition: grid-template-columns 160ms ease; }
 .scratchpad-window--notes-collapsed .scratchpad-window__workspace { grid-template-columns: 44px minmax(0, 1fr); }
-.scratchpad-window__notes { display: grid; min-width: 0; grid-template-rows: 40px minmax(0, 1fr) auto; border-right: 1px solid #e7e7e5; background: #f6f6f5; }
+.scratchpad-window__notes { display: grid; min-width: 0; min-height: 0; grid-template-rows: 40px minmax(0, 1fr) minmax(0, auto); border-right: 1px solid #e7e7e5; background: #f6f6f5; }
 .scratchpad-window__notes-top { display: flex; height: 40px; align-items: center; padding: 0 7px; }
 .scratchpad-window__collapse { display: inline-flex; min-width: 0; height: 25px; align-items: center; gap: 4px; padding: 0 5px; color: #696964; border: 0; border-radius: 5px; background: transparent; cursor: pointer; font-size: 10px; font-weight: 600; line-height: 1; white-space: nowrap; }
 .scratchpad-window__collapse:hover { color: #30302d; background: #eaeae8; }
@@ -69,12 +69,12 @@ html[data-surface="scratchpad"] #root {
 .scratchpad-window__notes-content { display: grid; min-height: 0; grid-template-rows: 29px 29px minmax(0, 1fr); gap: 8px; padding: 0 8px 8px; }
 .scratchpad-window__new-note { display: flex; width: 100%; height: 29px; align-items: center; justify-content: center; gap: 5px; color: #3d3d39; border: 1px solid #ddddda; border-radius: 6px; background: #fff; cursor: pointer; font-size: 10px; font-weight: 650; }
 .scratchpad-window__new-note:hover { border-color: #c6c6c1; background: #fafafa; }
+.scratchpad-window__new-note:disabled { color: #999993; border-color: #e5e5e1; background: #f0f0ed; cursor: default; }
 .scratchpad-window__new-note svg,
 .scratchpad-window__search svg,
 .scratchpad-window__note-icon svg,
 .scratchpad-window__delete-note svg,
 .scratchpad-window__unavailable > svg,
-.scratchpad-window__editor-footer svg,
 .scratchpad-window__copy svg { width: 14px; height: 14px; flex: 0 0 auto; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.65; }
 .scratchpad-window__new-note svg { width: 12px; height: 12px; }
 .scratchpad-window__search { display: flex; width: 100%; min-width: 0; align-items: center; gap: 5px; padding: 0 7px; color: #979792; border: 1px solid #e0e0dc; border-radius: 6px; background: #fff; }
@@ -84,10 +84,12 @@ html[data-surface="scratchpad"] #root {
 .scratchpad-window__search input::placeholder { color: #aaa9a4; }
 
 .scratchpad-window__note-list { min-height: 0; overflow-y: auto; padding-right: 1px; }
+.scratchpad-window__note-list:focus-visible { outline: 2px solid #878780; outline-offset: -2px; }
 .scratchpad-window__note-row { display: grid; grid-template-columns: minmax(0, 1fr) 24px; min-width: 0; align-items: center; margin-bottom: 4px; border: 1px solid transparent; border-radius: 7px; }
 .scratchpad-window__note-row--active { border-color: #d6d6d1; background: #fff; box-shadow: 0 1px 2px #00000008; }
 .scratchpad-window__note-card { display: flex; width: 100%; min-width: 0; align-items: center; gap: 7px; padding: 6px; color: #3a3a36; border: 0; border-radius: 6px; background: transparent; cursor: pointer; text-align: left; }
 .scratchpad-window__note-row:not(.scratchpad-window__note-row--active):hover { background: #eeeeeb; }
+.scratchpad-window__note-card:disabled { cursor: wait; opacity: .55; }
 .scratchpad-window__note-details { display: grid; min-width: 0; gap: 2px; }
 .scratchpad-window__note-details strong { overflow: hidden; font-size: 10px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
 .scratchpad-window__note-details small { color: #94948e; font-size: 10px; white-space: nowrap; }
@@ -95,22 +97,26 @@ html[data-surface="scratchpad"] #root {
 .scratchpad-window__note-icon svg { width: 12px; height: 12px; }
 .scratchpad-window__delete-note { display: grid; width: 22px; height: 22px; padding: 0; place-items: center; color: #aaa9a4; border: 0; border-radius: 4px; background: transparent; cursor: pointer; opacity: 0; }
 .scratchpad-window__delete-note:hover { color: #87534b; background: #f4eae8; }
-.scratchpad-window__note-row:hover .scratchpad-window__delete-note,
+.scratchpad-window__delete-note:disabled { cursor: wait; opacity: .35; }
+.scratchpad-window__note-row:hover .scratchpad-window__delete-note:not(:disabled),
 .scratchpad-window__delete-note:focus-visible { opacity: 1; }
 .scratchpad-window__delete-note svg { width: 12px; height: 12px; }
 .scratchpad-window__empty-search { margin: 8px 3px; color: #969690; font-size: 10px; line-height: 1.35; }
 
-.scratchpad-window__notes-bottom { display: grid; gap: 2px; padding: 7px 8px 8px; border-top: 1px solid #e7e7e4; }
+.scratchpad-window__notes-bottom { display: grid; min-height: 0; max-height: 100px; overflow-y: auto; gap: 2px; padding: 7px 8px 8px; border-top: 1px solid #e7e7e4; }
 .scratchpad-window__unavailable { display: flex; width: 100%; min-width: 0; align-items: flex-start; gap: 6px; padding: 5px 4px; color: #9b9b95; border: 0; border-radius: 5px; background: transparent; text-align: left; }
 .scratchpad-window__unavailable > span { display: grid; min-width: 0; gap: 1px; }
 .scratchpad-window__unavailable strong { color: #787872; font-size: 10px; font-weight: 600; line-height: 1.25; }
-.scratchpad-window__unavailable small { color: #9f9f99; font-size: 10px; line-height: 1.25; }
+.scratchpad-window__unavailable small { overflow: hidden; color: #9f9f99; font-size: 9px; line-height: 1.25; text-overflow: ellipsis; white-space: nowrap; }
 .scratchpad-window__unavailable:disabled { cursor: not-allowed; opacity: 1; }
 .scratchpad-window__unavailable > svg { width: 13px; height: 13px; margin-top: 1px; }
 
 .scratchpad-window__editor-panel { display: grid; min-width: 0; min-height: 0; grid-template-rows: 30px minmax(0, 1fr) 39px; background: #fff; }
 .scratchpad-window__editor-status { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 0 15px; color: #aaa9a4; border-bottom: 1px solid #f0f0ed; font-size: 10px; }
+.scratchpad-window__save-state-announcer { display: inline-flex; min-width: 0; }
 .scratchpad-window__save-state { display: inline-flex; align-items: center; gap: 4px; color: #92928c; }
+button.scratchpad-window__save-state { min-width: 0; padding: 2px 3px; color: #ad574c; border: 0; border-radius: 4px; background: transparent; cursor: pointer; }
+button.scratchpad-window__save-state:hover { background: #f8ecea; }
 .scratchpad-window__save-state i { width: 5px; height: 5px; border-radius: 50%; background: #73736d; }
 .scratchpad-window__save-state--loading i,
 .scratchpad-window__save-state--saving i { background: #ad8755; animation: scratchpad-window-pulse 1s ease-in-out infinite alternate; }
@@ -118,12 +124,11 @@ html[data-surface="scratchpad"] #root {
 .scratchpad-window__save-state--error i { background: #b85a4e; }
 @keyframes scratchpad-window-pulse { to { opacity: .35; } }
 .scratchpad-window__editor { display: flex; min-height: 0; }
+.scratchpad-window__editor:focus-within { box-shadow: inset 0 0 0 2px #878780; }
 .scratchpad-window__editor textarea { width: 100%; min-height: 0; flex: 1; resize: none; padding: 16px 18px; color: #353530; border: 0; outline: 0; background: transparent; font-family: Iowan Old Style, Palatino Linotype, Georgia, serif; font-size: 15px; line-height: 1.65; }
 .scratchpad-window__editor textarea::placeholder { color: #bbb9b2; }
 .scratchpad-window__editor textarea:disabled { cursor: default; }
-.scratchpad-window__editor-footer { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 6px 11px 6px 15px; color: #aaa9a4; border-top: 1px solid #f0f0ed; background: #fcfcfb; font-size: 10px; }
-.scratchpad-window__editor-footer > span { display: inline-flex; align-items: center; gap: 4px; }
-.scratchpad-window__editor-footer svg { width: 11px; height: 11px; }
+.scratchpad-window__editor-footer { display: flex; align-items: center; justify-content: flex-end; gap: 10px; padding: 6px 11px; color: #aaa9a4; border-top: 1px solid #f0f0ed; background: #fcfcfb; font-size: 10px; }
 .scratchpad-window__copy { display: inline-flex; height: 27px; align-items: center; gap: 5px; padding: 0 11px; color: #fff; border: 1px solid #22221f; border-radius: 14px; background: #282825; box-shadow: 0 1px 1px #00000020; cursor: pointer; font-size: 10px; font-weight: 650; }
 .scratchpad-window__copy:hover { background: #40403c; }
 .scratchpad-window__copy:disabled { color: #a9a9a2; border-color: #e6e6e2; background: #efefec; cursor: default; }
@@ -133,6 +138,15 @@ html[data-surface="scratchpad"] #root {
 @media (max-width: 460px) {
   .scratchpad-window__workspace { grid-template-columns: 152px minmax(0, 1fr); }
   .scratchpad-window__editor textarea { padding: 14px; }
-  .scratchpad-window__editor-footer > span { display: none; }
-  .scratchpad-window__editor-footer { justify-content: flex-end; }
+}
+
+@media (max-height: 360px) {
+  .scratchpad-window__notes-bottom { display: none; }
+  .scratchpad-window__editor textarea { padding-top: 12px; padding-bottom: 12px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .scratchpad-window__workspace { transition: none; }
+  .scratchpad-window__save-state--loading i,
+  .scratchpad-window__save-state--saving i { animation: none; }
 }

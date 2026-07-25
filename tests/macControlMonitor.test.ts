@@ -1,7 +1,30 @@
+import { EventEmitter } from "node:events";
+import { spawn } from "node:child_process";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
-import { parseControlMonitorLine } from "../src/main/hotkeys/macControlMonitor";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("node:child_process", () => ({
+  spawn: vi.fn(),
+}));
+
+import {
+  MacControlMonitor,
+  parseControlMonitorLine,
+} from "../src/main/hotkeys/macControlMonitor";
 import { resolveNativeActiveTargetHelperPath } from "../src/main/nativeHelperPath";
+
+class FakeMonitorProcess extends EventEmitter {
+  readonly stdout = Object.assign(new EventEmitter(), { setEncoding: vi.fn() });
+  readonly stderr = Object.assign(new EventEmitter(), { setEncoding: vi.fn() });
+  exitCode: number | null = null;
+  signalCode: NodeJS.Signals | null = null;
+  readonly kill = vi.fn(() => true);
+}
+
+afterEach(() => {
+  vi.clearAllMocks();
+  vi.unstubAllEnvs();
+});
 
 describe("macOS Control monitor protocol", () => {
   it("accepts only the four non-content key-state events", () => {
@@ -16,6 +39,38 @@ describe("macOS Control monitor protocol", () => {
     expect(parseControlMonitorLine('{"event":"key-down","key":"A"}')).toBeNull();
     expect(parseControlMonitorLine('{"event":"control-down","key":"Control"}')).toBeNull();
   });
+
+  it("passes no ambient secrets and reports asynchronous helper death once", () => {
+    vi.stubEnv("HF_TOKEN", "must-not-cross-process-boundary");
+    vi.stubEnv("HTTPS_PROXY", "http://sensitive-proxy.invalid");
+    const first = new FakeMonitorProcess();
+    const second = new FakeMonitorProcess();
+    vi.mocked(spawn)
+      .mockReturnValueOnce(first as never)
+      .mockReturnValueOnce(second as never);
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const stopped = vi.fn();
+    const monitor = new MacControlMonitor(process.execPath, "darwin");
+
+    expect(monitor.start(vi.fn(), stopped)).toBe(true);
+    const options = vi.mocked(spawn).mock.calls[0]?.[2];
+    expect(options).toMatchObject({
+      env: {},
+      shell: false,
+      windowsHide: true,
+    });
+    expect(options?.env).not.toHaveProperty("HF_TOKEN");
+    expect(options?.env).not.toHaveProperty("HTTPS_PROXY");
+    expect(options?.env).not.toHaveProperty("PATH");
+
+    first.emit("error", new Error("EACCES"));
+    first.emit("exit", 1, null);
+    expect(stopped).toHaveBeenCalledOnce();
+
+    expect(monitor.start(vi.fn(), stopped)).toBe(true);
+    expect(spawn).toHaveBeenCalledTimes(2);
+    warning.mockRestore();
+  });
 });
 
 describe("native active-target helper resolution", () => {
@@ -26,6 +81,16 @@ describe("native active-target helper resolution", () => {
       environment: { LOCALSCRIBE_NATIVE_INSERTION_HELPER: override },
       allowEnvironmentOverride: true,
     })).toBe(override);
+  });
+
+  it("anchors a relative development override to the application root rather than shell cwd", () => {
+    const workingDirectory = path.resolve("test-fixtures", "workspace");
+    expect(resolveNativeActiveTargetHelperPath({
+      platform: "darwin",
+      environment: { LOCALSCRIBE_NATIVE_INSERTION_HELPER: "build/active-target" },
+      allowEnvironmentOverride: true,
+      workingDirectory,
+    })).toBe(path.join(workingDirectory, "build", "active-target"));
   });
 
   it("never accepts an environment helper override for a packaged caller", () => {

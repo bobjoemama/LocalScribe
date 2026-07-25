@@ -40,6 +40,7 @@ struct PasteExpectation {
   DWORD process_id;
   std::string application_id;
   std::string window_fingerprint;
+  DWORD clipboard_sequence;
 };
 
 bool WriteStdout(std::string_view value) {
@@ -134,9 +135,11 @@ bool ParsePasteExpectation(
     std::wstring_view process_id,
     const std::wstring& application_id,
     std::wstring_view window_fingerprint,
+    std::wstring_view clipboard_sequence,
     PasteExpectation* expectation) {
   if (platform != L"win32" ||
       !ParseProcessId(process_id, &expectation->process_id) ||
+      !ParseProcessId(clipboard_sequence, &expectation->clipboard_sequence) ||
       !WideToUtf8(application_id, &expectation->application_id) ||
       expectation->application_id.size() > 1024 ||
       window_fingerprint.size() != 64) {
@@ -359,6 +362,7 @@ bool AutomationElementIsEditable(
   IUIAutomationElement* element = nullptr;
   IUIAutomationValuePattern* value_pattern = nullptr;
   bool inspected = false;
+  bool explicitly_read_only = false;
 
   if (SUCCEEDED(CoCreateInstance(
           CLSID_CUIAutomation,
@@ -377,18 +381,27 @@ bool AutomationElementIsEditable(
         SUCCEEDED(element->get_CurrentHasKeyboardFocus(&has_keyboard_focus)) &&
         SUCCEEDED(element->get_CurrentControlType(&control_type))) {
       inspected = true;
-      if (enabled != FALSE && has_keyboard_focus != FALSE) {
+      // UI Automation elements can occasionally omit a stable runtime ID.
+      // In that case editability alone is not enough to bind a later paste to
+      // the exact focused control. Native HWND-backed controls are handled by
+      // the fallback below, so UIA-only controls fail closed here.
+      if (enabled != FALSE &&
+          has_keyboard_focus != FALSE &&
+          !runtime_id->empty()) {
         if (SUCCEEDED(element->GetCurrentPatternAs(
                 UIA_ValuePatternId,
                 IID_PPV_ARGS(&value_pattern))) &&
             value_pattern != nullptr) {
           BOOL read_only = TRUE;
           if (SUCCEEDED(value_pattern->get_CurrentIsReadOnly(&read_only))) {
+            explicitly_read_only = read_only != FALSE;
             *editable = read_only == FALSE;
           }
         }
 
-        if (!*editable && control_type == UIA_EditControlTypeId) {
+        if (!*editable &&
+            !explicitly_read_only &&
+            control_type == UIA_EditControlTypeId) {
           VARIANT text_edit_available;
           VariantInit(&text_edit_available);
           if (SUCCEEDED(element->GetCurrentPropertyValue(
@@ -411,7 +424,9 @@ bool AutomationElementIsEditable(
 
   // Native Edit/RichEdit/Scintilla controls remain usable even when a target
   // application does not expose UI Automation metadata.
-  if (!*editable && NativeControlLooksEditable(focus_window)) {
+  if (!*editable &&
+      !explicitly_read_only &&
+      NativeControlLooksEditable(focus_window)) {
     *editable = true;
     inspected = true;
   }
@@ -527,6 +542,17 @@ bool InjectPaste(const PasteExpectation& expectation) {
       GetForegroundWindow() != target.foreground_window) {
     return false;
   }
+  // Modifier state and clipboard ownership can change while UI Automation
+  // inspects the target. Repeat both guards in the final synchronous handoff
+  // immediately before SendInput.
+  if (IsKeyPressed(VK_CONTROL) ||
+      IsKeyPressed(VK_SHIFT) ||
+      IsKeyPressed(VK_MENU) ||
+      IsKeyPressed(VK_LWIN) ||
+      IsKeyPressed(VK_RWIN) ||
+      GetClipboardSequenceNumber() != expectation.clipboard_sequence) {
+    return false;
+  }
 
   std::array<INPUT, 4> inputs{};
   inputs[0].type = INPUT_KEYBOARD;
@@ -579,24 +605,35 @@ bool SelfTest() {
           L"42",
           L"C:\\Program Files\\Editor\\editor.exe",
           fingerprint,
+          L"7",
           &expectation) ||
       ParsePasteExpectation(
           L"darwin",
           L"42",
           L"C:\\Program Files\\Editor\\editor.exe",
           fingerprint,
+          L"7",
           &invalid) ||
       ParsePasteExpectation(
           L"win32",
           L"042",
           L"C:\\Program Files\\Editor\\editor.exe",
           fingerprint,
+          L"7",
           &invalid) ||
       ParsePasteExpectation(
           L"win32",
           L"42",
           L"C:\\Program Files\\Editor\\editor.exe",
           std::wstring(64, L'A'),
+          L"7",
+          &invalid) ||
+      ParsePasteExpectation(
+          L"win32",
+          L"42",
+          L"C:\\Program Files\\Editor\\editor.exe",
+          fingerprint,
+          L"0",
           &invalid)) {
     return false;
   }
@@ -637,8 +674,13 @@ int wmain(int argument_count, wchar_t* arguments[]) {
   if (std::wstring_view(arguments[1]) == L"clipboard-sequence") {
     if (argument_count != 2) return Fail();
     const DWORD sequence = GetClipboardSequenceNumber();
+    // Windows reports zero when this process lacks clipboard access. Treat it
+    // as unavailable rather than allowing repeated zeros to defeat the
+    // sequence guard.
+    if (sequence == 0) return Fail();
     return WriteStdout(
-               "{\"sequence\":" + std::to_string(sequence) + "}\n")
+               "{\"platform\":\"win32\",\"sequence\":" +
+               std::to_string(sequence) + "}\n")
         ? 0
         : Fail();
   }
@@ -658,13 +700,14 @@ int wmain(int argument_count, wchar_t* arguments[]) {
   }
 
   if (std::wstring_view(arguments[1]) == L"paste") {
-    if (argument_count != 6) return Fail();
+    if (argument_count != 7) return Fail();
     PasteExpectation expectation{};
     if (!ParsePasteExpectation(
             arguments[2],
             arguments[3],
             arguments[4],
             arguments[5],
+            arguments[6],
             &expectation)) {
       return Fail();
     }

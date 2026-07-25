@@ -1,5 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { SafeInsertionCoordinator, sameTarget } from "../src/main/insertion/safeInsertion";
+import {
+  clipboardAdvancedExactlyOnce,
+  SafeInsertionCoordinator,
+  sameTarget,
+} from "../src/main/insertion/safeInsertion";
 import type {
   ActiveTarget,
   ClipboardPort,
@@ -48,6 +52,7 @@ const TARGET_A: ActiveTarget = {
   applicationId: "com.example.Editor",
   windowFingerprint: "a".repeat(64),
   focusedEditable: true,
+  focusedElementFingerprint: "f".repeat(64),
 };
 const TARGET_B: ActiveTarget = {
   ...TARGET_A,
@@ -131,7 +136,7 @@ describe("safe insertion", () => {
     await expect(insertion.insert("dictated", true)).resolves.toBe("pasted");
 
     expect(paste).toHaveBeenCalledOnce();
-    expect(paste).toHaveBeenCalledWith(TARGET_A);
+    expect(paste).toHaveBeenCalledWith(TARGET_A, 101);
     expect(clipboard.restoreCalls).toHaveLength(1);
   });
 
@@ -355,6 +360,25 @@ describe("safe insertion", () => {
     expect(clipboard.restoreCalls).toHaveLength(0);
   });
 
+  it("does not bless a foreign clipboard write before the first post-write sequence read", async () => {
+    const bridge = new FakeBridge([TARGET_A, TARGET_A], (readNumber, activeBridge) => {
+      if (readNumber === 3) {
+        activeBridge.sequence += 1;
+        clipboard.currentText = "external clipboard";
+      }
+    });
+    const clipboard = new FakeClipboard(bridge);
+    const paste = vi.fn();
+    const insertion = coordinator(bridge, clipboard, paste);
+
+    insertion.beginSession();
+    await expect(insertion.insert("dictated", true)).resolves.toBe("copied");
+
+    expect(paste).not.toHaveBeenCalled();
+    expect(clipboard.currentText).toBe("external clipboard");
+    expect(clipboard.restoreCalls).toHaveLength(0);
+  });
+
   it("leaves dictated text copied when paste injection fails", async () => {
     const bridge = new FakeBridge([TARGET_A, TARGET_A]);
     const clipboard = new FakeClipboard(bridge);
@@ -424,6 +448,22 @@ describe("safe insertion", () => {
   it("treats loss of a previously available window fingerprint as a target change", () => {
     expect(sameTarget(TARGET_A, { ...TARGET_A, windowFingerprint: null })).toBe(false);
     expect(sameTarget({ ...TARGET_A, windowFingerprint: null }, { ...TARGET_A, windowFingerprint: null })).toBe(false);
+  });
+
+  it("treats a different editable control in the same macOS window as a target change", () => {
+    expect(sameTarget(TARGET_A, {
+      ...TARGET_A,
+      focusedElementFingerprint: "e".repeat(64),
+    })).toBe(false);
+    expect(sameTarget(TARGET_A, TARGET_A)).toBe(true);
+  });
+
+  it("requires exactly one platform-valid clipboard sequence advance", () => {
+    expect(clipboardAdvancedExactlyOnce(100, 101, "darwin")).toBe(true);
+    expect(clipboardAdvancedExactlyOnce(100, 102, "darwin")).toBe(false);
+    expect(clipboardAdvancedExactlyOnce(100, 101, "win32")).toBe(true);
+    expect(clipboardAdvancedExactlyOnce(0, 1, "win32")).toBe(false);
+    expect(clipboardAdvancedExactlyOnce(4_294_967_295, 0, "win32")).toBe(false);
   });
 });
 
@@ -498,10 +538,12 @@ describe("native helper boundary", () => {
       ...base,
       windowFingerprint: null,
       focusedEditable: null,
+      focusedElementFingerprint: null,
     }))).toEqual({
       ...base,
       windowFingerprint: null,
       focusedEditable: null,
+      focusedElementFingerprint: null,
     });
     expect(nativeBridgeInternals.parseTarget(JSON.stringify({ ...base, windowFingerprint: null }))).toBeNull();
   });
@@ -555,6 +597,27 @@ describe("native helper boundary", () => {
 });
 
 describe("Windows insertion service", () => {
+  it("reports automatic paste ready only after the native helper self-test passes", async () => {
+    const { InsertionService } = await import("../src/main/insertion/insertionService");
+    const unavailable = new InsertionService({
+      clipboard: new FakeClipboard(new FakeBridge([])),
+      platformBridge: new FakeBridge([]),
+      platform: "win32",
+    });
+    await expect(unavailable.automaticPasteReady()).resolves.toBe(false);
+
+    const readyBridge = Object.assign(new FakeBridge([]), {
+      ready: vi.fn(async () => true),
+    });
+    const ready = new InsertionService({
+      clipboard: new FakeClipboard(readyBridge),
+      platformBridge: readyBridge,
+      platform: "win32",
+    });
+    await expect(ready.automaticPasteReady()).resolves.toBe(true);
+    expect(readyBridge.ready).toHaveBeenCalledOnce();
+  });
+
   it("never bypasses the native editable-target guard with a uiohook paste", async () => {
     const { InsertionService } = await import("../src/main/insertion/insertionService");
     const windowsTarget: ActiveTarget = {
@@ -605,7 +668,7 @@ describe("Windows insertion service", () => {
     insertion.beginSession();
     await expect(insertion.copyAndPaste("dictated", true)).resolves.toBe("pasted-with-copy");
     expect(bridge.paste).toHaveBeenCalledOnce();
-    expect(bridge.paste).toHaveBeenCalledWith(windowsTarget);
+    expect(bridge.paste).toHaveBeenCalledWith(windowsTarget, 101);
     expect(clipboard.currentText).toBe("dictated");
     expect(clipboard.restoreCalls).toHaveLength(0);
   });

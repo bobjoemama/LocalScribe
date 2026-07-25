@@ -10,9 +10,9 @@ describe("applyLocalTextRules", () => {
     const result = applyLocalTextRules(
       "Send this to Q when ASR using my sign off",
       [{ phrase: "Q when ASR", replacement: "Qwen ASR" }],
-      [{ trigger: "my sign off", expansion: "Best,\nDevesh" }],
+      [{ trigger: "my sign off", expansion: "Best,\nAlice" }],
     );
-    expect(result).toBe("Send this to Qwen ASR using Best,\nDevesh");
+    expect(result).toBe("Send this to Qwen ASR using Best,\nAlice");
   });
 
   it("matches dictionary phrases case-insensitively at word boundaries", () => {
@@ -30,9 +30,9 @@ describe("applyLocalTextRules", () => {
       applyLocalTextRules(
         "Use MY SIGN OFF, not my sign office.",
         [],
-        [{ trigger: "my sign off", expansion: "Best,\nDevesh" }],
+        [{ trigger: "my sign off", expansion: "Best,\nAlice" }],
       ),
-    ).toBe("Use Best,\nDevesh, not my sign office.");
+    ).toBe("Use Best,\nAlice, not my sign office.");
   });
 
   it("handles Unicode word boundaries and replacement dollar signs literally", () => {

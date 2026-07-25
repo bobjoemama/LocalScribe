@@ -1,0 +1,159 @@
+import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+import {
+  buildModelCatalogSnapshot,
+  modelRootForUserData,
+} from "../src/main/modelCatalogSnapshot";
+import { loadRuntimePlatformModelCatalog } from "../src/main/modelSpec";
+import { modelCatalogSchema } from "../src/shared/contracts";
+
+const temporaryRoots: string[] = [];
+
+afterEach(async () => {
+  await Promise.all(temporaryRoots.splice(0).map((root) => rm(root, {
+    recursive: true,
+    force: true,
+  })));
+});
+
+describe("main-process model catalog snapshot", () => {
+  it("reports all curated Mac artifacts, including families outside the library", async () => {
+    const modelRoot = await mkdtemp(path.join(os.tmpdir(), "localscribe-model-snapshot-"));
+    temporaryRoots.push(modelRoot);
+    const catalog = loadRuntimePlatformModelCatalog(
+      path.resolve("resources/model-manifest"),
+      "darwin",
+      "arm64",
+    );
+
+    const snapshot = await buildModelCatalogSnapshot({
+      settings: {
+        activeModelFamilyId: "whisper-large-v3",
+        modelLibraryFamilyIds: ["whisper-large-v3"],
+      },
+      catalog,
+      modelRoot,
+    });
+
+    expect(() => modelCatalogSchema.parse(snapshot)).not.toThrow();
+    expect(snapshot.verifications).toHaveLength(6);
+    expect(snapshot.verifications).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        familyId: "whisper-large-v3",
+        artifactId: "whisper-large-v3-mlx-fp16",
+        verificationStatus: "missing",
+      }),
+      expect.objectContaining({
+        familyId: "whisper-large-v2",
+        artifactId: "whisper-large-v2-mlx-int4",
+        verificationStatus: "missing",
+      }),
+    ]));
+    expect(snapshot.families.find((family) => family.familyId === "whisper-large-v2"))
+      .toMatchObject({ active: false, inLibrary: false });
+    expect(snapshot.unmanagedEntries).toEqual([]);
+  });
+
+  it("represents one Windows model artifact per family across all compute profiles", async () => {
+    const modelRoot = await mkdtemp(path.join(os.tmpdir(), "localscribe-model-snapshot-"));
+    temporaryRoots.push(modelRoot);
+    const catalog = loadRuntimePlatformModelCatalog(
+      path.resolve("resources/model-manifest"),
+      "win32",
+      "x64",
+    );
+
+    const snapshot = await buildModelCatalogSnapshot({
+      settings: {
+        activeModelFamilyId: "whisper-large-v2",
+        modelLibraryFamilyIds: ["whisper-large-v3", "whisper-large-v2"],
+      },
+      catalog,
+      modelRoot,
+    });
+
+    expect(snapshot.verifications).toEqual([
+      expect.objectContaining({
+        familyId: "whisper-large-v3",
+        artifactId: "whisper-large-v3-ctranslate2",
+      }),
+      expect.objectContaining({
+        familyId: "whisper-large-v2",
+        artifactId: "whisper-large-v2-ctranslate2",
+      }),
+    ]);
+    expect(snapshot.families.find((family) => family.familyId === "whisper-large-v2"))
+      .toMatchObject({ active: true, inLibrary: true });
+  });
+
+  it("keeps the model root under app-owned userData", () => {
+    expect(modelRootForUserData("/private/app-data")).toBe(
+      path.join("/private/app-data", "models"),
+    );
+  });
+
+  it("reports unmanaged and interrupted model data without following symlinks", async () => {
+    const modelRoot = await mkdtemp(path.join(os.tmpdir(), "localscribe-model-snapshot-"));
+    const external = await mkdtemp(path.join(os.tmpdir(), "localscribe-model-external-"));
+    temporaryRoots.push(modelRoot, external);
+    await mkdir(path.join(modelRoot, "qwen3-asr-old"));
+    await writeFile(path.join(modelRoot, "qwen3-asr-old", "weights.bin"), "12345");
+    await mkdir(path.join(modelRoot, ".whisper-medium-staging-deadbeef"));
+    await writeFile(path.join(modelRoot, ".whisper-medium-staging-deadbeef", "partial.bin"), "123");
+    await mkdir(path.join(modelRoot, ".localscribe-model-install-aabbccddeeff00112233445566778899"));
+    await writeFile(
+      path.join(
+        modelRoot,
+        ".localscribe-model-install-aabbccddeeff00112233445566778899",
+        "transaction.json",
+      ),
+      "{}",
+    );
+    await writeFile(path.join(external, "sentinel.bin"), "do not count this");
+    await symlink(external, path.join(modelRoot, "external-link"), "dir");
+    const catalog = loadRuntimePlatformModelCatalog(
+      path.resolve("resources/model-manifest"),
+      "darwin",
+      "arm64",
+    );
+
+    const snapshot = await buildModelCatalogSnapshot({
+      settings: {
+        activeModelFamilyId: "whisper-large-v3",
+        modelLibraryFamilyIds: ["whisper-large-v3"],
+      },
+      catalog,
+      modelRoot,
+    });
+
+    expect(snapshot.unmanagedEntries).toEqual(expect.arrayContaining([
+      {
+        name: "qwen3-asr-old",
+        kind: "directory",
+        reason: "unmanaged",
+        sizeBytes: 5,
+      },
+      {
+        name: ".whisper-medium-staging-deadbeef",
+        kind: "directory",
+        reason: "interrupted-install",
+        sizeBytes: 3,
+      },
+      {
+        name: ".localscribe-model-install-aabbccddeeff00112233445566778899",
+        kind: "directory",
+        reason: "interrupted-install",
+        sizeBytes: 2,
+      },
+      {
+        name: "external-link",
+        kind: "symlink",
+        reason: "unmanaged",
+        sizeBytes: null,
+      },
+    ]));
+  });
+
+});

@@ -39,35 +39,23 @@ Auto, High, Medium, and Low; Auto is policy rather than a fourth artifact.
 
 The worker project remains under `worker/windows_transformers/` for source-path
 compatibility, but its backend is faster-whisper—not Hugging Face Transformers.
-Important direct pins in its committed lock include:
-
-- Python 3.12.13
-- faster-whisper 1.2.1
-- CTranslate2 4.8.1
-- PyAV 18.0.0
-- NumPy 2.5.1
-- CUDA 12.9 cuBLAS/NVRTC packages
-- cuDNN 9.25
-- pynvml 13.610.43
+The committed Windows `pyproject.toml` and `uv.lock` are the authoritative
+runtime pins. `uv lock --check --project worker/windows_transformers` and the
+SBOM gate fail if the declared and locked graph drift; do not copy the current
+dependency versions into a packaging script.
 
 The immutable model authorities are
 [`faster-whisper-large-v3.json`](../resources/model-manifest/faster-whisper-large-v3.json)
 and [`faster-whisper-large-v2.json`](../resources/model-manifest/faster-whisper-large-v2.json).
 Large-v3 is the default; large-v2 can be added through the curated library.
 The corresponding Systran manifest metadata says MIT for both Windows
-artifacts. For example, the default v3 authority is:
-
-```text
-model:    Systran/faster-whisper-large-v3
-revision: edaa852ec7e145841d8ffdb056a99866b5f0a478
-bytes:    3,090,835,702
-license:  MIT
-```
+artifacts. The manifests themselves are the authority for model ID, revision,
+license, per-file byte counts, and SHA-256 digests.
 
 Every listed file has an exact byte count and SHA-256 digest. The worker stages
 downloads, rejects symlinks and unexpected file types, verifies every required
 file, and atomically activates only the complete directory. Runtime loading is
-`local_files_only=True`. Weights are never bundled in the installer and only an
+`local_files_only=True`. Weights are never bundled in the app package and only an
 explicit install action may download an approved, revision-pinned artifact.
 
 ## Narrow media and process boundary
@@ -81,6 +69,7 @@ Supported protocol messages are:
 
 - `hello`
 - `device_info`
+- `install_model`
 - `load_model`
 - `health`
 - `transcribe`
@@ -90,16 +79,19 @@ Each `load_model` request must provide a mutually consistent allowlisted
 `tier`, `modelId`, and `computeType`. Downloads require an explicit
 `allowDownload: true`; normal dictation sends false. stdout is protocol-only,
 stderr is diagnostic, main-to-worker request lines are bounded to 16 KiB, and
-worker-to-main response lines are bounded to 64 KiB. There is no local HTTP
+worker-to-main response lines are bounded to 1 MiB so the worker's permitted
+100,000-character transcription remains representable even with worst-case
+JSON escaping. There is no local HTTP
 server. The family/tier catalog is packaged: no plugin, arbitrary URL,
 arbitrary code, or custom model loader is accepted.
 
 ## Build on Windows
 
-Install Node 24.18.0, npm 11.16.0, `uv` 0.11.11, and Visual Studio 2026
-Build Tools with the Desktop development with C++ workload. LocalScribe pins
-`@electron/rebuild` 4.2.0, which uses a node-gyp release that recognizes
-Visual Studio 2026. Then run:
+Install the exact Node, npm, and `uv` versions declared by `.nvmrc`,
+`package.json`’s `packageManager`, and `.uv-version`, plus Visual Studio Build
+Tools with the Desktop development with C++ workload. The exact
+`@electron/rebuild` version is declared and locked in `package.json` and
+`package-lock.json`. Then run:
 
 ```powershell
 npm ci --strict-allow-scripts
@@ -116,6 +108,10 @@ exact `packageManager` pin.
 
 The runtime builder:
 
+- resolves and verifies the exact `uv` version from `.uv-version` before mutation;
+- rejects a linked/reparse runtime root, builds in a private sibling staging
+  directory, and promotes only after import and reparse-point checks pass;
+- restores the prior runtime if atomic promotion fails;
 - installs the pinned CPython 3.12.13 runtime;
 - performs `uv sync --locked --no-dev --no-editable --link-mode copy` and
   force-rebuilds LocalScribe's first-party worker so a same-version cached wheel
@@ -136,15 +132,24 @@ Run the worker’s dependency-light mocked tests with the bundled interpreter:
   -m unittest discover -s worker\windows_transformers\tests -v
 ```
 
-Create a complete Squirrel validation installer:
+Create the supported portable validation package:
 
 ```powershell
 npm run verify:local:windows
 ```
 
-This produces `LocalScribe-Setup.exe`, `RELEASES`, and a `.nupkg` under
-`out\make\`, plus the two Windows CycloneDX SBOMs and
-`out\SHA256SUMS-windows.txt`. Forge refuses to package when the runtime,
+This produces one versioned portable ZIP, two versioned Windows CycloneDX
+SBOMs, and a versioned checksum manifest. Resolve their exact paths from the
+same metadata used by Forge:
+
+```powershell
+node scripts/release-metadata.mjs --platform win32 --format json
+node scripts/verify-release-assets.mjs --platform win32
+```
+
+Forge extracts the ZIP into a private temporary directory, rejects
+links/reparse entries, and hashes every file to prove that the archive is an
+exact copy of the staged app. Forge refuses to package when the runtime,
 helper, model manifest, worker entrypoints, or Windows tray icon are missing.
 The complete gate also starts the packaged app with an isolated profile,
 re-runs the worker tests with the bundled interpreter, checks inference imports,
@@ -171,19 +176,31 @@ npm run verify:local:windows -- -RequireCuda `
   -CudaModelRoot "$env:APPDATA\LocalScribe\models"
 ```
 
-## Signing
+## Installer, signing, login, and updates
 
-An ordinary `npm run make:windows` is an unsigned validation build. Public mode
-is enabled only with `LOCALSCRIBE_RELEASE=1` and requires either:
+`npm run make:windows` intentionally emits an unsigned portable validation ZIP,
+not an installer. Extract it to an ordinary local directory and run
+`LocalScribe.exe` from there. LocalScribe registers that exact portable
+executable for optional hidden login startup; moving or deleting the extracted
+directory invalidates that registration until the app is launched again.
 
-- `WINDOWS_SIGN_WITH_PARAMS`, for a managed/EV signing flow; or
-- `WINDOWS_CERTIFICATE_FILE` plus `WINDOWS_CERTIFICATE_PASSWORD`.
+Squirrel is disabled by default. Its 32-bit `WriteZipToSetup.exe` helper was
+reproduced silently failing once LocalScribe's compressed CUDA/Python package
+passed roughly 950–970 MB: Forge returned success, but the 227 KB Setup.exe
+still contained Squirrel's dummy payload. The repository now contains a
+fail-closed PE-resource/ZIP verifier for regression diagnosis, and
+`LOCALSCRIBE_BUILD_LEGACY_SQUIRREL=1` may be used only by a developer to prove
+that a future smaller or upstream-fixed package passes it. That opt-in output
+is unsupported and must not be published.
 
-`WINDOWS_TIMESTAMP_SERVER` is also required and must use HTTPS. Release mode
-signs the complete packaged PE inventory and Squirrel artifacts, then checks
-`Get-AuthenticodeSignature` for every packaged `.exe`, `.dll`, and `.node`
-file plus Setup.exe. Opposite-platform native Node binaries are removed before
-signing. Missing credentials fail before packaging.
+`LOCALSCRIBE_RELEASE=1` on Windows fails before packaging. Public Windows
+publication stays disabled until there is a passwordless managed signing path,
+a supported installer, clean-machine install/uninstall evidence, and a tested
+update design. No update feed or automatic updater is configured. Portable
+users update manually by quitting LocalScribe, extracting the new verified
+package to a new directory, launching it once so login startup is repaired,
+and removing the old directory only after their local data is confirmed. User
+data and models live outside the portable program directory.
 
 ## Evidence boundary
 
@@ -194,12 +211,12 @@ Local verification on a Windows 11 x64 machine can establish:
 - mocked worker protocol behavior;
 - full Windows runtime assembly and import;
 - MSVC x64 helper compile/self-test;
-- native Node rebuild and Squirrel artifact creation;
+- native Node rebuild and verified portable ZIP creation;
 - whole-package platform isolation;
 - packaged startup, bundled inference imports, SBOMs, and artifact checksums;
 - CUDA device/compute-profile discovery when `-RequireCuda` is used;
 - checksum-verified model load and inference when `-CudaModelRoot` is supplied;
-- Authenticode validity when local release credentials are configured.
+- the current Authenticode state of packaged PE files.
 
 A build performed without a physical NVIDIA validation pass cannot establish:
 
@@ -207,9 +224,12 @@ A build performed without a physical NVIDIA validation pass cannot establish:
 - accuracy, latency, or peak VRAM for any tier;
 - microphone prompt/denial/recovery behavior;
 - real global hotkeys or target-guarded paste across desktop apps;
-- clean-user install/update/uninstall behavior;
+- clean-user portable extraction/manual-update behavior;
+- installer/update/uninstall behavior (no supported installer exists);
 - SmartScreen reputation.
 
-A Windows build is user-ready only after the signed installed app passes
-real-microphone, real-CUDA, hotkey, paste, tray, login, update, and uninstall
-tests on the claimed minimum GPU tier and at least one current RTX generation.
+A Windows portable build is user-ready only after the exact candidate passes
+real-microphone, real-CUDA, hotkey, paste, tray, login, and manual-update tests
+on the claimed minimum GPU tier and at least one current RTX generation. A
+Windows installer is a separate future deliverable and requires clean
+install/update/uninstall plus SmartScreen testing.
