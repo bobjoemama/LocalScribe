@@ -11,6 +11,7 @@ import path from "node:path";
 import { finished } from "node:stream/promises";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  archiveExtractionPath,
   assertFreshViteBuild,
   assertPackagedArchive,
   buildPackageProvenance,
@@ -120,6 +121,28 @@ describe("package source provenance", () => {
     expect(normalizeArchiveEntry("/.vite/build/main.js")).toBe(".vite/build/main.js");
     expect(normalizeArchiveEntry("\\.vite\\build\\main.js")).toBe(
       ".vite/build/main.js",
+    );
+  });
+
+  it("converts canonical archive keys only at the native extraction boundary", () => {
+    expect(archiveExtractionPath(".vite/build/main.js", "/")).toBe(
+      ".vite/build/main.js",
+    );
+    expect(archiveExtractionPath(".vite/build/main.js", "\\")).toBe(
+      ".vite\\build\\main.js",
+    );
+  });
+
+  it.each([
+    ["empty", ""],
+    ["rooted", "/.vite/build/main.js"],
+    ["backslash", ".vite\\build\\main.js"],
+    ["empty segment", ".vite//build/main.js"],
+    ["current-directory segment", ".vite/./build/main.js"],
+    ["traversal segment", ".vite/../package.json"],
+  ])("rejects %s noncanonical extraction paths", (_label, entry) => {
+    expect(() => archiveExtractionPath(entry, "\\")).toThrow(
+      /invalid canonical extraction path/u,
     );
   });
 
@@ -326,5 +349,23 @@ describe("package source provenance", () => {
         inputCandidates,
       })
     ).toThrow(/provenance sourceRoot/);
+  });
+
+  it("reports extraction failures separately from missing archive entries", async () => {
+    const project = makeSourceProject();
+    const directoryInPlaceOfMain = await makeArchive(project, (staging) => {
+      rmSync(path.join(staging, ".vite/build/main.js"), { force: true });
+      writeFixtureFile(staging, ".vite/build/main.js/child.js");
+    });
+
+    expect(() =>
+      assertPackagedArchive({
+        asarPath: directoryInPlaceOfMain,
+        projectPath: project,
+        platform: "darwin",
+        arch: "arm64",
+        inputCandidates,
+      })
+    ).toThrow(/could not extract \.vite\/build\/main\.js/u);
   });
 });
