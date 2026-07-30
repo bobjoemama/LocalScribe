@@ -383,12 +383,35 @@ function archiveEntries(asarPath: string, platform: PackagedPlatform): Set<strin
   return normalizeArchiveEntries(listPackage(asarPath, { isPack: false }), platform);
 }
 
+export function archiveExtractionPath(
+  canonicalArchivePath: string,
+  separator = path.sep,
+): string {
+  if (
+    (separator !== "/" && separator !== "\\")
+    || canonicalArchivePath.length === 0
+    || canonicalArchivePath.startsWith("/")
+    || canonicalArchivePath.includes("\\")
+    || canonicalArchivePath.split("/").some(
+      (segment) => segment.length === 0 || segment === "." || segment === "..",
+    )
+  ) {
+    throw new Error(
+      `Packaged archive verification failed: invalid canonical extraction path ${JSON.stringify(canonicalArchivePath)}.`,
+    );
+  }
+  return canonicalArchivePath.split("/").join(separator);
+}
+
 function extractArchiveText(asarPath: string, archivePath: string): string {
   let content: Buffer;
   try {
-    content = extractFile(asarPath, archivePath);
-  } catch {
-    throw new Error(`Packaged archive verification failed: missing ${archivePath}`);
+    content = extractFile(asarPath, archiveExtractionPath(archivePath));
+  } catch (error) {
+    throw new Error(
+      `Packaged archive verification failed: could not extract ${archivePath}`,
+      { cause: error },
+    );
   }
   if (content.length === 0) {
     throw new Error(`Packaged archive verification failed: empty ${archivePath}`);
