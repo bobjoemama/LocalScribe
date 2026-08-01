@@ -117,6 +117,11 @@ describe("runtime core SBOM generation", () => {
 
       expectOneExactComponent(bom, expectedHelper, packageJson.version);
       expect(namedComponents(bom, wrongPlatformHelper)).toHaveLength(0);
+      if (platform === "windows") {
+        expectOneExactComponent(bom, "CrispASR", "0.8.24");
+      } else {
+        expect(namedComponents(bom, "CrispASR")).toHaveLength(0);
+      }
 
       for (const [productionDependency, version] of Object.entries(
         packageJson.dependencies,

@@ -195,6 +195,47 @@ describe("ModelPerformanceSettings", () => {
     expect(html).not.toContain("Built-in family");
   });
 
+  it("renders a curated Qwen family from catalog data with platform-specific profiles", () => {
+    const modelCatalog = catalog();
+    modelCatalog.families.splice(1, 0, {
+      familyId: "qwen3-asr-1-7b",
+      displayName: "Qwen3-ASR 1.7B",
+      active: false,
+      inLibrary: false,
+      artifacts: (["bf16", "8bit", "4bit"] as const).map((precision, index) => ({
+        artifactId: `qwen3-asr-1-7b-mlx-${precision}`,
+        displayName: `Qwen3-ASR 1.7B · MLX ${precision}`,
+        backend: "MLX Audio",
+        modelId: `curated/qwen3-asr-1-7b-${precision}`,
+        storageDirectory: `qwen3-asr-1-7b-${precision}`,
+        revision: `${index + 4}`.repeat(40),
+        license: "Apache-2.0",
+        expectedDownloadBytes: [4_080_710_353, 2_467_859_030, 1_607_633_106][index]!,
+      })),
+      profiles: (["high", "medium", "low"] as const).map((tier, index) => ({
+        profileId: `qwen3-asr-1-7b-${tier}`,
+        tier,
+        artifactId: `qwen3-asr-1-7b-mlx-${(["bf16", "8bit", "4bit"] as const)[index]}`,
+        engine: "mlx-audio",
+        precision: (["bf16", "8-bit", "4-bit"] as const)[index]!,
+        expectedMemoryMinBytes: [4.2, 2.6, 1.8][index]! * GIBIBYTE,
+        expectedMemoryMaxBytes: [5.4, 3.6, 2.8][index]! * GIBIBYTE,
+        memoryBasis: "estimated",
+      })),
+    });
+
+    const html = renderModelSettings({ catalog: modelCatalog });
+
+    expect(html).toContain("Qwen3-ASR 1.7B");
+    expect(html).toContain("Catalog backend: MLX Audio");
+    expect(html).toContain("BF16");
+    expect(html).toContain("8-bit");
+    expect(html).toContain("4-bit");
+    expect(html).toContain("Apache-2.0");
+    expect(html).toContain("Add to library");
+    expect(html).toContain("Add to library to manage");
+  });
+
   it("permits the default Windows family data install when memory telemetry is unavailable", () => {
     const windowsCatalog = catalog({ platform: "win32-x64-cuda", sharedV3Artifact: true });
     const html = renderModelSettings({

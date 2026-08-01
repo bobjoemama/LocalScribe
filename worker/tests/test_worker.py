@@ -17,6 +17,7 @@ from localscribe_worker.worker import (
     MAX_REQUEST_BYTES,
     TIER_SPECS,
     HardwareInfo,
+    MLXAudioRuntime,
     MLXWhisperRuntime,
     ModelFile,
     ModelManifest,
@@ -33,10 +34,15 @@ def request(message_type: str, **fields: Any) -> dict[str, Any]:
 
 
 def tier_spec(tier: str, *, family: str = "v3") -> TierSpec:
+    family_fragment = (
+        "Qwen3-ASR-1.7B"
+        if family == "qwen"
+        else f"whisper-large-{family}-mlx"
+    )
     matches = [
         spec
         for spec in TIER_SPECS.values()
-        if spec.tier == tier and f"whisper-large-{family}-mlx" in spec.model_id
+        if spec.tier == tier and family_fragment in spec.model_id
     ]
     if len(matches) != 1:
         raise AssertionError(f"missing unique {family}/{tier} catalog selection")
@@ -226,8 +232,8 @@ class WorkerProtocolTests(unittest.TestCase):
             {
                 "type": "hello",
                 "protocol": 1,
-                "backend": "mlx-whisper",
-                "version": "0.4.3",
+                "backend": "localscribe-mlx-asr",
+                "version": "mlx-whisper/0.4.3;mlx-audio/0.4.6",
             },
         )
         self.assertEqual(
@@ -915,6 +921,52 @@ class WorkerProtocolTests(unittest.TestCase):
 
 
 class ModelInstallationTests(unittest.TestCase):
+    def test_explicit_install_adopts_exact_legacy_huggingface_local_dir(self) -> None:
+        manifest = tiny_manifest()
+        with tempfile.TemporaryDirectory() as temporary:
+            model_root = Path(temporary)
+            model = model_root / manifest.storage_directory
+            write_tiny_model(model, manifest)
+            metadata = model / ".cache" / "huggingface"
+            metadata.mkdir(parents=True)
+            (metadata / "download.json").write_text("{}", encoding="utf-8")
+
+            installed = ensure_model(
+                model_root,
+                manifest,
+                True,
+                snapshot_downloader=lambda **_kwargs: self.fail(
+                    "an exact legacy local_dir must not be downloaded again"
+                ),
+            )
+
+            self.assertEqual(installed, model.resolve())
+            self.assertTrue(worker_module._valid_model_directory(installed, manifest))
+            self.assertFalse((installed / ".cache").exists())
+
+    def test_legacy_huggingface_adoption_rejects_other_extra_entries(self) -> None:
+        manifest = tiny_manifest()
+        with tempfile.TemporaryDirectory() as temporary:
+            model_root = Path(temporary)
+            model = model_root / manifest.storage_directory
+            write_tiny_model(model, manifest)
+            metadata = model / ".cache"
+            metadata.mkdir()
+            (model / "user-notes.txt").write_text("keep", encoding="utf-8")
+
+            with self.assertRaisesRegex(WorkerError, "model download failed"):
+                ensure_model(
+                    model_root,
+                    manifest,
+                    True,
+                    snapshot_downloader=lambda **_kwargs: (_ for _ in ()).throw(
+                        RuntimeError("network must be attempted instead of deleting extras")
+                    ),
+                )
+
+            self.assertTrue(metadata.is_dir())
+            self.assertTrue((model / "user-notes.txt").is_file())
+
     def test_staged_install_uses_only_pinned_files_and_promotes_verified_directory(self) -> None:
         manifest = tiny_manifest()
         with tempfile.TemporaryDirectory() as temporary:
@@ -1129,7 +1181,7 @@ class ModelInstallationTests(unittest.TestCase):
                 RuntimeError,
                 "packaged_model_manifest_invalid",
             ):
-                worker_module._parse_manifest(tampered, spec.tier)
+                worker_module._parse_manifest(tampered, spec.tier, "MLX Whisper")
 
     def test_catalog_identity_is_derived_from_the_curated_manifest(self) -> None:
         spec = tier_spec("low", family="v2")
@@ -1146,15 +1198,19 @@ class ModelInstallationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             curated = Path(temporary) / spec.manifest_filename
             curated.write_text(json.dumps(raw), encoding="utf-8")
-            manifest = worker_module._parse_manifest(curated, spec.tier)
+            manifest = worker_module._parse_manifest(
+                curated,
+                spec.tier,
+                "MLX Whisper",
+            )
 
         self.assertEqual(manifest.model_id, "curated-owner/custom-whisper")
         self.assertEqual(manifest.artifact_id, "custom-whisper-int4")
         self.assertEqual(manifest.storage_directory, "custom-whisper-int4")
         self.assertEqual(manifest.revision, "c" * 40)
 
-    def test_packaged_catalog_has_exact_six_whisper_manifests_and_files(self) -> None:
-        self.assertEqual(len(TIER_SPECS), 6)
+    def test_packaged_catalog_has_exact_curated_manifests_and_files(self) -> None:
+        self.assertEqual(len(TIER_SPECS), 9)
         self.assertEqual(
             {spec.manifest_filename for spec in TIER_SPECS.values()},
             {
@@ -1164,6 +1220,9 @@ class ModelInstallationTests(unittest.TestCase):
                 "whisper-large-v2-mlx.json",
                 "whisper-large-v2-mlx-8bit.json",
                 "whisper-large-v2-mlx-4bit.json",
+                "qwen3-asr-1-7b-mlx-bf16.json",
+                "qwen3-asr-1-7b-mlx-8bit.json",
+                "qwen3-asr-1-7b-mlx-4bit.json",
             },
         )
         for family in ("v3", "v2"):
@@ -1174,6 +1233,13 @@ class ModelInstallationTests(unittest.TestCase):
                 ],
                 ["float16", "int8", "int4"],
             )
+        self.assertEqual(
+            [
+                tier_spec(tier, family="qwen").compute_type
+                for tier in ("high", "medium", "low")
+            ],
+            ["bfloat16", "int8", "int4"],
+        )
         for selection, manifest in worker_module.MODEL_MANIFESTS.items():
             spec = TIER_SPECS[selection]
             self.assertEqual(selection, (spec.model_id, spec.tier, spec.compute_type))
@@ -1181,13 +1247,68 @@ class ModelInstallationTests(unittest.TestCase):
             self.assertEqual(manifest.family_id, spec.family_id)
             self.assertEqual(manifest.artifact_id, spec.artifact_id)
             self.assertEqual(manifest.revision, spec.revision)
-            self.assertEqual(set(manifest.files), {"config.json", "weights.npz"})
+            if manifest.family_id == "qwen3-asr-1-7b":
+                self.assertIn("model.safetensors", manifest.files)
+                self.assertIn("config.json", manifest.files)
+            else:
+                self.assertEqual(set(manifest.files), {"config.json", "weights.npz"})
             for model_file in manifest.files.values():
                 self.assertGreater(model_file.bytes, 0)
                 self.assertRegex(model_file.sha256, r"^[a-f0-9]{64}$")
 
 
 class RuntimeAndHardwareTests(unittest.TestCase):
+    def test_runtime_passes_pcm_array_and_prompt_to_mlx_audio(self) -> None:
+        class FakeMetal:
+            def clear_cache(self) -> None:
+                pass
+
+        class FakeMlx:
+            metal = FakeMetal()
+
+            @staticmethod
+            def synchronize() -> None:
+                pass
+
+        class Result:
+            text = "Local Qwen audio."
+            language = "English"
+
+        class Model:
+            def __init__(self) -> None:
+                self.waveform: Any = None
+                self.kwargs: dict[str, Any] = {}
+
+            def generate(self, waveform: Any, **kwargs: Any) -> Result:
+                self.waveform = waveform
+                self.kwargs = kwargs
+                return Result()
+
+        model = Model()
+        runtime = MLXAudioRuntime(
+            mlx_module=FakeMlx(),
+            numpy_module=np,
+            model=model,
+        )
+        result = runtime.transcribe(
+            b"\x00\x00\xff\x7f",
+            language="en",
+            context="LocalScribe vocabulary",
+        )
+        self.assertEqual(result, TranscriptionResult("Local Qwen audio.", "English"))
+        self.assertIsInstance(model.waveform, np.ndarray)
+        self.assertEqual(
+            model.kwargs,
+            {
+                "language": "English",
+                "system_prompt": "LocalScribe vocabulary",
+                "temperature": 0.0,
+                "verbose": False,
+            },
+        )
+        runtime.close()
+        self.assertIsNone(runtime._model)
+
     def test_runtime_passes_pcm_array_and_verified_local_path_to_mlx_whisper(self) -> None:
         class FakeMetal:
             def clear_cache(self) -> None:

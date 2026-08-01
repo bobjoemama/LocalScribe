@@ -11,6 +11,9 @@ const computeTypeSchema = z.enum([
   "int8_float16",
   "int8",
   "int4",
+  "bfloat16",
+  "q8_0",
+  "q4_k",
 ]);
 export type WorkerComputeType = z.infer<typeof computeTypeSchema>;
 
@@ -143,13 +146,13 @@ const MAX_WORKER_STDOUT_LINE_BYTES = 1024 * 1024;
 
 export const WORKER_RUNTIME_IDENTITIES = {
   localscribe_worker: {
-    backend: "mlx-whisper",
-    version: "0.4.3",
+    backend: "localscribe-mlx-asr",
+    version: "mlx-whisper/0.4.3;mlx-audio/0.4.6",
     acceleratorKind: "apple-unified",
   },
   localscribe_windows_worker: {
-    backend: "faster-whisper-ctranslate2",
-    version: "1.2.1",
+    backend: "localscribe-windows-asr",
+    version: "faster-whisper/1.2.1;crispasr/0.8.24",
     acceleratorKind: "nvidia-cuda",
   },
 } as const;

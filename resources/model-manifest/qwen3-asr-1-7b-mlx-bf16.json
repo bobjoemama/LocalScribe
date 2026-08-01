@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "familyId": "qwen3-asr-1-7b",
+  "artifactId": "qwen3-asr-1-7b-mlx-bf16",
+  "platform": "darwin-arm64",
+  "backend": "MLX Audio",
+  "displayName": "Qwen3-ASR 1.7B · MLX BF16",
+  "modelId": "mlx-community/Qwen3-ASR-1.7B-bf16",
+  "storageDirectory": "qwen3-asr-1-7b-bf16-e1f6c26",
+  "revision": "e1f6c266914abc5a46e8756e02580f834a6cf8a7",
+  "license": "Apache-2.0",
+  "files": {
+    ".gitattributes": { "bytes": 1519, "sha256": "11ad7efa24975ee4b0c3c3a38ed18737f0658a5f75a0a96787b576a78a023361" },
+    "README.md": { "bytes": 1008, "sha256": "e8dbd283372fe894c095d08ec505c5bff21803db116622b7eb642a349879a18b" },
+    "chat_template.json": { "bytes": 1161, "sha256": "75a8cfca24f00de72d796fbfed6858fc9614ef3dabd8696684cc3bc03a9c58ff" },
+    "config.json": { "bytes": 6983, "sha256": "62fe9a2ba2de536820229e126fdfb35f9910b9a337dc46d3737c3b1ac0a9caa9" },
+    "generation_config.json": { "bytes": 142, "sha256": "1da527824d81e07118facff437e03f2e24a23311e3bdeb2368973fe77e5f275c" },
+    "merges.txt": { "bytes": 1671853, "sha256": "8831e4f1a044471340f7c0a83d7bd71306a5b867e95fd870f74d0c5308a904d5" },
+    "model.safetensors": { "bytes": 4076186653, "sha256": "2f080a3b769ae469aeaaa2dcb9e13a94141e54c9e6d5a7aa63392e0dc5a51789" },
+    "model.safetensors.index.json": { "bytes": 51384, "sha256": "a3ee6037ec82e95dc8577216ac84cf0b3c92cfefc099cf20b2296571f2fb3fc0" },
+    "preprocessor_config.json": { "bytes": 330, "sha256": "45e120a4eda2c20c5d7f2ea9354e63536bf35e27aa573fb7cdf78017b378770d" },
+    "tokenizer_config.json": { "bytes": 12487, "sha256": "4942d005604266809309cabc9f4e9cb89ce855d59b14681fdc0e1cc62ea26c4c" },
+    "vocab.json": { "bytes": 2776833, "sha256": "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910" }
+  }
+}

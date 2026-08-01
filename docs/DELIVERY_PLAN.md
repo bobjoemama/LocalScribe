@@ -4,22 +4,22 @@
 
 Source implementation:
 
-- Apple Silicon: fixed MLX Whisper engine, with default large-v3 and curated
-  addable large-v2 FP16, 8-bit, and 4-bit artifacts
-- Windows x64 NVIDIA: fixed faster-whisper/CTranslate2 CUDA engine, with one
-  shared artifact per family—default large-v3 and curated addable large-v2—and
-  `float16`, `int8_float16`, and `int8` profiles
+- Apple Silicon: MLX Whisper for default large-v3 and curated addable large-v2,
+  plus MLX Audio for curated Qwen3-ASR 1.7B; each family has High, Medium, and
+  Low pinned artifacts
+- Windows x64 NVIDIA: faster-whisper/CTranslate2 CUDA for the two Whisper
+  families and CrispASR/GGML CUDA for Qwen3-ASR 1.7B
 - exactly Auto, High, Medium, and Low user modes
 - deterministic, main-owned Auto resolution with worker-side allowlist checks
 - revision-, size-, and SHA-256-pinned model installation
 - no implicit model download during dictation
 - no plugins, arbitrary URLs/code, or custom model loaders
 
-Whisper large-v3 remains the default family; large-v2 is curated and can be
-added locally. Model weights are not bundled. Turbo is not enabled: enabling it
-requires a complete, validated three-tier Mac contract, including pinned MLX
-artifacts, installation verification, resource evidence, and real-device
-coverage. See [MODEL_CATALOG.md](MODEL_CATALOG.md).
+Whisper large-v3 remains the default family; Qwen3-ASR 1.7B and large-v2 are
+curated and can be added locally. Model weights are not bundled. Turbo is not
+enabled: enabling it requires a complete, validated three-tier Mac contract,
+including pinned MLX artifacts, installation verification, resource evidence,
+and real-device coverage. See [MODEL_CATALOG.md](MODEL_CATALOG.md).
 
 Remaining product evidence: real accuracy/latency/memory benchmarks for every
 supported family, all Mac tiers, and all Windows compute profiles.
@@ -54,8 +54,9 @@ Implemented:
 - release sourcemaps disabled
 - compatible patched npm overrides; production and full build-tool audits
 - separate CycloneDX SBOMs for each platform core runtime (production Node
-  graph, Electron, CPython, and native helper) and locked platform Python
-  dependencies, with local SBOM and artifact SHA-256 generation
+  graph, Electron, CPython, native helper, and Windows CrispASR runtime) and
+  locked platform Python dependencies, with local SBOM and artifact SHA-256
+  generation
 
 The generated Mac Python runtime and Windows Python/CUDA runtime are ignored by
 Git. Local verification and release builds must recreate them from committed
@@ -88,7 +89,7 @@ download, offline dictation, update/uninstall policy, and signed artifact review
 
 Validation path:
 
-- locked faster-whisper runtime build on a local Windows 11 x64 machine
+- locked faster-whisper and CrispASR runtime build on a local Windows 11 x64 machine
 - hardened x64 helper build and deterministic smoke
 - native Node rebuild with target-only binary pruning, worker/CUDA checks, and
   portable ZIP make

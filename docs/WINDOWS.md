@@ -1,10 +1,12 @@
-# Windows x64 faster-whisper runtime
+# Windows x64 local ASR runtimes
 
 LocalScribe’s Windows inference path uses the default
 `Systran/faster-whisper-large-v3` family, with
 `Systran/faster-whisper-large-v2` available as a curated user-addable family,
-through faster-whisper and CTranslate2 CUDA. It is deliberately separate from
-the macOS MLX worker while preserving the same bounded NDJSON protocol,
+through faster-whisper and CTranslate2 CUDA. Qwen3-ASR 1.7B is also available
+as a curated family through pinned F16, Q8_0, and Q4_K GGUF artifacts and the
+pinned CrispASR CUDA runtime. These engines are deliberately separate from the
+macOS MLX worker while preserving the same bounded NDJSON protocol,
 Electron UI, persistence model, and explicit model-installation flow.
 
 ## Supported boundary
@@ -12,17 +14,18 @@ Electron UI, persistence model, and explicit model-installation flow.
 The intended first tier is:
 
 - Windows 11 x64
-- NVIDIA GPU supported by the pinned CTranslate2 CUDA 12 / cuDNN 9 runtime
+- NVIDIA GPU supported by the pinned CTranslate2 and CrispASR CUDA runtimes
 - a current NVIDIA driver
 - enough free VRAM for the selected compute profile
 - at least 6 GiB free disk before beginning a model installation
 
 CPU-only, AMD, Intel, DirectML, Windows arm64, and Linux are not advertised.
-CTranslate2 makes the final compute-type capability check on the actual GPU and
-fails before loading an unsupported profile.
+CTranslate2 makes the final Whisper compute-type capability check on the actual
+GPU. CrispASR’s Qwen path requires its CUDA backend. Both fail closed rather
+than moving inference to the CPU.
 
-For each Windows family, the three user tiers share one immutable model
-artifact:
+For each Windows Whisper family, the three user tiers share one immutable
+model artifact:
 
 | Tier | CTranslate2 compute type | Estimated accelerator memory |
 | --- | --- | --- |
@@ -35,10 +38,24 @@ uses current NVML total/free VRAM plus fixed headroom and hysteresis policy; it
 does not download a different Windows model. The four available choices are
 Auto, High, Medium, and Low; Auto is policy rather than a fourth artifact.
 
+Qwen3-ASR 1.7B uses separate artifacts:
+
+| Tier | CrispASR GGUF | Estimated VRAM |
+| --- | --- | --- |
+| High | F16 | 4.8–5.8 GiB |
+| Medium | Q8_0 | 2.6–3.6 GiB |
+| Low | Q4_K | 1.8–2.8 GiB |
+
+The Q4_K conversion intentionally keeps the audio tower at Q8_0 because the
+upstream conversion found that further audio-tower quantization degraded
+transcription. Auto selects only within the active model family; it never
+changes Qwen into Whisper or vice versa.
+
 ## Pinned worker and model
 
 The worker project remains under `worker/windows_transformers/` for source-path
-compatibility, but its backend is faster-whisper—not Hugging Face Transformers.
+compatibility. Whisper uses faster-whisper rather than Hugging Face
+Transformers; Qwen uses CrispASR’s persistent C ABI session.
 The committed Windows `pyproject.toml` and `uv.lock` are the authoritative
 runtime pins. `uv lock --check --project worker/windows_transformers` and the
 SBOM gate fail if the declared and locked graph drift; do not copy the current
@@ -48,9 +65,18 @@ The immutable model authorities are
 [`faster-whisper-large-v3.json`](../resources/model-manifest/faster-whisper-large-v3.json)
 and [`faster-whisper-large-v2.json`](../resources/model-manifest/faster-whisper-large-v2.json).
 Large-v3 is the default; large-v2 can be added through the curated library.
+The Qwen authorities are
+[`qwen3-asr-1-7b-crisp-f16.json`](../resources/model-manifest/qwen3-asr-1-7b-crisp-f16.json),
+[`qwen3-asr-1-7b-crisp-q8-0.json`](../resources/model-manifest/qwen3-asr-1-7b-crisp-q8-0.json),
+and [`qwen3-asr-1-7b-crisp-q4-k.json`](../resources/model-manifest/qwen3-asr-1-7b-crisp-q4-k.json).
 The corresponding Systran manifest metadata says MIT for both Windows
 artifacts. The manifests themselves are the authority for model ID, revision,
 license, per-file byte counts, and SHA-256 digests.
+
+The Windows build downloads CrispASR 0.8.24 from one pinned GitHub release,
+verifies the complete archive and every retained runtime file, omits the
+archive’s duplicate cuBLAS DLLs, and reuses LocalScribe’s pinned CUDA 12 cuBLAS
+runtime. The CrispASR license and third-party notices remain in the package.
 
 Every listed file has an exact byte count and SHA-256 digest. The worker stages
 downloads, rejects symlinks and unexpected file types, verifies every required
@@ -62,8 +88,8 @@ explicit install action may download an approved, revision-pinned artifact.
 
 The worker accepts only mono 16 kHz signed PCM16 WAV under the main process’s
 permitted temporary root. It validates the WAV itself and passes a bounded
-NumPy PCM array to faster-whisper; PyAV does not receive an arbitrary
-renderer-controlled path or container.
+NumPy PCM array to the selected in-process engine; PyAV does not receive an
+arbitrary renderer-controlled path or container.
 
 Supported protocol messages are:
 

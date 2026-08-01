@@ -19,6 +19,11 @@ MACOS_FAMILY_TIER_MANIFESTS = {
         "medium": ("whisper-large-v2-mlx-8bit.json", "int8"),
         "low": ("whisper-large-v2-mlx-4bit.json", "int4"),
     },
+    "qwen3-asr-1-7b": {
+        "high": ("qwen3-asr-1-7b-mlx-bf16.json", "bfloat16"),
+        "medium": ("qwen3-asr-1-7b-mlx-8bit.json", "int8"),
+        "low": ("qwen3-asr-1-7b-mlx-4bit.json", "int4"),
+    },
 }
 
 
@@ -50,7 +55,7 @@ def main() -> int:
         "--family",
         choices=tuple(MACOS_FAMILY_TIER_MANIFESTS),
         default="whisper-large-v3",
-        help="Curated MLX Whisper family to smoke; large-v3 is the default.",
+        help="Curated local ASR family to smoke; Whisper large-v3 is the default.",
     )
     parser.add_argument("--tier", choices=("high", "medium", "low"), default="medium")
     parser.add_argument(
@@ -113,13 +118,23 @@ def main() -> int:
         return response
 
     hello = receive()
+    installed = None
+    if args.allow_download:
+        installed = request({
+            "type": "install_model",
+            "tier": args.tier,
+            "modelId": model_id,
+            "computeType": compute_type,
+            "modelRoot": str(model_root),
+            "allowDownload": True,
+        })
     ready = request({
         "type": "load_model",
         "tier": args.tier,
         "modelId": model_id,
         "computeType": compute_type,
         "modelRoot": str(model_root),
-        "allowDownload": args.allow_download,
+        "allowDownload": False,
     })
     final = request({
         "type": "transcribe",
@@ -130,7 +145,10 @@ def main() -> int:
     })
     request({"type": "shutdown"})
     process.wait(timeout=5)
-    print(json.dumps({"hello": hello, "ready": ready, "final": final}, ensure_ascii=False))
+    print(json.dumps(
+        {"hello": hello, "installed": installed, "ready": ready, "final": final},
+        ensure_ascii=False,
+    ))
     return 0
 
 

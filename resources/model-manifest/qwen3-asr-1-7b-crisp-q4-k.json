@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "familyId": "qwen3-asr-1-7b",
+  "artifactId": "qwen3-asr-1-7b-crisp-q4-k",
+  "platform": "win32-x64-cuda",
+  "backend": "CrispASR CUDA",
+  "displayName": "Qwen3-ASR 1.7B · CrispASR Q4_K",
+  "modelId": "cstr/qwen3-asr-1.7b-GGUF",
+  "storageDirectory": "qwen3-asr-1-7b-crisp-q4-k-87e941f",
+  "revision": "87e941f6302c55716a120cd8fbfba74f0bfe7cf7",
+  "license": "Apache-2.0",
+  "files": {
+    "qwen3-asr-1.7b-q4_k.gguf": {
+      "bytes": 1490915200,
+      "sha256": "ec197cef7ccc589fdcae1becc3f4a3de119d0a41e790b898b519b1a048dad8d4"
+    }
+  }
+}

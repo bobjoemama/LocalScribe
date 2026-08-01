@@ -187,7 +187,7 @@ describe("IPC contracts", () => {
       expectedDownloadBytes: 1,
     });
     const verification = (
-      familyId: "whisper-large-v3" | "whisper-large-v2",
+      familyId: "whisper-large-v3" | "qwen3-asr-1-7b" | "whisper-large-v2",
       artifactId: string,
     ) => ({
       familyId,
@@ -214,6 +214,34 @@ describe("IPC contracts", () => {
           profiles: profiles("whisper-large-v3", "whisper-large-v3-ctranslate2"),
         },
         {
+          familyId: "qwen3-asr-1-7b" as const,
+          displayName: "Qwen3-ASR 1.7B",
+          active: false,
+          inLibrary: false,
+          artifacts: (["f16", "q8-0", "q4-k"] as const).map((quant) => ({
+            ...artifact(
+              `qwen3-asr-1-7b-crisp-${quant}`,
+              "cstr/qwen3-asr-1.7b-GGUF",
+            ),
+            backend: "CrispASR CUDA",
+            storageDirectory: `qwen3-asr-1-7b-crisp-${quant}`,
+          })),
+          profiles: (["high", "medium", "low"] as const).map((tier, index) => ({
+            profileId: `qwen3-asr-1-7b-${tier}`,
+            tier,
+            artifactId: [
+              "qwen3-asr-1-7b-crisp-f16",
+              "qwen3-asr-1-7b-crisp-q8-0",
+              "qwen3-asr-1-7b-crisp-q4-k",
+            ][index],
+            engine: "crispasr" as const,
+            precision: ["float16", "q8_0", "q4_k"][index],
+            expectedMemoryMinBytes: 1,
+            expectedMemoryMaxBytes: 2,
+            memoryBasis: "estimated" as const,
+          })),
+        },
+        {
           familyId: "whisper-large-v2" as const,
           displayName: "Whisper large-v2",
           active: false,
@@ -224,12 +252,15 @@ describe("IPC contracts", () => {
       ],
       verifications: [
         verification("whisper-large-v3", "whisper-large-v3-ctranslate2"),
+        verification("qwen3-asr-1-7b", "qwen3-asr-1-7b-crisp-f16"),
+        verification("qwen3-asr-1-7b", "qwen3-asr-1-7b-crisp-q8-0"),
+        verification("qwen3-asr-1-7b", "qwen3-asr-1-7b-crisp-q4-k"),
         verification("whisper-large-v2", "whisper-large-v2-ctranslate2"),
       ],
       unmanagedEntries: [],
     };
 
-    expect(modelCatalogSchema.parse(catalog).verifications).toHaveLength(2);
+    expect(modelCatalogSchema.parse(catalog).verifications).toHaveLength(5);
     expect(() => modelCatalogSchema.parse({
       ...catalog,
       verifications: catalog.verifications.slice(0, 1),

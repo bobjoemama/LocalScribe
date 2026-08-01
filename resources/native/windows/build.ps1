@@ -6,6 +6,12 @@ param(
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
+$CrispASRPreparation = Join-Path $PSScriptRoot "prepare-crispasr-runtime.ps1"
+if (-not (Test-Path -LiteralPath $CrispASRPreparation -PathType Leaf)) {
+  throw "The pinned CrispASR preparation script is missing."
+}
+& $CrispASRPreparation
+
 if ([string]::IsNullOrWhiteSpace($OutputPath)) {
   $OutputPath = Join-Path $PSScriptRoot "active-target.exe"
 }

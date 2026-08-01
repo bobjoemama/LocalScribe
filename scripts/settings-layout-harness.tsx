@@ -50,6 +50,24 @@ const activeArtifacts = activeArtifactIds.map((artifactId, index) => ({
   license: "MIT",
   expectedDownloadBytes: isWindows ? 3_100_000_000 : (3 - index) * 1_000_000_000,
 }));
+const qwenArtifactPrecisions = isWindows
+  ? (["f16", "q8-0", "q4-k"] as const)
+  : (["bf16", "8bit", "4bit"] as const);
+const qwenArtifactIds = qwenArtifactPrecisions.map(
+  (precision) => `qwen3-asr-1-7b-${isWindows ? "crisp" : "mlx"}-${precision}`,
+);
+const qwenArtifacts = qwenArtifactIds.map((artifactId, index) => ({
+  artifactId,
+  displayName: `Qwen3-ASR 1.7B · ${isWindows ? "CrispASR" : "MLX"} ${qwenArtifactPrecisions[index]}`,
+  backend: isWindows ? "CrispASR CUDA" : "MLX Audio",
+  modelId: `curated/qwen3-asr-1-7b-${qwenArtifactPrecisions[index]}`,
+  storageDirectory: artifactId,
+  revision: `${index + 4}`.repeat(40),
+  license: "Apache-2.0",
+  expectedDownloadBytes: isWindows
+    ? [4_704_800_576, 2_506_723_200, 1_490_915_200][index]!
+    : [4_080_710_353, 2_467_859_030, 1_607_633_106][index]!,
+}));
 
 let persistedSettings: AppSettings = appSettingsSchema.parse(usesCustomSettings
   ? {
@@ -135,6 +153,29 @@ const catalog: ModelCatalog = {
       })),
     },
     {
+      familyId: "qwen3-asr-1-7b",
+      displayName: "Qwen3-ASR 1.7B",
+      active: false,
+      inLibrary: false,
+      artifacts: qwenArtifacts,
+      profiles: ["high", "medium", "low"].map((tier, index) => ({
+        profileId: `qwen3-asr-1-7b-${tier}`,
+        tier: tier as "high" | "medium" | "low",
+        artifactId: qwenArtifactIds[index]!,
+        engine: isWindows ? "crispasr" as const : "mlx-audio" as const,
+        precision: isWindows
+          ? (["float16", "q8_0", "q4_k"] as const)[index]!
+          : (["bf16", "8-bit", "4-bit"] as const)[index]!,
+        expectedMemoryMinBytes: (
+          isWindows ? [4.8, 2.6, 1.8] : [4.2, 2.6, 1.8]
+        )[index]! * GIBIBYTE,
+        expectedMemoryMaxBytes: (
+          isWindows ? [5.8, 3.6, 2.8] : [5.4, 3.6, 2.8]
+        )[index]! * GIBIBYTE,
+        memoryBasis: "estimated" as const,
+      })),
+    },
+    {
       familyId: "whisper-large-v2",
       displayName: "Whisper large-v2",
       active: false,
@@ -171,6 +212,17 @@ const catalog: ModelCatalog = {
       sizeBytes: modelPresent ? artifact.expectedDownloadBytes : 0,
       expectedBytes: artifact.expectedDownloadBytes,
       verifiedFiles: modelVerified ? 1 : 0,
+      expectedFiles: 1,
+    })),
+    ...qwenArtifacts.map((artifact) => ({
+      familyId: "qwen3-asr-1-7b" as const,
+      artifactId: artifact.artifactId,
+      present: false,
+      verified: false,
+      verificationStatus: "missing" as const,
+      sizeBytes: 0,
+      expectedBytes: artifact.expectedDownloadBytes,
+      verifiedFiles: 0,
       expectedFiles: 1,
     })),
     {

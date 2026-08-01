@@ -91,8 +91,8 @@ class FakeWorkerProcess extends EventEmitter {
     queueMicrotask(() => this.respond({
       type: "hello",
       protocol: 1,
-      backend: "mlx-whisper",
-      version: "0.4.3",
+      backend: "localscribe-mlx-asr",
+      version: "mlx-whisper/0.4.3;mlx-audio/0.4.6",
     }));
   }
 
@@ -154,17 +154,20 @@ describe("WorkerSupervisor model lifecycle", () => {
     );
     const exactPin = (source: string, packageName: string) => {
       const match = source.match(new RegExp(
-        `["']${packageName.replace("-", "\\-")}==([^;"']+)`,
+        `["']${packageName.replace("-", "\\-")}(?:\\[[^\\]]+\\])?==([^;"']+)`,
       ));
       if (!match?.[1]) throw new Error(`Missing exact ${packageName} worker pin`);
       return match[1];
     };
 
     expect(WORKER_RUNTIME_IDENTITIES.localscribe_worker.version).toBe(
-      exactPin(macProject, "mlx-whisper"),
+      [
+        `mlx-whisper/${exactPin(macProject, "mlx-whisper")}`,
+        `mlx-audio/${exactPin(macProject, "mlx-audio")}`,
+      ].join(";"),
     );
     expect(WORKER_RUNTIME_IDENTITIES.localscribe_windows_worker.version).toBe(
-      exactPin(windowsProject, "faster-whisper"),
+      `faster-whisper/${exactPin(windowsProject, "faster-whisper")};crispasr/0.8.24`,
     );
   });
 
@@ -230,8 +233,8 @@ describe("WorkerSupervisor model lifecycle", () => {
         process.stdout.emit("data", Buffer.from(`${JSON.stringify({
           type: "hello",
           protocol: 1,
-          backend: "faster-whisper-ctranslate2",
-          version: "1.2.1",
+          backend: "localscribe-windows-asr",
+          version: "faster-whisper/1.2.1;crispasr/0.8.24",
         })}\n`, "utf8"));
       });
       return process as never;
@@ -288,8 +291,8 @@ describe("WorkerSupervisor model lifecycle", () => {
           process.stdout.emit("data", Buffer.from(`${JSON.stringify({
             type: "hello",
             protocol: 1,
-            backend: "faster-whisper-ctranslate2",
-            version: "1.2.1",
+            backend: "localscribe-windows-asr",
+            version: "faster-whisper/1.2.1;crispasr/0.8.24",
           })}\n`, "utf8"));
         });
         return process as never;
@@ -423,8 +426,8 @@ describe("WorkerSupervisor model lifecycle", () => {
         process.stdout.emit("data", Buffer.from(`${JSON.stringify({
           type: "hello",
           protocol: 1,
-          backend: "faster-whisper-ctranslate2",
-          version: "1.2.1",
+          backend: "localscribe-windows-asr",
+          version: "faster-whisper/1.2.1;crispasr/0.8.24",
         })}\n`, "utf8"));
       });
       return process as never;
@@ -469,8 +472,8 @@ describe("WorkerSupervisor model lifecycle", () => {
         process.stdout.emit("data", Buffer.from(`${JSON.stringify({
           type: "hello",
           protocol: 1,
-          backend: "faster-whisper-ctranslate2",
-          version: "1.2.1",
+          backend: "localscribe-windows-asr",
+          version: "faster-whisper/1.2.1;crispasr/0.8.24",
         })}\n`, "utf8"));
       });
       return process as never;
@@ -540,8 +543,8 @@ describe("WorkerSupervisor model lifecycle", () => {
         process.stdout.emit("data", Buffer.from(`${JSON.stringify({
           type: "hello",
           protocol: 1,
-          backend: "faster-whisper-ctranslate2",
-          version: "1.2.1",
+          backend: "localscribe-windows-asr",
+          version: "faster-whisper/1.2.1;crispasr/0.8.24",
         })}\n`, "utf8"));
       });
       return process as never;

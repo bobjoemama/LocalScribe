@@ -12,3 +12,10 @@ The pinned macOS large-v3 8-bit and 4-bit artifacts and the macOS
 they need distribution review and must not be treated as MIT by inference. All
 selected identities and per-file digests are recorded in
 `resources/model-manifest/`; see [MODEL_CATALOG.md](MODEL_CATALOG.md).
+
+The curated Qwen3-ASR model manifests declare Apache-2.0. Windows Qwen
+inference additionally ships a narrowly retained CrispASR 0.8.24 CUDA runtime:
+the release archive, each retained DLL, its Apache-2.0 license, and its
+third-party notices are pinned by digest in
+`resources/native/windows/crispasr-runtime.json`. This approval does not extend
+to arbitrary Qwen repositories, GGUF conversions, or native runtime releases.
