@@ -16,6 +16,9 @@ native/macos/active-target
 model-manifest/whisper-large-v3-mlx.json
 model-manifest/whisper-large-v3-mlx-8bit.json
 model-manifest/whisper-large-v3-mlx-4bit.json
+model-manifest/qwen3-asr-1-7b-mlx-bf16.json
+model-manifest/qwen3-asr-1-7b-mlx-8bit.json
+model-manifest/qwen3-asr-1-7b-mlx-4bit.json
 model-manifest/whisper-large-v2-mlx.json
 model-manifest/whisper-large-v2-mlx-8bit.json
 model-manifest/whisper-large-v2-mlx-4bit.json
@@ -27,20 +30,31 @@ Windows x64:
 worker/windows_transformers/localscribe_windows_worker/**
 python-runtime-windows/**
 native/windows/active-target.exe
+native/windows/crispasr/LICENSE
+native/windows/crispasr/THIRD_PARTY_NOTICES.txt
+native/windows/crispasr/crispasr.dll
+native/windows/crispasr/cudart64_12.dll
+native/windows/crispasr/ggml-base.dll
+native/windows/crispasr/ggml-cpu.dll
+native/windows/crispasr/ggml-cuda.dll
+native/windows/crispasr/ggml.dll
 branding/LocalScribe.ico
 model-manifest/faster-whisper-large-v3.json
+model-manifest/qwen3-asr-1-7b-crisp-f16.json
+model-manifest/qwen3-asr-1-7b-crisp-q8-0.json
+model-manifest/qwen3-asr-1-7b-crisp-q4-k.json
 model-manifest/faster-whisper-large-v2.json
 ```
 
-No `auto` manifest exists. Large-v3 is the default catalog family; large-v2 is
-curated and addable, not an extension point. Mac packages carry exactly three
-MLX manifests per family. Windows tiers share one physical manifest per family
-and use a trusted compute-profile allowlist. Repository/revision/artifact
-identity is manifest-driven rather than duplicated in each worker, but the
-integrity-covered manifest filenames, family IDs, engines, and profile mapping
-remain curated code/package policy. Packaging does not accept plugins,
-arbitrary model URLs, user manifests, custom code/loaders, or extra manifest
-paths. The catalog's revision and per-file SHA-256 pins are described in
+No `auto` manifest exists. Large-v3 is the default catalog family; Qwen3-ASR
+1.7B and large-v2 are curated and addable, not extension points. Mac packages
+carry exactly three MLX manifests per family. Windows Whisper tiers share one
+physical manifest per family and use a trusted compute-profile allowlist;
+Windows Qwen tiers use three distinct GGUF manifests. Repository, revision,
+artifact, engine, and profile identity remain curated code/package policy.
+Packaging does not accept plugins, arbitrary model URLs, user manifests,
+custom code/loaders, or extra manifest paths. The catalog's revision and
+per-file SHA-256 pins are described in
 [MODEL_CATALOG.md](MODEL_CATALOG.md).
 
 ## Gate order

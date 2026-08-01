@@ -1,8 +1,9 @@
 # Curated model catalog
 
 LocalScribe ships a fixed, platform-specific catalog. Whisper large-v3 is the
-default family. Whisper large-v2 is a curated family that a user may add to the
-local library; it is not selected from an arbitrary repository or URL.
+default family. Qwen3-ASR 1.7B and the older Whisper large-v2 are curated
+families that a user may add to the local library; none is selected from an
+arbitrary repository or URL.
 
 Model weights are not in the app installer. An explicit install action fetches
 only the selected manifest-pinned revision into a staging directory, verifies
@@ -11,10 +12,26 @@ atomically. Normal dictation does not download a missing model.
 
 ## Catalog contract
 
-| Platform | Fixed engine | Family and profile contract |
-| --- | --- | --- |
-| macOS arm64 | MLX Whisper | large-v3 and large-v2 each have distinct FP16 (High), 8-bit (Medium), and 4-bit (Low) artifacts. |
-| Windows x64 NVIDIA | faster-whisper / CTranslate2 CUDA | large-v3 and large-v2 each have one shared artifact, used with `float16` (High), `int8_float16` (Medium), and `int8` (Low). |
+| Platform | Family | Fixed engine | High / Medium / Low |
+| --- | --- | --- | --- |
+| macOS arm64 | Whisper large-v3 and large-v2 | MLX Whisper | distinct FP16 / 8-bit / 4-bit artifacts |
+| macOS arm64 | Qwen3-ASR 1.7B | MLX Audio | distinct BF16 / 8-bit / 4-bit artifacts |
+| Windows x64 NVIDIA | Whisper large-v3 and large-v2 | faster-whisper / CTranslate2 CUDA | one artifact loaded as `float16` / `int8_float16` / `int8` |
+| Windows x64 NVIDIA | Qwen3-ASR 1.7B | CrispASR / GGML CUDA | distinct F16 / Q8_0 / Q4_K GGUF artifacts |
+
+The model-memory figures shown in Settings are conservative inference ranges,
+not just file sizes:
+
+| Platform and family | High | Medium | Low |
+| --- | ---: | ---: | ---: |
+| Mac Whisper large-v3 or large-v2 | 4.0–5.5 GiB | 2.5–3.5 GiB | 1.8–2.7 GiB |
+| Mac Qwen3-ASR 1.7B | 4.2–5.4 GiB | 2.6–3.6 GiB | 1.8–2.8 GiB |
+| Windows Whisper large-v3 or large-v2 | 4.5–5.5 GiB VRAM | 2.9–3.5 GiB VRAM | 2.6–3.3 GiB VRAM |
+| Windows Qwen3-ASR 1.7B | 4.8–5.8 GiB VRAM | 2.6–3.6 GiB VRAM | 1.8–2.8 GiB VRAM |
+
+These are catalog safety estimates. Mac Qwen 8-bit inference has been exercised
+on an M4 Max; every Windows Qwen tier remains subject to the physical
+Windows/NVIDIA release gate.
 
 The only performance choices are Auto, High, Medium, and Low. Auto resolves to
 one of the three concrete profiles from local accelerator-memory policy; it is
@@ -47,21 +64,27 @@ trust design and is deliberately not implemented.
 
 ## Packaged manifest inventory
 
-Mac packages contain exactly these six MLX manifests:
+Mac packages contain exactly these nine MLX manifests:
 
 ```text
 whisper-large-v3-mlx.json
 whisper-large-v3-mlx-8bit.json
 whisper-large-v3-mlx-4bit.json
+qwen3-asr-1-7b-mlx-bf16.json
+qwen3-asr-1-7b-mlx-8bit.json
+qwen3-asr-1-7b-mlx-4bit.json
 whisper-large-v2-mlx.json
 whisper-large-v2-mlx-8bit.json
 whisper-large-v2-mlx-4bit.json
 ```
 
-Windows packages contain exactly these two faster-whisper manifests:
+Windows packages contain exactly these five CUDA manifests:
 
 ```text
 faster-whisper-large-v3.json
+qwen3-asr-1-7b-crisp-f16.json
+qwen3-asr-1-7b-crisp-q8-0.json
+qwen3-asr-1-7b-crisp-q4-k.json
 faster-whisper-large-v2.json
 ```
 
@@ -72,9 +95,10 @@ or a new file list for those pins.
 
 On multi-GPU Windows systems the worker enumerates current NVML devices, chooses
 the valid device with the most free VRAM (then total VRAM, then the lower
-ordinal for a deterministic tie), reports that ordinal, and reuses it for the
-CTranslate2 capability probe and model load. A fresh worker repeats selection;
-it never silently falls back to CUDA device 0.
+ordinal for a deterministic tie), reports that physical ordinal, and exposes
+only that adapter inside the isolated worker. CTranslate2 and CrispASR then see
+the selected physical adapter as logical CUDA device 0. A fresh worker repeats
+selection; neither engine silently switches to a different physical GPU.
 
 ## License boundary
 
@@ -85,6 +109,11 @@ and 4-bit revisions, and all three pinned macOS
 metadata because no license declaration was found at those exact revisions.
 That does not establish an MIT grant: those artifacts require a separate
 license review before they are represented as distribution-ready.
+
+The pinned Qwen3-ASR model repositories declare Apache-2.0. The Windows native
+CrispASR runtime is also Apache-2.0; its exact release archive and retained DLLs
+are SHA-256 pinned, and its license and third-party notices are included in the
+Windows package.
 
 ## Turbo
 

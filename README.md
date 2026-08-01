@@ -61,13 +61,16 @@ started.
 | Mode | macOS | Windows | Best for |
 | --- | --- | --- | --- |
 | Auto | Selects an MLX tier from available memory | Selects a CUDA tier from available VRAM | Most users |
-| High | Whisper large-v3 FP16 | CTranslate2 `float16` | Highest fidelity |
-| Medium | Whisper large-v3 8-bit | CTranslate2 `int8_float16` | Balanced memory and quality |
-| Low | Whisper large-v3 4-bit | CTranslate2 `int8` | Lowest memory use |
+| High | Selected family’s MLX FP16/BF16 model | CTranslate2 `float16` or Qwen F16 | Highest fidelity |
+| Medium | Selected family’s MLX 8-bit model | CTranslate2 `int8_float16` or Qwen Q8_0 | Balanced memory and quality |
+| Low | Selected family’s MLX 4-bit model | CTranslate2 `int8` or Qwen Q4_K | Lowest memory use |
 
-Whisper large-v3 is the default family. Curated large-v2 variants can be added
-from the local model library. Arbitrary model URLs, plugins, and custom model
-code are intentionally not accepted. See the
+Whisper large-v3 is the default family. Qwen3-ASR 1.7B and the older Whisper
+large-v2 can be added from the local model library. On macOS, Whisper uses MLX
+Whisper and Qwen uses MLX Audio. On NVIDIA Windows, Whisper uses
+faster-whisper/CTranslate2 and Qwen uses a pinned CrispASR GGML/CUDA runtime.
+Arbitrary model URLs, plugins, and custom model code are intentionally not
+accepted. See the
 [model catalog](docs/MODEL_CATALOG.md).
 
 ## What stays local
@@ -87,7 +90,7 @@ WAV for inference, and deleted afterward.
 | Platform | Supported configuration |
 | --- | --- |
 | macOS | Apple Silicon, macOS 14+, Microphone permission, Accessibility permission for global shortcuts and insertion |
-| Windows | Windows 11 x64, supported NVIDIA GPU and driver, CUDA-capable pinned CTranslate2 runtime |
+| Windows | Windows 11 x64, supported NVIDIA GPU and driver, pinned CTranslate2 and CrispASR CUDA runtimes |
 
 Intel Macs, Linux, Windows ARM, AMD/Intel GPUs, DirectML, and CPU-only Windows
 inference are not packaged.

@@ -374,6 +374,11 @@ function workerComputeType(tier: RuntimeModelTierSpec): WorkerComputeType {
       return "int8";
     case "4-bit":
       return "int4";
+    case "bf16":
+      return "bfloat16";
+    case "q8_0":
+    case "q4_k":
+      return tier.precision;
     case "float16":
     case "int8_float16":
     case "int8":

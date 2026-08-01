@@ -26,6 +26,7 @@ from localscribe_windows_worker.worker import (
     MODEL_ID,
     MODEL_MANIFESTS,
     MODEL_REVISION,
+    CrispASRRuntime,
     DeviceInfo,
     FasterWhisperRuntime,
     ModelFile,
@@ -37,6 +38,7 @@ from localscribe_windows_worker.worker import (
 )
 
 TEST_MODEL_BYTES = b"model"
+QWEN_MODEL_ID = "cstr/qwen3-asr-1.7b-GGUF"
 TEST_MODEL_FILES = {
     "model.bin": ModelFile(
         bytes=len(TEST_MODEL_BYTES),
@@ -47,10 +49,22 @@ TEST_MODEL_MANIFESTS = {
     model_id: replace(manifest, files=dict(TEST_MODEL_FILES))
     for model_id, manifest in MODEL_MANIFESTS.items()
 }
+TEST_MODEL_PROFILES = {
+    selection: replace(manifest, files=dict(TEST_MODEL_FILES))
+    for selection, manifest in worker_module.MODEL_PROFILES.items()
+}
 
 
 def test_manifest(model_id: str = MODEL_ID) -> ModelManifest:
     return TEST_MODEL_MANIFESTS[model_id]
+
+
+def test_profile(
+    model_id: str,
+    tier: str,
+    compute_type: str,
+) -> ModelManifest:
+    return TEST_MODEL_PROFILES[(model_id, tier, compute_type)]
 
 
 class FakeArray:
@@ -253,7 +267,10 @@ class WorkerProtocolTests(unittest.TestCase):
             kwargs["runtime_factory"] = factory
         if device_info_provider is not None:
             kwargs["device_info_provider"] = device_info_provider
-        with patch.object(worker_module, "MODEL_MANIFESTS", TEST_MODEL_MANIFESTS):
+        with (
+            patch.object(worker_module, "MODEL_MANIFESTS", TEST_MODEL_MANIFESTS),
+            patch.object(worker_module, "MODEL_PROFILES", TEST_MODEL_PROFILES),
+        ):
             exit_code = run_worker(**kwargs)
         return parse_output(output), errors.getvalue(), exit_code
 
@@ -448,6 +465,53 @@ class WorkerProtocolTests(unittest.TestCase):
             self.assertEqual(factory_model_ids, [MODEL_ID, v2])
             self.assertTrue(runtimes[0].closed)
             self.assertTrue(runtimes[1].closed)
+
+    def test_loads_qwen_q8_profile_with_its_exact_engine_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            model_root = Path(temporary) / "models"
+            model_root.mkdir()
+            manifest = test_profile(QWEN_MODEL_ID, "medium", "q8_0")
+            model_directory = write_test_model(
+                model_root / manifest.storage_directory,
+            )
+            observed: list[tuple[str, str, str]] = []
+
+            def factory(
+                path: Path,
+                compute_type: str,
+                selected_manifest: ModelManifest,
+            ) -> FakeRuntime:
+                self.assertEqual(path, model_directory)
+                observed.append(
+                    (
+                        compute_type,
+                        selected_manifest.backend,
+                        selected_manifest.artifact_id,
+                    )
+                )
+                return FakeRuntime(compute_type)
+
+            load = request(
+                "load_model",
+                modelId=QWEN_MODEL_ID,
+                modelRoot=str(model_root),
+                tier="medium",
+                computeType="q8_0",
+            )
+            messages, errors, exit_code = self.run_protocol(
+                encode_requests(load, request("shutdown")),
+                installer=lambda _root, _manifest: model_directory,
+                factory=factory,
+            )
+
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(errors, "")
+            self.assertEqual(messages[1]["modelId"], QWEN_MODEL_ID)
+            self.assertEqual(messages[1]["computeType"], "q8_0")
+            self.assertEqual(
+                observed,
+                [("q8_0", "CrispASR CUDA", "qwen3-asr-1-7b-crisp-q8-0")],
+            )
 
     def test_load_rejects_missing_different_catalog_model_without_installing(self) -> None:
         v2 = "Systran/faster-whisper-large-v2"
@@ -1390,11 +1454,20 @@ class ModelIntegrityTests(unittest.TestCase):
 
 class FasterWhisperRuntimeTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.original_device_index = worker_module._SELECTED_CUDA_DEVICE_INDEX
+        self._selected_cuda_device = worker_module._SELECTED_CUDA_DEVICE_INDEX
+        self._bound_cuda_device = worker_module._BOUND_CUDA_PHYSICAL_INDEX
+        self._cuda_visible_devices = os.environ.get("CUDA_VISIBLE_DEVICES")
         worker_module._SELECTED_CUDA_DEVICE_INDEX = 0
+        worker_module._BOUND_CUDA_PHYSICAL_INDEX = None
+        os.environ.pop("CUDA_VISIBLE_DEVICES", None)
 
     def tearDown(self) -> None:
-        worker_module._SELECTED_CUDA_DEVICE_INDEX = self.original_device_index
+        worker_module._SELECTED_CUDA_DEVICE_INDEX = self._selected_cuda_device
+        worker_module._BOUND_CUDA_PHYSICAL_INDEX = self._bound_cuda_device
+        if self._cuda_visible_devices is None:
+            os.environ.pop("CUDA_VISIBLE_DEVICES", None)
+        else:
+            os.environ["CUDA_VISIBLE_DEVICES"] = self._cuda_visible_devices
 
     def test_cuda_dll_configuration_adds_only_bundled_directories_once(self) -> None:
         with (
@@ -1716,11 +1789,11 @@ class FasterWhisperRuntimeTests(unittest.TestCase):
             nvmlDeviceGetMemoryInfo=lambda handle: memories[handle],
         )
         fake_ctranslate2 = types.SimpleNamespace(
-            get_cuda_device_count=lambda: 2,
+            get_cuda_device_count=lambda: 1,
             get_supported_compute_types=lambda device, index: (
                 calls.append(("compute", index))
                 or {"float16", "int8_float16", "int8"}
-                if device == "cuda" and index == 1
+                if device == "cuda" and index == 0
                 else set()
             ),
         )
@@ -1760,8 +1833,8 @@ class FasterWhisperRuntimeTests(unittest.TestCase):
         self.assertEqual(
             calls,
             [
-                ("compute", 1),
-                ("model", 1, "int8_float16"),
+                ("compute", 0),
+                ("model", 0, "int8_float16"),
             ],
         )
 
@@ -1782,7 +1855,7 @@ class FasterWhisperRuntimeTests(unittest.TestCase):
             nvmlDeviceGetMemoryInfo=lambda handle: memories[handle],
         )
         fake_ctranslate2 = types.SimpleNamespace(
-            get_cuda_device_count=lambda: 2,
+            get_cuda_device_count=lambda: 1,
             get_supported_compute_types=lambda _device, index: (
                 selected_indices.append(index) or {"int8_float16"}
             ),
@@ -1815,7 +1888,7 @@ class FasterWhisperRuntimeTests(unittest.TestCase):
                 test_manifest(),
             )
 
-        self.assertEqual(selected_indices, [1, 1])
+        self.assertEqual(selected_indices, [0, 0])
 
     def test_query_device_info_rejects_values_outside_the_main_protocol(self) -> None:
         for name, total, free in (
@@ -1839,6 +1912,95 @@ class FasterWhisperRuntimeTests(unittest.TestCase):
                         worker_module.query_device_info()
                 self.assertEqual(raised.exception.code, "device_info_invalid")
                 self.assertEqual(events, ["init", "shutdown"])
+
+
+class CrispASRRuntimeTests(unittest.TestCase):
+    def test_transcribe_keeps_the_session_loaded_and_bounds_result_text(self) -> None:
+        freed: list[int] = []
+        hotwords: list[tuple[int, bytes | None, float]] = []
+
+        class PCM:
+            def __init__(self) -> None:
+                self.ctypes = types.SimpleNamespace(data_as=lambda _pointer: "pcm")
+
+            def __len__(self) -> int:
+                return 320
+
+        class Library:
+            @staticmethod
+            def crispasr_session_set_hotwords(
+                session: int,
+                value: bytes | None,
+                boost: Any,
+            ) -> int:
+                hotwords.append((session, value, float(boost.value)))
+                return 0
+
+            @staticmethod
+            def crispasr_session_transcribe_lang(
+                session: int,
+                samples: str,
+                count: int,
+                language: bytes,
+            ) -> int:
+                self.assertEqual((session, samples, count, language), (7, "pcm", 320, b"en"))
+                return 11
+
+            @staticmethod
+            def crispasr_session_result_n_segments(result: int) -> int:
+                self.assertEqual(result, 11)
+                return 2
+
+            @staticmethod
+            def crispasr_session_result_segment_text(
+                _result: int,
+                index: int,
+            ) -> bytes:
+                return [b"Local Qwen", b"dictation."][index]
+
+            @staticmethod
+            def crispasr_session_result_free(result: int) -> None:
+                freed.append(result)
+
+            @staticmethod
+            def crispasr_session_close(_session: int) -> None:
+                pass
+
+        runtime = CrispASRRuntime(Library(), 7, object())
+        with patch.object(runtime, "_read_pcm16", return_value=PCM()):
+            result = runtime.transcribe(
+                ValidatedAudio(Path("audio.wav"), b"wav"),
+                language="en",
+                context="LocalScribe, Qwen",
+            )
+
+        self.assertEqual(result, TranscriptionResult("Local Qwen dictation.", "en"))
+        self.assertEqual(hotwords, [(7, b"LocalScribe, Qwen", 2.0)])
+        self.assertEqual(freed, [11])
+        runtime.close()
+        self.assertEqual(runtime._session, 0)
+
+    def test_runtime_dispatch_never_falls_back_between_model_families(self) -> None:
+        qwen = test_profile(QWEN_MODEL_ID, "low", "q4_k")
+        whisper = test_manifest()
+        with (
+            patch.object(CrispASRRuntime, "load", return_value="qwen") as qwen_load,
+            patch.object(FasterWhisperRuntime, "load", return_value="whisper") as whisper_load,
+        ):
+            self.assertEqual(
+                worker_module._load_runtime(Path("/qwen"), "q4_k", qwen),
+                "qwen",
+            )
+            self.assertEqual(
+                worker_module._load_runtime(
+                    Path("/whisper"),
+                    "int8_float16",
+                    whisper,
+                ),
+                "whisper",
+            )
+        qwen_load.assert_called_once()
+        whisper_load.assert_called_once()
 
 
 if __name__ == "__main__":

@@ -46,7 +46,7 @@ export const modelSpecSchema = z.object({
   // metadata; do not infer a project-wide license from another model family.
   license: z.string().min(1).max(120),
   files: z.record(
-    z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/),
+    z.string().regex(/^(?:\.gitattributes|[A-Za-z0-9][A-Za-z0-9._-]*)$/),
     manifestFileSchema,
   ).refine((files) => Object.keys(files).length > 0, "a model manifest must list files"),
 }).strict();
@@ -54,8 +54,21 @@ export const modelSpecSchema = z.object({
 export type ModelSpec = z.infer<typeof modelSpecSchema>;
 export type ModelVerificationStatus = "missing" | "invalid" | "verified";
 export type ModelCatalogPlatform = ModelSpec["platform"];
-export type ModelEngine = "mlx-whisper" | "faster-whisper";
-export type ModelPrecision = "fp16" | "8-bit" | "4-bit" | "float16" | "int8_float16" | "int8";
+export type ModelEngine =
+  | "mlx-whisper"
+  | "mlx-audio"
+  | "faster-whisper"
+  | "crispasr";
+export type ModelPrecision =
+  | "fp16"
+  | "bf16"
+  | "8-bit"
+  | "4-bit"
+  | "float16"
+  | "int8_float16"
+  | "int8"
+  | "q8_0"
+  | "q4_k";
 
 export interface ModelResourceEvidence {
   kind: ModelResourceEvidenceKind;
@@ -228,6 +241,40 @@ const windowsTier = (
   ),
 });
 
+const mlxAudioTier = (
+  input: {
+    manifestFilename: string;
+    precision: "bf16" | "8-bit" | "4-bit";
+    memory: readonly [number, number];
+  },
+): CatalogTierDefinition => ({
+  manifestFilename: input.manifestFilename,
+  engine: "mlx-audio",
+  precision: input.precision,
+  acceleratorMemory: estimatedMemory(
+    `MLX Audio Qwen3-ASR 1.7B ${input.precision} artifact size plus conservative inference overhead; physical 8-bit inference verified on M4 Max`,
+    input.memory[0],
+    input.memory[1],
+  ),
+});
+
+const crispAsrTier = (
+  input: {
+    manifestFilename: string;
+    precision: "float16" | "q8_0" | "q4_k";
+    memory: readonly [number, number];
+  },
+): CatalogTierDefinition => ({
+  manifestFilename: input.manifestFilename,
+  engine: "crispasr",
+  precision: input.precision,
+  acceleratorMemory: estimatedMemory(
+    `CrispASR Qwen3-ASR 1.7B ${input.precision} GGUF plus conservative CUDA inference overhead; physical Windows benchmark pending`,
+    input.memory[0],
+    input.memory[1],
+  ),
+});
+
 const v3Mac: FamilyCatalogDefinition = {
   familyId: "whisper-large-v3",
   displayName: "Whisper large-v3",
@@ -274,6 +321,29 @@ const v2Mac: FamilyCatalogDefinition = {
   },
 };
 
+const qwenMac: FamilyCatalogDefinition = {
+  familyId: "qwen3-asr-1-7b",
+  displayName: "Qwen3-ASR 1.7B",
+  engine: "mlx-audio",
+  tiers: {
+    high: mlxAudioTier({
+      manifestFilename: "qwen3-asr-1-7b-mlx-bf16.json",
+      precision: "bf16",
+      memory: [4.2, 5.4],
+    }),
+    medium: mlxAudioTier({
+      manifestFilename: "qwen3-asr-1-7b-mlx-8bit.json",
+      precision: "8-bit",
+      memory: [2.6, 3.6],
+    }),
+    low: mlxAudioTier({
+      manifestFilename: "qwen3-asr-1-7b-mlx-4bit.json",
+      precision: "4-bit",
+      memory: [1.8, 2.8],
+    }),
+  },
+};
+
 const v3WindowsArtifact = {
   manifestFilename: "faster-whisper-large-v3.json",
 } as const;
@@ -297,17 +367,42 @@ const windowsFamily = (
   },
 });
 
+const qwenWindows: FamilyCatalogDefinition = {
+  familyId: "qwen3-asr-1-7b",
+  displayName: "Qwen3-ASR 1.7B",
+  engine: "crispasr",
+  tiers: {
+    high: crispAsrTier({
+      manifestFilename: "qwen3-asr-1-7b-crisp-f16.json",
+      precision: "float16",
+      memory: [4.8, 5.8],
+    }),
+    medium: crispAsrTier({
+      manifestFilename: "qwen3-asr-1-7b-crisp-q8-0.json",
+      precision: "q8_0",
+      memory: [2.6, 3.6],
+    }),
+    low: crispAsrTier({
+      manifestFilename: "qwen3-asr-1-7b-crisp-q4-k.json",
+      precision: "q4_k",
+      memory: [1.8, 2.8],
+    }),
+  },
+};
+
 /** Every shipped family is declared for both supported runtime platforms. */
 export const MODEL_CATALOG_DEFINITIONS = {
   "darwin-arm64": {
     families: {
       "whisper-large-v3": v3Mac,
+      "qwen3-asr-1-7b": qwenMac,
       "whisper-large-v2": v2Mac,
     },
   },
   "win32-x64-cuda": {
     families: {
       "whisper-large-v3": windowsFamily("whisper-large-v3", "Whisper large-v3", v3WindowsArtifact),
+      "qwen3-asr-1-7b": qwenWindows,
       "whisper-large-v2": windowsFamily("whisper-large-v2", "Whisper large-v2", v2WindowsArtifact),
     },
   },
@@ -472,12 +567,8 @@ export function resolveModelPerformance(
 const MODEL_TIER_PRIORITY: readonly ModelPerformanceTier[] = ["high", "medium", "low"];
 
 function assertCatalogRouting(catalog: RuntimeModelCatalog): void {
-  const expectedEngine: ModelEngine = catalog.platform === "darwin-arm64"
-    ? "mlx-whisper"
-    : "faster-whisper";
-  const expectedPrecisions: Record<ModelPerformanceTier, ModelPrecision> = expectedEngine === "mlx-whisper"
-    ? { high: "fp16", medium: "8-bit", low: "4-bit" }
-    : { high: "float16", medium: "int8_float16", low: "int8" };
+  const definition = MODEL_CATALOG_DEFINITIONS[catalog.platform].families[catalog.familyId];
+  const expectedEngine = definition.engine;
   for (const tierName of MODEL_TIER_PRIORITY) {
     const tier = catalog.tiers[tierName];
     if (
@@ -488,7 +579,7 @@ function assertCatalogRouting(catalog: RuntimeModelCatalog): void {
       || tier.manifest.familyId !== catalog.familyId
       || tier.artifactId !== tier.manifest.artifactId
       || tier.engine !== catalog.engine
-      || tier.precision !== expectedPrecisions[tierName]
+      || tier.precision !== definition.tiers[tierName].precision
       || tier.manifest.platform !== catalog.platform
     ) {
       throw new Error(
@@ -558,9 +649,13 @@ function assertManifestMatchesCatalog(
   definition: CatalogTierDefinition,
   tier: ModelPerformanceTier,
 ): void {
-  const expectedBackend = definition.engine === "mlx-whisper"
-    ? "MLX Whisper"
-    : "faster-whisper/CTranslate2";
+  const expectedBackends: Record<ModelEngine, string> = {
+    "mlx-whisper": "MLX Whisper",
+    "mlx-audio": "MLX Audio",
+    "faster-whisper": "faster-whisper/CTranslate2",
+    crispasr: "CrispASR CUDA",
+  };
+  const expectedBackend = expectedBackends[definition.engine];
   const expected = {
     familyId: family.familyId,
     backend: expectedBackend,

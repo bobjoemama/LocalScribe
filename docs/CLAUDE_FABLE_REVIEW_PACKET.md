@@ -103,8 +103,10 @@ version list:
 - Python 3.12.13
 - MLX 0.32.0
 - MLX Whisper 0.4.3
+- MLX Audio 0.4.6
 - faster-whisper 1.2.1
 - CTranslate2 4.8.1
+- CrispASR 0.8.24
 - CUDA 12.9 user-space packages and cuDNN 9.25 on Windows
 
 Review `package.json`, `package-lock.json`, all three `uv.lock` files,
@@ -114,10 +116,10 @@ rather than reused from a same-version uv wheel cache.
 
 ## Model harness contract
 
-Whisper large-v3 is the default family. Whisper large-v2 is the only
-curated-addable family. “Add model” means activate an already reviewed family
-from the packaged catalog; it is intentionally not an arbitrary repository,
-URL, manifest, plugin, Python module, or custom loader.
+Whisper large-v3 is the default family. Qwen3-ASR 1.7B and Whisper large-v2 are
+the curated-addable families. “Add model” means activate an already reviewed
+family from the packaged catalog; it is intentionally not an arbitrary
+repository, URL, manifest, plugin, Python module, or custom loader.
 
 Reviewers should challenge that safety/usability choice, but must not describe
 arbitrary model loading as implemented.
@@ -129,6 +131,9 @@ arbitrary model loading as implemented.
 | large-v3 | High | FP16 | 3,083,520,685 | 4.0–5.5 GiB | MIT |
 | large-v3 | Medium | 8-bit | 1,707,566,582 | 2.5–3.5 GiB | Undeclared |
 | large-v3 | Low | 4-bit | 973,563,382 | 1.8–2.7 GiB | Undeclared |
+| Qwen3-ASR 1.7B | High | BF16 | 4,080,710,353 | 4.2–5.4 GiB | Apache-2.0 |
+| Qwen3-ASR 1.7B | Medium | 8-bit | 2,467,859,030 | 2.6–3.6 GiB | Apache-2.0 |
+| Qwen3-ASR 1.7B | Low | 4-bit | 1,607,633,106 | 1.8–2.8 GiB | Apache-2.0 |
 | large-v2 | High | FP16 | 3,083,149,692 | 4.0–5.5 GiB | Undeclared |
 | large-v2 | Medium | 8-bit | 1,707,195,589 | 2.5–3.5 GiB | Undeclared |
 | large-v2 | Low | 4-bit | 973,192,389 | 1.8–2.7 GiB | Undeclared |
@@ -148,6 +153,19 @@ is not itself a legal-review record.
 | large-v2 | 3,089,578,858 | High | `float16` | 4.5–5.5 GiB | MIT |
 | large-v2 | same artifact | Medium | `int8_float16` | 2.9–3.5 GiB | MIT |
 | large-v2 | same artifact | Low | `int8` | 2.6–3.3 GiB | MIT |
+
+### Windows Qwen3-ASR artifacts
+
+| Family | Mode | GGUF precision | Exact download bytes | Estimated VRAM | Manifest license |
+| --- | --- | --- | ---: | ---: | --- |
+| Qwen3-ASR 1.7B | High | F16 | 4,704,800,576 | 4.8–5.8 GiB | Apache-2.0 |
+| Qwen3-ASR 1.7B | Medium | Q8_0 | 2,506,723,200 | 2.6–3.6 GiB | Apache-2.0 |
+| Qwen3-ASR 1.7B | Low | Q4_K | 1,490,915,200 | 1.8–2.8 GiB | Apache-2.0 |
+
+Review the CrispASR C ABI lifetime, CUDA-only fail-closed behavior, selected
+GPU isolation, exact native-file inventory, archive and per-file SHA-256 gates,
+license/notice retention, SBOM component, and the absence of cross-family or
+CPU fallback.
 
 The Mac modes use distinct physical quantized artifacts. The Windows modes use
 one physical CTranslate2 artifact per family with three allowlisted compute

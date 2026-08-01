@@ -117,7 +117,11 @@ export function historyRetentionLabel(days: HistoryRetentionDays): string {
 }
 
 /** Curated local ASR families shipped with this application. */
-export const MODEL_FAMILY_IDS = ["whisper-large-v3", "whisper-large-v2"] as const;
+export const MODEL_FAMILY_IDS = [
+  "whisper-large-v3",
+  "qwen3-asr-1-7b",
+  "whisper-large-v2",
+] as const;
 export const DEFAULT_MODEL_FAMILY_ID = "whisper-large-v3" as const;
 export const modelFamilyIdSchema = z.enum(MODEL_FAMILY_IDS);
 export type ModelFamilyId = z.infer<typeof modelFamilyIdSchema>;
@@ -299,7 +303,7 @@ const modelCatalogProfileSchema = z.object({
   profileId: z.string().regex(/^[a-z0-9][a-z0-9-]*$/),
   tier: modelPerformanceTierSchema,
   artifactId: z.string().regex(/^[a-z0-9][a-z0-9-]*$/),
-  engine: z.enum(["mlx-whisper", "faster-whisper"]),
+  engine: z.enum(["mlx-whisper", "mlx-audio", "faster-whisper", "crispasr"]),
   precision: z.string().min(1).max(40),
   expectedMemoryMinBytes: z.number().int().positive(),
   expectedMemoryMaxBytes: z.number().int().positive(),

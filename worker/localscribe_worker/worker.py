@@ -21,10 +21,13 @@ from pathlib import Path
 from typing import Any, BinaryIO, Protocol, TextIO
 
 PROTOCOL_VERSION = 1
-BACKEND_NAME = "mlx-whisper"
-# Handshake the installed runtime version, not a second handwritten literal.
-# Supervisor retains the release allowlist, so dependency drift fails closed.
-BACKEND_VERSION = package_version("mlx-whisper")
+BACKEND_NAME = "localscribe-mlx-asr"
+# Handshake both installed inference engines. The supervisor retains the exact
+# release allowlist, so either dependency drifting fails closed.
+BACKEND_VERSION = (
+    f"mlx-whisper/{package_version('mlx-whisper')};"
+    f"mlx-audio/{package_version('mlx-audio')}"
+)
 
 MAX_REQUEST_BYTES = 16 * 1024
 # Keep these literals in sync with resources/audio-protocol.json. They are
@@ -63,7 +66,6 @@ MODEL_TRANSACTION_NAME = re.compile(
     rf"^{re.escape(MODEL_TRANSACTION_PREFIX)}([0-9a-f]{{32}})$"
 )
 
-EXPECTED_MODEL_FILES = frozenset({"config.json", "weights.npz"})
 EXPECTED_MANIFEST_FIELDS = frozenset(
     {
         "schemaVersion",
@@ -115,15 +117,18 @@ def _catalog_selection(spec: TierSpec) -> CatalogSelection:
 # runtime compute profile remain an executable allowlist: a renderer cannot
 # supply either, and adding a curated model still requires a signed app build.
 CURATED_PROFILE_POLICIES = (
-    ("whisper-large-v3-mlx.json", "high", "float16"),
-    ("whisper-large-v3-mlx-8bit.json", "medium", "int8"),
-    ("whisper-large-v3-mlx-4bit.json", "low", "int4"),
-    ("whisper-large-v2-mlx.json", "high", "float16"),
-    ("whisper-large-v2-mlx-8bit.json", "medium", "int8"),
-    ("whisper-large-v2-mlx-4bit.json", "low", "int4"),
+    ("whisper-large-v3-mlx.json", "high", "float16", "MLX Whisper"),
+    ("whisper-large-v3-mlx-8bit.json", "medium", "int8", "MLX Whisper"),
+    ("whisper-large-v3-mlx-4bit.json", "low", "int4", "MLX Whisper"),
+    ("whisper-large-v2-mlx.json", "high", "float16", "MLX Whisper"),
+    ("whisper-large-v2-mlx-8bit.json", "medium", "int8", "MLX Whisper"),
+    ("whisper-large-v2-mlx-4bit.json", "low", "int4", "MLX Whisper"),
+    ("qwen3-asr-1-7b-mlx-bf16.json", "high", "bfloat16", "MLX Audio"),
+    ("qwen3-asr-1-7b-mlx-8bit.json", "medium", "int8", "MLX Audio"),
+    ("qwen3-asr-1-7b-mlx-4bit.json", "low", "int4", "MLX Audio"),
 )
 MANIFEST_FILENAMES = frozenset(
-    filename for filename, _tier, _compute_type in CURATED_PROFILE_POLICIES
+    filename for filename, _tier, _compute_type, _backend in CURATED_PROFILE_POLICIES
 )
 MODEL_REQUEST_FIELDS = frozenset(
     {
@@ -233,7 +238,7 @@ def _manifest_path(filename: str) -> Path:
     raise RuntimeError("packaged_model_manifest_missing")
 
 
-def _parse_manifest(path: Path, tier: str) -> ModelManifest:
+def _parse_manifest(path: Path, tier: str, expected_backend: str) -> ModelManifest:
     try:
         metadata = path.lstat()
         if path.is_symlink() or not stat.S_ISREG(metadata.st_mode):
@@ -250,7 +255,7 @@ def _parse_manifest(path: Path, tier: str) -> ModelManifest:
         raise RuntimeError("packaged_model_manifest_invalid")
     if raw.get("schemaVersion") != 1 or raw.get("platform") != "darwin-arm64":
         raise RuntimeError("packaged_model_manifest_invalid")
-    if raw.get("backend") != "MLX Whisper":
+    if raw.get("backend") != expected_backend:
         raise RuntimeError("packaged_model_manifest_backend_mismatch")
     for field in ("displayName", "license"):
         value = raw.get(field)
@@ -279,12 +284,18 @@ def _parse_manifest(path: Path, tier: str) -> ModelManifest:
     ):
         raise RuntimeError("packaged_model_manifest_invalid")
     files = raw.get("files")
-    if not isinstance(files, dict) or frozenset(files) != EXPECTED_MODEL_FILES:
+    if not isinstance(files, dict) or not files or len(files) > 64:
         raise RuntimeError("packaged_model_manifest_invalid")
     parsed_files: dict[str, ModelFile] = {}
     for filename, file_raw in files.items():
         if (
-            not isinstance(file_raw, dict)
+            not isinstance(filename, str)
+            or re.fullmatch(
+                r"(?:\.gitattributes|[A-Za-z0-9][A-Za-z0-9._-]*)",
+                filename,
+            )
+            is None
+            or not isinstance(file_raw, dict)
             or frozenset(file_raw) != frozenset({"bytes", "sha256"})
             or not isinstance(file_raw.get("bytes"), int)
             or isinstance(file_raw.get("bytes"), bool)
@@ -313,8 +324,12 @@ def _parse_manifest(path: Path, tier: str) -> ModelManifest:
 
 TIER_SPECS: dict[CatalogSelection, TierSpec] = {}
 MODEL_MANIFESTS: dict[CatalogSelection, ModelManifest] = {}
-for manifest_filename, tier, compute_type in CURATED_PROFILE_POLICIES:
-    manifest = _parse_manifest(_manifest_path(manifest_filename), tier)
+for manifest_filename, tier, compute_type, expected_backend in CURATED_PROFILE_POLICIES:
+    manifest = _parse_manifest(
+        _manifest_path(manifest_filename),
+        tier,
+        expected_backend,
+    )
     spec = TierSpec(
         tier=tier,
         manifest_filename=manifest_filename,
@@ -459,7 +474,9 @@ def _valid_model_directory(
         directory_metadata = model_directory.lstat()
         if model_directory.is_symlink() or not stat.S_ISDIR(directory_metadata.st_mode):
             return False
-        if frozenset(entry.name for entry in model_directory.iterdir()) != EXPECTED_MODEL_FILES:
+        if frozenset(entry.name for entry in model_directory.iterdir()) != frozenset(
+            manifest.files
+        ):
             return False
         for filename, expected in manifest.files.items():
             candidate = model_directory / filename
@@ -469,6 +486,44 @@ def _valid_model_directory(
             if metadata.st_size != expected.bytes or _sha256(candidate) != expected.sha256:
                 return False
         return True
+    except OSError:
+        return False
+
+
+def _remove_verified_huggingface_metadata(
+    model_directory: Path,
+    manifest: ModelManifest,
+) -> bool:
+    """Adopt an exact legacy local_dir download without re-downloading weights.
+
+    Hugging Face adds only a .cache directory to local_dir downloads. An
+    explicit install/repair may remove that metadata if every signed-manifest
+    file is already exact; no other extra entry or symlink is accepted.
+    """
+    try:
+        directory_metadata = model_directory.lstat()
+        if model_directory.is_symlink() or not stat.S_ISDIR(directory_metadata.st_mode):
+            return False
+        entries = {entry.name: entry for entry in model_directory.iterdir()}
+        if frozenset(entries) != frozenset((*manifest.files, ".cache")):
+            return False
+        metadata_directory = entries[".cache"]
+        metadata = metadata_directory.lstat()
+        if metadata_directory.is_symlink() or not stat.S_ISDIR(metadata.st_mode):
+            return False
+        for filename, expected in manifest.files.items():
+            candidate = entries[filename]
+            file_metadata = candidate.lstat()
+            if candidate.is_symlink() or not stat.S_ISREG(file_metadata.st_mode):
+                return False
+            if (
+                file_metadata.st_size != expected.bytes
+                or _sha256(candidate) != expected.sha256
+            ):
+                return False
+        _safe_rmtree(metadata_directory, model_directory)
+        _sync_directory(model_directory)
+        return _valid_model_directory(model_directory, manifest)
     except OSError:
         return False
 
@@ -739,6 +794,8 @@ def ensure_model(
             "model_not_installed",
             "install the selected local speech model before dictating",
         )
+    if _remove_verified_huggingface_metadata(final_directory, manifest):
+        return final_directory
 
     transaction, staging, backup = _create_model_transaction(model_root, manifest)
     try:
@@ -753,7 +810,7 @@ def ensure_model(
                     repo_id=manifest.model_id,
                     revision=manifest.revision,
                     local_dir=staging,
-                    allow_patterns=sorted(EXPECTED_MODEL_FILES),
+                    allow_patterns=sorted(manifest.files),
                     max_workers=4,
                     token=False,
                 )
@@ -1071,6 +1128,119 @@ class MLXWhisperRuntime:
             pass
 
 
+class MLXAudioRuntime:
+    def __init__(
+        self,
+        *,
+        mlx_module: Any,
+        numpy_module: Any,
+        model: Any,
+    ) -> None:
+        self._mlx = mlx_module
+        self._numpy = numpy_module
+        self._model = model
+
+    @classmethod
+    def load(cls, model_directory: Path, spec: TierSpec) -> MLXAudioRuntime:
+        if (
+            not model_directory.is_absolute()
+            or spec.family_id != "qwen3-asr-1-7b"
+        ):
+            raise WorkerError("model_load_failed", "local Qwen model path is invalid")
+        try:
+            with contextlib.redirect_stdout(sys.stderr):
+                import mlx.core as mx
+                import numpy as np
+                from mlx_audio.stt import load
+        except Exception as error:
+            raise WorkerError(
+                "runtime_import_failed",
+                "MLX Audio runtime dependencies are unavailable",
+            ) from error
+        try:
+            with contextlib.redirect_stdout(sys.stderr):
+                model = load(str(model_directory))
+        except Exception as error:
+            raise WorkerError(
+                "model_load_failed",
+                "The selected Qwen3-ASR model could not be loaded with MLX Audio",
+            ) from error
+        return cls(mlx_module=mx, numpy_module=np, model=model)
+
+    def transcribe(
+        self,
+        pcm16: bytes,
+        *,
+        language: str | None,
+        context: str,
+    ) -> TranscriptionResult:
+        if self._model is None:
+            raise WorkerError("model_not_loaded", "ASR model is not loaded")
+        waveform = (
+            self._numpy.frombuffer(pcm16, dtype="<i2").astype(self._numpy.float32)
+            / 32768.0
+        )
+        language_name = None
+        if language is not None:
+            language_name = next(
+                (
+                    name.title()
+                    for name, code in LANGUAGE_NAME_TO_CODE.items()
+                    if code == language
+                ),
+                language,
+            )
+        try:
+            with contextlib.redirect_stdout(sys.stderr):
+                result = self._model.generate(
+                    waveform,
+                    language=language_name,
+                    system_prompt=context or None,
+                    temperature=0.0,
+                    verbose=False,
+                )
+        except WorkerError:
+            raise
+        except Exception as error:
+            raise WorkerError("transcription_failed", "local transcription failed") from error
+        text = getattr(result, "text", None)
+        detected_language = getattr(result, "language", None)
+        if not isinstance(text, str) or len(text) > MAX_RESULT_CHARS:
+            raise WorkerError(
+                "invalid_model_output",
+                "model returned an invalid transcription",
+            )
+        if (
+            detected_language is not None
+            and (
+                not isinstance(detected_language, str)
+                or len(detected_language) > MAX_LANGUAGE_CHARS
+            )
+        ):
+            detected_language = None
+        return TranscriptionResult(
+            text=text,
+            language=detected_language or language,
+        )
+
+    def close(self) -> None:
+        self._model = None
+        gc.collect()
+        try:
+            self._mlx.synchronize()
+            self._mlx.metal.clear_cache()
+        except Exception:
+            pass
+
+
+def _load_runtime(model_directory: Path, spec: TierSpec) -> InferenceRuntime:
+    if spec.family_id == "qwen3-asr-1-7b":
+        return MLXAudioRuntime.load(model_directory, spec)
+    if spec.family_id in {"whisper-large-v3", "whisper-large-v2"}:
+        return MLXWhisperRuntime.load(model_directory, spec)
+    raise WorkerError("model_not_allowed", "model family is not supported by this worker")
+
+
 def _read_limited_line(input_stream: BinaryIO) -> tuple[bytes, bool]:
     line = input_stream.readline(MAX_REQUEST_BYTES + 1)
     if not line:
@@ -1160,7 +1330,7 @@ def run_worker(
     output_stream: TextIO,
     error_stream: TextIO,
     model_installer: ModelInstaller = _default_model_installer,
-    runtime_factory: RuntimeFactory = MLXWhisperRuntime.load,
+    runtime_factory: RuntimeFactory = _load_runtime,
     hardware_probe: HardwareProbe = read_apple_hardware_info,
     platform_name: str | None = None,
     machine_name: str | None = None,

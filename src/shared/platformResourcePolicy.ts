@@ -20,11 +20,28 @@ const MAC_MANIFESTS = [
   "whisper-large-v2-mlx.json",
   "whisper-large-v2-mlx-8bit.json",
   "whisper-large-v2-mlx-4bit.json",
+  "qwen3-asr-1-7b-mlx-bf16.json",
+  "qwen3-asr-1-7b-mlx-8bit.json",
+  "qwen3-asr-1-7b-mlx-4bit.json",
 ] as const;
 
 const WINDOWS_MANIFESTS = [
   "faster-whisper-large-v3.json",
   "faster-whisper-large-v2.json",
+  "qwen3-asr-1-7b-crisp-f16.json",
+  "qwen3-asr-1-7b-crisp-q8-0.json",
+  "qwen3-asr-1-7b-crisp-q4-k.json",
+] as const;
+
+const WINDOWS_NATIVE_RUNTIME = [
+  "native/windows/crispasr/LICENSE",
+  "native/windows/crispasr/THIRD_PARTY_NOTICES.txt",
+  "native/windows/crispasr/crispasr.dll",
+  "native/windows/crispasr/cudart64_12.dll",
+  "native/windows/crispasr/ggml-base.dll",
+  "native/windows/crispasr/ggml-cpu.dll",
+  "native/windows/crispasr/ggml-cuda.dll",
+  "native/windows/crispasr/ggml.dll",
 ] as const;
 
 const FORBIDDEN_PACKAGED_RESOURCE_PATH_PATTERNS: readonly RegExp[] = [
@@ -73,7 +90,10 @@ export function resourcePolicyFor(
       workerDirectory: "worker/windows_transformers/localscribe_windows_worker",
       runtimeDirectory: "python-runtime-windows",
       runtimeExecutable: "python-runtime-windows/venv/Scripts/python.exe",
-      helperFiles: ["native/windows/active-target.exe"],
+      helperFiles: [
+        "native/windows/active-target.exe",
+        ...WINDOWS_NATIVE_RUNTIME,
+      ],
       manifestFiles: WINDOWS_MANIFESTS.map((filename) => `model-manifest/${filename}`),
       brandingFiles: ["branding/LocalScribe.ico"],
     };

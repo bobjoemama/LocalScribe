@@ -138,6 +138,20 @@ const appVersion = runtimeVersions.app;
 const electronLocked = runtimeVersions.electron;
 const macPython = runtimeVersions.python;
 const platformName = RELEASE_POLICY.targets[platform].label;
+const crispAsrManifest = platform === "win32"
+  ? readJson("resources/native/windows/crispasr-runtime.json")
+  : null;
+if (
+  crispAsrManifest !== null &&
+  (
+    crispAsrManifest?.schemaVersion !== 1 ||
+    crispAsrManifest?.name !== "CrispASR" ||
+    crispAsrManifest?.license !== "Apache-2.0" ||
+    typeof crispAsrManifest?.source !== "string"
+  )
+) {
+  throw new Error("Runtime SBOM rejected the pinned CrispASR runtime manifest.");
+}
 const helperName = platform === "darwin"
   ? "native/macos/active-target"
   : "native/windows/active-target.exe";
@@ -166,6 +180,28 @@ const supplementalComponents = [
     purl: `pkg:generic/localscribe-active-target@${appVersion}?platform=${platformName}`,
     properties: [{ name: "com.localscribe.runtime-role", value: "target-bound-paste-helper" }],
   },
+  ...(crispAsrManifest === null
+    ? []
+    : [{
+        type: "library",
+        "bom-ref": `crispasr@${exactVersion(crispAsrManifest.version, "CrispASR")}`,
+        name: crispAsrManifest.name,
+        version: exactVersion(crispAsrManifest.version, "CrispASR"),
+        purl: `pkg:generic/crispasr@${exactVersion(crispAsrManifest.version, "CrispASR")}?download_url=${encodeURIComponent(crispAsrManifest.archive.url)}`,
+        licenses: [{ license: { id: crispAsrManifest.license } }],
+        externalReferences: [{
+          type: "vcs",
+          url: crispAsrManifest.source,
+        }],
+        hashes: [{
+          alg: "SHA-256",
+          content: crispAsrManifest.archive.sha256,
+        }],
+        properties: [
+          { name: "com.localscribe.runtime-role", value: "qwen-asr-native-engine" },
+          { name: "com.localscribe.runtime-archive", value: crispAsrManifest.archive.url },
+        ],
+      }]),
 ];
 
 // npm can mark a direct production package as `peer: true` when a development

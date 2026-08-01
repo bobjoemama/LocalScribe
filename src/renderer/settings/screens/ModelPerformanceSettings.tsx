@@ -127,10 +127,13 @@ export function catalogFamilyBackendLabel(
 export function friendlyPrecision(precision: string): string {
   const normalized = precision.toLowerCase();
   if (normalized === "fp16" || normalized === "float16") return "FP16";
+  if (normalized === "bf16" || normalized === "bfloat16") return "BF16";
   if (normalized === "int8_float16" || normalized === "int8-float16") {
     return "INT8 weights + FP16 compute";
   }
   if (normalized === "int8") return "INT8";
+  if (normalized === "q8_0") return "Q8_0";
+  if (normalized === "q4_k") return "Q4_K";
   if (normalized === "8-bit") return "8-bit";
   if (normalized === "4-bit") return "4-bit";
   return precision;

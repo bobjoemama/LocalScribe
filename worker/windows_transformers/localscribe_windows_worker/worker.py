@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ctypes
 import gc
 import hashlib
 import importlib.util
@@ -21,7 +22,7 @@ from pathlib import Path
 from typing import Any, BinaryIO, Protocol, TextIO
 
 PROTOCOL_VERSION = 1
-BACKEND_NAME = "faster-whisper-ctranslate2"
+BACKEND_NAME = "localscribe-windows-asr"
 # Handshake the installed runtime version, not a second handwritten literal.
 # Supervisor retains the release allowlist, so dependency drift fails closed.
 try:
@@ -43,6 +44,7 @@ except PackageNotFoundError:
         if dependency.startswith("faster-whisper==")
     )
     BACKEND_VERSION = _dependency.removeprefix("faster-whisper==").split(";", 1)[0]
+BACKEND_VERSION = f"faster-whisper/{BACKEND_VERSION};crispasr/0.8.24"
 
 MAX_REQUEST_BYTES = 16 * 1024
 # Keep these literals in sync with resources/audio-protocol.json. They are
@@ -82,10 +84,15 @@ MODEL_TRANSACTION_NAME = re.compile(
     rf"^{re.escape(MODEL_TRANSACTION_PREFIX)}([0-9a-f]{{32}})$"
 )
 
-TIER_COMPUTE_TYPES = {
+WHISPER_TIER_COMPUTE_TYPES = {
     "high": "float16",
     "medium": "int8_float16",
     "low": "int8",
+}
+QWEN_TIER_COMPUTE_TYPES = {
+    "high": "float16",
+    "medium": "q8_0",
+    "low": "q4_k",
 }
 
 EXPECTED_MANIFEST_FIELDS = frozenset(
@@ -247,6 +254,7 @@ UNSUPPORTED_LANGUAGE_CODES_BY_FAMILY = {
 _DLL_DIRECTORY_HANDLES: list[Any] = []
 _CUDA_DLLS_CONFIGURED = False
 _SELECTED_CUDA_DEVICE_INDEX: int | None = None
+_BOUND_CUDA_PHYSICAL_INDEX: int | None = None
 
 
 class WorkerError(Exception):
@@ -279,12 +287,18 @@ class ModelManifest:
 # resource-integrity-covered manifests. The exact filenames remain the
 # deliberate executable allowlist, so renderers cannot introduce repositories
 # or URLs and a curated addition still requires a signed LocalScribe release.
-MANIFEST_FILENAMES = frozenset(
-    {
-        "faster-whisper-large-v3.json",
-        "faster-whisper-large-v2.json",
-    }
+CURATED_PROFILE_POLICIES = (
+    ("faster-whisper-large-v3.json", "high", "float16", "faster-whisper/CTranslate2"),
+    ("faster-whisper-large-v3.json", "medium", "int8_float16", "faster-whisper/CTranslate2"),
+    ("faster-whisper-large-v3.json", "low", "int8", "faster-whisper/CTranslate2"),
+    ("faster-whisper-large-v2.json", "high", "float16", "faster-whisper/CTranslate2"),
+    ("faster-whisper-large-v2.json", "medium", "int8_float16", "faster-whisper/CTranslate2"),
+    ("faster-whisper-large-v2.json", "low", "int8", "faster-whisper/CTranslate2"),
+    ("qwen3-asr-1-7b-crisp-f16.json", "high", "float16", "CrispASR CUDA"),
+    ("qwen3-asr-1-7b-crisp-q8-0.json", "medium", "q8_0", "CrispASR CUDA"),
+    ("qwen3-asr-1-7b-crisp-q4-k.json", "low", "q4_k", "CrispASR CUDA"),
 )
+MANIFEST_FILENAMES = frozenset(policy[0] for policy in CURATED_PROFILE_POLICIES)
 DEFAULT_MANIFEST_FILENAME = "faster-whisper-large-v3.json"
 REQUIRED_CTRANSLATE2_FILES = frozenset(
     {"config.json", "model.bin", "tokenizer.json"}
@@ -315,7 +329,10 @@ def _manifest_path(filename: str) -> Path:
     raise RuntimeError("packaged_model_manifest_missing")
 
 
-def _load_model_manifest(path: Path) -> ModelManifest:
+def _load_model_manifest(
+    path: Path,
+    expected_backend: str = "faster-whisper/CTranslate2",
+) -> ModelManifest:
     try:
         metadata = path.lstat()
         if path.is_symlink() or not stat.S_ISREG(metadata.st_mode):
@@ -334,7 +351,7 @@ def _load_model_manifest(path: Path) -> ModelManifest:
         raise RuntimeError("packaged_model_manifest_platform_mismatch")
     if raw.get("schemaVersion") != 1:
         raise RuntimeError("packaged_model_manifest_invalid")
-    if raw.get("backend") != "faster-whisper/CTranslate2":
+    if raw.get("backend") != expected_backend:
         raise RuntimeError("packaged_model_manifest_backend_mismatch")
     for field in ("displayName", "license"):
         if not isinstance(raw.get(field), str) or not raw[field] or len(raw[field]) > 200:
@@ -364,7 +381,17 @@ def _load_model_manifest(path: Path) -> ModelManifest:
     files = raw.get("files")
     if (
         not isinstance(files, dict)
-        or not REQUIRED_CTRANSLATE2_FILES.issubset(files)
+        or (
+            expected_backend == "faster-whisper/CTranslate2"
+            and not REQUIRED_CTRANSLATE2_FILES.issubset(files)
+        )
+        or (
+            expected_backend == "CrispASR CUDA"
+            and (
+                len(files) != 1
+                or not all(filename.casefold().endswith(".gguf") for filename in files)
+            )
+        )
         or any(
             not isinstance(filename, str)
             or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", filename) is None
@@ -401,15 +428,33 @@ def _load_model_manifest(path: Path) -> ModelManifest:
     )
 
 
-MODEL_MANIFESTS_BY_FILENAME = {
-    filename: _load_model_manifest(_manifest_path(filename))
-    for filename in MANIFEST_FILENAMES
-}
-MODEL_MANIFESTS: dict[str, ModelManifest] = {}
-for _manifest in MODEL_MANIFESTS_BY_FILENAME.values():
-    if _manifest.model_id in MODEL_MANIFESTS:
+MODEL_MANIFESTS_BY_FILENAME: dict[str, ModelManifest] = {}
+MODEL_PROFILES: dict[tuple[str, str, str], ModelManifest] = {}
+for _filename, _tier, _compute_type, _expected_backend in CURATED_PROFILE_POLICIES:
+    _manifest = MODEL_MANIFESTS_BY_FILENAME.get(_filename)
+    if _manifest is None:
+        _manifest = _load_model_manifest(
+            _manifest_path(_filename),
+            _expected_backend,
+        )
+        MODEL_MANIFESTS_BY_FILENAME[_filename] = _manifest
+    _selection = (_manifest.model_id, _tier, _compute_type)
+    if _selection in MODEL_PROFILES:
         raise RuntimeError("duplicate_model_catalog_selection")
-    MODEL_MANIFESTS[_manifest.model_id] = _manifest
+    MODEL_PROFILES[_selection] = _manifest
+
+MODEL_MANIFESTS: dict[str, ModelManifest] = {}
+_manifest_repo_counts: dict[str, int] = {}
+for _manifest in MODEL_MANIFESTS_BY_FILENAME.values():
+    _manifest_repo_counts[_manifest.model_id] = (
+        _manifest_repo_counts.get(_manifest.model_id, 0) + 1
+    )
+for _manifest in MODEL_MANIFESTS_BY_FILENAME.values():
+    # The three Qwen quantizations intentionally share a Hugging Face repo.
+    # This compatibility map is only authoritative for repositories that map
+    # to one artifact; request routing always uses MODEL_PROFILES.
+    if _manifest_repo_counts[_manifest.model_id] == 1:
+        MODEL_MANIFESTS[_manifest.model_id] = _manifest
 
 # Retained as compatibility aliases for callers that only use the original
 # large-v3 default. The request path always selects from MODEL_MANIFESTS.
@@ -501,15 +546,28 @@ def _normalize_language(value: Any) -> str | None:
     raise WorkerError("invalid_language", "language is not supported by Whisper")
 
 
-def _validated_tier_compute_type(message: dict[str, Any]) -> tuple[str, str]:
+def _validated_tier_compute_type(
+    message: dict[str, Any],
+    model_id: str,
+) -> tuple[str, str]:
     tier = message.get("tier")
     compute_type = message.get("computeType")
-    if not isinstance(tier, str) or tier not in TIER_COMPUTE_TYPES:
+    if not isinstance(tier, str) or tier not in {"high", "medium", "low"}:
         raise WorkerError("invalid_tier", "tier must be high, medium, or low")
-    if not isinstance(compute_type, str) or compute_type != TIER_COMPUTE_TYPES[tier]:
+    if not isinstance(compute_type, str) or len(compute_type) > 32:
         raise WorkerError(
             "invalid_compute_type",
-            "computeType does not match the requested tier",
+            "computeType is invalid",
+        )
+    expected_compute_type = (
+        QWEN_TIER_COMPUTE_TYPES[tier]
+        if model_id == "cstr/qwen3-asr-1.7b-GGUF"
+        else WHISPER_TIER_COMPUTE_TYPES[tier]
+    )
+    if compute_type != expected_compute_type:
+        raise WorkerError(
+            "invalid_compute_type",
+            "computeType does not match the requested model and tier",
         )
     return tier, compute_type
 
@@ -1095,6 +1153,20 @@ def _configure_windows_cuda_dlls() -> None:
     _CUDA_DLLS_CONFIGURED = True
 
 
+def _bind_cuda_device(physical_index: int) -> None:
+    """Expose exactly one dynamically selected NVIDIA device to both engines."""
+    global _BOUND_CUDA_PHYSICAL_INDEX
+    if _BOUND_CUDA_PHYSICAL_INDEX is None:
+        os.environ["CUDA_VISIBLE_DEVICES"] = str(physical_index)
+        _BOUND_CUDA_PHYSICAL_INDEX = physical_index
+        return
+    if _BOUND_CUDA_PHYSICAL_INDEX != physical_index:
+        raise WorkerError(
+            "cuda_device_changed",
+            "the selected NVIDIA GPU changed; restart LocalScribe before loading a model",
+        )
+
+
 def query_device_info() -> DeviceInfo:
     global _SELECTED_CUDA_DEVICE_INDEX
     try:
@@ -1162,6 +1234,7 @@ def query_device_info() -> DeviceInfo:
                 -device.device_index,
             ),
         )
+        _bind_cuda_device(selected.device_index)
         _SELECTED_CUDA_DEVICE_INDEX = selected.device_index
         return selected
     except WorkerError:
@@ -1190,7 +1263,7 @@ class FasterWhisperRuntime:
         compute_type: str,
         manifest: ModelManifest,
     ) -> FasterWhisperRuntime:
-        if compute_type not in TIER_COMPUTE_TYPES.values():
+        if compute_type not in WHISPER_TIER_COMPUTE_TYPES.values():
             raise WorkerError("invalid_compute_type", "compute type is not allowed")
         if not _valid_model_directory(model_directory, manifest):
             raise WorkerError("model_checksum_failed", "local model verification failed")
@@ -1209,12 +1282,16 @@ class FasterWhisperRuntime:
         try:
             if ctranslate2.get_cuda_device_count() < 1:
                 raise WorkerError("cuda_unavailable", "an NVIDIA CUDA GPU is required")
-            device_index = _SELECTED_CUDA_DEVICE_INDEX
-            if device_index is None:
+            physical_device_index = _SELECTED_CUDA_DEVICE_INDEX
+            if physical_device_index is None:
                 # Install/switch/shutdown boundaries create fresh workers.
                 # Never silently fall back to GPU 0 after such a restart:
                 # re-run the same NVML selector used by device_info.
-                device_index = query_device_info().device_index
+                physical_device_index = query_device_info().device_index
+            _bind_cuda_device(physical_device_index)
+            # CUDA_VISIBLE_DEVICES maps the selected physical adapter to the
+            # only logical adapter exposed inside this isolated worker.
+            device_index = 0
             if device_index >= ctranslate2.get_cuda_device_count():
                 raise WorkerError(
                     "cuda_unavailable",
@@ -1336,6 +1413,289 @@ class FasterWhisperRuntime:
         gc.collect()
 
 
+class _CrispASROpenParams(ctypes.Structure):
+    _fields_ = [
+        ("abi_version", ctypes.c_int),
+        ("n_threads", ctypes.c_int),
+        ("use_gpu", ctypes.c_int),
+        ("verbosity", ctypes.c_int),
+        ("flash_attn", ctypes.c_int),
+        ("n_gpu_layers", ctypes.c_int),
+        ("reserved", ctypes.c_int * 6),
+    ]
+
+
+def _crispasr_library_path() -> Path:
+    for parent in Path(__file__).resolve().parents:
+        for relative in (
+            Path("resources") / "native" / "windows" / "crispasr" / "crispasr.dll",
+            Path("native") / "windows" / "crispasr" / "crispasr.dll",
+        ):
+            candidate = parent / relative
+            try:
+                metadata = candidate.lstat()
+            except OSError:
+                continue
+            if stat.S_ISREG(metadata.st_mode) and not _is_reparse_point(metadata):
+                return candidate.resolve(strict=True)
+    raise WorkerError(
+        "runtime_import_failed",
+        "the packaged CrispASR CUDA runtime is unavailable",
+    )
+
+
+class CrispASRRuntime:
+    def __init__(self, library: Any, session: int, numpy_module: Any) -> None:
+        self._library = library
+        self._session = session
+        self._numpy = numpy_module
+        self._closed = False
+
+    @staticmethod
+    def _configure_signatures(library: Any) -> None:
+        required_symbols = (
+            "crispasr_set_gpu_backend",
+            "crispasr_session_open_with_params",
+            "crispasr_session_backend",
+            "crispasr_session_transcribe",
+            "crispasr_session_result_n_segments",
+            "crispasr_session_result_segment_text",
+            "crispasr_session_result_free",
+            "crispasr_session_close",
+        )
+        if any(not hasattr(library, symbol) for symbol in required_symbols):
+            raise WorkerError(
+                "runtime_import_failed",
+                "the packaged CrispASR runtime has an incompatible ABI",
+            )
+        library.crispasr_set_gpu_backend.argtypes = [ctypes.c_char_p]
+        library.crispasr_set_gpu_backend.restype = None
+        library.crispasr_session_open_with_params.argtypes = [
+            ctypes.c_char_p,
+            ctypes.c_char_p,
+            ctypes.POINTER(_CrispASROpenParams),
+        ]
+        library.crispasr_session_open_with_params.restype = ctypes.c_void_p
+        library.crispasr_session_backend.argtypes = [ctypes.c_void_p]
+        library.crispasr_session_backend.restype = ctypes.c_char_p
+        library.crispasr_session_transcribe.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_float),
+            ctypes.c_int,
+        ]
+        library.crispasr_session_transcribe.restype = ctypes.c_void_p
+        if hasattr(library, "crispasr_session_transcribe_lang"):
+            library.crispasr_session_transcribe_lang.argtypes = [
+                ctypes.c_void_p,
+                ctypes.POINTER(ctypes.c_float),
+                ctypes.c_int,
+                ctypes.c_char_p,
+            ]
+            library.crispasr_session_transcribe_lang.restype = ctypes.c_void_p
+        if hasattr(library, "crispasr_session_set_hotwords"):
+            library.crispasr_session_set_hotwords.argtypes = [
+                ctypes.c_void_p,
+                ctypes.c_char_p,
+                ctypes.c_float,
+            ]
+            library.crispasr_session_set_hotwords.restype = ctypes.c_int
+        library.crispasr_session_result_n_segments.argtypes = [ctypes.c_void_p]
+        library.crispasr_session_result_n_segments.restype = ctypes.c_int
+        library.crispasr_session_result_segment_text.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_int,
+        ]
+        library.crispasr_session_result_segment_text.restype = ctypes.c_char_p
+        library.crispasr_session_result_free.argtypes = [ctypes.c_void_p]
+        library.crispasr_session_result_free.restype = None
+        library.crispasr_session_close.argtypes = [ctypes.c_void_p]
+        library.crispasr_session_close.restype = None
+
+    @classmethod
+    def load(
+        cls,
+        model_directory: Path,
+        compute_type: str,
+        manifest: ModelManifest,
+    ) -> CrispASRRuntime:
+        if (
+            manifest.family_id != "qwen3-asr-1-7b"
+            or manifest.backend != "CrispASR CUDA"
+            or compute_type not in QWEN_TIER_COMPUTE_TYPES.values()
+            or not _valid_model_directory(model_directory, manifest)
+        ):
+            raise WorkerError("model_checksum_failed", "local Qwen model verification failed")
+        device_index = _SELECTED_CUDA_DEVICE_INDEX
+        if device_index is None:
+            device_index = query_device_info().device_index
+        _bind_cuda_device(device_index)
+        _configure_windows_cuda_dlls()
+        library_path = _crispasr_library_path()
+        native_directory = library_path.parent
+        add_dll_directory = getattr(os, "add_dll_directory", None)
+        if add_dll_directory is not None:
+            _DLL_DIRECTORY_HANDLES.append(add_dll_directory(str(native_directory)))
+        try:
+            import numpy as np
+
+            library = ctypes.CDLL(str(library_path))
+            cls._configure_signatures(library)
+            library.crispasr_set_gpu_backend(b"cuda")
+            model_filename = next(iter(manifest.files))
+            model_path = (model_directory / model_filename).resolve(strict=True)
+            params = _CrispASROpenParams(
+                abi_version=2,
+                n_threads=min(8, max(1, os.cpu_count() or 4)),
+                use_gpu=1,
+                verbosity=0,
+                flash_attn=1,
+                n_gpu_layers=-1,
+                reserved=(ctypes.c_int * 6)(*([0] * 6)),
+            )
+            session = library.crispasr_session_open_with_params(
+                os.fsencode(model_path),
+                b"qwen3",
+                ctypes.byref(params),
+            )
+        except WorkerError:
+            raise
+        except Exception as error:
+            raise WorkerError(
+                "runtime_import_failed",
+                "the CrispASR CUDA runtime could not be loaded",
+            ) from error
+        if not session:
+            raise WorkerError(
+                "model_load_failed",
+                "CrispASR could not load the selected Qwen3-ASR model with CUDA",
+            )
+        backend = library.crispasr_session_backend(session)
+        backend_name = backend.decode("utf-8", errors="replace") if backend else ""
+        if backend_name not in {"qwen3", "qwen3-1.7b"}:
+            library.crispasr_session_close(session)
+            raise WorkerError(
+                "model_load_failed",
+                "CrispASR loaded an unexpected model backend",
+            )
+        return cls(library, session, np)
+
+    def _read_pcm16(self, audio: ValidatedAudio) -> Any:
+        try:
+            with wave.open(io.BytesIO(audio.wav_bytes), "rb") as wav:
+                frame_count = wav.getnframes()
+                raw = wav.readframes(frame_count)
+        except (EOFError, OSError, wave.Error) as error:
+            raise WorkerError("invalid_audio_file", "audio WAV is malformed") from error
+        expected_bytes = frame_count * REQUIRED_CHANNELS * REQUIRED_SAMPLE_WIDTH_BYTES
+        if len(raw) != expected_bytes or len(raw) > MAX_AUDIO_BYTES:
+            raise WorkerError("invalid_audio_file", "audio payload is invalid")
+        return (
+            self._numpy.frombuffer(raw, dtype="<i2").astype(self._numpy.float32)
+            / 32768.0
+        )
+
+    def transcribe(
+        self,
+        audio: ValidatedAudio,
+        *,
+        language: str | None,
+        context: str,
+    ) -> TranscriptionResult:
+        if self._closed or not self._session:
+            raise WorkerError("model_not_loaded", "ASR model is not loaded")
+        pcm = self._read_pcm16(audio)
+        if hasattr(self._library, "crispasr_session_set_hotwords"):
+            hotwords = context.encode("utf-8") if context else None
+            if self._library.crispasr_session_set_hotwords(
+                self._session,
+                hotwords,
+                ctypes.c_float(2.0),
+            ) != 0:
+                raise WorkerError(
+                    "transcription_failed",
+                    "Qwen contextual vocabulary could not be applied",
+                )
+        samples = pcm.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
+        try:
+            if language and hasattr(
+                self._library,
+                "crispasr_session_transcribe_lang",
+            ):
+                result = self._library.crispasr_session_transcribe_lang(
+                    self._session,
+                    samples,
+                    len(pcm),
+                    language.encode("utf-8"),
+                )
+            else:
+                result = self._library.crispasr_session_transcribe(
+                    self._session,
+                    samples,
+                    len(pcm),
+                )
+        except Exception as error:
+            raise WorkerError("transcription_failed", "speech transcription failed") from error
+        if not result:
+            raise WorkerError("transcription_failed", "speech transcription failed")
+        try:
+            segment_count = self._library.crispasr_session_result_n_segments(result)
+            if segment_count < 0 or segment_count > 100_000:
+                raise WorkerError(
+                    "invalid_model_output",
+                    "model returned an invalid transcription",
+                )
+            text_parts: list[str] = []
+            text_characters = 0
+            for index in range(segment_count):
+                raw_text = self._library.crispasr_session_result_segment_text(
+                    result,
+                    index,
+                )
+                segment_text = (
+                    raw_text.decode("utf-8", errors="strict") if raw_text else ""
+                )
+                text_characters += len(segment_text)
+                if text_characters > MAX_RESULT_CHARS:
+                    raise WorkerError(
+                        "invalid_model_output",
+                        "model returned an oversized transcription",
+                    )
+                text_parts.append(segment_text)
+            return TranscriptionResult(" ".join(text_parts).strip(), language)
+        except UnicodeDecodeError as error:
+            raise WorkerError(
+                "invalid_model_output",
+                "model returned an invalid transcription",
+            ) from error
+        finally:
+            self._library.crispasr_session_result_free(result)
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        session = self._session
+        self._session = 0
+        if session:
+            try:
+                self._library.crispasr_session_close(session)
+            except Exception:
+                pass
+        gc.collect()
+
+
+def _load_runtime(
+    model_directory: Path,
+    compute_type: str,
+    manifest: ModelManifest,
+) -> InferenceRuntime:
+    if manifest.family_id == "qwen3-asr-1-7b":
+        return CrispASRRuntime.load(model_directory, compute_type, manifest)
+    if manifest.family_id in {"whisper-large-v3", "whisper-large-v2"}:
+        return FasterWhisperRuntime.load(model_directory, compute_type, manifest)
+    raise WorkerError("model_not_allowed", "model family is not supported by this worker")
+
+
 def _read_limited_line(input_stream: BinaryIO) -> tuple[bytes, bool]:
     line = input_stream.readline(MAX_REQUEST_BYTES + 1)
     if not line:
@@ -1353,7 +1713,7 @@ def run_worker(
     output_stream: TextIO,
     error_stream: TextIO,
     model_installer: ModelInstaller = ensure_model,
-    runtime_factory: RuntimeFactory = FasterWhisperRuntime.load,
+    runtime_factory: RuntimeFactory = _load_runtime,
     device_info_provider: DeviceInfoProvider = query_device_info,
     platform_name: str | None = None,
 ) -> int:
@@ -1404,13 +1764,19 @@ def run_worker(
                     if platform_name != "win32":
                         raise WorkerError(
                             "windows_only",
-                            "faster-whisper CUDA worker requires Windows",
+                            "the LocalScribe CUDA worker requires Windows",
                         )
                     model_id = _string_field(message, "modelId", max_chars=200)
-                    manifest = MODEL_MANIFESTS.get(model_id)
+                    tier, compute_type = _validated_tier_compute_type(
+                        message,
+                        model_id,
+                    )
+                    manifest = MODEL_PROFILES.get((model_id, tier, compute_type))
                     if manifest is None:
-                        raise WorkerError("model_not_allowed", "requested model is not allowed")
-                    tier, compute_type = _validated_tier_compute_type(message)
+                        raise WorkerError(
+                            "model_not_allowed",
+                            "modelId, tier, and computeType must match the model catalog",
+                        )
                     if message.get("allowDownload") is not True:
                         raise WorkerError(
                             "allow_download_required",
@@ -1461,13 +1827,19 @@ def run_worker(
                     if platform_name != "win32":
                         raise WorkerError(
                             "windows_only",
-                            "faster-whisper CUDA worker requires Windows",
+                            "the LocalScribe CUDA worker requires Windows",
                         )
                     model_id = _string_field(message, "modelId", max_chars=200)
-                    manifest = MODEL_MANIFESTS.get(model_id)
+                    tier, compute_type = _validated_tier_compute_type(
+                        message,
+                        model_id,
+                    )
+                    manifest = MODEL_PROFILES.get((model_id, tier, compute_type))
                     if manifest is None:
-                        raise WorkerError("model_not_allowed", "requested model is not allowed")
-                    tier, compute_type = _validated_tier_compute_type(message)
+                        raise WorkerError(
+                            "model_not_allowed",
+                            "modelId, tier, and computeType must match the model catalog",
+                        )
                     allow_download = message.get("allowDownload")
                     if allow_download is not False:
                         raise WorkerError(
