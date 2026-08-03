@@ -188,6 +188,7 @@ publishing any Windows artifact.
 | [Clean-room policy](docs/CLEAN_ROOM.md) | Product independence and provenance |
 | [Delivery plan](docs/DELIVERY_PLAN.md) | Remaining implementation and validation work |
 | [Independent review packet](docs/CLAUDE_FABLE_REVIEW_PACKET.md) | Evidence-gated external code review |
+| [Opus 5 engineering packet](docs/OPUS_5_REVIEW_PACKET.md) | Whole-repository review, refactor, bug fixing, and GUI acceptance |
 
 ## Security and release status
 
