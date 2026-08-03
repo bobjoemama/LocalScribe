@@ -43,7 +43,7 @@ const SETTINGS_CHANNELS = new Set<string>([
   IPC.systemDiagnostics,
   IPC.systemModelCatalog,
   IPC.systemAddModelFamily,
-  IPC.systemActivateModelFamily,
+  IPC.systemApplyModelSelection,
   IPC.systemInstallModel,
   IPC.systemRemoveModel,
 ]);

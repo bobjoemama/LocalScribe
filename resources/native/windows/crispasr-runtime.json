@@ -3,7 +3,7 @@
   "name": "CrispASR",
   "version": "0.8.24",
   "source": "https://github.com/CrispStrobe/CrispASR",
-  "license": "Apache-2.0",
+  "license": "MIT",
   "archive": {
     "url": "https://github.com/CrispStrobe/CrispASR/releases/download/v0.8.24/crispasr-windows-x86_64-cuda.zip",
     "sha256": "832af6218508ac52fc71ac5653c433786bdfae81f775e2c77bfefd05df6f255b",

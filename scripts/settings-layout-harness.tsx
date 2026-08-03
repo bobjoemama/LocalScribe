@@ -14,6 +14,7 @@ import {
   type LaunchAtLoginStatus,
   type LocalScribeApi,
   type ModelCatalog,
+  type ModelSelectionApplyRequest,
   type PermissionSnapshot,
 } from "../src/shared/contracts";
 import { SettingsModal } from "../src/renderer/settings/screens/StyleSettings";
@@ -27,6 +28,7 @@ const harnessVerification = (
     : "missing"
 ) as "missing" | "invalid" | "verified";
 const harnessSettingsPreset = harnessParams.get("settings") === "custom" ? "custom" : "default";
+const harnessApplyResult = harnessParams.get("apply") === "fail" ? "fail" : "success";
 const isWindows = harnessPlatform === "win32";
 const usesCustomSettings = harnessSettingsPreset === "custom";
 Object.defineProperty(navigator, "platform", {
@@ -68,6 +70,23 @@ const qwenArtifacts = qwenArtifactIds.map((artifactId, index) => ({
     ? [4_704_800_576, 2_506_723_200, 1_490_915_200][index]!
     : [4_080_710_353, 2_467_859_030, 1_607_633_106][index]!,
 }));
+const qwen06ArtifactIds = qwenArtifactPrecisions.map(
+  (precision) => `qwen3-asr-0-6b-${isWindows ? "crisp" : "mlx"}-${precision}`,
+);
+const qwen06Artifacts = qwen06ArtifactIds.map((artifactId, index) => ({
+  artifactId,
+  displayName: `Qwen3-ASR 0.6B · ${isWindows ? "CrispASR" : "MLX"} ${qwenArtifactPrecisions[index]}`,
+  backend: isWindows ? "CrispASR CUDA" : "MLX Audio",
+  modelId: isWindows
+    ? "cstr/qwen3-asr-0.6b-GGUF"
+    : `mlx-community/Qwen3-ASR-0.6B-${qwenArtifactPrecisions[index]}`,
+  storageDirectory: artifactId,
+  revision: `${index + 7}`.repeat(40),
+  license: "Apache-2.0",
+  expectedDownloadBytes: isWindows
+    ? [1_882_037_824, 1_006_809_760, 631_026_336][index]!
+    : [1_569_438_434, 1_010_773_761, 712_781_279][index]!,
+}));
 
 let persistedSettings: AppSettings = appSettingsSchema.parse(usesCustomSettings
   ? {
@@ -87,7 +106,14 @@ let persistedSettings: AppSettings = appSettingsSchema.parse(usesCustomSettings
       toggleShortcut: "CommandOrControl+F14",
     }
   : DEFAULT_SETTINGS);
+if (harnessParams.has("apply")) {
+  persistedSettings = appSettingsSchema.parse({
+    ...persistedSettings,
+    modelLibraryFamilyIds: ["whisper-large-v3", "qwen3-asr-1-7b"],
+  });
+}
 const settingsPatchCalls: AppSettingsPatch[] = [];
+const modelApplyCalls: ModelSelectionApplyRequest[] = [];
 const settingsListeners = new Set<(settings: AppSettings) => void>();
 let launchAtLoginStatus: LaunchAtLoginStatus = usesCustomSettings
   ? {
@@ -133,7 +159,9 @@ const permissions: PermissionSnapshot = {
 const catalog: ModelCatalog = {
   platform: isWindows ? "win32-x64-cuda" : "darwin-arm64",
   activeModelFamilyId: "whisper-large-v3",
-  modelLibraryFamilyIds: ["whisper-large-v3"],
+  modelLibraryFamilyIds: harnessParams.has("apply")
+    ? ["whisper-large-v3", "qwen3-asr-1-7b"]
+    : ["whisper-large-v3"],
   families: [
     {
       familyId: "whisper-large-v3",
@@ -153,10 +181,33 @@ const catalog: ModelCatalog = {
       })),
     },
     {
+      familyId: "qwen3-asr-0-6b",
+      displayName: "Qwen3-ASR 0.6B",
+      active: false,
+      inLibrary: false,
+      artifacts: qwen06Artifacts,
+      profiles: ["high", "medium", "low"].map((tier, index) => ({
+        profileId: `qwen3-asr-0-6b-${tier}`,
+        tier: tier as "high" | "medium" | "low",
+        artifactId: qwen06ArtifactIds[index]!,
+        engine: isWindows ? "crispasr" as const : "mlx-audio" as const,
+        precision: isWindows
+          ? (["float16", "q8_0", "q4_k"] as const)[index]!
+          : (["bf16", "8-bit", "4-bit"] as const)[index]!,
+        expectedMemoryMinBytes: (
+          isWindows ? [2.5, 1.6, 1.2] : [2, 1.4, 1.1]
+        )[index]! * GIBIBYTE,
+        expectedMemoryMaxBytes: (
+          isWindows ? [3.5, 2.6, 2.2] : [3, 2.3, 2]
+        )[index]! * GIBIBYTE,
+        memoryBasis: "estimated" as const,
+      })),
+    },
+    {
       familyId: "qwen3-asr-1-7b",
       displayName: "Qwen3-ASR 1.7B",
       active: false,
-      inLibrary: false,
+      inLibrary: harnessParams.has("apply"),
       artifacts: qwenArtifacts,
       profiles: ["high", "medium", "low"].map((tier, index) => ({
         profileId: `qwen3-asr-1-7b-${tier}`,
@@ -217,6 +268,17 @@ const catalog: ModelCatalog = {
     ...qwenArtifacts.map((artifact) => ({
       familyId: "qwen3-asr-1-7b" as const,
       artifactId: artifact.artifactId,
+      present: harnessParams.has("apply"),
+      verified: harnessParams.has("apply"),
+      verificationStatus: harnessParams.has("apply") ? "verified" as const : "missing" as const,
+      sizeBytes: harnessParams.has("apply") ? artifact.expectedDownloadBytes : 0,
+      expectedBytes: artifact.expectedDownloadBytes,
+      verifiedFiles: harnessParams.has("apply") ? 1 : 0,
+      expectedFiles: 1,
+    })),
+    ...qwen06Artifacts.map((artifact) => ({
+      familyId: "qwen3-asr-0-6b" as const,
+      artifactId: artifact.artifactId,
       present: false,
       verified: false,
       verificationStatus: "missing" as const,
@@ -266,6 +328,7 @@ const diagnostics: Diagnostics = {
     modelId: "curated/whisper-large-v3-high",
     storageDirectory: activeArtifacts[0]!.storageDirectory,
     installed: modelVerified,
+    loaded: harnessParams.has("apply-success"),
     present: modelPresent,
     verified: modelVerified,
     verificationStatus: harnessVerification,
@@ -359,7 +422,32 @@ window.localScribe = {
     modelCatalog: async () => catalog,
     openPermission: async () => undefined,
     addModelFamily: async () => catalog,
-    activateModelFamily: async () => catalog,
+    applyModelSelection: async (request) => {
+      modelApplyCalls.push({ ...request });
+      if (harnessApplyResult === "fail") throw new Error("Harness model load failed");
+      persistedSettings = appSettingsSchema.parse({
+        ...persistedSettings,
+        activeModelFamilyId: request.familyId,
+        modelPerformanceMode: request.performanceMode,
+      });
+      for (const listener of settingsListeners) listener(persistedSettings);
+      return {
+        settings: persistedSettings,
+        catalog,
+        diagnostics: {
+          ...diagnostics,
+          model: {
+            ...diagnostics.model,
+            loaded: true,
+          },
+          performance: {
+            ...diagnostics.performance,
+            preference: request.performanceMode,
+            resolvedTier: request.performanceMode === "auto" ? diagnostics.performance.resolvedTier : request.performanceMode,
+          },
+        },
+      };
+    },
     installModel: async () => diagnostics,
     removeModel: async () => diagnostics,
   },
@@ -374,11 +462,13 @@ const renderSettings = () => {
 (window as unknown as {
   __localScribeSettingsHarness: {
     patchCalls: AppSettingsPatch[];
+    applyCalls: ModelSelectionApplyRequest[];
     persisted(): AppSettings;
     remount(): void;
   };
 }).__localScribeSettingsHarness = {
   patchCalls: settingsPatchCalls,
+  applyCalls: modelApplyCalls,
   persisted: () => persistedSettings,
   remount: renderSettings,
 };

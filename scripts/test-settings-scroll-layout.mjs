@@ -271,7 +271,61 @@ async function exerciseChangedSettings(window) {
   })()\`);
 }
 
-async function inspectSize(width, height, platform, verification, settingsPreset = "default") {
+async function exerciseModelSelection(window, expectedResult) {
+  return window.webContents.executeJavaScript(\`(async () => {
+    const waitForPaint = () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const openModel = [...document.querySelectorAll(".ls-settings-sidebar nav button")]
+      .find((candidate) => candidate.textContent?.trim() === "Model & Performance");
+    if (!(openModel instanceof HTMLButtonElement)) throw new Error("Missing Model & Performance tab");
+    openModel.click();
+    await waitForPaint();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    const qwenCard = [...document.querySelectorAll(".ls-model-family-card")]
+      .find((candidate) => candidate.querySelector("h3")?.textContent?.trim() === "Qwen3-ASR 1.7B");
+    const selectQwen = [...(qwenCard?.querySelectorAll("button") ?? [])]
+      .find((candidate) => candidate.textContent?.trim() === "Select");
+    if (!(selectQwen instanceof HTMLButtonElement)) throw new Error("Missing Qwen family Select button");
+    selectQwen.click();
+    await waitForPaint();
+    const low = document.querySelector("input[name='model-performance-mode'][value='low']");
+    if (!(low instanceof HTMLInputElement)) throw new Error("Missing Low performance choice");
+    low.click();
+    await waitForPaint();
+    const beforeApply = {
+      applyCalls: [...window.__localScribeSettingsHarness.applyCalls],
+      patchCalls: [...window.__localScribeSettingsHarness.patchCalls],
+      summary: document.querySelector(".ls-model-apply-card")?.textContent ?? "",
+    };
+    const apply = [...document.querySelectorAll(".ls-model-apply-card button")]
+      .find((candidate) => candidate.textContent?.trim() === "Apply model");
+    if (!(apply instanceof HTMLButtonElement)) throw new Error("Missing Apply model button");
+    const enabledBeforeClick = !apply.disabled;
+    apply.click();
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      if (window.__localScribeSettingsHarness.applyCalls.length === 1
+        && !apply.textContent?.includes("Applying")) break;
+    }
+    const selectionInputs = [...document.querySelectorAll("input[name='model-performance-mode']")];
+    return {
+      expectedResult: \${JSON.stringify(expectedResult)},
+      enabledBeforeClick,
+      beforeApply,
+      afterApply: {
+        applyCalls: [...window.__localScribeSettingsHarness.applyCalls],
+        patchCalls: [...window.__localScribeSettingsHarness.patchCalls],
+        persisted: window.__localScribeSettingsHarness.persisted(),
+        checked: selectionInputs.filter((input) => input.checked).map((input) => input.value),
+        summary: document.querySelector(".ls-model-apply-card")?.textContent ?? "",
+        feedback: document.querySelector(".ls-model-feedback")?.textContent ?? "",
+        applyDisabled: apply.disabled,
+      },
+    };
+  })()\`);
+}
+
+async function inspectSize(width, height, platform, verification, settingsPreset = "default", applyResult = null) {
   const window = new BrowserWindow({
     width,
     height,
@@ -309,6 +363,7 @@ async function inspectSize(width, height, platform, verification, settingsPreset
     harnessUrl.searchParams.set("platform", platform);
     harnessUrl.searchParams.set("verification", verification);
     harnessUrl.searchParams.set("settings", settingsPreset);
+    if (applyResult) harnessUrl.searchParams.set("apply", applyResult);
     void window.loadURL(harnessUrl.href).catch((error) => {
       stage(\`loadURL-rejected \${error instanceof Error ? error.message : String(error)}\`);
     });
@@ -338,14 +393,17 @@ async function inspectSize(width, height, platform, verification, settingsPreset
     const saveReload = settingsPreset === "custom"
       ? await exerciseChangedSettings(window)
       : null;
+    const modelSelection = applyResult ? await exerciseModelSelection(window, applyResult) : null;
     return {
       platform,
       verification,
       settingsPreset,
+      applyResult,
       requestedSize: { width, height },
       contentSize,
       tabs,
       saveReload,
+      modelSelection,
     };
   } finally {
     if (!window.isDestroyed()) window.destroy();
@@ -384,6 +442,8 @@ async function run() {
       results.push(await inspectSize(width, height, platform, "missing", "custom"));
     }
   }
+  results.push(await inspectSize(900, 640, "darwin", "verified", "default", "success"));
+  results.push(await inspectSize(900, 640, "darwin", "verified", "default", "fail"));
   writeFileSync(resultFile, JSON.stringify({ results }, null, 2));
   allowQuit = true;
   app.quit();
@@ -425,7 +485,8 @@ function assertTab(result, size) {
   assert(after.targetTop >= after.viewportTop - 1, `${label}: bottom target remains above the scroll viewport: ${layoutEvidence}`);
   assert(after.targetBottom <= after.viewportBottom + 1, `${label}: bottom target remains hidden behind the footer: ${layoutEvidence}`);
   assert(
-    result.footerControls.map((control) => control.label).join("\u0000") === "Cancel\u0000Save changes",
+    result.footerControls.map((control) => control.label).join("\u0000")
+      === (label === "Model & Performance" ? "Cancel" : "Cancel\u0000Save changes"),
     `${label}: settings footer controls are incomplete: ${layoutEvidence}`,
   );
   assert(
@@ -480,11 +541,41 @@ function assertTab(result, size) {
       );
     } else {
       assert(
-        result.modelControls.actions.length === 3
+        result.modelControls.actions.length === (size.applyResult ? 6 : 3)
         && result.modelControls.actions.every((control) => control.visible),
         `Model & Performance: a macOS install control cannot be scrolled into view: ${layoutEvidence}`,
       );
     }
+  }
+}
+
+function assertModelSelection(size) {
+  const evidence = size.modelSelection;
+  if (!evidence) return;
+  const serialized = JSON.stringify(evidence);
+  assert(evidence.enabledBeforeClick, `Model Apply: expected verified selection to be applicable: ${serialized}`);
+  assert(evidence.beforeApply.applyCalls.length === 0, `Model Apply: selection invoked IPC before Apply: ${serialized}`);
+  assert(evidence.beforeApply.patchCalls.length === 0, `Model Apply: selection leaked into generic settings patch: ${serialized}`);
+  assert(evidence.beforeApply.summary.includes("Currently using"), `Model Apply: current summary missing: ${serialized}`);
+  assert(evidence.beforeApply.summary.includes("After applying"), `Model Apply: pending summary missing: ${serialized}`);
+  assert(evidence.afterApply.applyCalls.length === 1, `Model Apply: expected exactly one combined call: ${serialized}`);
+  assert(
+    JSON.stringify(evidence.afterApply.applyCalls[0])
+      === JSON.stringify({ familyId: "qwen3-asr-1-7b", performanceMode: "low" }),
+    `Model Apply: request did not combine family and mode: ${serialized}`,
+  );
+  assert(evidence.afterApply.patchCalls.length === 0, `Model Apply: Apply used generic settings patch: ${serialized}`);
+  if (evidence.expectedResult === "success") {
+    assert(evidence.afterApply.persisted.modelPerformanceMode === "low", `Model Apply: acknowledged mode did not persist: ${serialized}`);
+    assert(evidence.afterApply.persisted.activeModelFamilyId === "qwen3-asr-1-7b", `Model Apply: acknowledged family did not persist: ${serialized}`);
+    assert(evidence.afterApply.applyDisabled, `Model Apply: unchanged acknowledged selection remained enabled: ${serialized}`);
+    assert(evidence.afterApply.summary.includes("Current model selection"), `Model Apply: success did not converge current and pending: ${serialized}`);
+  } else {
+    assert(evidence.afterApply.persisted.modelPerformanceMode === "auto", `Model Apply: failed mode mutated persisted settings: ${serialized}`);
+    assert(evidence.afterApply.persisted.activeModelFamilyId === "whisper-large-v3", `Model Apply: failed family mutated persisted settings: ${serialized}`);
+    assert(evidence.afterApply.checked.join("") === "low", `Model Apply: failed selection was not preserved: ${serialized}`);
+    assert(!evidence.afterApply.applyDisabled, `Model Apply: failed pending selection cannot be retried: ${serialized}`);
+    assert(evidence.afterApply.feedback.includes("prior model selection remains active"), `Model Apply: failure copy is misleading: ${serialized}`);
   }
 }
 
@@ -614,6 +705,7 @@ try {
     assert(size.contentSize.height === size.requestedSize.height, "Electron height differs from requested content height");
     for (const tab of size.tabs) assertTab(tab, size);
     assertChangedSettings(size);
+    assertModelSelection(size);
   }
   console.log(JSON.stringify(report, null, 2));
 } catch (error) {

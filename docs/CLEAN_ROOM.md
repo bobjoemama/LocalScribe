@@ -15,7 +15,7 @@ selected identities and per-file digests are recorded in
 
 The curated Qwen3-ASR model manifests declare Apache-2.0. Windows Qwen
 inference additionally ships a narrowly retained CrispASR 0.8.24 CUDA runtime:
-the release archive, each retained DLL, its Apache-2.0 license, and its
+the release archive, each retained DLL, its MIT license, and its
 third-party notices are pinned by digest in
 `resources/native/windows/crispasr-runtime.json`. This approval does not extend
 to arbitrary Qwen repositories, GGUF conversions, or native runtime releases.

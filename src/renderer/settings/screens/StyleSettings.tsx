@@ -37,6 +37,7 @@ import {
 import {
   ModelPerformanceSettings,
   type ModelActionState,
+  type ModelSelectionDraft,
   type ModelTierRuntimeStatus,
 } from "./ModelPerformanceSettings";
 import "./style-settings.css";
@@ -123,6 +124,19 @@ export function settingsWithPendingDraft(
   pending: AppSettingsPatch,
 ): AppSettings {
   return { ...persisted, ...pending };
+}
+
+export function settingsPatchWithoutModelSelection(patch: AppSettingsPatch): AppSettingsPatch {
+  const {
+    modelPerformanceMode: _modelPerformanceMode,
+    activeModelFamilyId: _activeModelFamilyId,
+    modelLibraryFamilyIds: _modelLibraryFamilyIds,
+    ...safePatch
+  } = patch as AppSettingsPatch & Partial<Pick<
+    AppSettings,
+    "modelPerformanceMode" | "activeModelFamilyId" | "modelLibraryFamilyIds"
+  >>;
+  return safePatch;
 }
 
 /**
@@ -885,12 +899,20 @@ export function SettingsModal({ onClose }: { onClose(): void }) {
   const [busy, setBusy] = useState(false);
   const dirtySettings = useRef<AppSettingsPatch>({});
   const [modelAction, setModelAction] = useState<ModelActionState>(null);
+  const [pendingModelSelection, setPendingModelSelection] = useState<ModelSelectionDraft | null>(null);
+  const [modelApplying, setModelApplying] = useState(false);
+  const modelApplyInFlight = useRef(false);
   const [modelFeedback, setModelFeedback] = useState<{ message: string; isError: boolean } | null>(null);
   const shortcutPlatform = permissions?.platform === "darwin"
     || permissions?.platform === "win32"
     || permissions?.platform === "linux"
     ? permissions.platform
     : null;
+  const closeSettings = useCallback(() => {
+    if (modelApplyInFlight.current) return;
+    setPendingModelSelection(null);
+    onClose();
+  }, [onClose]);
 
   const refresh = useCallback(async () => {
     const [permissionResult, launchAtLoginResult, diagnosticsResult, profileResult] = await Promise.allSettled([
@@ -928,6 +950,7 @@ export function SettingsModal({ onClose }: { onClose(): void }) {
   const applyPersistedSettings = useCallback((next: AppSettings) => {
     // Keep only local edits pending for a field-level patch. A shortcut that
     // just committed in another surface otherwise must replace this stale copy.
+    dirtySettings.current = settingsPatchWithoutModelSelection(dirtySettings.current);
     setSettings(settingsWithPendingDraft(next, dirtySettings.current));
     setSettingsLoadError(null);
   }, []);
@@ -1013,11 +1036,11 @@ export function SettingsModal({ onClose }: { onClose(): void }) {
 
   useEffect(() => {
     const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
+      if (event.key === "Escape") closeSettings();
     };
     window.addEventListener("keydown", closeOnEscape);
     return () => window.removeEventListener("keydown", closeOnEscape);
-  }, [onClose]);
+  }, [closeSettings]);
 
   const update = <K extends keyof AppSettings>(key: K, value: AppSettings[K]) => {
     if (!settings) return;
@@ -1058,7 +1081,8 @@ export function SettingsModal({ onClose }: { onClose(): void }) {
 
   const save = async () => {
     if (!settings) return;
-    const patch = { ...dirtySettings.current };
+    const patch = settingsPatchWithoutModelSelection(dirtySettings.current);
+    dirtySettings.current = patch;
     if (Object.keys(patch).length === 0) {
       setStatus("No settings changes to save");
       return;
@@ -1072,24 +1096,6 @@ export function SettingsModal({ onClose }: { onClose(): void }) {
       setStatus(Object.keys(remaining).length > 0
         ? "Saved the submitted settings. Newer changes still need to be saved."
         : "Settings saved");
-      if (patch.modelPerformanceMode !== undefined) {
-        try {
-          const nextDiagnostics = await window.localScribe.system.diagnostics();
-          setDiagnostics(nextDiagnostics);
-          setModelFeedback({
-            message: modelPerformanceSaveMessage(
-              saved.modelPerformanceMode,
-              nextDiagnostics.performance,
-            ),
-            isError: false,
-          });
-        } catch {
-          setModelFeedback({
-            message: "The performance mode was saved, but LocalScribe could not refresh its model status. Recheck memory to try again.",
-            isError: true,
-          });
-        }
-      }
       if (patch.launchAtLogin !== undefined) {
         try {
           setLaunchAtLoginStatus(await window.localScribe.system.getLaunchAtLoginStatus());
@@ -1224,37 +1230,54 @@ export function SettingsModal({ onClose }: { onClose(): void }) {
       setModelFeedback({ message: "The curated model catalog is unavailable. Refresh model status and try again.", isError: true });
       return;
     }
+    setModelAction({ action: "adding", familyId });
     setModelFeedback({ message: `Adding ${family.displayName} to your local model library…`, isError: false });
     try {
       const nextCatalog = await window.localScribe.system.addModelFamily({ familyId });
       setModelCatalog(nextCatalog);
       setModelCatalogError(null);
-      setModelFeedback({ message: `${family.displayName} was added to your local library. Activate it when you are ready to use it for dictation.`, isError: false });
+      setModelFeedback({ message: `${family.displayName} was added to your local library. Select it, download a profile, then apply it when you are ready.`, isError: false });
     } catch (error) {
       setModelFeedback({ message: `Could not add ${family.displayName}: ${errorDetail(error)}`, isError: true });
+    } finally {
+      setModelAction(null);
     }
   };
 
-  const activateModelFamily = async (familyId: ModelFamilyId) => {
-    const family = modelCatalog?.families.find((candidate) => candidate.familyId === familyId);
-    if (!family) {
-      setModelFeedback({ message: "The curated model catalog is unavailable. Refresh model status and try again.", isError: true });
-      return;
-    }
-    setModelFeedback({ message: `Activating ${family.displayName}…`, isError: false });
+  const applyModelSelection = async () => {
+    if (!settings || modelApplyInFlight.current) return;
+    const selection = pendingModelSelection ?? {
+      familyId: settings.activeModelFamilyId,
+      performanceMode: settings.modelPerformanceMode,
+    };
+    modelApplyInFlight.current = true;
+    setModelApplying(true);
+    setModelFeedback({ message: "Unloading the current model and loading your selected model…", isError: false });
     try {
-      const nextCatalog = await window.localScribe.system.activateModelFamily({ familyId });
-      setModelCatalog(nextCatalog);
+      const result = await window.localScribe.system.applyModelSelection(selection);
+      dirtySettings.current = settingsPatchWithoutModelSelection(dirtySettings.current);
+      setSettings(settingsWithPendingDraft(result.settings, dirtySettings.current));
+      setModelCatalog(result.catalog);
       setModelCatalogError(null);
-      try {
-        const nextDiagnostics = await window.localScribe.system.diagnostics();
-        setDiagnostics(nextDiagnostics);
-      } catch {
-        // Activation was successful even when memory telemetry cannot refresh.
-      }
-      setModelFeedback({ message: `${family.displayName} is now active. Performance mode applies within this family.`, isError: false });
+      setDiagnostics(result.diagnostics);
+      setPendingModelSelection(null);
+      const family = result.catalog.families.find((candidate) => (
+        candidate.familyId === result.settings.activeModelFamilyId
+      ));
+      setModelFeedback({
+        message: result.diagnostics.model.loaded
+          ? `${family?.displayName ?? result.settings.activeModelFamilyId} · ${tierLabel(result.settings.modelPerformanceMode)} is loaded and ready.`
+          : `${family?.displayName ?? result.settings.activeModelFamilyId} was selected, but its runtime is not loaded. Refresh status and try again.`,
+        isError: !result.diagnostics.model.loaded,
+      });
     } catch (error) {
-      setModelFeedback({ message: `Could not activate ${family.displayName}: ${errorDetail(error)}`, isError: true });
+      setModelFeedback({
+        message: `Could not apply the selected model: ${errorDetail(error)} Your prior model selection remains active.`,
+        isError: true,
+      });
+    } finally {
+      modelApplyInFlight.current = false;
+      setModelApplying(false);
     }
   };
 
@@ -1277,12 +1300,17 @@ export function SettingsModal({ onClose }: { onClose(): void }) {
         Object.prototype.hasOwnProperty.call(dirtySettings.current, "launchAtLogin"),
       )
     : null;
+  const currentModelSelection: ModelSelectionDraft | null = settings ? {
+    familyId: settings.activeModelFamilyId,
+    performanceMode: settings.modelPerformanceMode,
+  } : null;
+  const displayedModelSelection = pendingModelSelection ?? currentModelSelection;
 
   return (
     <div
       className="ls-modal-backdrop"
       role="presentation"
-      onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}
+      onMouseDown={(event) => { if (event.target === event.currentTarget) closeSettings(); }}
     >
       <section className="ls-settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title">
         <aside className="ls-settings-sidebar">
@@ -1300,7 +1328,7 @@ export function SettingsModal({ onClose }: { onClose(): void }) {
         <div className="ls-settings-main">
           <header className="ls-settings-header">
             <div><span>LocalScribe</span><h1 id="settings-title">{SETTINGS_TABS.find((item) => item.id === tab)?.label}</h1></div>
-            <button type="button" className="ls-close-button" onClick={onClose} aria-label="Close settings"><CloseIcon /></button>
+            <button type="button" className="ls-close-button" disabled={modelApplying} onClick={closeSettings} aria-label="Close settings"><CloseIcon /></button>
           </header>
 
           <div
@@ -1413,7 +1441,10 @@ export function SettingsModal({ onClose }: { onClose(): void }) {
 
             {tab === "model" && (
               <ModelPerformanceSettings
-                mode={settings.modelPerformanceMode}
+                currentSelection={currentModelSelection!}
+                currentModelLoaded={diagnostics?.model.loaded ?? false}
+                pendingSelection={displayedModelSelection!}
+                mode={displayedModelSelection!.performanceMode}
                 resolvedTier={diagnostics?.performance.preference === settings.modelPerformanceMode
                   ? diagnostics.performance.resolvedTier
                   : null}
@@ -1439,18 +1470,33 @@ export function SettingsModal({ onClose }: { onClose(): void }) {
                 runtimeTierStatuses={modelRuntimeTierStatuses(diagnostics, modelCatalog)}
                 action={modelAction}
                 feedback={modelFeedback}
+                applying={modelApplying}
                 onModeChange={(mode) => {
-                  update("modelPerformanceMode", mode);
+                  setPendingModelSelection({
+                    ...displayedModelSelection!,
+                    performanceMode: mode,
+                  });
                   setModelFeedback({
-                    message: `${tierLabel(mode)} selected. Save changes to apply this performance mode.`,
+                    message: `${tierLabel(mode)} selected. Review the combined model choice, then press Apply model.`,
                     isError: false,
                   });
                 }}
+                onFamilyChange={(familyId) => {
+                  const family = modelCatalog?.families.find((candidate) => candidate.familyId === familyId);
+                  setPendingModelSelection({
+                    ...displayedModelSelection!,
+                    familyId,
+                  });
+                  setModelFeedback({
+                    message: `${family?.displayName ?? familyId} selected. Nothing changes until you press Apply model.`,
+                    isError: false,
+                  });
+                }}
+                onApply={() => void applyModelSelection()}
                 onInstall={(familyId, tier) => void installModel(familyId, tier, false)}
                 onRepair={(familyId, tier) => void installModel(familyId, tier, true)}
                 onRemove={(familyId, tier) => void removeModel(familyId, tier)}
                 onAddFamily={(familyId) => void addModelFamily(familyId)}
-                onActivateFamily={(familyId) => void activateModelFamily(familyId)}
                 onRefresh={() => void refreshModelStatus()}
               />
             )}
@@ -1505,9 +1551,17 @@ export function SettingsModal({ onClose }: { onClose(): void }) {
           </div>
 
           <footer className="ls-settings-footer">
-            <span className={settingsLoadError || status.startsWith("Could not") || status.startsWith("Model removed, but") ? "is-error" : ""} role="status" aria-live="polite">{settingsLoadError ? "Saved settings could not be loaded." : status}</span>
-            <button type="button" className="ls-secondary-button" onClick={onClose}>Cancel</button>
-            <button type="button" className="ls-primary-button" disabled={busy || !settings} onClick={() => void save()}>{busy ? "Saving…" : "Save changes"}</button>
+            <span className={settingsLoadError || status.startsWith("Could not") || status.startsWith("Model removed, but") ? "is-error" : ""} role="status" aria-live="polite">
+              {settingsLoadError
+                ? "Saved settings could not be loaded."
+                : tab === "model"
+                  ? "Model choices apply only with the Apply model button above."
+                  : status}
+            </span>
+            <button type="button" className="ls-secondary-button" disabled={modelApplying} onClick={closeSettings}>Cancel</button>
+            {tab !== "model" && (
+              <button type="button" className="ls-primary-button" disabled={busy || !settings} onClick={() => void save()}>{busy ? "Saving…" : "Save changes"}</button>
+            )}
           </footer>
         </div>
       </section>

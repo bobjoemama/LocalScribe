@@ -19,6 +19,9 @@ const MAC_MANIFEST_FILENAMES = [
   "whisper-large-v3-mlx.json",
   "whisper-large-v3-mlx-8bit.json",
   "whisper-large-v3-mlx-4bit.json",
+  "qwen3-asr-0-6b-mlx-bf16.json",
+  "qwen3-asr-0-6b-mlx-8bit.json",
+  "qwen3-asr-0-6b-mlx-4bit.json",
   "qwen3-asr-1-7b-mlx-bf16.json",
   "qwen3-asr-1-7b-mlx-8bit.json",
   "qwen3-asr-1-7b-mlx-4bit.json",
@@ -78,11 +81,13 @@ describe("packaged model specifications", () => {
     expect(platformWindows.families["whisper-large-v3"]).toMatchObject({ familyId: windows.familyId });
     expect(Object.keys(platformMac.families)).toEqual([
       "whisper-large-v3",
+      "qwen3-asr-0-6b",
       "qwen3-asr-1-7b",
       "whisper-large-v2",
     ]);
     expect(Object.keys(platformWindows.families)).toEqual([
       "whisper-large-v3",
+      "qwen3-asr-0-6b",
       "qwen3-asr-1-7b",
       "whisper-large-v2",
     ]);
@@ -209,6 +214,27 @@ describe("packaged model specifications", () => {
         low: { precision: "4-bit", artifactId: "qwen3-asr-1-7b-mlx-4bit" },
       },
     });
+    expect(platformMac.families["qwen3-asr-0-6b"]).toMatchObject({
+      displayName: "Qwen3-ASR 0.6B",
+      engine: "mlx-audio",
+      tiers: {
+        high: {
+          precision: "bf16",
+          artifactId: "qwen3-asr-0-6b-mlx-bf16",
+          expectedDownloadBytes: 1_569_438_434,
+        },
+        medium: {
+          precision: "8-bit",
+          artifactId: "qwen3-asr-0-6b-mlx-8bit",
+          expectedDownloadBytes: 1_010_773_761,
+        },
+        low: {
+          precision: "4-bit",
+          artifactId: "qwen3-asr-0-6b-mlx-4bit",
+          expectedDownloadBytes: 712_781_279,
+        },
+      },
+    });
     expect(platformWindows.families["qwen3-asr-1-7b"]).toMatchObject({
       displayName: "Qwen3-ASR 1.7B",
       engine: "crispasr",
@@ -216,6 +242,27 @@ describe("packaged model specifications", () => {
         high: { precision: "float16", artifactId: "qwen3-asr-1-7b-crisp-f16" },
         medium: { precision: "q8_0", artifactId: "qwen3-asr-1-7b-crisp-q8-0" },
         low: { precision: "q4_k", artifactId: "qwen3-asr-1-7b-crisp-q4-k" },
+      },
+    });
+    expect(platformWindows.families["qwen3-asr-0-6b"]).toMatchObject({
+      displayName: "Qwen3-ASR 0.6B",
+      engine: "crispasr",
+      tiers: {
+        high: {
+          precision: "float16",
+          artifactId: "qwen3-asr-0-6b-crisp-f16",
+          expectedDownloadBytes: 1_882_037_824,
+        },
+        medium: {
+          precision: "q8_0",
+          artifactId: "qwen3-asr-0-6b-crisp-q8-0",
+          expectedDownloadBytes: 1_006_809_760,
+        },
+        low: {
+          precision: "q4_k",
+          artifactId: "qwen3-asr-0-6b-crisp-q4-k",
+          expectedDownloadBytes: 631_026_336,
+        },
       },
     });
     expect(windowsV2.tiers.high.manifest).toEqual(windowsV2.tiers.medium.manifest);
@@ -299,6 +346,9 @@ describe("packaged model specifications", () => {
       expect.objectContaining({ familyId: "whisper-large-v3", artifactId: "whisper-large-v3-mlx-fp16" }),
       expect.objectContaining({ familyId: "whisper-large-v3", artifactId: "whisper-large-v3-mlx-int8" }),
       expect.objectContaining({ familyId: "whisper-large-v3", artifactId: "whisper-large-v3-mlx-int4" }),
+      expect.objectContaining({ familyId: "qwen3-asr-0-6b", artifactId: "qwen3-asr-0-6b-mlx-bf16" }),
+      expect.objectContaining({ familyId: "qwen3-asr-0-6b", artifactId: "qwen3-asr-0-6b-mlx-8bit" }),
+      expect.objectContaining({ familyId: "qwen3-asr-0-6b", artifactId: "qwen3-asr-0-6b-mlx-4bit" }),
       expect.objectContaining({ familyId: "qwen3-asr-1-7b", artifactId: "qwen3-asr-1-7b-mlx-bf16" }),
       expect.objectContaining({ familyId: "qwen3-asr-1-7b", artifactId: "qwen3-asr-1-7b-mlx-8bit" }),
       expect.objectContaining({ familyId: "qwen3-asr-1-7b", artifactId: "qwen3-asr-1-7b-mlx-4bit" }),
@@ -306,18 +356,21 @@ describe("packaged model specifications", () => {
       expect.objectContaining({ familyId: "whisper-large-v2", artifactId: "whisper-large-v2-mlx-int8" }),
       expect.objectContaining({ familyId: "whisper-large-v2", artifactId: "whisper-large-v2-mlx-int4" }),
     ]);
-    expect(macVerifier).toHaveBeenCalledTimes(9);
+    expect(macVerifier).toHaveBeenCalledTimes(12);
 
     await expect(
       verifyRuntimePlatformModelCatalog("/models", windows, windowsVerifier),
     ).resolves.toEqual([
       expect.objectContaining({ familyId: "whisper-large-v3", artifactId: "whisper-large-v3-ctranslate2" }),
+      expect.objectContaining({ familyId: "qwen3-asr-0-6b", artifactId: "qwen3-asr-0-6b-crisp-f16" }),
+      expect.objectContaining({ familyId: "qwen3-asr-0-6b", artifactId: "qwen3-asr-0-6b-crisp-q8-0" }),
+      expect.objectContaining({ familyId: "qwen3-asr-0-6b", artifactId: "qwen3-asr-0-6b-crisp-q4-k" }),
       expect.objectContaining({ familyId: "qwen3-asr-1-7b", artifactId: "qwen3-asr-1-7b-crisp-f16" }),
       expect.objectContaining({ familyId: "qwen3-asr-1-7b", artifactId: "qwen3-asr-1-7b-crisp-q8-0" }),
       expect.objectContaining({ familyId: "qwen3-asr-1-7b", artifactId: "qwen3-asr-1-7b-crisp-q4-k" }),
       expect.objectContaining({ familyId: "whisper-large-v2", artifactId: "whisper-large-v2-ctranslate2" }),
     ]);
-    expect(windowsVerifier).toHaveBeenCalledTimes(5);
+    expect(windowsVerifier).toHaveBeenCalledTimes(8);
   });
 
   it("rejects cross-family storage aliasing before verification or removal can target it", async () => {

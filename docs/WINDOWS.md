@@ -3,9 +3,11 @@
 LocalScribe’s Windows inference path uses the default
 `Systran/faster-whisper-large-v3` family, with
 `Systran/faster-whisper-large-v2` available as a curated user-addable family,
-through faster-whisper and CTranslate2 CUDA. Qwen3-ASR 1.7B is also available
-as a curated family through pinned F16, Q8_0, and Q4_K GGUF artifacts and the
-pinned CrispASR CUDA runtime. These engines are deliberately separate from the
+through faster-whisper and CTranslate2 CUDA. Qwen3-ASR 0.6B and 1.7B are also
+available as curated families through pinned F16, Q8_0, and Q4_K GGUF artifacts
+and the pinned CrispASR CUDA runtime. Qwen3-ASR 0.6B is the smaller
+lower-latency candidate, but no Windows physical latency result is claimed.
+These engines are deliberately separate from the
 macOS MLX worker while preserving the same bounded NDJSON protocol,
 Electron UI, persistence model, and explicit model-installation flow.
 
@@ -38,18 +40,23 @@ uses current NVML total/free VRAM plus fixed headroom and hysteresis policy; it
 does not download a different Windows model. The four available choices are
 Auto, High, Medium, and Low; Auto is policy rather than a fourth artifact.
 
-Qwen3-ASR 1.7B uses separate artifacts:
+Each Qwen3-ASR family uses separate artifacts:
 
-| Tier | CrispASR GGUF | Estimated VRAM |
-| --- | --- | --- |
-| High | F16 | 4.8–5.8 GiB |
-| Medium | Q8_0 | 2.6–3.6 GiB |
-| Low | Q4_K | 1.8–2.8 GiB |
+| Family | Tier | CrispASR GGUF | Estimated VRAM |
+| --- | --- | --- | --- |
+| Qwen3-ASR 0.6B | High | F16 | 2.5–3.5 GiB |
+| Qwen3-ASR 0.6B | Medium | Q8_0 | 1.6–2.6 GiB |
+| Qwen3-ASR 0.6B | Low | Q4_K | 1.2–2.2 GiB |
+| Qwen3-ASR 1.7B | High | F16 | 4.8–5.8 GiB |
+| Qwen3-ASR 1.7B | Medium | Q8_0 | 2.6–3.6 GiB |
+| Qwen3-ASR 1.7B | Low | Q4_K | 1.8–2.8 GiB |
 
-The Q4_K conversion intentionally keeps the audio tower at Q8_0 because the
+These are conservative catalog estimates, not physical Windows measurements.
+
+The Q4_K conversions intentionally keep the audio tower at Q8_0 because the
 upstream conversion found that further audio-tower quantization degraded
 transcription. Auto selects only within the active model family; it never
-changes Qwen into Whisper or vice versa.
+changes Qwen into Whisper, changes 0.6B into 1.7B, or vice versa.
 
 ## Pinned worker and model
 
@@ -68,7 +75,10 @@ Large-v3 is the default; large-v2 can be added through the curated library.
 The Qwen authorities are
 [`qwen3-asr-1-7b-crisp-f16.json`](../resources/model-manifest/qwen3-asr-1-7b-crisp-f16.json),
 [`qwen3-asr-1-7b-crisp-q8-0.json`](../resources/model-manifest/qwen3-asr-1-7b-crisp-q8-0.json),
-and [`qwen3-asr-1-7b-crisp-q4-k.json`](../resources/model-manifest/qwen3-asr-1-7b-crisp-q4-k.json).
+[`qwen3-asr-1-7b-crisp-q4-k.json`](../resources/model-manifest/qwen3-asr-1-7b-crisp-q4-k.json),
+[`qwen3-asr-0-6b-crisp-f16.json`](../resources/model-manifest/qwen3-asr-0-6b-crisp-f16.json),
+[`qwen3-asr-0-6b-crisp-q8-0.json`](../resources/model-manifest/qwen3-asr-0-6b-crisp-q8-0.json),
+and [`qwen3-asr-0-6b-crisp-q4-k.json`](../resources/model-manifest/qwen3-asr-0-6b-crisp-q4-k.json).
 The corresponding Systran manifest metadata says MIT for both Windows
 artifacts. The manifests themselves are the authority for model ID, revision,
 license, per-file byte counts, and SHA-256 digests.
@@ -83,6 +93,14 @@ downloads, rejects symlinks and unexpected file types, verifies every required
 file, and atomically activates only the complete directory. Runtime loading is
 `local_files_only=True`. Weights are never bundled in the app package and only an
 explicit install action may download an approved, revision-pinned artifact.
+
+Model selection is separate from installation. Selecting a family or tier only
+creates a pending choice. **Apply model** verifies that exact curated artifact,
+unloads the prior worker/model, preloads the target with downloads disabled,
+and persists the new family and mode only after the target reports ready. The
+old and new CUDA models are never intentionally resident at the same time. An
+apply failure must leave the prior committed selection in place and report
+whether runtime rollback succeeded.
 
 ## Narrow media and process boundary
 
@@ -199,8 +217,15 @@ inference without any implicit download:
 
 ```powershell
 npm run verify:local:windows -- -RequireCuda `
-  -CudaModelRoot "$env:APPDATA\LocalScribe\models"
+  -CudaModelRoot "$env:APPDATA\LocalScribe\models" `
+  -CudaFamily qwen3-asr-0-6b -CudaTier medium -CudaRepeat 2
 ```
+
+Add `-CudaAudioPath C:\absolute\fixture.wav` to use a real 16 kHz mono PCM16
+fixture instead of generated silence. Family, tier, audio, and repeat are used
+only when `-CudaModelRoot` is supplied; the ordinary no-model release gate
+continues to validate packaging and CUDA discovery without requiring model
+weights.
 
 ## Installer, signing, login, and updates
 

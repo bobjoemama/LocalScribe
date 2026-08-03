@@ -116,10 +116,11 @@ rather than reused from a same-version uv wheel cache.
 
 ## Model harness contract
 
-Whisper large-v3 is the default family. Qwen3-ASR 1.7B and Whisper large-v2 are
-the curated-addable families. “Add model” means activate an already reviewed
-family from the packaged catalog; it is intentionally not an arbitrary
-repository, URL, manifest, plugin, Python module, or custom loader.
+Whisper large-v3 is the default family. Qwen3-ASR 0.6B, Qwen3-ASR 1.7B, and
+Whisper large-v2 are the curated-addable families. “Add model” means make an
+already reviewed family from the packaged catalog available in the local
+library; it does not select, load, or apply that family. It is intentionally not
+an arbitrary repository, URL, manifest, plugin, Python module, or custom loader.
 
 Reviewers should challenge that safety/usability choice, but must not describe
 arbitrary model loading as implemented.
@@ -131,6 +132,9 @@ arbitrary model loading as implemented.
 | large-v3 | High | FP16 | 3,083,520,685 | 4.0–5.5 GiB | MIT |
 | large-v3 | Medium | 8-bit | 1,707,566,582 | 2.5–3.5 GiB | Undeclared |
 | large-v3 | Low | 4-bit | 973,563,382 | 1.8–2.7 GiB | Undeclared |
+| Qwen3-ASR 0.6B | High | BF16 | 1,569,438,434 | 2.0–3.0 GiB | Apache-2.0 |
+| Qwen3-ASR 0.6B | Medium | 8-bit | 1,010,773,761 | 1.4–2.3 GiB | Apache-2.0 |
+| Qwen3-ASR 0.6B | Low | 4-bit | 712,781,279 | 1.1–2.0 GiB | Apache-2.0 |
 | Qwen3-ASR 1.7B | High | BF16 | 4,080,710,353 | 4.2–5.4 GiB | Apache-2.0 |
 | Qwen3-ASR 1.7B | Medium | 8-bit | 2,467,859,030 | 2.6–3.6 GiB | Apache-2.0 |
 | Qwen3-ASR 1.7B | Low | 4-bit | 1,607,633,106 | 1.8–2.8 GiB | Apache-2.0 |
@@ -158,6 +162,9 @@ is not itself a legal-review record.
 
 | Family | Mode | GGUF precision | Exact download bytes | Estimated VRAM | Manifest license |
 | --- | --- | --- | ---: | ---: | --- |
+| Qwen3-ASR 0.6B | High | F16 | 1,882,037,824 | 2.5–3.5 GiB | Apache-2.0 |
+| Qwen3-ASR 0.6B | Medium | Q8_0 | 1,006,809,760 | 1.6–2.6 GiB | Apache-2.0 |
+| Qwen3-ASR 0.6B | Low | Q4_K | 631,026,336 | 1.2–2.2 GiB | Apache-2.0 |
 | Qwen3-ASR 1.7B | High | F16 | 4,704,800,576 | 4.8–5.8 GiB | Apache-2.0 |
 | Qwen3-ASR 1.7B | Medium | Q8_0 | 2,506,723,200 | 2.6–3.6 GiB | Apache-2.0 |
 | Qwen3-ASR 1.7B | Low | Q4_K | 1,490,915,200 | 1.8–2.8 GiB | Apache-2.0 |
@@ -176,9 +183,10 @@ requests, and manifest identity preserve that distinction.
 
 Auto is policy, not a model and not a fallback chain. It:
 
-- unloads the prior model and re-reads total/currently free accelerator memory
-  at each recording boundary so an old startup snapshot cannot drive a later
-  dictation;
+- samples live total/currently free accelerator memory at each recording
+  boundary; while a model is warm, its conservative minimum allocation is
+  added back for selection policy, capped at physical memory, so the active
+  tier does not count against itself;
 - evaluates each tier against its conservative maximum estimate;
 - requires an additional 1 GiB before upgrading;
 - downgrades immediately if the current tier no longer fits;
@@ -207,6 +215,16 @@ Review the complete transaction:
 7. Normal model load always uses `allowDownload: false` /
    `local_files_only=True`.
 8. Dictation reports a missing model rather than downloading implicitly.
+
+Selection and installation are separate transactions. Family/tier changes are
+pending renderer state until one **Apply model** request carries both values.
+Apply must serialize against dictation and install/remove work, verify the exact
+target artifact, stop and fully release the previous worker/model, preload the
+target with downloads disabled, and only then persist the family and mode
+together. Review rollback for target-load failure and database-commit failure;
+the UI must not label the candidate active before model-ready acknowledgement.
+No implementation may keep both old and new model runtimes intentionally
+resident during a switch.
 
 Look for disk-exhaustion paths, interrupted installs, staging cleanup errors,
 manifest substitution, family/tier aliasing, TOCTOU, unsafe archive behavior,
@@ -562,6 +580,10 @@ On Apple Silicon:
 
 ```sh
 npm run verify:local:macos
+npm run verify:local:macos -- \
+  --smoke-model-root "$HOME/Library/Application Support/LocalScribe/models" \
+  --smoke-audio /absolute/path/to/fixture.wav \
+  --smoke-family qwen3-asr-0-6b --smoke-tier medium --smoke-repeat 2
 ```
 
 Do not run packaged Python without `-B` /
@@ -574,7 +596,8 @@ On Windows x64:
 npm run verify:local:windows
 npm run verify:local:windows -- -RequireCuda
 npm run verify:local:windows -- -RequireCuda `
-  -CudaModelRoot "$env:APPDATA\LocalScribe\models"
+  -CudaModelRoot "$env:APPDATA\LocalScribe\models" `
+  -CudaFamily qwen3-asr-0-6b -CudaTier medium -CudaRepeat 2
 Get-AuthenticodeSignature <signed-artifact>
 ```
 

@@ -126,6 +126,9 @@ CURATED_PROFILE_POLICIES = (
     ("qwen3-asr-1-7b-mlx-bf16.json", "high", "bfloat16", "MLX Audio"),
     ("qwen3-asr-1-7b-mlx-8bit.json", "medium", "int8", "MLX Audio"),
     ("qwen3-asr-1-7b-mlx-4bit.json", "low", "int4", "MLX Audio"),
+    ("qwen3-asr-0-6b-mlx-bf16.json", "high", "bfloat16", "MLX Audio"),
+    ("qwen3-asr-0-6b-mlx-8bit.json", "medium", "int8", "MLX Audio"),
+    ("qwen3-asr-0-6b-mlx-4bit.json", "low", "int4", "MLX Audio"),
 )
 MANIFEST_FILENAMES = frozenset(
     filename for filename, _tier, _compute_type, _backend in CURATED_PROFILE_POLICIES
@@ -1144,7 +1147,7 @@ class MLXAudioRuntime:
     def load(cls, model_directory: Path, spec: TierSpec) -> MLXAudioRuntime:
         if (
             not model_directory.is_absolute()
-            or spec.family_id != "qwen3-asr-1-7b"
+            or spec.family_id not in {"qwen3-asr-1-7b", "qwen3-asr-0-6b"}
         ):
             raise WorkerError("model_load_failed", "local Qwen model path is invalid")
         try:
@@ -1234,7 +1237,7 @@ class MLXAudioRuntime:
 
 
 def _load_runtime(model_directory: Path, spec: TierSpec) -> InferenceRuntime:
-    if spec.family_id == "qwen3-asr-1-7b":
+    if spec.family_id in {"qwen3-asr-1-7b", "qwen3-asr-0-6b"}:
         return MLXAudioRuntime.load(model_directory, spec)
     if spec.family_id in {"whisper-large-v3", "whisper-large-v2"}:
         return MLXWhisperRuntime.load(model_directory, spec)

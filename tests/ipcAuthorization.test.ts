@@ -10,6 +10,7 @@ describe("renderer IPC authorization", () => {
     for (const channel of [
       IPC.systemInstallModel,
       IPC.systemRemoveModel,
+      IPC.systemApplyModelSelection,
       IPC.systemGetLaunchAtLoginStatus,
       IPC.historyClear,
       IPC.dictionaryDelete,
@@ -18,6 +19,13 @@ describe("renderer IPC authorization", () => {
       expect(rendererSurfaceCanInvoke("pill", channel)).toBe(false);
       expect(rendererSurfaceCanInvoke("scratchpad", channel)).toBe(false);
     }
+  });
+
+  it("exposes atomic model Apply only to Settings", () => {
+    expect(rendererSurfaceCanInvoke("settings", IPC.systemApplyModelSelection)).toBe(true);
+    expect(rendererSurfaceCanInvoke("pill", IPC.systemApplyModelSelection)).toBe(false);
+    expect(rendererSurfaceCanInvoke("scratchpad", IPC.systemApplyModelSelection)).toBe(false);
+    expect(rendererSurfaceCanInvoke("settings", "system:activate-model-family")).toBe(false);
   });
 
   it("fails closed for Settings channels that are unrelated or added later", () => {

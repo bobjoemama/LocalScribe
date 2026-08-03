@@ -1,11 +1,28 @@
 [CmdletBinding()]
 param(
   [switch]$RequireCuda,
-  [string]$CudaModelRoot
+  [string]$CudaModelRoot,
+  [string]$CudaAudioPath,
+  [ValidateSet("whisper-large-v3", "whisper-large-v2", "qwen3-asr-0-6b", "qwen3-asr-1-7b")]
+  [string]$CudaFamily = "whisper-large-v3",
+  [ValidateSet("high", "medium", "low")]
+  [string]$CudaTier = "medium",
+  [ValidateRange(1, 20)]
+  [int]$CudaRepeat = 1
 )
 
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
+
+if (
+  ($PSBoundParameters.ContainsKey("CudaAudioPath") -or
+    $PSBoundParameters.ContainsKey("CudaFamily") -or
+    $PSBoundParameters.ContainsKey("CudaTier") -or
+    $PSBoundParameters.ContainsKey("CudaRepeat")) -and
+  [string]::IsNullOrWhiteSpace($CudaModelRoot)
+) {
+  throw "CUDA model smoke options require -CudaModelRoot."
+}
 
 function Resolve-RequiredNpmLifecyclePath {
   param(
@@ -113,7 +130,15 @@ try {
   if ($RequireCuda -or -not [string]::IsNullOrWhiteSpace($CudaModelRoot)) {
     $CudaArguments = @("-B", "scripts\smoke-windows-cuda.py")
     if (-not [string]::IsNullOrWhiteSpace($CudaModelRoot)) {
-      $CudaArguments += @("--model-root", $CudaModelRoot)
+      $CudaArguments += @(
+        "--model-root", $CudaModelRoot,
+        "--family", $CudaFamily,
+        "--tier", $CudaTier,
+        "--repeat", [string]$CudaRepeat
+      )
+      if (-not [string]::IsNullOrWhiteSpace($CudaAudioPath)) {
+        $CudaArguments += @("--audio", $CudaAudioPath)
+      }
     }
     & $BundledPython @CudaArguments
     if ($LASTEXITCODE -ne 0) {

@@ -39,6 +39,7 @@ from localscribe_windows_worker.worker import (
 
 TEST_MODEL_BYTES = b"model"
 QWEN_MODEL_ID = "cstr/qwen3-asr-1.7b-GGUF"
+QWEN06_MODEL_ID = "cstr/qwen3-asr-0.6b-GGUF"
 TEST_MODEL_FILES = {
     "model.bin": ModelFile(
         bytes=len(TEST_MODEL_BYTES),
@@ -511,6 +512,51 @@ class WorkerProtocolTests(unittest.TestCase):
             self.assertEqual(
                 observed,
                 [("q8_0", "CrispASR CUDA", "qwen3-asr-1-7b-crisp-q8-0")],
+            )
+
+    def test_loads_qwen06_q4_profile_with_its_exact_engine_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            model_root = Path(temporary) / "models"
+            model_root.mkdir()
+            manifest = test_profile(QWEN06_MODEL_ID, "low", "q4_k")
+            model_directory = write_test_model(model_root / manifest.storage_directory)
+            observed: list[tuple[str, str, str]] = []
+
+            def factory(
+                path: Path,
+                compute_type: str,
+                selected_manifest: ModelManifest,
+            ) -> FakeRuntime:
+                self.assertEqual(path, model_directory)
+                observed.append(
+                    (
+                        compute_type,
+                        selected_manifest.family_id,
+                        selected_manifest.artifact_id,
+                    )
+                )
+                return FakeRuntime(compute_type)
+
+            load = request(
+                "load_model",
+                modelId=QWEN06_MODEL_ID,
+                modelRoot=str(model_root),
+                tier="low",
+                computeType="q4_k",
+            )
+            messages, errors, exit_code = self.run_protocol(
+                encode_requests(load, request("shutdown")),
+                installer=lambda _root, _manifest: model_directory,
+                factory=factory,
+            )
+
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(errors, "")
+            self.assertEqual(messages[1]["modelId"], QWEN06_MODEL_ID)
+            self.assertEqual(messages[1]["computeType"], "q4_k")
+            self.assertEqual(
+                observed,
+                [("q4_k", "qwen3-asr-0-6b", "qwen3-asr-0-6b-crisp-q4-k")],
             )
 
     def test_load_rejects_missing_different_catalog_model_without_installing(self) -> None:

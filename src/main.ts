@@ -31,6 +31,7 @@ import {
   modelFamilyLibraryRequestSchema,
   modelInstallRequestSchema,
   modelRemoveRequestSchema,
+  modelSelectionApplyRequestSchema,
   navigationTargetSchema,
   pillModeSchema,
   sessionSnapshotSchema,
@@ -40,6 +41,7 @@ import {
   type ModelCatalog,
   type ModelFamilyId,
   type ModelPerformanceTier,
+  type ModelSelectionApplyResult,
   type NavigationTarget,
   type PillMode,
   type SessionSnapshot,
@@ -52,6 +54,7 @@ import {
 import { LocalDatabase } from "./main/persistence/database";
 import {
   WorkerSupervisor,
+  workerModelSelectionsMatch,
   type WorkerAcceleratorSnapshot,
   type WorkerComputeType,
   type WorkerModelSelection,
@@ -212,7 +215,7 @@ function runtimeModelManifestDirectory(): string {
 }
 
 function canSwitchModelNow(): boolean {
-  return session.state === "idle" || session.state === "success" || session.state === "error";
+  return session.state === "idle";
 }
 
 function assertModelSwitchAllowed(): void {
@@ -248,7 +251,12 @@ function modelOperationInProgress(): boolean {
  * artifact. It intentionally does not probe hardware or start the worker.
  */
 async function collectModelCatalog(): Promise<ModelCatalog> {
-  const settings = database.getSettings();
+  return collectModelCatalogForSettings(database.getSettings());
+}
+
+async function collectModelCatalogForSettings(
+  settings: ReturnType<LocalDatabase["getSettings"]>,
+): Promise<ModelCatalog> {
   const catalog = platformModelCatalog();
   return buildModelCatalogSnapshot({
     settings,
@@ -305,40 +313,112 @@ function memorySnapshot() {
   };
 }
 
-async function refreshModelResolution(
-  probeAtDictationBoundary = false,
-): Promise<ModelPerformanceResolution> {
-  // Hardware-driven Auto may move only while idle or at the transition into a
-  // new recording. Once that boundary resolves, the tier is pinned through
-  // transcription and insertion.
-  if (session.state === "idle" || probeAtDictationBoundary) {
-    // Probe an unloaded device so Auto is not biased downward by the memory
-    // consumed by whichever tier happened to run most recently.
-    await worker.shutdown();
-    try {
-      acceleratorSnapshot = await worker.deviceInfo();
-    } catch (error) {
-      acceleratorSnapshot = null;
-      if (!quitting) console.warn("Accelerator diagnostics are unavailable", error);
-    }
+async function probeUnloadedAccelerator(): Promise<void> {
+  if (worker.loadedSelection()) {
+    throw new Error("Accelerator probing requires the current local speech model to be unloaded.");
   }
-  const preference = database.getSettings().modelPerformanceMode;
+  try {
+    acceleratorSnapshot = await worker.deviceInfo();
+  } catch (error) {
+    acceleratorSnapshot = null;
+    if (!quitting) console.warn("Accelerator diagnostics are unavailable", error);
+  }
+}
+
+function resolveSelection(
+  familyId: ModelFamilyId,
+  preference: ReturnType<LocalDatabase["getSettings"]>["modelPerformanceMode"],
+  memory = memorySnapshot(),
+): ModelPerformanceResolution {
   const next = resolveModelPerformance({
     preference,
-    catalog: modelCatalog(),
-    memory: memorySnapshot(),
+    catalog: modelCatalog(familyId),
+    memory,
     previousTier: previousAutoTier,
     activeDictationTier,
   });
+  return next;
+}
+
+async function refreshModelResolution(options: {
+  reprobeUnloaded?: boolean;
+  familyId?: ModelFamilyId;
+  preference?: ReturnType<LocalDatabase["getSettings"]>["modelPerformanceMode"];
+  memory?: ReturnType<typeof memorySnapshot>;
+} = {}): Promise<ModelPerformanceResolution> {
+  const settings = database.getSettings();
+  const familyId = options.familyId ?? settings.activeModelFamilyId;
+  const preference = options.preference ?? settings.modelPerformanceMode;
+  if (options.reprobeUnloaded) await probeUnloadedAccelerator();
+  const next = resolveSelection(familyId, preference, options.memory ?? memorySnapshot());
   modelResolution = next;
   if (
-    (session.state === "idle" || probeAtDictationBoundary)
+    session.state === "idle"
+    && familyId === settings.activeModelFamilyId
     && preference === "auto"
     && next.fitsMemoryBudget
   ) {
     previousAutoTier = next.effectiveTier;
   }
   return next;
+}
+
+/**
+ * A live telemetry sample includes the memory already held by the warm model.
+ * Add back only the curated minimum allocation for selection policy, capped
+ * at physical memory. That is the conservative lower bound for the memory the
+ * current runtime would release; using the maximum could overstate capacity
+ * and select a tier that cannot actually load. Diagnostics continue to expose
+ * the unmodified reading.
+ */
+function memorySnapshotWithoutWarmModel(
+  snapshot: WorkerAcceleratorSnapshot,
+  warmResolution: ModelPerformanceResolution,
+): ReturnType<typeof memorySnapshot> {
+  return {
+    totalBytes: snapshot.totalMemoryBytes,
+    freeBytes: Math.min(
+      snapshot.totalMemoryBytes,
+      snapshot.freeMemoryBytes + warmResolution.tier.acceleratorMemory.minimumBytes,
+    ),
+  };
+}
+
+async function refreshAutoResolutionAtRecordingBoundary(): Promise<ModelPerformanceResolution> {
+  const settings = database.getSettings();
+  const warmSelection = worker.loadedSelection();
+  if (!warmSelection) {
+    const coldResolution = await refreshModelResolution({ reprobeUnloaded: true });
+    if (coldResolution.fitsMemoryBudget) previousAutoTier = coldResolution.effectiveTier;
+    return coldResolution;
+  }
+
+  const cached = modelResolution;
+  const cachedMatchesWarmSelection = cached !== null
+    && cached.preference === "auto"
+    && cached.tier.familyId === settings.activeModelFamilyId
+    && cached.fitsMemoryBudget
+    && workerModelSelectionsMatch(warmSelection, workerSelection(cached.tier));
+  try {
+    const liveSnapshot = await worker.deviceInfo();
+    acceleratorSnapshot = liveSnapshot;
+    if (!cachedMatchesWarmSelection) {
+      throw new Error("The warm local speech model does not match the active Auto selection.");
+    }
+    const next = await refreshModelResolution({
+      memory: memorySnapshotWithoutWarmModel(liveSnapshot, cached),
+    });
+    if (next.fitsMemoryBudget) previousAutoTier = next.effectiveTier;
+    return next;
+  } catch (error) {
+    // A transient telemetry failure must not evict or fail a known-safe warm
+    // model. If the cached selection is inconsistent, fail closed instead.
+    if (cachedMatchesWarmSelection) {
+      if (!quitting) console.warn("Live accelerator telemetry is unavailable; keeping the safe warm Auto tier", error);
+      return cached;
+    }
+    throw error;
+  }
 }
 
 async function currentModelResolution(): Promise<ModelPerformanceResolution> {
@@ -348,7 +428,20 @@ async function currentModelResolution(): Promise<ModelPerformanceResolution> {
   ) {
     return activeSessionModelResolution.promise;
   }
-  if (session.state === "idle" || !modelResolution) return refreshModelResolution();
+  // A failed startup probe must be recoverable without restarting the app.
+  // Retrying is safe only while idle and cold: diagnostics must never evict a
+  // warm runtime merely to obtain a fresher memory reading.
+  if (
+    session.state === "idle"
+    && acceleratorSnapshot === null
+    && worker.loadedSelection() === null
+  ) {
+    return refreshModelResolution({ reprobeUnloaded: true });
+  }
+  if (modelResolution) return modelResolution;
+  // Diagnostics and status refreshes are observational. They reuse the last
+  // unloaded-device snapshot and must never evict a ready speech model.
+  if (session.state === "idle") return refreshModelResolution();
   return resolveModelPerformance({
     preference: database.getSettings().modelPerformanceMode,
     catalog: modelCatalog(),
@@ -414,10 +507,11 @@ function resolutionReasonMessage(resolution: ModelPerformanceResolution): string
   }
 }
 
-async function collectDiagnostics(): Promise<Diagnostics> {
-  const resolution = await currentModelResolution();
+async function collectDiagnosticsForResolution(
+  resolution: ModelPerformanceResolution,
+): Promise<Diagnostics> {
   const modelRoot = path.join(app.getPath("userData"), "models");
-  const catalog = modelCatalog();
+  const catalog = modelCatalog(resolution.tier.familyId);
   const verifications = await verifyRuntimeModelCatalog(modelRoot, catalog);
   const model = resolution.tier.manifest;
   const verification = verifications[resolution.effectiveTier];
@@ -436,6 +530,10 @@ async function collectDiagnostics(): Promise<Diagnostics> {
       // `installed` is retained for the current renderer, but deliberately
       // means cryptographically verified rather than merely present.
       installed: verification.verified,
+      loaded: workerModelSelectionsMatch(
+        worker.loadedSelection(),
+        workerSelection(resolution.tier),
+      ),
       ...verification,
       revision: model.revision,
       license: model.license,
@@ -476,6 +574,10 @@ async function collectDiagnostics(): Promise<Diagnostics> {
     },
     dataPath: app.getPath("userData"),
   };
+}
+
+async function collectDiagnostics(): Promise<Diagnostics> {
+  return collectDiagnosticsForResolution(await currentModelResolution());
 }
 
 function rendererUrl(surface: RendererSurface): string {
@@ -771,23 +873,6 @@ function notifySettingsChanged(settings: ReturnType<LocalDatabase["getSettings"]
   }
 }
 
-/**
- * Family membership and activation have dedicated main-owned operations so a
- * renderer cannot repoint the runtime through an arbitrary whole-settings
- * write. Performance preference remains an independent setting.
- */
-function assertGenericSettingsPreserveModelLibrary(
-  previous: ReturnType<LocalDatabase["getSettings"]>,
-  next: Pick<ReturnType<LocalDatabase["getSettings"]>, "activeModelFamilyId" | "modelLibraryFamilyIds">,
-): void {
-  if (
-    next.activeModelFamilyId !== previous.activeModelFamilyId
-    || next.modelLibraryFamilyIds.join("\u0000") !== previous.modelLibraryFamilyIds.join("\u0000")
-  ) {
-    throw new Error("Use the model library operations to add or activate a local speech model family.");
-  }
-}
-
 function beginListening(activation: "hold" | "toggle" = "toggle"): SessionSnapshot {
   if (session.state !== "idle" && session.state !== "success" && session.state !== "error") return session;
   if (modelOperationInProgress()) {
@@ -807,11 +892,13 @@ function beginListening(activation: "hold" | "toggle" = "toggle"): SessionSnapsh
   const sessionId = randomUUID();
   activeSessionId = sessionId;
   if (preference === "auto") {
-    // Free VRAM/unified memory is dynamic. Probe at every recording boundary
-    // while audio is captured, after unloading the previous model so its own
-    // allocation cannot bias Auto downward. The chosen tier is then pinned
-    // for this session; explicit modes remain exact and do not auto-fallback.
-    const promise = refreshModelResolution(true).then((resolution) => {
+    // Sample live memory at every recording boundary without evicting a warm
+    // model. Selection policy adds back the warm tier's curated minimum
+    // allocation, so Auto compares tiers against a conservative
+    // unloaded-equivalent budget.
+    // A changed tier is applied later by the normal same-family transcription
+    // load boundary; Auto never falls back to another family.
+    const promise = refreshAutoResolutionAtRecordingBoundary().then((resolution) => {
       if (activeSessionId === sessionId) {
         activeDictationTier = resolution.effectiveTier;
       }
@@ -875,6 +962,134 @@ function trustedSurfaceForEvent(event: IpcMainInvokeEvent): RendererSurface {
     return surface;
   }
   throw new Error("Rejected IPC from a renderer that is not owned by a live LocalScribe window");
+}
+
+async function applyModelSelection(
+  request: ReturnType<typeof modelSelectionApplyRequestSchema.parse>,
+): Promise<ModelSelectionApplyResult> {
+  return runExclusiveModelOperation(async () => {
+    assertModelSwitchAllowed();
+    const targetCatalog = platformModelCatalog().families[request.familyId];
+    if (!targetCatalog) {
+      throw new Error("This LocalScribe build does not package that model family for this platform.");
+    }
+    assertFamilyInLibrary(request.familyId);
+
+    const previousSettings = database.getSettings();
+    const samePersistedSelection = (
+      previousSettings.activeModelFamilyId === request.familyId
+      && previousSettings.modelPerformanceMode === request.performanceMode
+    );
+    const currentResolutionForSelection = samePersistedSelection
+      ? await currentModelResolution()
+      : null;
+    const currentWarmSelection = worker.loadedSelection();
+    if (
+      currentResolutionForSelection
+      && currentResolutionForSelection.fitsMemoryBudget
+      && workerModelSelectionsMatch(
+        currentWarmSelection,
+        workerSelection(currentResolutionForSelection.tier),
+      )
+    ) {
+      // Apply is a no-op only when the exact resolved runtime is already warm.
+      const [catalog, diagnostics] = await Promise.all([
+        collectModelCatalogForSettings(previousSettings),
+        collectDiagnosticsForResolution(currentResolutionForSelection),
+      ]);
+      return { settings: previousSettings, catalog, diagnostics };
+    }
+
+    const previousResolution = currentResolutionForSelection ?? modelResolution
+      ?? resolveSelection(
+        previousSettings.activeModelFamilyId,
+        previousSettings.modelPerformanceMode,
+      );
+    const previousWarmSelection = currentWarmSelection;
+    const previousAutoTierSnapshot = previousAutoTier;
+    const previousAcceleratorSnapshot = acceleratorSnapshot;
+    const candidateSettings = appSettingsSchema.parse({
+      ...previousSettings,
+      activeModelFamilyId: request.familyId,
+      modelPerformanceMode: request.performanceMode,
+    });
+    let targetResolution: ModelPerformanceResolution;
+
+    try {
+      // A fresh worker is the load/unload boundary. Probe only after the old
+      // runtime is gone so its allocation cannot make Auto select downward.
+      await worker.shutdown();
+      await probeUnloadedAccelerator();
+      previousAutoTier = undefined;
+      targetResolution = resolveSelection(request.familyId, request.performanceMode);
+      assertResolutionFitsMemory(targetResolution);
+
+      const modelRoot = modelRootForUserData(app.getPath("userData"));
+      const verifications = await verifyRuntimeModelCatalog(modelRoot, targetCatalog);
+      const targetVerification = verifications[targetResolution.effectiveTier];
+      if (!targetVerification.verified || targetVerification.verificationStatus !== "verified") {
+        const action = targetVerification.present ? "repair" : "install";
+        throw new Error(
+          `The selected local speech model is not cryptographically verified. ${action === "repair" ? "Repair" : "Install"} this exact model and quality tier before applying it.`,
+        );
+      }
+
+      // Eager loading proves the exact engine, model, quantization, and current
+      // memory state before either routing field becomes durable.
+      await worker.ensureReady(workerSelection(targetResolution.tier));
+
+      const [catalog, diagnostics] = await Promise.all([
+        collectModelCatalogForSettings(candidateSettings),
+        collectDiagnosticsForResolution(targetResolution),
+      ]);
+      // Loading and catalog verification can take minutes. Merge the two model
+      // routing fields into the latest row immediately before the synchronous
+      // write so a microphone, shortcut, launch-at-login, or other settings
+      // update committed while Apply was running cannot be reverted here.
+      // There must be no await between this read and write.
+      const latestSettings = database.getSettings();
+      const settings = database.saveSettings(appSettingsSchema.parse({
+        ...latestSettings,
+        activeModelFamilyId: request.familyId,
+        modelPerformanceMode: request.performanceMode,
+      }));
+      modelResolution = targetResolution;
+      if (request.performanceMode === "auto" && targetResolution.fitsMemoryBudget) {
+        previousAutoTier = targetResolution.effectiveTier;
+      }
+      notifySettingsChanged(settings);
+      return { settings, catalog, diagnostics };
+    } catch (error) {
+      // Target load and durable settings are one transaction from the user's
+      // perspective. A failed target is always terminated, and the previous
+      // warm selection is restored best-effort without altering its settings.
+      let restoreError: unknown = null;
+      let restoreSkippedForShutdown = false;
+      try {
+        await worker.shutdown();
+        if (previousWarmSelection) {
+          if (quitting) restoreSkippedForShutdown = true;
+          else await worker.ensureReady(previousWarmSelection);
+        }
+      } catch (rollbackError) {
+        restoreError = rollbackError;
+      }
+      acceleratorSnapshot = previousAcceleratorSnapshot;
+      previousAutoTier = previousAutoTierSnapshot;
+      modelResolution = previousResolution;
+      const reason = error instanceof Error ? error.message : "The target model could not be loaded.";
+      const restoreDetail = restoreError
+        ? " The previous model settings were kept, but its warm runtime could not be restored; the next dictation will retry loading it."
+        : restoreSkippedForShutdown
+          ? " The previous model settings were kept; its runtime was not restarted because LocalScribe is shutting down."
+        : previousWarmSelection
+          ? " The previous model was restored and its settings remain active."
+          : " The previous settings remain active; no model was warm before Apply.";
+      throw new Error(`Could not apply the local speech model: ${reason}${restoreDetail}`, {
+        cause: error,
+      });
+    }
+  });
 }
 
 function registerIpc(): void {
@@ -1089,9 +1304,6 @@ function registerIpc(): void {
     }
     const previous = database.getSettings();
     const preview = appSettingsSchema.parse({ ...previous, ...patch });
-    assertGenericSettingsPreserveModelLibrary(previous, preview);
-    const modelPreferenceChanged = preview.modelPerformanceMode !== previous.modelPerformanceMode;
-    if (modelPreferenceChanged) assertModelSwitchAllowed();
     const launchAtLoginRequested = Object.prototype.hasOwnProperty.call(patch, "launchAtLogin");
     if (launchAtLoginRequested) {
       app.setLoginItemSettings(loginItemSettings(
@@ -1116,19 +1328,6 @@ function registerIpc(): void {
         }
       }
       throw error;
-    }
-    if (modelPreferenceChanged) {
-      try {
-        await worker.shutdown();
-        modelResolution = null;
-        await refreshModelResolution();
-      } catch (error) {
-        // The preference is already durable at this point. A worker or
-        // telemetry refresh failure must not turn a successful settings write
-        // into a false rejection that leaves renderers showing stale values.
-        modelResolution = null;
-        console.warn("LocalScribe could not refresh the model after saving its performance mode", error);
-      }
     }
     try {
       const purged = database.purgeExpiredTranscriptions(settings.historyRetentionDays);
@@ -1224,40 +1423,27 @@ function registerIpc(): void {
   handle(IPC.systemModelCatalog, () => collectModelCatalog());
   handle(IPC.systemAddModelFamily, async (_event, rawRequest: unknown) => {
     const request = modelFamilyLibraryRequestSchema.parse(rawRequest);
-    // The schema is an allowlist, and the packaged runtime catalog must also
-    // provide the family for this platform before it can be persisted.
-    if (!platformModelCatalog().families[request.familyId]) {
-      throw new Error("This LocalScribe build does not package that model family for this platform.");
-    }
-    const previous = database.getSettings();
-    if (previous.modelLibraryFamilyIds.includes(request.familyId)) return collectModelCatalog();
-    const settings = database.saveSettings(appSettingsSchema.parse({
-      ...previous,
-      modelLibraryFamilyIds: [...previous.modelLibraryFamilyIds, request.familyId],
-    }));
-    notifySettingsChanged(settings);
-    return collectModelCatalog();
-  });
-  handle(IPC.systemActivateModelFamily, async (_event, rawRequest: unknown) => {
-    const request = modelFamilyLibraryRequestSchema.parse(rawRequest);
     return runExclusiveModelOperation(async () => {
-      assertModelSwitchAllowed();
-      assertFamilyInLibrary(request.familyId);
+      // Serialize library membership with Apply so its catalog snapshot and
+      // final routing commit cannot erase or omit a concurrently-added family.
+      // The schema is an allowlist, and the packaged runtime catalog must also
+      // provide the family for this platform before it can be persisted.
+      if (!platformModelCatalog().families[request.familyId]) {
+        throw new Error("This LocalScribe build does not package that model family for this platform.");
+      }
       const previous = database.getSettings();
-      if (previous.activeModelFamilyId === request.familyId) return collectModelCatalog();
-      // A fresh worker process is our cross-engine unload boundary. Persist
-      // only after the old runtime has been shut down.
-      await worker.shutdown();
+      if (previous.modelLibraryFamilyIds.includes(request.familyId)) return collectModelCatalog();
       const settings = database.saveSettings(appSettingsSchema.parse({
         ...previous,
-        activeModelFamilyId: request.familyId,
+        modelLibraryFamilyIds: [...previous.modelLibraryFamilyIds, request.familyId],
       }));
-      previousAutoTier = undefined;
-      modelResolution = null;
-      await refreshModelResolution();
       notifySettingsChanged(settings);
       return collectModelCatalog();
     });
+  });
+  handle(IPC.systemApplyModelSelection, (_event, rawRequest: unknown) => {
+    const request = modelSelectionApplyRequestSchema.parse(rawRequest);
+    return applyModelSelection(request);
   });
   handle(IPC.systemInstallModel, async (_event, rawRequest: unknown) => {
     const request = modelInstallRequestSchema.parse(rawRequest);
@@ -1267,6 +1453,13 @@ function registerIpc(): void {
       const catalog = modelCatalog(request.familyId);
       const tier = catalog.tiers[request.tier];
       const modelRoot = modelRootForUserData(app.getPath("userData"));
+      const warmSelection = worker.loadedSelection();
+      const replacesLoadedArtifact = request.replaceExisting
+        && warmSelection !== null
+        && modelResolution !== null
+        && modelResolution.tier.familyId === request.familyId
+        && modelResolution.tier.artifactId === tier.artifactId
+        && workerModelSelectionsMatch(warmSelection, workerSelection(modelResolution.tier));
       // Installation is a disk/network data operation, not model activation.
       // It remains available when accelerator telemetry is missing or the
       // requested tier cannot currently fit in memory. The worker stages and
@@ -1275,7 +1468,7 @@ function registerIpc(): void {
         modelRoot,
         model: tier.manifest,
         replaceExisting: request.replaceExisting,
-        install: () => worker.installModel(workerSelection(tier)),
+        install: () => worker.installModel(workerSelection(tier), { replacesLoadedArtifact }),
       });
       return collectDiagnostics();
     });
@@ -1286,18 +1479,25 @@ function registerIpc(): void {
       assertModelSwitchAllowed();
       assertFamilyInLibrary(request.familyId);
       const tier = modelCatalog(request.familyId).tiers[request.tier];
+      const activeResolution = await currentModelResolution();
+      if (
+        activeResolution.tier.familyId === request.familyId
+        && activeResolution.tier.artifactId === tier.artifactId
+      ) {
+        throw new Error(
+          "This model artifact is currently selected. Apply another model or performance tier before removing it.",
+        );
+      }
       const modelRoot = modelRootForUserData(app.getPath("userData"));
       const rootStatus = await assertSafeModelRoot(modelRoot, true);
-      await worker.shutdown();
       if (rootStatus === "safe") {
         await rm(modelArtifactDirectory(modelRoot, tier.manifest), {
           recursive: true,
           force: true,
         });
       }
-      modelResolution = null;
-      // collectDiagnostics performs the one post-removal hardware refresh.
-      // Avoid a second worker startup/probe cycle here.
+      // The active selection and its warm runtime are unrelated to this
+      // artifact, so removal must remain a storage-only operation.
       return collectDiagnostics();
     });
   });
@@ -1428,7 +1628,9 @@ startupPromise = app.whenReady().then(async () => {
     audioCacheRoot,
   );
   workerInitialized = true;
-  await refreshModelResolution();
+  // Startup is an unloaded boundary. Capture one unbiased hardware snapshot;
+  // later diagnostics remain observational and dictation keeps models warm.
+  await refreshModelResolution({ reprobeUnloaded: true });
   // A quit request can interrupt the initial hardware probe. The shutdown
   // path waits for this promise before closing the database; do not construct
   // windows, IPC handlers, or hotkeys after that request.

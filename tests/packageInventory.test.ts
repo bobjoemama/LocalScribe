@@ -32,6 +32,9 @@ const MAC_MODEL_MANIFESTS = [
   "qwen3-asr-1-7b-mlx-bf16.json",
   "qwen3-asr-1-7b-mlx-8bit.json",
   "qwen3-asr-1-7b-mlx-4bit.json",
+  "qwen3-asr-0-6b-mlx-bf16.json",
+  "qwen3-asr-0-6b-mlx-8bit.json",
+  "qwen3-asr-0-6b-mlx-4bit.json",
 ] as const;
 const WINDOWS_MODEL_MANIFESTS = [
   "faster-whisper-large-v3.json",
@@ -39,6 +42,9 @@ const WINDOWS_MODEL_MANIFESTS = [
   "qwen3-asr-1-7b-crisp-f16.json",
   "qwen3-asr-1-7b-crisp-q8-0.json",
   "qwen3-asr-1-7b-crisp-q4-k.json",
+  "qwen3-asr-0-6b-crisp-f16.json",
+  "qwen3-asr-0-6b-crisp-q8-0.json",
+  "qwen3-asr-0-6b-crisp-q4-k.json",
 ] as const;
 const WINDOWS_NATIVE_FILES = [
   "native/windows/active-target.exe",

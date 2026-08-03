@@ -17,11 +17,18 @@ const TIER_ORDER: readonly ModelPerformanceTier[] = ["high", "medium", "low"];
 
 export type ModelModeChoice = ModelPerformanceMode;
 export type ConcreteModelTier = ModelPerformanceTier;
+export interface ModelSelectionDraft {
+  familyId: ModelFamilyId;
+  performanceMode: ModelPerformanceMode;
+}
 export type ModelVerificationState = "missing" | "invalid" | "verified" | "unknown";
 export type ModelActionState = {
   action: "installing" | "repairing" | "removing";
   familyId: ModelFamilyId;
   tier: ConcreteModelTier;
+} | {
+  action: "adding";
+  familyId: ModelFamilyId;
 } | null;
 
 /** Runtime-only facts. Catalog metadata remains usable when these are unavailable. */
@@ -66,6 +73,9 @@ export interface ModelMemoryRequirementView {
 }
 
 export interface ModelPerformanceSettingsProps {
+  currentSelection: ModelSelectionDraft;
+  currentModelLoaded: boolean;
+  pendingSelection: ModelSelectionDraft;
   mode: ModelModeChoice;
   resolvedTier: ConcreteModelTier | null;
   fitsMemoryBudget: boolean | null;
@@ -77,13 +87,153 @@ export interface ModelPerformanceSettingsProps {
   runtimeTierStatuses: readonly ModelTierRuntimeStatus[];
   action: ModelActionState;
   feedback: { message: string; isError: boolean } | null;
+  applying: boolean;
   onModeChange(mode: ModelModeChoice): void;
+  onFamilyChange(familyId: ModelFamilyId): void;
+  onApply(): void;
   onInstall(familyId: ModelFamilyId, tier: ConcreteModelTier): void;
   onRepair(familyId: ModelFamilyId, tier: ConcreteModelTier): void;
   onRemove(familyId: ModelFamilyId, tier: ConcreteModelTier): void;
   onAddFamily(familyId: ModelFamilyId): void;
-  onActivateFamily(familyId: ModelFamilyId): void;
   onRefresh(): void;
+}
+
+export interface ModelApplyEligibility {
+  enabled: boolean;
+  reason: string;
+  targetTier: ConcreteModelTier | null;
+  targetVerification: ModelVerificationState;
+}
+
+/**
+ * Renderer-side affordance only. Main repeats every check against fresh state
+ * before it unloads or persists anything.
+ */
+export function modelApplyEligibility({
+  currentSelection,
+  currentModelLoaded,
+  pendingSelection,
+  resolvedTier,
+  catalog,
+  catalogError,
+  runtimeTierStatuses,
+  hardware,
+  memoryRequirement,
+  action,
+  applying,
+}: Pick<ModelPerformanceSettingsProps,
+  | "currentSelection"
+  | "currentModelLoaded"
+  | "pendingSelection"
+  | "resolvedTier"
+  | "catalog"
+  | "catalogError"
+  | "runtimeTierStatuses"
+  | "hardware"
+  | "memoryRequirement"
+  | "action"
+  | "applying"
+>): ModelApplyEligibility {
+  const unavailable = (
+    reason: string,
+    targetTier: ConcreteModelTier | null = null,
+    targetVerification: ModelVerificationState = "unknown",
+  ): ModelApplyEligibility => ({ enabled: false, reason, targetTier, targetVerification });
+
+  if (applying) return unavailable("Applying the selected model…");
+  if (action) return unavailable("Finish the current model-library action first.");
+  if (catalogError) return unavailable("Refresh the model catalog before applying.");
+  if (!catalog) return unavailable("The model catalog is still loading.");
+  if (
+    currentSelection.familyId === pendingSelection.familyId
+    && currentSelection.performanceMode === pendingSelection.performanceMode
+    && currentModelLoaded
+  ) {
+    return unavailable("Current model is loaded and ready.");
+  }
+
+  const family = catalog.families.find((candidate) => candidate.familyId === pendingSelection.familyId);
+  if (!family) return unavailable("The selected model is not available on this platform.");
+  if (!family.inLibrary) return unavailable(`Add ${family.displayName} to your library first.`);
+  if (!hardware || hardware.totalMemoryBytes === null || hardware.availableMemoryBytes === null) {
+    return unavailable("Refresh accelerator memory before applying.");
+  }
+  const totalMemoryBytes = hardware.totalMemoryBytes;
+  const availableMemoryBytes = hardware.availableMemoryBytes;
+  const currentFamily = catalog.families.find(
+    (candidate) => candidate.familyId === currentSelection.familyId,
+  );
+  const currentProfile = resolvedTier === null
+    ? undefined
+    : currentFamily?.profiles.find((profile) => profile.tier === resolvedTier);
+  // Apply unloads the current runtime before loading the target. Use the
+  // current profile's minimum estimated allocation as a conservative lower
+  // bound for memory that will become available; using its maximum could
+  // overstate capacity. The hardware display itself remains the raw reading.
+  const availableAfterUnloadBytes = Math.min(
+    totalMemoryBytes,
+    availableMemoryBytes + (
+      currentModelLoaded ? currentProfile?.expectedMemoryMinBytes ?? 0 : 0
+    ),
+  );
+  const headroom = memoryRequirement?.reservedHeadroomBytes;
+  if (headroom === null || headroom === undefined) {
+    return unavailable("Reserved runtime memory is unavailable. Refresh model status.");
+  }
+
+  const orderedProfiles = [...family.profiles].sort(
+    (left, right) => TIER_ORDER.indexOf(left.tier) - TIER_ORDER.indexOf(right.tier),
+  );
+  const fits = (profile: ModelCatalog["families"][number]["profiles"][number]) => {
+    const required = profile.expectedMemoryMaxBytes + headroom;
+    return totalMemoryBytes >= required && availableAfterUnloadBytes >= required;
+  };
+  const targetProfile = pendingSelection.performanceMode === "auto"
+    ? orderedProfiles.find(fits)
+    : orderedProfiles.find((profile) => profile.tier === pendingSelection.performanceMode);
+  if (!targetProfile) {
+    return unavailable(pendingSelection.performanceMode === "auto"
+      ? "No profile in this model family fits the available memory."
+      : "The selected performance profile is missing from the catalog.");
+  }
+  if (!fits(targetProfile)) {
+    const required = targetProfile.expectedMemoryMaxBytes + headroom;
+    return unavailable(
+      `${tierLabelFor(targetProfile.tier)} needs ${formatAcceleratorBytes(required)} available after unloading the current model, but ${formatAcceleratorBytes(availableAfterUnloadBytes)} is conservatively available.`,
+      targetProfile.tier,
+    );
+  }
+
+  const runtime = runtimeTierStatuses.find((candidate) => (
+    candidate.familyId === family.familyId
+    && candidate.tier === targetProfile.tier
+    && candidate.artifactId === targetProfile.artifactId
+  ));
+  const catalogVerification = catalog.verifications.find((candidate) => (
+    candidate.familyId === family.familyId
+    && candidate.artifactId === targetProfile.artifactId
+  ));
+  const verification = runtime?.verificationStatus
+    ?? catalogVerification?.verificationStatus
+    ?? "unknown";
+  if (verification === "missing") {
+    return unavailable("Download the selected model profile before applying.", targetProfile.tier, verification);
+  }
+  if (verification === "invalid") {
+    return unavailable("Repair the selected model profile before applying.", targetProfile.tier, verification);
+  }
+  if (verification !== "verified") {
+    return unavailable("Verify the selected model profile before applying.", targetProfile.tier, verification);
+  }
+  return {
+    enabled: true,
+    reason: currentSelection.familyId === pendingSelection.familyId
+      && currentSelection.performanceMode === pendingSelection.performanceMode
+      ? "Ready to verify and load the current model."
+      : "Ready to unload the current model and load this selection.",
+    targetTier: targetProfile.tier,
+    targetVerification: verification,
+  };
 }
 
 export function modelVerificationPresentation(status: ModelVerificationState): {
@@ -211,14 +361,17 @@ export function catalogTierViews(
           ?? (family.active
             ? "Runtime quality details are unavailable until model diagnostics refresh."
             : family.inLibrary
-              ? "Activate this family to load its runtime quality details."
-              : "Add this family to your library, then activate it to load runtime quality details."),
+              ? "Select and apply this family to load its runtime quality details."
+              : "Add this family to your library, then select and apply it to load runtime quality details."),
         verificationStatus: runtime?.verificationStatus ?? "unknown",
       };
     });
 }
 
 export function ModelPerformanceSettings({
+  currentSelection,
+  currentModelLoaded,
+  pendingSelection,
   mode,
   resolvedTier,
   fitsMemoryBudget,
@@ -230,12 +383,14 @@ export function ModelPerformanceSettings({
   runtimeTierStatuses,
   action,
   feedback,
+  applying,
   onModeChange,
+  onFamilyChange,
+  onApply,
   onInstall,
   onRepair,
   onRemove,
   onAddFamily,
-  onActivateFamily,
   onRefresh,
 }: ModelPerformanceSettingsProps) {
   const platform = hardware?.platform ?? platformFromCatalog(catalog);
@@ -246,25 +401,79 @@ export function ModelPerformanceSettings({
   const autoResolutionLabel = fitsMemoryBudget === false ? "No tier fits" : resolvedLabel;
   const requestedLabel = MODEL_MODE_CHOICES.find((choice) => choice.id === mode)?.label ?? mode;
   const eligibilityUnknown = hardware === null || hardware.availableMemoryBytes === null;
+  const currentFamily = catalog?.families.find((family) => family.familyId === currentSelection.familyId);
+  const pendingFamily = catalog?.families.find((family) => family.familyId === pendingSelection.familyId);
+  const currentModeLabel = modeLabel(currentSelection.performanceMode);
+  const pendingModeLabel = modeLabel(pendingSelection.performanceMode);
+  const selectionChanged = currentSelection.familyId !== pendingSelection.familyId
+    || currentSelection.performanceMode !== pendingSelection.performanceMode;
+  const applyEligibility = modelApplyEligibility({
+    currentSelection,
+    currentModelLoaded,
+    pendingSelection,
+    resolvedTier,
+    catalog,
+    catalogError,
+    runtimeTierStatuses,
+    hardware,
+    memoryRequirement,
+    action,
+    applying,
+  });
 
   return (
     <div className="ls-model-performance">
-      <section className="ls-model-auto-card" aria-labelledby="model-auto-heading">
+      <section className="ls-model-apply-card" aria-labelledby="model-apply-heading">
         <div>
-          <span>Performance within the active family</span>
-          <h2 id="model-auto-heading">
-            {mode === "auto"
-              ? <>Auto resolves to <strong>{autoResolutionLabel}</strong></>
-              : <><strong>{requestedLabel}</strong> selected</>}
+          <span>{selectionChanged ? "Pending model change" : "Current model selection"}</span>
+          <h2 id="model-apply-heading">
+            {pendingFamily?.displayName ?? pendingSelection.familyId} · {pendingModeLabel}
           </h2>
-          <p>{platformCopy.summary} Family selection changes the speech model; Auto, High, Medium, and Low choose a profile only within that active family.</p>
+          <dl className="ls-model-selection-summary">
+            <div>
+              <dt>Currently using</dt>
+              <dd>{currentFamily?.displayName ?? currentSelection.familyId} · {currentModeLabel}</dd>
+            </div>
+            <div>
+              <dt>After applying</dt>
+              <dd>{pendingFamily?.displayName ?? pendingSelection.familyId} · {pendingModeLabel}</dd>
+            </div>
+          </dl>
+          <p>{applyEligibility.reason}</p>
         </div>
-        <button type="button" className="ls-secondary-button" onClick={onRefresh}>
-          Refresh model status
-        </button>
+        <div className="ls-model-apply-actions">
+          <button type="button" className="ls-secondary-button" disabled={applying || action !== null} onClick={onRefresh}>
+            Refresh status
+          </button>
+          <button
+            type="button"
+            className="ls-primary-button ls-model-apply-button"
+            disabled={!applyEligibility.enabled}
+            aria-disabled={!applyEligibility.enabled}
+            onClick={onApply}
+          >
+            {applying
+              ? "Applying…"
+              : !selectionChanged && !currentModelLoaded
+                ? "Load current model"
+                : "Apply model"}
+          </button>
+        </div>
       </section>
 
-      <fieldset className="ls-model-mode-picker">
+      <section className="ls-model-auto-card" aria-labelledby="model-auto-heading">
+        <div>
+          <span>Performance within the selected family</span>
+          <h2 id="model-auto-heading">
+            {mode === "auto"
+              ? <>Auto resolves to <strong>{selectionChanged ? applyEligibility.targetTier ? modeLabel(applyEligibility.targetTier) : "after validation" : autoResolutionLabel}</strong></>
+              : <><strong>{requestedLabel}</strong> selected</>}
+          </h2>
+          <p>{platformCopy.summary} Changing these controls only stages a choice. LocalScribe unloads the current model and loads the new one only after you press Apply model.</p>
+        </div>
+      </section>
+
+      <fieldset className="ls-model-mode-picker" disabled={applying || action !== null || Boolean(catalogError) || !catalog}>
         <legend>Performance mode</legend>
         <p>Choose Auto or one concrete quality and memory profile for the active speech-model family.</p>
         <div>
@@ -292,7 +501,7 @@ export function ModelPerformanceSettings({
         </div>
       </fieldset>
 
-      {mode === "auto" && resolutionReason && (
+      {!selectionChanged && mode === "auto" && resolutionReason && (
         <p className="ls-model-resolution-note" role="status">
           <InfoIcon />
           <span>{resolutionReason}</span>
@@ -312,6 +521,7 @@ export function ModelPerformanceSettings({
         memoryRequirement={memoryRequirement}
         platformCopy={platformCopy}
         eligibilityUnknown={eligibilityUnknown}
+        normalizedForWarmModel={currentModelLoaded}
       />
 
       {feedback && (
@@ -346,7 +556,9 @@ export function ModelPerformanceSettings({
                   key={family.familyId}
                   family={family}
                   mode={mode}
-                  resolvedTier={resolvedTier}
+                  currentFamilyId={currentSelection.familyId}
+                  pendingFamilyId={pendingSelection.familyId}
+                  resolvedTier={selectionChanged ? applyEligibility.targetTier : resolvedTier}
                   fitsMemoryBudget={fitsMemoryBudget}
                   runtimeTierStatuses={runtimeTierStatuses}
                   action={action}
@@ -355,7 +567,8 @@ export function ModelPerformanceSettings({
                   onRepair={onRepair}
                   onRemove={onRemove}
                   onAddFamily={onAddFamily}
-                  onActivateFamily={onActivateFamily}
+                  onFamilyChange={onFamilyChange}
+                  selectionDisabled={applying || action !== null}
                 />
               ))}
             </div>
@@ -397,11 +610,13 @@ function MemoryStatus({
   memoryRequirement,
   platformCopy,
   eligibilityUnknown,
+  normalizedForWarmModel,
 }: {
   hardware: ModelHardwareView | null;
   memoryRequirement: ModelMemoryRequirementView | null;
   platformCopy: ReturnType<typeof platformModelCopy>;
   eligibilityUnknown: boolean;
+  normalizedForWarmModel: boolean;
 }) {
   if (!hardware) {
     return (
@@ -432,7 +647,9 @@ function MemoryStatus({
           <small>
             {hardware.availableMemoryBytes === null
               ? "Availability · unavailable"
-              : `Available now · ${hardware.memoryBasis}`}
+              : normalizedForWarmModel
+                ? `Selection budget · live telemetry normalized for the warm model · ${hardware.memoryBasis}`
+                : `Available now · live telemetry · ${hardware.memoryBasis}`}
           </small>
         </span>
       </section>
@@ -456,6 +673,8 @@ function MemoryStatus({
 function ModelFamilyCard({
   family,
   mode,
+  currentFamilyId,
+  pendingFamilyId,
   resolvedTier,
   fitsMemoryBudget,
   runtimeTierStatuses,
@@ -465,10 +684,13 @@ function ModelFamilyCard({
   onRepair,
   onRemove,
   onAddFamily,
-  onActivateFamily,
+  onFamilyChange,
+  selectionDisabled,
 }: {
   family: ModelCatalog["families"][number];
   mode: ModelModeChoice;
+  currentFamilyId: ModelFamilyId;
+  pendingFamilyId: ModelFamilyId;
   resolvedTier: ConcreteModelTier | null;
   fitsMemoryBudget: boolean | null;
   runtimeTierStatuses: readonly ModelTierRuntimeStatus[];
@@ -478,7 +700,8 @@ function ModelFamilyCard({
   onRepair(familyId: ModelFamilyId, tier: ConcreteModelTier): void;
   onRemove(familyId: ModelFamilyId, tier: ConcreteModelTier): void;
   onAddFamily(familyId: ModelFamilyId): void;
-  onActivateFamily(familyId: ModelFamilyId): void;
+  onFamilyChange(familyId: ModelFamilyId): void;
+  selectionDisabled: boolean;
 }) {
   const tiers = catalogTierViews(family, runtimeTierStatuses);
   const sharedArtifactIds = new Set(
@@ -490,38 +713,41 @@ function ModelFamilyCard({
     if (!firstTierForArtifact.has(tier.artifactId)) firstTierForArtifact.set(tier.artifactId, tier.tier);
   }
   const isDefault = family.familyId === DEFAULT_MODEL_FAMILY_ID;
+  const isCurrent = family.familyId === currentFamilyId;
+  const isPending = family.familyId === pendingFamilyId;
 
   return (
-    <article className={family.active ? "ls-model-family-card is-active" : "ls-model-family-card"}>
+    <article className={isPending ? "ls-model-family-card is-selected" : isCurrent ? "ls-model-family-card is-active" : "ls-model-family-card"}>
       <header className="ls-model-family-heading">
         <div>
           <div className="ls-model-family-badges">
             {isDefault && <span className="ls-model-family-badge">Built-in default</span>}
-            {family.active && <span className="ls-model-family-badge is-active">Active family</span>}
-            {!family.active && family.inLibrary && <span className="ls-model-family-badge">Added to library</span>}
+            {isCurrent && <span className="ls-model-family-badge is-active">Currently active</span>}
+            {isPending && !isCurrent && <span className="ls-model-family-badge is-pending">Selected to apply</span>}
+            {!isCurrent && family.inLibrary && <span className="ls-model-family-badge">Added to library</span>}
             {!family.inLibrary && <span className="ls-model-family-badge">Available to add</span>}
           </div>
           <h3>{family.displayName}</h3>
           <p>Catalog backend: {catalogFamilyBackendLabel(family)}</p>
         </div>
         {!family.inLibrary ? (
-          <button type="button" className="ls-small-button ls-model-primary-action" onClick={() => onAddFamily(family.familyId)}>
-            Add to library
+          <button type="button" className="ls-small-button ls-model-primary-action" disabled={selectionDisabled} onClick={() => onAddFamily(family.familyId)}>
+            {selectionDisabled && action?.action === "adding" && action.familyId === family.familyId ? "Adding…" : "Add to library"}
           </button>
-        ) : !family.active ? (
-          <button type="button" className="ls-small-button ls-model-primary-action" onClick={() => onActivateFamily(family.familyId)}>
-            Activate
+        ) : !isPending ? (
+          <button type="button" className="ls-small-button ls-model-primary-action" disabled={selectionDisabled} onClick={() => onFamilyChange(family.familyId)}>
+            Select
           </button>
         ) : (
-          <span className="ls-model-active-label">Used for dictation</span>
+          <span className="ls-model-active-label">{isCurrent ? "Current selection" : "Pending selection"}</span>
         )}
       </header>
 
-      {!family.active && family.inLibrary && (
-        <p className="ls-model-family-note">Added locally and ready to activate. Performance mode will continue to apply to the currently active family until you activate this one.</p>
+      {!isCurrent && family.inLibrary && (
+        <p className="ls-model-family-note">Added locally. Select it, choose a performance mode, then use Apply model to switch safely.</p>
       )}
       {!family.inLibrary && (
-        <p className="ls-model-family-note">This curated family is available but is not part of your local library yet. Add it before activation or model-data actions.</p>
+        <p className="ls-model-family-note">This curated family is available but is not part of your local library yet. Add it before selecting it or managing its model data.</p>
       )}
 
       <div className="ls-model-tier-list">
@@ -529,17 +755,17 @@ function ModelFamilyCard({
           <ModelTierRow
             key={tier.profileId}
             tier={tier}
-            selected={family.active && (mode === tier.tier || (
+            selected={isPending && (mode === tier.tier || (
               mode === "auto"
               && fitsMemoryBudget === true
               && resolvedTier === tier.tier
             ))}
-            activeFamily={family.active}
+            activeFamily={isCurrent}
             familyInLibrary={family.inLibrary}
             sharedArtifact={sharedArtifactIds.has(tier.artifactId)}
             isArtifactControl={firstTierForArtifact.get(tier.artifactId) === tier.tier}
             artifactControlTier={firstTierForArtifact.get(tier.artifactId) ?? tier.tier}
-            action={action}
+            action={action?.action === "adding" ? null : action}
             runEligibilityUnknown={runEligibilityUnknown}
             onInstall={onInstall}
             onRepair={onRepair}
@@ -579,7 +805,12 @@ function ModelTierRow({
   onRemove(familyId: ModelFamilyId, tier: ConcreteModelTier): void;
 }) {
   const status = modelVerificationPresentation(tier.verificationStatus);
-  const activeAction = action?.familyId === tier.familyId && action.tier === tier.tier ? action.action : null;
+  const activeAction = action
+    && action.action !== "adding"
+    && action.familyId === tier.familyId
+    && action.tier === tier.tier
+    ? action.action
+    : null;
   const anyAction = action !== null;
   const tierLabel = MODEL_MODE_CHOICES.find((choice) => choice.id === tier.tier)?.label ?? tier.tier;
   const sharedWith = sharedArtifact ? "Shared artifact" : null;
@@ -603,9 +834,9 @@ function ModelTierRow({
       </dl>
       <div className="ls-model-tier-footer">
         <p>{tier.qualityNote}{runEligibilityUnknown && activeFamily ? " Run eligibility is unknown until accelerator memory can be read." : ""}</p>
-        {!activeFamily ? (
+        {!familyInLibrary ? (
           <span className="ls-model-shared-label">
-            {familyInLibrary ? "Activate to manage" : "Add to library to manage"}
+            Add to library to manage
           </span>
         ) : sharedArtifact && !isArtifactControl ? (
           <span className="ls-model-shared-label">{sharedWith} · managed from {tierLabelFor(artifactControlTier)}</span>
@@ -683,6 +914,10 @@ function progressLabelFor(operation: "install" | "repair" | "remove"): string {
 
 function tierLabelFor(tier: ConcreteModelTier): string {
   return MODEL_MODE_CHOICES.find((choice) => choice.id === tier)?.label ?? tier;
+}
+
+function modeLabel(mode: ModelPerformanceMode): string {
+  return MODEL_MODE_CHOICES.find((choice) => choice.id === mode)?.label ?? mode;
 }
 
 function platformFromCatalog(catalog: ModelCatalog | null): ModelHardwareView["platform"] | null {

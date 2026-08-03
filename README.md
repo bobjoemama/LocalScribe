@@ -46,10 +46,18 @@ the notarized release.
 ## Set up dictation
 
 1. Open **Settings → Model & Performance**.
-2. Choose **Auto** unless you want to select a memory tier manually.
-3. Click the install action for the selected local model.
-4. Wait for LocalScribe to verify and activate the model.
-5. Open any text box and use the shortcut shown in the LocalScribe pill.
+2. Choose a model family and **Auto** unless you want to select a memory tier
+   manually. Qwen3-ASR 0.6B is the smaller, lower-latency candidate; its
+   real-device latency still needs comparative benchmarking.
+3. Click the install action for the selected local model if its exact artifact
+   is not already verified.
+4. Review the pending family, tier, engine, and memory estimate, then click
+   **Apply model**. Merely selecting or downloading a model does not change the
+   active runtime.
+5. Wait for LocalScribe to unload the previous model, verify and preload the
+   target, and report it ready. The new family and tier are committed only
+   after that load succeeds.
+6. Open any text box and use the shortcut shown in the LocalScribe pill.
 
 Model weights are not hidden inside the installer. LocalScribe downloads only
 revision-pinned catalog files, checks their size and SHA-256 hash, and activates
@@ -65,10 +73,12 @@ started.
 | Medium | Selected family’s MLX 8-bit model | CTranslate2 `int8_float16` or Qwen Q8_0 | Balanced memory and quality |
 | Low | Selected family’s MLX 4-bit model | CTranslate2 `int8` or Qwen Q4_K | Lowest memory use |
 
-Whisper large-v3 is the default family. Qwen3-ASR 1.7B and the older Whisper
-large-v2 can be added from the local model library. On macOS, Whisper uses MLX
-Whisper and Qwen uses MLX Audio. On NVIDIA Windows, Whisper uses
-faster-whisper/CTranslate2 and Qwen uses a pinned CrispASR GGML/CUDA runtime.
+Whisper large-v3 is the default family. Qwen3-ASR 0.6B, Qwen3-ASR 1.7B, and
+the older Whisper large-v2 can be added from the local model library. Qwen3-ASR
+0.6B is the smaller lower-latency candidate, not a claim of measured superiority.
+On macOS, Whisper uses MLX Whisper and Qwen uses MLX Audio. On NVIDIA Windows,
+Whisper uses faster-whisper/CTranslate2 and Qwen uses a pinned CrispASR
+GGML/CUDA runtime.
 Arbitrary model URLs, plugins, and custom model code are intentionally not
 accepted. See the
 [model catalog](docs/MODEL_CATALOG.md).
@@ -116,6 +126,16 @@ Run on an Apple Silicon Mac with Xcode command-line tools:
 npm run verify:local:macos
 ```
 
+To include an exact installed-model load and repeated inference in the macOS
+gate, supply both an existing model root and a 16 kHz mono PCM16 fixture:
+
+```bash
+npm run verify:local:macos -- \
+  --smoke-model-root "$HOME/Library/Application Support/LocalScribe/models" \
+  --smoke-audio /absolute/path/to/fixture.wav \
+  --smoke-family qwen3-asr-0-6b --smoke-tier medium --smoke-repeat 2
+```
+
 The DMG, Mac ZIP, SBOMs, and checksum manifest are written under `out/`.
 A normal local build uses an Apple Development or ad-hoc signature. Creating a
 notarized public build requires the release credentials documented in
@@ -133,6 +153,15 @@ On the NVIDIA system intended for use, also require the CUDA checks:
 
 ```powershell
 npm run verify:local:windows -- -RequireCuda
+```
+
+An installed-model smoke is opt-in so the ordinary release gate does not
+require multi-gigabyte weights:
+
+```powershell
+npm run verify:local:windows -- -RequireCuda `
+  -CudaModelRoot "$env:APPDATA\LocalScribe\models" `
+  -CudaFamily qwen3-asr-0-6b -CudaTier medium -CudaRepeat 2
 ```
 
 The target gate produces one versioned portable ZIP, proves that it is an exact

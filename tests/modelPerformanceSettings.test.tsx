@@ -2,6 +2,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import type { ModelCatalog } from "../src/shared/contracts";
 import {
+  modelApplyEligibility,
   ModelPerformanceSettings,
   type ModelPerformanceSettingsProps,
 } from "../src/renderer/settings/screens/ModelPerformanceSettings";
@@ -123,6 +124,15 @@ function catalog({
 
 function renderModelSettings(overrides: Partial<ModelPerformanceSettingsProps> = {}) {
   const props: ModelPerformanceSettingsProps = {
+    currentSelection: {
+      familyId: "whisper-large-v3",
+      performanceMode: "auto",
+    },
+    currentModelLoaded: true,
+    pendingSelection: {
+      familyId: "whisper-large-v3",
+      performanceMode: "auto",
+    },
     mode: "auto",
     resolvedTier: "medium",
     fitsMemoryBudget: true,
@@ -165,12 +175,14 @@ function renderModelSettings(overrides: Partial<ModelPerformanceSettingsProps> =
     ],
     action: null,
     feedback: null,
+    applying: false,
     onModeChange: vi.fn(),
+    onFamilyChange: vi.fn(),
+    onApply: vi.fn(),
     onInstall: vi.fn(),
     onRepair: vi.fn(),
     onRemove: vi.fn(),
     onAddFamily: vi.fn(),
-    onActivateFamily: vi.fn(),
     onRefresh: vi.fn(),
     ...overrides,
   };
@@ -178,6 +190,127 @@ function renderModelSettings(overrides: Partial<ModelPerformanceSettingsProps> =
 }
 
 describe("ModelPerformanceSettings", () => {
+  it("allows an exact verified persisted selection to load when its runtime is cold", () => {
+    const eligibility = modelApplyEligibility({
+      currentSelection: { familyId: "whisper-large-v3", performanceMode: "auto" },
+      currentModelLoaded: false,
+      pendingSelection: { familyId: "whisper-large-v3", performanceMode: "auto" },
+      resolvedTier: "high",
+      catalog: catalog(),
+      catalogError: null,
+      runtimeTierStatuses: [{ familyId: "whisper-large-v3", tier: "high", artifactId: "whisper-large-v3-high", verificationStatus: "verified" }],
+      hardware: { platform: "darwin", displayName: "Apple M-series GPU", totalMemoryBytes: 48 * GIBIBYTE, availableMemoryBytes: 31 * GIBIBYTE, memoryBasis: "measured" },
+      memoryRequirement: { requiredFreeMemoryBytes: null, reservedHeadroomBytes: 2 * GIBIBYTE },
+      action: null,
+      applying: false,
+    });
+
+    expect(eligibility).toMatchObject({ enabled: true, targetTier: "high", targetVerification: "verified" });
+    expect(renderModelSettings({ currentModelLoaded: false })).toContain("Load current model");
+  });
+
+  it("keeps exact warm Apply idempotent", () => {
+    const html = renderModelSettings({ currentModelLoaded: true });
+    expect(html).toContain("Current model is loaded and ready.");
+    expect(html).toContain("disabled");
+  });
+
+  it("enables one combined Apply only for a changed, verified, memory-eligible target", () => {
+    const modelCatalog = catalog();
+    const eligibility = modelApplyEligibility({
+      currentSelection: { familyId: "whisper-large-v3", performanceMode: "auto" },
+      currentModelLoaded: true,
+      pendingSelection: { familyId: "whisper-large-v3", performanceMode: "medium" },
+      resolvedTier: "high",
+      catalog: modelCatalog,
+      catalogError: null,
+      runtimeTierStatuses: [{
+        familyId: "whisper-large-v3",
+        tier: "medium",
+        artifactId: "whisper-large-v3-medium",
+        verificationStatus: "verified",
+      }],
+      hardware: {
+        platform: "darwin",
+        displayName: "Apple M-series GPU",
+        totalMemoryBytes: 48 * GIBIBYTE,
+        availableMemoryBytes: 31 * GIBIBYTE,
+        memoryBasis: "measured",
+      },
+      memoryRequirement: { requiredFreeMemoryBytes: null, reservedHeadroomBytes: 2 * GIBIBYTE },
+      action: null,
+      applying: false,
+    });
+
+    expect(eligibility).toMatchObject({
+      enabled: true,
+      targetTier: "medium",
+      targetVerification: "verified",
+    });
+  });
+
+  it("accounts conservatively for memory released by the warm model before Apply", () => {
+    const eligibility = modelApplyEligibility({
+      currentSelection: { familyId: "whisper-large-v3", performanceMode: "high" },
+      currentModelLoaded: true,
+      pendingSelection: { familyId: "whisper-large-v3", performanceMode: "medium" },
+      resolvedTier: "high",
+      catalog: catalog(),
+      catalogError: null,
+      runtimeTierStatuses: [{
+        familyId: "whisper-large-v3",
+        tier: "medium",
+        artifactId: "whisper-large-v3-medium",
+        verificationStatus: "verified",
+      }],
+      hardware: {
+        platform: "darwin",
+        displayName: "Apple M-series GPU",
+        totalMemoryBytes: 8 * GIBIBYTE,
+        availableMemoryBytes: 2 * GIBIBYTE,
+        memoryBasis: "measured",
+      },
+      memoryRequirement: {
+        requiredFreeMemoryBytes: 5 * GIBIBYTE,
+        reservedHeadroomBytes: 2 * GIBIBYTE,
+      },
+      action: null,
+      applying: false,
+    });
+
+    // The raw reading is only 2 GiB, but unloading the current High profile
+    // conservatively releases its 3 GiB minimum before Medium loads.
+    expect(eligibility).toMatchObject({
+      enabled: true,
+      targetTier: "medium",
+      targetVerification: "verified",
+    });
+  });
+
+  it("disables Apply when the exact selected artifact is missing", () => {
+    const html = renderModelSettings({
+      currentSelection: { familyId: "whisper-large-v3", performanceMode: "auto" },
+      pendingSelection: { familyId: "whisper-large-v3", performanceMode: "high" },
+      mode: "high",
+    });
+
+    expect(html).toContain("Download the selected model profile before applying.");
+    expect(html).toContain('class="ls-primary-button ls-model-apply-button" disabled="" aria-disabled="true"');
+  });
+
+  it("derives current and pending labels from the catalog", () => {
+    const html = renderModelSettings({
+      catalog: catalog({ v2InLibrary: true }),
+      currentSelection: { familyId: "whisper-large-v3", performanceMode: "auto" },
+      pendingSelection: { familyId: "whisper-large-v2", performanceMode: "low" },
+      mode: "low",
+    });
+
+    expect(html).toContain("Currently using</dt><dd>Whisper large-v3 · Auto");
+    expect(html).toContain("After applying</dt><dd>Whisper large-v2 · Low");
+    expect(html).toContain("Selected to apply");
+  });
+
   it("keeps family selection separate from the four accessible performance choices", () => {
     const html = renderModelSettings();
 
@@ -186,7 +319,10 @@ describe("ModelPerformanceSettings", () => {
     expect(html).toContain('value="high"');
     expect(html).toContain('value="medium"');
     expect(html).toContain('value="low"');
-    expect(html).toContain("Family selection changes the speech model");
+    expect(html).toContain("Changing these controls only stages a choice");
+    expect(html).toContain("Currently using");
+    expect(html).toContain("After applying");
+    expect(html).toContain("Apply model");
     expect(html).toContain("Whisper large-v3");
     expect(html).toContain("Built-in default");
     expect(html).toContain("Whisper large-v2");
@@ -400,14 +536,14 @@ describe("ModelPerformanceSettings", () => {
     expect(removeAfterMissingRefresh).not.toContain(">Download</button>");
   });
 
-  it("shows an added v2 family as ready to activate and does not offer inactive artifact actions", () => {
+  it("shows an added v2 family as selectable and keeps artifact management separate", () => {
     const html = renderModelSettings({ catalog: catalog({ v2InLibrary: true }) });
 
     expect(html).toContain("Added to library");
-    expect(html).toContain("Activate");
-    expect(html).toContain("Added locally and ready to activate");
+    expect(html).toContain("Select");
+    expect(html).toContain("Added locally. Select it");
     expect(html).toContain("Undeclared — review required");
-    expect(html).toContain("Activate to manage");
+    expect(html).toContain("Check / download");
   });
 
   it("derives family backends and inactive management eligibility from the catalog", () => {
@@ -430,8 +566,8 @@ describe("ModelPerformanceSettings", () => {
     );
 
     expect(inactiveDefault).toContain("Catalog backend: Catalog-provided macOS backend");
-    expect(inactiveDefault).toContain("Activate this family to load its runtime quality details.");
-    expect(inactiveDefault).toContain("Activate to manage");
+    expect(inactiveDefault).toContain("Select and apply this family to load its runtime quality details.");
+    expect(inactiveDefault).toContain("Check / download");
     expect(inactiveDefault).not.toContain("Built-in family");
     expect(html).toContain("Runtime quality details are unavailable until model diagnostics refresh.");
   });
@@ -450,7 +586,7 @@ describe("ModelPerformanceSettings", () => {
 
     expect(inactiveFamily.match(/Verified/g)).toHaveLength(3);
     expect(inactiveFamily).not.toContain("Status unavailable");
-    expect(inactiveFamily).toContain("Activate to manage");
+    expect(inactiveFamily).toContain("Remove High profile for whisper-large-v2");
   });
 
   it("lists unmanaged and interrupted model storage without offering a destructive action", () => {
