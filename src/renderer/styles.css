@@ -24,6 +24,22 @@ html, body, #root { width: 100%; height: 100%; }
 body { margin: 0; min-width: 320px; overflow: hidden; }
 button, input, textarea, select { font: inherit; }
 button { color: inherit; }
+
+/*
+ * Keep the desktop UI on the native arrow cursor. The floating pill changes
+ * hit targets as it expands, so mixing arrow, hand, busy, and forbidden
+ * cursors makes a stationary pointer appear to flicker. Editable text keeps
+ * the expected I-beam; every application control uses the stable arrow.
+ */
+html,
+body,
+body :where(*, *::before, *::after) { cursor: default !important; }
+body :where(
+  input:not([type="button"]):not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="reset"]):not([type="submit"]),
+  textarea,
+  [contenteditable="true"]
+) { cursor: text !important; }
+
 button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible {
   outline: 2px solid #217c70;
   outline-offset: 2px;

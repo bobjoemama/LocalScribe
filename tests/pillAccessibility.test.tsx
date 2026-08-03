@@ -50,4 +50,14 @@ describe("pill accessibility", () => {
       "max-height: calc(var(--pill-idle-picker-height) - var(--pill-idle-hover-height) - 6px)",
     );
   });
+
+  it("keeps application controls on the arrow cursor while preserving text editing", () => {
+    const css = readFileSync(resolve(process.cwd(), "src/renderer/styles.css"), "utf8");
+
+    expect(css).toMatch(
+      /body :where\(\*, \*::before, \*::after\)\s*\{ cursor: default !important; \}/,
+    );
+    expect(css).toMatch(/textarea,[\s\S]*\{ cursor: text !important; \}/);
+    expect(css).not.toMatch(/cursor:\s*(?:pointer|wait|not-allowed)\s*!important/);
+  });
 });

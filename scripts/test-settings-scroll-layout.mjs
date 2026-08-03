@@ -185,6 +185,16 @@ async function inspectTab(window, label, targetText) {
       modelControls.sharedLabels = [...scroll.querySelectorAll(".ls-model-shared-label")]
         .filter((node) => node.textContent?.includes("Shared artifact")).length;
     }
+    const interactiveCursors = [...document.querySelectorAll(
+      ".ls-settings-modal button, .ls-settings-modal summary, .ls-settings-modal select, "
+      + ".ls-settings-modal label, .ls-settings-modal [role='button'], "
+      + ".ls-settings-modal [role='radio'], .ls-settings-modal [role='tab'], "
+      + ".ls-settings-modal [role='menuitem'], .ls-settings-modal [role='switch']",
+    )].map((control) => ({
+      tag: control.tagName.toLowerCase(),
+      label: control.getAttribute("aria-label") ?? control.textContent?.trim().slice(0, 80) ?? "",
+      cursor: getComputedStyle(control).cursor,
+    }));
     return {
       label: \${JSON.stringify(label)},
       targetText: \${JSON.stringify(targetText)},
@@ -193,6 +203,7 @@ async function inspectTab(window, label, targetText) {
       footerControls,
       modelControls,
       settingsBindings,
+      interactiveCursors,
     };
   })()\`);
 }
@@ -492,6 +503,11 @@ function assertTab(result, size) {
   assert(
     result.footerControls.every((control) => control.visible),
     `${label}: a settings footer control is clipped: ${layoutEvidence}`,
+  );
+  assert(
+    result.interactiveCursors.length > 0
+      && result.interactiveCursors.every((control) => control.cursor === "default"),
+    `${label}: an application control does not keep the stable arrow cursor: ${JSON.stringify(result.interactiveCursors)}`,
   );
   if (label === "Model & Performance") {
     assert(

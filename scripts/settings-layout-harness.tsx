@@ -18,6 +18,7 @@ import {
   type PermissionSnapshot,
 } from "../src/shared/contracts";
 import { SettingsModal } from "../src/renderer/settings/screens/StyleSettings";
+import "../src/renderer/styles.css";
 
 const GIBIBYTE = 1_073_741_824;
 const harnessParams = new URLSearchParams(window.location.search);
