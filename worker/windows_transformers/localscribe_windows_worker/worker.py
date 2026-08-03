@@ -94,6 +94,12 @@ QWEN_TIER_COMPUTE_TYPES = {
     "medium": "q8_0",
     "low": "q4_k",
 }
+QWEN_MODEL_IDS = frozenset(
+    {
+        "cstr/qwen3-asr-1.7b-GGUF",
+        "cstr/qwen3-asr-0.6b-GGUF",
+    }
+)
 
 EXPECTED_MANIFEST_FIELDS = frozenset(
     {
@@ -297,6 +303,9 @@ CURATED_PROFILE_POLICIES = (
     ("qwen3-asr-1-7b-crisp-f16.json", "high", "float16", "CrispASR CUDA"),
     ("qwen3-asr-1-7b-crisp-q8-0.json", "medium", "q8_0", "CrispASR CUDA"),
     ("qwen3-asr-1-7b-crisp-q4-k.json", "low", "q4_k", "CrispASR CUDA"),
+    ("qwen3-asr-0-6b-crisp-f16.json", "high", "float16", "CrispASR CUDA"),
+    ("qwen3-asr-0-6b-crisp-q8-0.json", "medium", "q8_0", "CrispASR CUDA"),
+    ("qwen3-asr-0-6b-crisp-q4-k.json", "low", "q4_k", "CrispASR CUDA"),
 )
 MANIFEST_FILENAMES = frozenset(policy[0] for policy in CURATED_PROFILE_POLICIES)
 DEFAULT_MANIFEST_FILENAME = "faster-whisper-large-v3.json"
@@ -561,7 +570,7 @@ def _validated_tier_compute_type(
         )
     expected_compute_type = (
         QWEN_TIER_COMPUTE_TYPES[tier]
-        if model_id == "cstr/qwen3-asr-1.7b-GGUF"
+        if model_id in QWEN_MODEL_IDS
         else WHISPER_TIER_COMPUTE_TYPES[tier]
     )
     if compute_type != expected_compute_type:
@@ -1519,7 +1528,7 @@ class CrispASRRuntime:
         manifest: ModelManifest,
     ) -> CrispASRRuntime:
         if (
-            manifest.family_id != "qwen3-asr-1-7b"
+            manifest.family_id not in {"qwen3-asr-1-7b", "qwen3-asr-0-6b"}
             or manifest.backend != "CrispASR CUDA"
             or compute_type not in QWEN_TIER_COMPUTE_TYPES.values()
             or not _valid_model_directory(model_directory, manifest)
@@ -1689,7 +1698,7 @@ def _load_runtime(
     compute_type: str,
     manifest: ModelManifest,
 ) -> InferenceRuntime:
-    if manifest.family_id == "qwen3-asr-1-7b":
+    if manifest.family_id in {"qwen3-asr-1-7b", "qwen3-asr-0-6b"}:
         return CrispASRRuntime.load(model_directory, compute_type, manifest)
     if manifest.family_id in {"whisper-large-v3", "whisper-large-v2"}:
         return FasterWhisperRuntime.load(model_directory, compute_type, manifest)

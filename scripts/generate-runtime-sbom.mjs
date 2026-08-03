@@ -146,7 +146,7 @@ if (
   (
     crispAsrManifest?.schemaVersion !== 1 ||
     crispAsrManifest?.name !== "CrispASR" ||
-    crispAsrManifest?.license !== "Apache-2.0" ||
+    crispAsrManifest?.license !== "MIT" ||
     typeof crispAsrManifest?.source !== "string"
   )
 ) {

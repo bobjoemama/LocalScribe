@@ -57,6 +57,9 @@ const MAC_RELEASE_INPUTS = [
   "resources/model-manifest/qwen3-asr-1-7b-mlx-4bit.json",
   "resources/model-manifest/qwen3-asr-1-7b-mlx-8bit.json",
   "resources/model-manifest/qwen3-asr-1-7b-mlx-bf16.json",
+  "resources/model-manifest/qwen3-asr-0-6b-mlx-4bit.json",
+  "resources/model-manifest/qwen3-asr-0-6b-mlx-8bit.json",
+  "resources/model-manifest/qwen3-asr-0-6b-mlx-bf16.json",
   "resources/native/macos/active-target.swift",
   "scripts/build-worker-runtime.sh",
   "worker/localscribe_worker",
@@ -72,6 +75,9 @@ const WINDOWS_RELEASE_INPUTS = [
   "resources/model-manifest/qwen3-asr-1-7b-crisp-f16.json",
   "resources/model-manifest/qwen3-asr-1-7b-crisp-q4-k.json",
   "resources/model-manifest/qwen3-asr-1-7b-crisp-q8-0.json",
+  "resources/model-manifest/qwen3-asr-0-6b-crisp-f16.json",
+  "resources/model-manifest/qwen3-asr-0-6b-crisp-q4-k.json",
+  "resources/model-manifest/qwen3-asr-0-6b-crisp-q8-0.json",
   "resources/native/windows/active-target.cpp",
   "resources/native/windows/build.ps1",
   "resources/native/windows/crispasr-runtime.json",
@@ -180,7 +186,7 @@ function collectSourceFiles(projectPath: string, candidate: string, output: stri
   }
 }
 
-function releaseInputCandidates(platform: PackagedPlatform): readonly string[] {
+export function releaseInputCandidates(platform: PackagedPlatform): readonly string[] {
   return [
     ...COMMON_RELEASE_INPUTS,
     ...(platform === "darwin" ? MAC_RELEASE_INPUTS : WINDOWS_RELEASE_INPUTS),

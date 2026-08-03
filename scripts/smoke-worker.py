@@ -24,6 +24,11 @@ MACOS_FAMILY_TIER_MANIFESTS = {
         "medium": ("qwen3-asr-1-7b-mlx-8bit.json", "int8"),
         "low": ("qwen3-asr-1-7b-mlx-4bit.json", "int4"),
     },
+    "qwen3-asr-0-6b": {
+        "high": ("qwen3-asr-0-6b-mlx-bf16.json", "bfloat16"),
+        "medium": ("qwen3-asr-0-6b-mlx-8bit.json", "int8"),
+        "low": ("qwen3-asr-0-6b-mlx-4bit.json", "int4"),
+    },
 }
 
 
@@ -59,11 +64,19 @@ def main() -> int:
     )
     parser.add_argument("--tier", choices=("high", "medium", "low"), default="medium")
     parser.add_argument(
+        "--repeat",
+        type=int,
+        default=1,
+        help="Transcribe the same fixture repeatedly in one worker process to prove warm reuse.",
+    )
+    parser.add_argument(
         "--allow-download",
         action="store_true",
         help="Explicitly permit downloading the pinned tier before the smoke test.",
     )
     args = parser.parse_args()
+    if args.repeat < 1 or args.repeat > 20:
+        parser.error("--repeat must be between 1 and 20")
     # Preserve the venv launcher path. Resolving its symlink would bypass the
     # venv and make the packaged runtime's site-packages unavailable.
     python_executable = Path(os.path.abspath(args.python))
@@ -136,17 +149,26 @@ def main() -> int:
         "modelRoot": str(model_root),
         "allowDownload": False,
     })
-    final = request({
-        "type": "transcribe",
-        "audioPath": str(audio_path),
-        "allowedRoot": str(audio_path.parent),
-        "language": "English",
-        "context": "LocalScribe",
-    })
+    finals = [
+        request({
+            "type": "transcribe",
+            "audioPath": str(audio_path),
+            "allowedRoot": str(audio_path.parent),
+            "language": "English",
+            "context": "LocalScribe",
+        })
+        for _ in range(args.repeat)
+    ]
     request({"type": "shutdown"})
     process.wait(timeout=5)
     print(json.dumps(
-        {"hello": hello, "installed": installed, "ready": ready, "final": final},
+        {
+            "hello": hello,
+            "installed": installed,
+            "ready": ready,
+            "final": finals[0],
+            "finals": finals,
+        },
         ensure_ascii=False,
     ))
     return 0

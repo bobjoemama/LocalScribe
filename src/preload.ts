@@ -11,6 +11,8 @@ import {
   modelInstallRequestSchema,
   modelCatalogSchema,
   modelFamilyLibraryRequestSchema,
+  modelSelectionApplyRequestSchema,
+  modelSelectionApplyResultSchema,
   modelRemoveRequestSchema,
   navigationTargetSchema,
   permissionSnapshotSchema,
@@ -132,9 +134,11 @@ const api: LocalScribeApi = {
       const input = modelFamilyLibraryRequestSchema.parse(request);
       return modelCatalogSchema.parse(await ipcRenderer.invoke(IPC.systemAddModelFamily, input));
     },
-    activateModelFamily: async (request) => {
-      const input = modelFamilyLibraryRequestSchema.parse(request);
-      return modelCatalogSchema.parse(await ipcRenderer.invoke(IPC.systemActivateModelFamily, input));
+    applyModelSelection: async (request) => {
+      const input = modelSelectionApplyRequestSchema.parse(request);
+      return modelSelectionApplyResultSchema.parse(
+        await ipcRenderer.invoke(IPC.systemApplyModelSelection, input),
+      );
     },
     installModel: async (request) => {
       const input = modelInstallRequestSchema.parse(request);

@@ -5,24 +5,34 @@
 Source implementation:
 
 - Apple Silicon: MLX Whisper for default large-v3 and curated addable large-v2,
-  plus MLX Audio for curated Qwen3-ASR 1.7B; each family has High, Medium, and
-  Low pinned artifacts
+  plus MLX Audio for curated Qwen3-ASR 0.6B and 1.7B; each family has High,
+  Medium, and Low pinned artifacts
 - Windows x64 NVIDIA: faster-whisper/CTranslate2 CUDA for the two Whisper
-  families and CrispASR/GGML CUDA for Qwen3-ASR 1.7B
+  families and CrispASR/GGML CUDA for Qwen3-ASR 0.6B and 1.7B
 - exactly Auto, High, Medium, and Low user modes
 - deterministic, main-owned Auto resolution with worker-side allowlist checks
 - revision-, size-, and SHA-256-pinned model installation
 - no implicit model download during dictation
 - no plugins, arbitrary URLs/code, or custom model loaders
 
-Whisper large-v3 remains the default family; Qwen3-ASR 1.7B and large-v2 are
-curated and can be added locally. Model weights are not bundled. Turbo is not
+Whisper large-v3 remains the default family; Qwen3-ASR 0.6B, Qwen3-ASR 1.7B,
+and large-v2 are curated and can be added locally. Qwen3-ASR 0.6B is the
+smaller lower-latency candidate, but it is not represented as faster until the
+same workload is measured on the target Mac and NVIDIA Windows systems. Model
+weights are not bundled. Turbo is not
 enabled: enabling it requires a complete, validated three-tier Mac contract,
 including pinned MLX artifacts, installation verification, resource evidence,
 and real-device coverage. See [MODEL_CATALOG.md](MODEL_CATALOG.md).
 
 Remaining product evidence: real accuracy/latency/memory benchmarks for every
 supported family, all Mac tiers, and all Windows compute profiles.
+
+Model selection is an explicit transaction. Family and performance choices
+remain pending until **Apply model** is pressed. Apply verifies the exact
+curated target, unloads the previous runtime, preloads the target without an
+implicit download, and commits the new family/tier only after the target reports
+ready. A failed apply must preserve the prior committed selection and report
+the rollback state instead of claiming the candidate is active.
 
 ## 2. Desktop workflow
 

@@ -17,8 +17,10 @@ import {
   buildPackageProvenance,
   normalizeArchiveEntries,
   normalizeArchiveEntry,
+  releaseInputCandidates,
   writePackageProvenance,
 } from "../scripts/package-provenance.mts";
+import { resourcePolicyFor } from "../src/shared/platformResourcePolicy";
 
 const temporaryDirectories: string[] = [];
 const inputCandidates = ["package.json", "src"] as const;
@@ -117,6 +119,20 @@ afterEach(() => {
 });
 
 describe("package source provenance", () => {
+  it.each([
+    ["darwin", "arm64"],
+    ["win32", "x64"],
+  ] as const)("binds the exact %s model-manifest allowlist into source provenance", (platform, arch) => {
+    const provenanceManifests = releaseInputCandidates(platform)
+      .filter((entry) => entry.startsWith("resources/model-manifest/"))
+      .sort();
+    const packagedManifests = resourcePolicyFor(platform, arch).manifestFiles
+      .map((entry) => `resources/${entry}`)
+      .sort();
+
+    expect(provenanceManifests).toEqual(packagedManifests);
+  });
+
   it("canonicalizes POSIX and Windows ASAR entry separators identically", () => {
     expect(normalizeArchiveEntry("/.vite/build/main.js")).toBe(".vite/build/main.js");
     expect(normalizeArchiveEntry("\\.vite\\build\\main.js")).toBe(

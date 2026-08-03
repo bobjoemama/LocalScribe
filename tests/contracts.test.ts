@@ -2,13 +2,16 @@ import { describe, expect, it } from "vitest";
 import {
   DEFAULT_SETTINGS,
   HISTORY_RETENTION_OPTIONS,
+  MODEL_FAMILY_IDS,
   MODEL_PERFORMANCE_MODES,
+  appSettingsPatchSchema,
   appSettingsSchema,
   diagnosticsSchema,
   modelCatalogSchema,
   modelFamilyLibraryRequestSchema,
   modelInstallRequestSchema,
   modelRemoveRequestSchema,
+  modelSelectionApplyRequestSchema,
   scratchpadNoteSchema,
   transcribeAudioSchema,
 } from "../src/shared/contracts";
@@ -45,6 +48,12 @@ describe("IPC contracts", () => {
   });
 
   it("keeps active model selection inside a unique curated local library", () => {
+    expect(MODEL_FAMILY_IDS).toEqual([
+      "whisper-large-v3",
+      "qwen3-asr-0-6b",
+      "qwen3-asr-1-7b",
+      "whisper-large-v2",
+    ]);
     expect(DEFAULT_SETTINGS).toMatchObject({
       activeModelFamilyId: "whisper-large-v3",
       modelLibraryFamilyIds: ["whisper-large-v3"],
@@ -60,6 +69,35 @@ describe("IPC contracts", () => {
     expect(() => appSettingsSchema.parse({
       ...DEFAULT_SETTINGS,
       modelLibraryFamilyIds: ["untrusted/model"],
+    })).toThrow();
+  });
+
+  it("keeps model routing out of generic settings patches", () => {
+    expect(appSettingsPatchSchema.parse({ autoPaste: false })).toEqual({ autoPaste: false });
+    for (const forbidden of [
+      { modelPerformanceMode: "medium" },
+      { activeModelFamilyId: "qwen3-asr-0-6b" },
+      { modelLibraryFamilyIds: ["whisper-large-v3", "qwen3-asr-0-6b"] },
+    ]) {
+      expect(() => appSettingsPatchSchema.parse(forbidden)).toThrow();
+    }
+  });
+
+  it("requires family and performance mode together for an atomic Apply", () => {
+    expect(modelSelectionApplyRequestSchema.parse({
+      familyId: "qwen3-asr-0-6b",
+      performanceMode: "medium",
+    })).toEqual({
+      familyId: "qwen3-asr-0-6b",
+      performanceMode: "medium",
+    });
+    expect(() => modelSelectionApplyRequestSchema.parse({
+      familyId: "qwen3-asr-0-6b",
+    })).toThrow();
+    expect(() => modelSelectionApplyRequestSchema.parse({
+      familyId: "qwen3-asr-0-6b",
+      performanceMode: "medium",
+      modelId: "untrusted/model",
     })).toThrow();
   });
 
@@ -187,7 +225,7 @@ describe("IPC contracts", () => {
       expectedDownloadBytes: 1,
     });
     const verification = (
-      familyId: "whisper-large-v3" | "qwen3-asr-1-7b" | "whisper-large-v2",
+      familyId: "whisper-large-v3" | "qwen3-asr-0-6b" | "qwen3-asr-1-7b" | "whisper-large-v2",
       artifactId: string,
     ) => ({
       familyId,
@@ -212,6 +250,34 @@ describe("IPC contracts", () => {
           inLibrary: true,
           artifacts: [artifact("whisper-large-v3-ctranslate2", "Systran/faster-whisper-large-v3")],
           profiles: profiles("whisper-large-v3", "whisper-large-v3-ctranslate2"),
+        },
+        {
+          familyId: "qwen3-asr-0-6b" as const,
+          displayName: "Qwen3-ASR 0.6B",
+          active: false,
+          inLibrary: false,
+          artifacts: (["f16", "q8-0", "q4-k"] as const).map((quant) => ({
+            ...artifact(
+              `qwen3-asr-0-6b-crisp-${quant}`,
+              "cstr/qwen3-asr-0.6b-GGUF",
+            ),
+            backend: "CrispASR CUDA",
+            storageDirectory: `qwen3-asr-0-6b-crisp-${quant}`,
+          })),
+          profiles: (["high", "medium", "low"] as const).map((tier, index) => ({
+            profileId: `qwen3-asr-0-6b-${tier}`,
+            tier,
+            artifactId: [
+              "qwen3-asr-0-6b-crisp-f16",
+              "qwen3-asr-0-6b-crisp-q8-0",
+              "qwen3-asr-0-6b-crisp-q4-k",
+            ][index],
+            engine: "crispasr" as const,
+            precision: ["float16", "q8_0", "q4_k"][index],
+            expectedMemoryMinBytes: 1,
+            expectedMemoryMaxBytes: 2,
+            memoryBasis: "estimated" as const,
+          })),
         },
         {
           familyId: "qwen3-asr-1-7b" as const,
@@ -252,6 +318,9 @@ describe("IPC contracts", () => {
       ],
       verifications: [
         verification("whisper-large-v3", "whisper-large-v3-ctranslate2"),
+        verification("qwen3-asr-0-6b", "qwen3-asr-0-6b-crisp-f16"),
+        verification("qwen3-asr-0-6b", "qwen3-asr-0-6b-crisp-q8-0"),
+        verification("qwen3-asr-0-6b", "qwen3-asr-0-6b-crisp-q4-k"),
         verification("qwen3-asr-1-7b", "qwen3-asr-1-7b-crisp-f16"),
         verification("qwen3-asr-1-7b", "qwen3-asr-1-7b-crisp-q8-0"),
         verification("qwen3-asr-1-7b", "qwen3-asr-1-7b-crisp-q4-k"),
@@ -260,7 +329,7 @@ describe("IPC contracts", () => {
       unmanagedEntries: [],
     };
 
-    expect(modelCatalogSchema.parse(catalog).verifications).toHaveLength(5);
+    expect(modelCatalogSchema.parse(catalog).verifications).toHaveLength(8);
     expect(() => modelCatalogSchema.parse({
       ...catalog,
       verifications: catalog.verifications.slice(0, 1),

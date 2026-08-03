@@ -9,6 +9,13 @@ import wave
 from importlib.metadata import version
 from pathlib import Path
 
+FAMILY_MODEL_IDS = {
+    "whisper-large-v3": "Systran/faster-whisper-large-v3",
+    "whisper-large-v2": "Systran/faster-whisper-large-v2",
+    "qwen3-asr-0-6b": "cstr/qwen3-asr-0.6b-GGUF",
+    "qwen3-asr-1-7b": "cstr/qwen3-asr-1.7b-GGUF",
+}
+
 
 def _exact_version(distribution: str, expected: str, label: str) -> str:
     actual = version(distribution)
@@ -27,33 +34,83 @@ def _parse_arguments() -> argparse.Namespace:
             "pinned large-v3 model and run one second of silent inference"
         ),
     )
+    parser.add_argument(
+        "--family",
+        choices=tuple(FAMILY_MODEL_IDS),
+        default="whisper-large-v3",
+        help="Curated family to load when --model-root is supplied.",
+    )
+    parser.add_argument(
+        "--tier",
+        choices=("high", "medium", "low"),
+        default="medium",
+        help="Curated performance tier to load when --model-root is supplied.",
+    )
+    parser.add_argument("--audio", type=Path, help="optional 16 kHz mono PCM16 WAV fixture")
+    parser.add_argument(
+        "--repeat",
+        type=int,
+        default=1,
+        choices=range(1, 21),
+        metavar="1..20",
+        help="repeat inference in one loaded runtime to prove warm reuse",
+    )
     return parser.parse_args()
 
 
-def _smoke_model(worker_module: object, model_root: Path) -> dict[str, object]:
-    manifest = worker_module.MODEL_MANIFESTS[worker_module.MODEL_ID]
-    model_directory = model_root.resolve() / manifest.storage_directory
-    runtime = worker_module.FasterWhisperRuntime.load(
-        model_directory,
-        "int8_float16",
-        manifest,
+def _smoke_model(
+    worker_module: object,
+    model_root: Path,
+    family: str,
+    tier: str,
+    audio_path: Path | None,
+    repeat: int,
+) -> dict[str, object]:
+    model_id = FAMILY_MODEL_IDS[family]
+    compute_types = (
+        worker_module.QWEN_TIER_COMPUTE_TYPES
+        if model_id in worker_module.QWEN_MODEL_IDS
+        else worker_module.WHISPER_TIER_COMPUTE_TYPES
     )
+    compute_type = compute_types[tier]
+    manifest = worker_module.MODEL_PROFILES[(model_id, tier, compute_type)]
+    model_directory = model_root.resolve() / manifest.storage_directory
+    if model_id in worker_module.QWEN_MODEL_IDS:
+        runtime = worker_module.CrispASRRuntime.load(
+            model_directory,
+            compute_type,
+            manifest,
+        )
+    else:
+        runtime = worker_module.FasterWhisperRuntime.load(
+            model_directory,
+            compute_type,
+            manifest,
+        )
     try:
         with tempfile.TemporaryDirectory(prefix="localscribe-cuda-smoke-") as temporary:
-            audio_path = Path(temporary) / "silence.wav"
-            with wave.open(str(audio_path), "wb") as wav:
-                wav.setnchannels(worker_module.REQUIRED_CHANNELS)
-                wav.setsampwidth(worker_module.REQUIRED_SAMPLE_WIDTH_BYTES)
-                wav.setframerate(worker_module.REQUIRED_SAMPLE_RATE)
-                wav.writeframes(b"\x00\x00" * worker_module.REQUIRED_SAMPLE_RATE)
-            audio = worker_module.validate_audio_path(str(audio_path), temporary)
-            result = runtime.transcribe(audio, language="en", context="")
+            temporary_path = Path(temporary)
+            fixture = audio_path.resolve(strict=True) if audio_path else temporary_path / "silence.wav"
+            if audio_path is None:
+                with wave.open(str(fixture), "wb") as wav:
+                    wav.setnchannels(worker_module.REQUIRED_CHANNELS)
+                    wav.setsampwidth(worker_module.REQUIRED_SAMPLE_WIDTH_BYTES)
+                    wav.setframerate(worker_module.REQUIRED_SAMPLE_RATE)
+                    wav.writeframes(b"\x00\x00" * worker_module.REQUIRED_SAMPLE_RATE)
+            # validate_audio_path confines reads to the supplied session root.
+            # Copying arbitrary fixtures is unnecessary: use their parent as the
+            # explicit root for this local verification command.
+            audio = worker_module.validate_audio_path(str(fixture), str(fixture.parent))
+            results = [runtime.transcribe(audio, language="en", context="") for _ in range(repeat)]
     finally:
         runtime.close()
     return {
-        "computeType": "int8_float16",
+        "family": family,
+        "tier": tier,
+        "computeType": compute_type,
         "modelDirectory": str(model_directory),
-        "resultCharacters": len(result.text),
+        "repeat": repeat,
+        "resultCharacters": [len(result.text) for result in results],
     }
 
 
@@ -81,7 +138,7 @@ def main() -> int:
     supported_compute_types = sorted(
         str(value) for value in ctranslate2.get_supported_compute_types("cuda", 0)
     )
-    required_compute_types = set(worker_module.TIER_COMPUTE_TYPES.values())
+    required_compute_types = set(worker_module.WHISPER_TIER_COMPUTE_TYPES.values())
     missing_compute_types = sorted(required_compute_types.difference(supported_compute_types))
     if missing_compute_types:
         raise RuntimeError(
@@ -91,7 +148,14 @@ def main() -> int:
 
     device = worker_module.query_device_info()
     model_smoke = (
-        _smoke_model(worker_module, arguments.model_root)
+        _smoke_model(
+            worker_module,
+            arguments.model_root,
+            arguments.family,
+            arguments.tier,
+            arguments.audio,
+            arguments.repeat,
+        )
         if arguments.model_root is not None
         else None
     )

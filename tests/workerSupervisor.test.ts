@@ -12,12 +12,21 @@ vi.mock("node:child_process", () => ({
 import {
   WORKER_RUNTIME_IDENTITIES,
   WorkerSupervisor,
+  workerModelSelectionsMatch,
   type WorkerModelSelection,
 } from "../src/main/worker/workerSupervisor";
 
 const spawnMock = vi.mocked(spawn);
 const requests: Array<Record<string, unknown>> = [];
 const temporaryDirectories: string[] = [];
+
+it("matches readiness only for the exact warm model, tier, and compute type", () => {
+  expect(workerModelSelectionsMatch(medium, { ...medium })).toBe(true);
+  expect(workerModelSelectionsMatch(null, medium)).toBe(false);
+  expect(workerModelSelectionsMatch({ ...medium, modelId: "other/model" }, medium)).toBe(false);
+  expect(workerModelSelectionsMatch({ ...medium, tier: "low" }, medium)).toBe(false);
+  expect(workerModelSelectionsMatch({ ...medium, computeType: "float16" }, medium)).toBe(false);
+});
 
 class FakeWorkerProcess extends EventEmitter {
   readonly stdout = new EventEmitter();
@@ -193,6 +202,22 @@ describe("WorkerSupervisor model lifecycle", () => {
     });
     expect(spawnOptions?.env).not.toHaveProperty("HF_TOKEN");
     expect(spawnOptions?.env).not.toHaveProperty("HTTPS_PROXY");
+  });
+
+  it("reports the warm selection without mutating or reloading it", async () => {
+    const worker = supervisor();
+    expect(worker.loadedSelection()).toBeNull();
+
+    await worker.ensureReady(medium);
+    const snapshot = worker.loadedSelection();
+    expect(snapshot).toEqual(medium);
+    if (snapshot) snapshot.modelId = "mutated/outside";
+    expect(worker.loadedSelection()).toEqual(medium);
+
+    await worker.ensureReady(medium);
+    expect(requests.filter((request) => request.type === "load_model")).toHaveLength(1);
+    await worker.shutdown();
+    expect(worker.loadedSelection()).toBeNull();
   });
 
   it("normalizes platform-specific accelerator telemetry", async () => {
@@ -819,7 +844,7 @@ describe("WorkerSupervisor model lifecycle", () => {
     expect(spawnMock).toHaveBeenCalledOnce();
   });
 
-  it("unloads an active runtime before a serialized installation", async () => {
+  it("preserves an unrelated warm runtime during a serialized installation", async () => {
     const worker = supervisor();
 
     await worker.ensureReady(medium);
@@ -827,14 +852,34 @@ describe("WorkerSupervisor model lifecycle", () => {
 
     expect(requests.map((request) => request.type)).toEqual([
       "load_model",
-      "shutdown",
       "install_model",
-      "shutdown",
     ]);
     expect(requests.some((request) => (
       request.type === "load_model" && request.modelId === high.modelId
     ))).toBe(false);
-    expect(spawnMock).toHaveBeenCalledTimes(2);
+    expect(worker.loadedSelection()).toEqual(medium);
+    expect(spawnMock).toHaveBeenCalledOnce();
+  });
+
+  it("unloads a replaced warm artifact and restores its exact prior selection", async () => {
+    const worker = supervisor();
+
+    await worker.ensureReady(medium);
+    await worker.installModel(high, { replacesLoadedArtifact: true });
+
+    expect(requests.map((request) => request.type)).toEqual([
+      "load_model",
+      "shutdown",
+      "install_model",
+      "shutdown",
+      "load_model",
+    ]);
+    expect(requests.filter((request) => request.type === "load_model")).toEqual([
+      expect.objectContaining(medium),
+      expect.objectContaining(medium),
+    ]);
+    expect(worker.loadedSelection()).toEqual(medium);
+    expect(spawnMock).toHaveBeenCalledTimes(3);
   });
 
   it("keeps load_model download-disabled after an explicit install", async () => {

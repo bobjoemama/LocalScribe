@@ -34,11 +34,10 @@ def request(message_type: str, **fields: Any) -> dict[str, Any]:
 
 
 def tier_spec(tier: str, *, family: str = "v3") -> TierSpec:
-    family_fragment = (
-        "Qwen3-ASR-1.7B"
-        if family == "qwen"
-        else f"whisper-large-{family}-mlx"
-    )
+    family_fragment = {
+        "qwen": "Qwen3-ASR-1.7B",
+        "qwen06": "Qwen3-ASR-0.6B",
+    }.get(family, f"whisper-large-{family}-mlx")
     matches = [
         spec
         for spec in TIER_SPECS.values()
@@ -1210,7 +1209,7 @@ class ModelInstallationTests(unittest.TestCase):
         self.assertEqual(manifest.revision, "c" * 40)
 
     def test_packaged_catalog_has_exact_curated_manifests_and_files(self) -> None:
-        self.assertEqual(len(TIER_SPECS), 9)
+        self.assertEqual(len(TIER_SPECS), 12)
         self.assertEqual(
             {spec.manifest_filename for spec in TIER_SPECS.values()},
             {
@@ -1223,6 +1222,9 @@ class ModelInstallationTests(unittest.TestCase):
                 "qwen3-asr-1-7b-mlx-bf16.json",
                 "qwen3-asr-1-7b-mlx-8bit.json",
                 "qwen3-asr-1-7b-mlx-4bit.json",
+                "qwen3-asr-0-6b-mlx-bf16.json",
+                "qwen3-asr-0-6b-mlx-8bit.json",
+                "qwen3-asr-0-6b-mlx-4bit.json",
             },
         )
         for family in ("v3", "v2"):
@@ -1233,13 +1235,14 @@ class ModelInstallationTests(unittest.TestCase):
                 ],
                 ["float16", "int8", "int4"],
             )
-        self.assertEqual(
-            [
-                tier_spec(tier, family="qwen").compute_type
-                for tier in ("high", "medium", "low")
-            ],
-            ["bfloat16", "int8", "int4"],
-        )
+        for family in ("qwen", "qwen06"):
+            self.assertEqual(
+                [
+                    tier_spec(tier, family=family).compute_type
+                    for tier in ("high", "medium", "low")
+                ],
+                ["bfloat16", "int8", "int4"],
+            )
         for selection, manifest in worker_module.MODEL_MANIFESTS.items():
             spec = TIER_SPECS[selection]
             self.assertEqual(selection, (spec.model_id, spec.tier, spec.compute_type))
@@ -1247,7 +1250,7 @@ class ModelInstallationTests(unittest.TestCase):
             self.assertEqual(manifest.family_id, spec.family_id)
             self.assertEqual(manifest.artifact_id, spec.artifact_id)
             self.assertEqual(manifest.revision, spec.revision)
-            if manifest.family_id == "qwen3-asr-1-7b":
+            if manifest.family_id in {"qwen3-asr-1-7b", "qwen3-asr-0-6b"}:
                 self.assertIn("model.safetensors", manifest.files)
                 self.assertIn("config.json", manifest.files)
             else:
@@ -1258,6 +1261,19 @@ class ModelInstallationTests(unittest.TestCase):
 
 
 class RuntimeAndHardwareTests(unittest.TestCase):
+    def test_qwen06_runtime_dispatches_only_to_mlx_audio(self) -> None:
+        spec = tier_spec("low", family="qwen06")
+        with (
+            patch.object(MLXAudioRuntime, "load", return_value="qwen06") as qwen_load,
+            patch.object(MLXWhisperRuntime, "load", return_value="whisper") as whisper_load,
+        ):
+            self.assertEqual(
+                worker_module._load_runtime(Path("/qwen06"), spec),
+                "qwen06",
+            )
+        qwen_load.assert_called_once_with(Path("/qwen06"), spec)
+        whisper_load.assert_not_called()
+
     def test_runtime_passes_pcm_array_and_prompt_to_mlx_audio(self) -> None:
         class FakeMetal:
             def clear_cache(self) -> None:

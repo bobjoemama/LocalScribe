@@ -242,6 +242,7 @@ const windowsTier = (
 });
 
 const mlxAudioTier = (
+  familyLabel: string,
   input: {
     manifestFilename: string;
     precision: "bf16" | "8-bit" | "4-bit";
@@ -252,13 +253,14 @@ const mlxAudioTier = (
   engine: "mlx-audio",
   precision: input.precision,
   acceleratorMemory: estimatedMemory(
-    `MLX Audio Qwen3-ASR 1.7B ${input.precision} artifact size plus conservative inference overhead; physical 8-bit inference verified on M4 Max`,
+    `MLX Audio ${familyLabel} ${input.precision} artifact size plus conservative inference overhead; physical benchmark pending`,
     input.memory[0],
     input.memory[1],
   ),
 });
 
 const crispAsrTier = (
+  familyLabel: string,
   input: {
     manifestFilename: string;
     precision: "float16" | "q8_0" | "q4_k";
@@ -269,7 +271,7 @@ const crispAsrTier = (
   engine: "crispasr",
   precision: input.precision,
   acceleratorMemory: estimatedMemory(
-    `CrispASR Qwen3-ASR 1.7B ${input.precision} GGUF plus conservative CUDA inference overhead; physical Windows benchmark pending`,
+    `CrispASR ${familyLabel} ${input.precision} GGUF plus conservative CUDA inference overhead; physical Windows benchmark pending`,
     input.memory[0],
     input.memory[1],
   ),
@@ -326,20 +328,43 @@ const qwenMac: FamilyCatalogDefinition = {
   displayName: "Qwen3-ASR 1.7B",
   engine: "mlx-audio",
   tiers: {
-    high: mlxAudioTier({
+    high: mlxAudioTier("Qwen3-ASR 1.7B", {
       manifestFilename: "qwen3-asr-1-7b-mlx-bf16.json",
       precision: "bf16",
       memory: [4.2, 5.4],
     }),
-    medium: mlxAudioTier({
+    medium: mlxAudioTier("Qwen3-ASR 1.7B", {
       manifestFilename: "qwen3-asr-1-7b-mlx-8bit.json",
       precision: "8-bit",
       memory: [2.6, 3.6],
     }),
-    low: mlxAudioTier({
+    low: mlxAudioTier("Qwen3-ASR 1.7B", {
       manifestFilename: "qwen3-asr-1-7b-mlx-4bit.json",
       precision: "4-bit",
       memory: [1.8, 2.8],
+    }),
+  },
+};
+
+const qwen06Mac: FamilyCatalogDefinition = {
+  familyId: "qwen3-asr-0-6b",
+  displayName: "Qwen3-ASR 0.6B",
+  engine: "mlx-audio",
+  tiers: {
+    high: mlxAudioTier("Qwen3-ASR 0.6B", {
+      manifestFilename: "qwen3-asr-0-6b-mlx-bf16.json",
+      precision: "bf16",
+      memory: [2, 3],
+    }),
+    medium: mlxAudioTier("Qwen3-ASR 0.6B", {
+      manifestFilename: "qwen3-asr-0-6b-mlx-8bit.json",
+      precision: "8-bit",
+      memory: [1.4, 2.3],
+    }),
+    low: mlxAudioTier("Qwen3-ASR 0.6B", {
+      manifestFilename: "qwen3-asr-0-6b-mlx-4bit.json",
+      precision: "4-bit",
+      memory: [1.1, 2],
     }),
   },
 };
@@ -372,20 +397,43 @@ const qwenWindows: FamilyCatalogDefinition = {
   displayName: "Qwen3-ASR 1.7B",
   engine: "crispasr",
   tiers: {
-    high: crispAsrTier({
+    high: crispAsrTier("Qwen3-ASR 1.7B", {
       manifestFilename: "qwen3-asr-1-7b-crisp-f16.json",
       precision: "float16",
       memory: [4.8, 5.8],
     }),
-    medium: crispAsrTier({
+    medium: crispAsrTier("Qwen3-ASR 1.7B", {
       manifestFilename: "qwen3-asr-1-7b-crisp-q8-0.json",
       precision: "q8_0",
       memory: [2.6, 3.6],
     }),
-    low: crispAsrTier({
+    low: crispAsrTier("Qwen3-ASR 1.7B", {
       manifestFilename: "qwen3-asr-1-7b-crisp-q4-k.json",
       precision: "q4_k",
       memory: [1.8, 2.8],
+    }),
+  },
+};
+
+const qwen06Windows: FamilyCatalogDefinition = {
+  familyId: "qwen3-asr-0-6b",
+  displayName: "Qwen3-ASR 0.6B",
+  engine: "crispasr",
+  tiers: {
+    high: crispAsrTier("Qwen3-ASR 0.6B", {
+      manifestFilename: "qwen3-asr-0-6b-crisp-f16.json",
+      precision: "float16",
+      memory: [2.5, 3.5],
+    }),
+    medium: crispAsrTier("Qwen3-ASR 0.6B", {
+      manifestFilename: "qwen3-asr-0-6b-crisp-q8-0.json",
+      precision: "q8_0",
+      memory: [1.6, 2.6],
+    }),
+    low: crispAsrTier("Qwen3-ASR 0.6B", {
+      manifestFilename: "qwen3-asr-0-6b-crisp-q4-k.json",
+      precision: "q4_k",
+      memory: [1.2, 2.2],
     }),
   },
 };
@@ -395,6 +443,7 @@ export const MODEL_CATALOG_DEFINITIONS = {
   "darwin-arm64": {
     families: {
       "whisper-large-v3": v3Mac,
+      "qwen3-asr-0-6b": qwen06Mac,
       "qwen3-asr-1-7b": qwenMac,
       "whisper-large-v2": v2Mac,
     },
@@ -402,6 +451,7 @@ export const MODEL_CATALOG_DEFINITIONS = {
   "win32-x64-cuda": {
     families: {
       "whisper-large-v3": windowsFamily("whisper-large-v3", "Whisper large-v3", v3WindowsArtifact),
+      "qwen3-asr-0-6b": qwen06Windows,
       "qwen3-asr-1-7b": qwenWindows,
       "whisper-large-v2": windowsFamily("whisper-large-v2", "Whisper large-v2", v2WindowsArtifact),
     },

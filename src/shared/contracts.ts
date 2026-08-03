@@ -119,6 +119,7 @@ export function historyRetentionLabel(days: HistoryRetentionDays): string {
 /** Curated local ASR families shipped with this application. */
 export const MODEL_FAMILY_IDS = [
   "whisper-large-v3",
+  "qwen3-asr-0-6b",
   "qwen3-asr-1-7b",
   "whisper-large-v2",
 ] as const;
@@ -168,8 +169,18 @@ export const appSettingsSchema = appSettingsFieldsSchema.superRefine((settings, 
 });
 export type AppSettings = z.infer<typeof appSettingsSchema>;
 
-/** A field-level update merged against current persisted settings in main. */
-export const appSettingsPatchSchema = appSettingsFieldsSchema.partial().strict().refine(
+/**
+ * A field-level update merged against current persisted settings in main.
+ *
+ * Model routing is intentionally absent. Family and performance mode must be
+ * committed together through modelSelectionApplyRequestSchema, after main has
+ * unloaded the old runtime and proved the target can be loaded.
+ */
+export const appSettingsPatchSchema = appSettingsFieldsSchema.omit({
+  modelPerformanceMode: true,
+  activeModelFamilyId: true,
+  modelLibraryFamilyIds: true,
+}).partial().strict().refine(
   (patch) => Object.keys(patch).length > 0,
   "Choose at least one setting to update.",
 );
@@ -232,6 +243,9 @@ const modelDiagnosticsSchema = z.object({
   // Backward-compatible UI field. It is true only after every manifest file
   // has passed its cryptographic digest check; it is not a size-only signal.
   installed: z.boolean(),
+  // Runtime readiness is distinct from an installed, verified artifact. This
+  // is true only while the worker reports the exact resolved selection warm.
+  loaded: z.boolean(),
   present: z.boolean(),
   verified: z.boolean(),
   verificationStatus: modelVerificationStatusSchema,
@@ -500,6 +514,19 @@ export const modelFamilyLibraryRequestSchema = z.object({
 }).strict();
 export type ModelFamilyLibraryRequest = z.infer<typeof modelFamilyLibraryRequestSchema>;
 
+export const modelSelectionApplyRequestSchema = z.object({
+  familyId: modelFamilyIdSchema,
+  performanceMode: modelPerformanceModeSchema,
+}).strict();
+export type ModelSelectionApplyRequest = z.infer<typeof modelSelectionApplyRequestSchema>;
+
+export const modelSelectionApplyResultSchema = z.object({
+  settings: appSettingsSchema,
+  catalog: modelCatalogSchema,
+  diagnostics: diagnosticsSchema,
+}).strict();
+export type ModelSelectionApplyResult = z.infer<typeof modelSelectionApplyResultSchema>;
+
 export const modelInstallRequestSchema = z.object({
   confirmed: z.literal(true),
   replaceExisting: z.boolean(),
@@ -653,7 +680,7 @@ export const IPC = {
   systemDiagnostics: "system:diagnostics",
   systemModelCatalog: "system:model-catalog",
   systemAddModelFamily: "system:add-model-family",
-  systemActivateModelFamily: "system:activate-model-family",
+  systemApplyModelSelection: "system:apply-model-selection",
   systemInstallModel: "system:install-model",
   systemRemoveModel: "system:remove-model",
 } as const;
@@ -721,7 +748,7 @@ export interface LocalScribeApi {
     diagnostics(): Promise<Diagnostics>;
     modelCatalog(): Promise<ModelCatalog>;
     addModelFamily(request: ModelFamilyLibraryRequest): Promise<ModelCatalog>;
-    activateModelFamily(request: ModelFamilyLibraryRequest): Promise<ModelCatalog>;
+    applyModelSelection(request: ModelSelectionApplyRequest): Promise<ModelSelectionApplyResult>;
     installModel(request: ModelInstallRequest): Promise<Diagnostics>;
     removeModel(request: ModelRemoveRequest): Promise<Diagnostics>;
   };

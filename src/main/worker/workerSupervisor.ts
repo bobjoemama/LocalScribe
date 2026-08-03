@@ -122,6 +122,15 @@ export interface WorkerModelSelection {
   computeType: WorkerComputeType;
 }
 
+export function workerModelSelectionsMatch(
+  left: WorkerModelSelection | null,
+  right: WorkerModelSelection,
+): boolean {
+  return left?.modelId === right.modelId
+    && left.tier === right.tier
+    && left.computeType === right.computeType;
+}
+
 export interface WorkerTranscription {
   text: string;
   language: string | null;
@@ -189,14 +198,29 @@ export class WorkerSupervisor {
   }
 
   /**
-   * Installs and verifies model data without constructing an inference
-   * runtime. A new worker process provides the unload boundary before an
-   * installation or repair, and is stopped again afterward so the next
-   * dictation must explicitly load its selected model.
+   * Returns the model held by the live worker without starting, probing, or
+   * stopping anything. Main uses this to keep diagnostics observational and
+   * to restore the previous warm runtime if an Apply transaction fails.
    */
-  installModel(selection: WorkerModelSelection): Promise<void> {
+  loadedSelection(): WorkerModelSelection | null {
+    return this.activeModel ? { ...this.activeModel } : null;
+  }
+
+  /**
+   * Installs and verifies model data without changing the selected runtime.
+   * An unrelated warm model stays resident in the same serialized worker. A
+   * repair that replaces the warm artifact must explicitly request an unload;
+   * after the transaction the prior selection is loaded again.
+   */
+  installModel(
+    selection: WorkerModelSelection,
+    options: { replacesLoadedArtifact?: boolean } = {},
+  ): Promise<void> {
     return this.serialize(async () => {
-      await this.stopProcessUnlocked();
+      const previousSelection = this.activeModel ? { ...this.activeModel } : null;
+      const mustUnload = previousSelection !== null
+        && (options.replacesLoadedArtifact === true || sameSelection(previousSelection, selection));
+      if (mustUnload) await this.stopProcessUnlocked();
       try {
         await this.ensureStarted();
         const response = await this.request(
@@ -222,9 +246,16 @@ export class WorkerSupervisor {
           throw new Error("ASR worker acknowledged installation for a model selection other than the validated catalog tier");
         }
       } finally {
-        // `install_model` is intentionally data-only. Stopping here also
-        // makes repair safe when the preceding process had a runtime loaded.
-        await this.stopProcessUnlocked();
+        if (!previousSelection) {
+          // A data-only installer process must not become an accidental warm
+          // runtime when the application was cold before the operation.
+          await this.stopProcessUnlocked();
+        } else if (mustUnload) {
+          // Finish the installer process before reconstructing the exact prior
+          // selection, so replacement never overlaps the old native runtime.
+          await this.stopProcessUnlocked();
+          await this.ensureReadyUnlocked(previousSelection);
+        }
       }
     });
   }

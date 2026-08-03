@@ -38,11 +38,16 @@ describe("main-process model catalog snapshot", () => {
     });
 
     expect(() => modelCatalogSchema.parse(snapshot)).not.toThrow();
-    expect(snapshot.verifications).toHaveLength(9);
+    expect(snapshot.verifications).toHaveLength(12);
     expect(snapshot.verifications).toEqual(expect.arrayContaining([
       expect.objectContaining({
         familyId: "whisper-large-v3",
         artifactId: "whisper-large-v3-mlx-fp16",
+        verificationStatus: "missing",
+      }),
+      expect.objectContaining({
+        familyId: "qwen3-asr-0-6b",
+        artifactId: "qwen3-asr-0-6b-mlx-8bit",
         verificationStatus: "missing",
       }),
       expect.objectContaining({
@@ -83,6 +88,18 @@ describe("main-process model catalog snapshot", () => {
       expect.objectContaining({
         familyId: "whisper-large-v3",
         artifactId: "whisper-large-v3-ctranslate2",
+      }),
+      expect.objectContaining({
+        familyId: "qwen3-asr-0-6b",
+        artifactId: "qwen3-asr-0-6b-crisp-f16",
+      }),
+      expect.objectContaining({
+        familyId: "qwen3-asr-0-6b",
+        artifactId: "qwen3-asr-0-6b-crisp-q8-0",
+      }),
+      expect.objectContaining({
+        familyId: "qwen3-asr-0-6b",
+        artifactId: "qwen3-asr-0-6b-crisp-q4-k",
       }),
       expect.objectContaining({
         familyId: "qwen3-asr-1-7b",

@@ -19,6 +19,9 @@ model-manifest/whisper-large-v3-mlx-4bit.json
 model-manifest/qwen3-asr-1-7b-mlx-bf16.json
 model-manifest/qwen3-asr-1-7b-mlx-8bit.json
 model-manifest/qwen3-asr-1-7b-mlx-4bit.json
+model-manifest/qwen3-asr-0-6b-mlx-bf16.json
+model-manifest/qwen3-asr-0-6b-mlx-8bit.json
+model-manifest/qwen3-asr-0-6b-mlx-4bit.json
 model-manifest/whisper-large-v2-mlx.json
 model-manifest/whisper-large-v2-mlx-8bit.json
 model-manifest/whisper-large-v2-mlx-4bit.json
@@ -43,14 +46,18 @@ model-manifest/faster-whisper-large-v3.json
 model-manifest/qwen3-asr-1-7b-crisp-f16.json
 model-manifest/qwen3-asr-1-7b-crisp-q8-0.json
 model-manifest/qwen3-asr-1-7b-crisp-q4-k.json
+model-manifest/qwen3-asr-0-6b-crisp-f16.json
+model-manifest/qwen3-asr-0-6b-crisp-q8-0.json
+model-manifest/qwen3-asr-0-6b-crisp-q4-k.json
 model-manifest/faster-whisper-large-v2.json
 ```
 
 No `auto` manifest exists. Large-v3 is the default catalog family; Qwen3-ASR
-1.7B and large-v2 are curated and addable, not extension points. Mac packages
-carry exactly three MLX manifests per family. Windows Whisper tiers share one
-physical manifest per family and use a trusted compute-profile allowlist;
-Windows Qwen tiers use three distinct GGUF manifests. Repository, revision,
+0.6B, Qwen3-ASR 1.7B, and large-v2 are curated and addable, not extension
+points. Mac packages carry exactly three MLX manifests per family. Windows
+Whisper tiers share one physical manifest per family and use a trusted
+compute-profile allowlist; Windows Qwen tiers use three distinct GGUF manifests
+per family. Repository, revision,
 artifact, engine, and profile identity remain curated code/package policy.
 Packaging does not accept plugins, arbitrary model URLs, user manifests,
 custom code/loaders, or extra manifest paths. The catalog's revision and
