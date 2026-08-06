@@ -349,10 +349,53 @@ function merge(chunks: Float32Array[]): Float32Array {
   return output;
 }
 
-function resample(input: Float32Array, inputRate: number, outputRate: number): Float32Array {
+/**
+ * Convert captured audio to the protocol's 16 kHz.
+ *
+ * The two directions need different treatment, and treating them the same
+ * destroyed the recording.
+ *
+ * Down (the common case — the AudioContext follows the OS device, usually 44.1
+ * or 48 kHz) averages each output sample's window of input samples, which is a
+ * crude but real low-pass before decimation.
+ *
+ * Up is the case that was wrong. `AudioContext` is constructed without an
+ * explicit `sampleRate`, so it inherits whatever the default input device
+ * reports, and macOS drives a Bluetooth headset in HFP/CVSD mode at 8 kHz —
+ * some USB speakerphones report 8 kHz too. With `ratio < 1` the window
+ * `[floor(i*ratio), floor((i+1)*ratio))` is *empty* for roughly half the output
+ * indices, so `sum` stayed 0 and the sample was written as `0 / max(1, 0)`. The
+ * result was the microphone signal multiplied by an alternating 0/1 sequence:
+ * amplitude modulation at Nyquist, which is severe aliasing plus a 6 dB drop,
+ * on top of dropping half the information outright.
+ *
+ * Nothing caught it. `hasUsableSpeechEnergy` and the minimum-length check both
+ * run on the *un*-resampled buffer, and the WAV header is written with the
+ * literal 16000, so the mangled audio passed every validation layer and reached
+ * the model as an ordinary recording. The user got "No speech detected" or a
+ * nonsense transcript with nothing pointing at the sample rate.
+ *
+ * Linear interpolation is the fix: every output sample is derived from real
+ * neighbouring input samples, so no sample is ever invented as silence.
+ */
+export function resample(input: Float32Array, inputRate: number, outputRate: number): Float32Array {
   if (inputRate === outputRate) return input;
   const ratio = inputRate / outputRate;
-  const output = new Float32Array(Math.floor(input.length / ratio));
+  const output = new Float32Array(Math.max(0, Math.floor(input.length / ratio)));
+  if (input.length === 0) return output;
+
+  if (ratio < 1) {
+    const last = input.length - 1;
+    for (let index = 0; index < output.length; index += 1) {
+      const position = index * ratio;
+      const left = Math.min(last, Math.floor(position));
+      const right = Math.min(last, left + 1);
+      const weight = position - left;
+      output[index] = (input[left] ?? 0) * (1 - weight) + (input[right] ?? 0) * weight;
+    }
+    return output;
+  }
+
   for (let index = 0; index < output.length; index += 1) {
     const start = Math.floor(index * ratio);
     const end = Math.min(input.length, Math.floor((index + 1) * ratio));

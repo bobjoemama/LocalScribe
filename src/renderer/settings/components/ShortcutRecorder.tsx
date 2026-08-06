@@ -17,6 +17,34 @@ export type ShortcutValidationOutcome = {
   warning?: string;
 };
 
+/**
+ * Should the recorder take focus back after a validation finishes?
+ *
+ * Extracted from the effect below so it can be exercised directly. There is no
+ * DOM in this suite, and the source-shaped test that stood in for one was
+ * tautological — it asserted that the word "orphaned" appeared in a slice that
+ * *began* at the `const orphaned =` declaration, so it held no matter how the
+ * guard was used, including when the guard was inverted or the focus call was
+ * deleted. Taking the two elements as arguments makes the decision testable
+ * without a document.
+ *
+ * Both halves matter and pull in opposite directions: without it a keyboard
+ * user is dropped on `document.body` when the disabled button blurs, and with
+ * it inverted the recorder yanks focus out of wherever the user deliberately
+ * moved during validation.
+ */
+export function shouldRestoreRecorderFocus(input: {
+  wasValidating: boolean;
+  validating: boolean;
+  activeElement: unknown;
+  body: unknown;
+}): boolean {
+  // Only on the falling edge of a validation, never on an ordinary re-render.
+  if (!input.wasValidating || input.validating) return false;
+  // Only when nothing else holds focus.
+  return input.activeElement === null || input.activeElement === input.body;
+}
+
 type ShortcutRecorderProps = {
   kind: ShortcutKind;
   label: string;
@@ -116,8 +144,29 @@ export function ShortcutRecorder({
   const capturingRef = useRef(false);
   const startPromise = useRef<Promise<void> | null>(null);
   const lastShortcut = useRef("");
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const wasValidating = useRef(false);
   const descriptionId = useId();
   const feedbackId = useId();
+
+  /*
+   * Committing a recorded shortcut disables this button while main validates
+   * it. Disabling the focused element blurs it, and the browser drops focus to
+   * `document.body` — so a keyboard user who just recorded a shortcut lost
+   * their place in the dialog entirely and had to tab back from the top.
+   * Restore focus, but only when nothing else has claimed it: moving focus a
+   * user has deliberately placed elsewhere would be worse than losing it.
+   */
+  useEffect(() => {
+    const restore = shouldRestoreRecorderFocus({
+      wasValidating: wasValidating.current,
+      validating,
+      activeElement: document.activeElement,
+      body: document.body,
+    });
+    if (restore) buttonRef.current?.focus();
+    wasValidating.current = validating;
+  }, [validating]);
 
   const endNativeCapture = useCallback(async () => {
     const begin = startPromise.current;
@@ -283,6 +332,7 @@ export function ShortcutRecorder({
         )}
       </span>
       <button
+        ref={buttonRef}
         type="button"
         className={capturing ? "ls-shortcut-recorder__button is-capturing" : "ls-shortcut-recorder__button"}
         onClick={startCapture}

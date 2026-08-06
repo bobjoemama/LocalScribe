@@ -7,12 +7,15 @@ import { MAX_HISTORY_ITEMS, type Transcription } from "../src/shared/contracts";
 import {
   ActivityChart,
   CategoryList,
+  HistoryNoticeSurface,
   HistoryScreen,
   InsightsScreen,
   activityBarHeightPercent,
   createLatestRequestGate,
   historyErrorMessage,
+  historyFailureNotice,
   historySampleLabel,
+  historySuccessNotice,
   historyStoragePresentation,
   insightTabForKey,
   summarizeTranscriptions,
@@ -150,6 +153,114 @@ describe("History Insights interaction and data presentation", () => {
     )).toBe("Clipboard is temporarily unavailable.");
   });
 
+  /*
+   * The message an action produces was written into `.hi-live-region`, and that
+   * class is `position: fixed; left: -9999px`. So "The transcript could not be
+   * deleted." was rendered 9999 pixels to the left of the window: a sighted
+   * user clicked Delete, the row stayed, and no surface in the app said why.
+   * Copy, clear, and export failed the same silent way.
+   */
+  describe("history action outcomes", () => {
+    const offScreenClasses = ["hi-live-region", "hi-visually-hidden"];
+
+    /* Every class the CSS file positions or clips out of view. */
+    function isHiddenByStylesheet(className: string): boolean {
+      const start = insightsCss.indexOf(`.${className} {`);
+      if (start < 0) return false;
+      const rule = insightsCss.slice(start, insightsCss.indexOf("}", start));
+      return /left: -\d{3,}px|display: none|visibility: hidden|clip: rect\(0 0 0 0\)/u.test(rule);
+    }
+
+    it("renders a failure in the layout instead of off-screen", () => {
+      const html = renderToStaticMarkup(createElement(HistoryNoticeSurface, {
+        notice: historyFailureNotice(new Error("database is locked"), "The transcript could not be deleted."),
+        onDismiss: () => undefined,
+      }));
+
+      expect(html).toContain("database is locked");
+      // The message must not be inside the off-screen paragraph.
+      const liveRegion = html.slice(html.indexOf('class="hi-live-region"'));
+      expect(liveRegion).not.toContain("database is locked");
+
+      // ...and the element that does carry it must not be hidden by the
+      // stylesheet, which is the exact trap the previous surface fell into.
+      const classes = [...html.matchAll(/class="([^"]+)"/gu)].flatMap((match) => match[1]!.split(" "));
+      const carrying = classes.filter((name) => !offScreenClasses.includes(name));
+      expect(carrying).toContain("hi-action-notice");
+      for (const name of carrying) {
+        expect(isHiddenByStylesheet(name), `${name} is hidden by the stylesheet`).toBe(false);
+      }
+      // The off-screen classes really are off-screen — otherwise the check above
+      // proves nothing.
+      expect(isHiddenByStylesheet("hi-live-region")).toBe(true);
+    });
+
+    it("announces the failure once, as an alert", () => {
+      const html = renderToStaticMarkup(createElement(HistoryNoticeSurface, {
+        notice: historyFailureNotice(new Error("database is locked"), "fallback"),
+        onDismiss: () => undefined,
+      }));
+
+      expect(html).toContain('role="alert"');
+      // Assistive technology would otherwise hear it from both the alert and
+      // the polite region.
+      expect(html.match(/database is locked/gu)).toHaveLength(1);
+    });
+
+    it("offers a way to dismiss the failure", () => {
+      const html = renderToStaticMarkup(createElement(HistoryNoticeSurface, {
+        notice: historyFailureNotice(new Error("database is locked"), "fallback"),
+        onDismiss: () => undefined,
+      }));
+
+      expect(html).toContain("Dismiss");
+    });
+
+    it("leaves successes in the polite region rather than adding a banner", () => {
+      const html = renderToStaticMarkup(createElement(HistoryNoticeSurface, {
+        notice: historySuccessNotice("Transcript deleted."),
+        onDismiss: () => undefined,
+      }));
+
+      // The deleted row disappearing is the visible confirmation; a card for
+      // every successful copy would be noise.
+      expect(html).not.toContain('role="alert"');
+      const liveRegion = html.slice(html.indexOf('class="hi-live-region"'));
+      expect(liveRegion).toContain("Transcript deleted.");
+    });
+
+    it("renders nothing at all when no action has run", () => {
+      const html = renderToStaticMarkup(createElement(HistoryNoticeSurface, {
+        notice: null,
+        onDismiss: () => undefined,
+      }));
+
+      expect(html).not.toContain('role="alert"');
+      expect(html).toContain('class="hi-live-region"');
+    });
+
+    it("still keeps machine paths out of the now-visible failure text", () => {
+      // The message became visible; the redaction that made it safe to show
+      // has to hold on this path too.
+      expect(historyFailureNotice(
+        new Error("EPERM: failed to export C:\\Users\\Alice\\Documents\\history.json"),
+        "History could not be exported.",
+      )).toEqual({ message: "History could not be exported.", tone: "error" });
+      expect(historySuccessNotice("History exported locally."))
+        .toEqual({ message: "History exported locally.", tone: "success" });
+    });
+
+    it("does not show a stale banner on the initial screen", () => {
+      const html = renderToStaticMarkup(createElement(HistoryScreen));
+
+      expect(html).not.toContain('role="alert"');
+      expect(html).not.toContain("hi-action-notice");
+      // The polite region is still mounted, so an announcement has somewhere to
+      // land without remounting the element.
+      expect(html).toContain('class="hi-live-region"');
+    });
+  });
+
   it("identifies category percentages as a share of dictated words", () => {
     const html = renderToStaticMarkup(createElement(CategoryList, {
       categories: [{
@@ -171,5 +282,48 @@ describe("History Insights interaction and data presentation", () => {
     expect(insightsCss).toMatch(/@media \(hover: none\)[\s\S]*\.hi-overflow--row summary \{ opacity: 1; \}/);
     expect(insightsCss).toMatch(/\.hi-period-row \{[^}]*flex-wrap: wrap;/);
     expect(insightsCss).toMatch(/\.hi-overflow--row \.hi-overflow-menu \{[^}]*bottom: calc\(100% \+ 6px\);/);
+  });
+
+  /*
+   * `activityBarHeightPercent` is only honest if the percentage resolves against
+   * a box that is the same height for every column. It did not: the column was a
+   * flex column, the bar asked for a percentage of the whole 215px column, and
+   * any bar tall enough that bar + 27px label exceeded 215px was cut down by
+   * flex-shrink instead. Measured in Chromium at both settings sizes, a 65% day
+   * drew 139.75px against the 100% day's 190.30px — 73% as tall, not 65% — and
+   * that column's date label was squeezed from 27px to 24.7px. With the plot
+   * area on its own definite grid row every ratio is now exact to 0.01%.
+   */
+  it("gives the bars a plot area that cannot shrink, so bar height stays linear in the data", () => {
+    const rule = (selector: string): string => {
+      const start = insightsCss.indexOf(`${selector} {`);
+      expect(start, `missing stylesheet rule: ${selector}`).toBeGreaterThanOrEqual(0);
+      return insightsCss.slice(start, insightsCss.indexOf("}", start));
+    };
+
+    const column = rule(".hi-chart-column");
+    expect(column).toContain("display: grid");
+    expect(column).toContain("grid-template-rows: minmax(0, 1fr) var(--hi-chart-label-height)");
+    // A flex column is exactly what let the label steal height from the bar.
+    expect(column).not.toContain("display: flex");
+
+    // One token drives the plot area, the gridline area, and the label box, so
+    // the top gridline is the maximum and the baseline is zero.
+    expect(rule(".hi-chart")).toContain("--hi-chart-label-height: 27px");
+    expect(rule(".hi-chart-grid")).toContain("inset: 0 0 var(--hi-chart-label-height)");
+    expect(rule(".hi-chart-label")).toContain("height: var(--hi-chart-label-height)");
+    expect(rule(".hi-chart-column > i")).not.toMatch(/(^|[;{\s])height:/);
+
+    // The row assignment above only holds while the column has exactly these
+    // two in-flow children, in this order, after the out-of-flow tooltip.
+    const html = renderToStaticMarkup(createElement(ActivityChart, {
+      points: [{ key: "2026-07-22", words: 4, label: "W", fullLabel: "Jul 22" }],
+    }));
+    const renderedColumn = html.slice(html.indexOf('class="hi-chart-column"'));
+    expect(renderedColumn).toMatch(/<i [^>]*><\/i><span class="hi-chart-label"/);
+    // The bar and the label, and nothing else, occupy the two rows.
+    expect(renderedColumn.match(/<(?:i|span|div|p|strong|small)\b/gu)?.length).toBe(
+      1 /* tooltip */ + 2 /* tooltip strong + small */ + 1 /* bar */ + 1 /* label */,
+    );
   });
 });

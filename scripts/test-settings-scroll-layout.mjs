@@ -8,6 +8,7 @@
  */
 import { spawn } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import process from "node:process";
@@ -28,9 +29,17 @@ const settingsWindowSizes = [
 ];
 
 const rendererSource = resolve(repository, "scripts/settings-layout-harness.html");
-const electronBinary = process.platform === "darwin"
-  ? resolve(repository, "node_modules/electron/dist/Electron.app/Contents/MacOS/Electron")
-  : resolve(repository, "node_modules/electron/dist/electron");
+/*
+ * Electron 43 publishes no install script; `node_modules/electron` resolves its
+ * own binary lazily and downloads it on first use. Hard-coding `dist/...` skipped
+ * that resolution entirely, so a fresh `npm ci --strict-allow-scripts` checkout
+ * failed this gate with ENOENT before anything could provide the binary. Ask the
+ * package where its executable is instead.
+ */
+const electronBinary = createRequire(import.meta.url)("electron");
+if (typeof electronBinary !== "string" || electronBinary.length === 0) {
+  throw new Error("The electron package did not resolve to an executable path.");
+}
 
 const electronMain = `
 import { app, BrowserWindow, protocol, session } from "electron";
@@ -282,6 +291,184 @@ async function exerciseChangedSettings(window) {
   })()\`);
 }
 
+/**
+ * Drive a real failed save so the footer shows the longest status the product
+ * can produce, then measure horizontal containment.
+ *
+ * Regression: .ls-settings-main declared only grid-template-rows, so its
+ * implicit auto column was sized to the footer status's max-content width.
+ * A 185-character status grew the column to ~995px inside a 664px pane and
+ * overflow:hidden clipped Cancel, Save changes, and the header close button
+ * off the modal, with no horizontal scroll owner to bring them back.
+ */
+async function exerciseLongFooterStatus(window) {
+  return window.webContents.executeJavaScript(\`(async () => {
+    const waitForPaint = () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const openTab = async (label) => {
+      const button = [...document.querySelectorAll(".ls-settings-sidebar nav button")]
+        .find((candidate) => candidate.textContent?.trim() === label);
+      if (!button) throw new Error("Missing settings tab while exercising a failed save: " + label);
+      button.click();
+      await waitForPaint();
+    };
+    await openTab("System");
+    const showPill = [...document.querySelectorAll(".ls-settings-row")]
+      .find((candidate) => candidate.querySelector("strong")?.textContent?.trim() === "Show floating bar")
+      ?.querySelector("input");
+    if (!(showPill instanceof HTMLInputElement)) throw new Error("Missing Show floating bar control");
+    showPill.click();
+    await waitForPaint();
+
+    const footer = document.querySelector(".ls-settings-footer");
+    const main = document.querySelector(".ls-settings-main");
+    const modal = document.querySelector(".ls-settings-modal");
+    const scroll = document.querySelector(".ls-settings-scroll");
+    const save = [...footer.querySelectorAll("button")]
+      .find((candidate) => candidate.textContent?.trim() === "Save changes");
+    if (!(save instanceof HTMLButtonElement)) throw new Error("Missing Save changes button");
+    save.click();
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      if (!save.textContent?.includes("Saving")) break;
+    }
+    await waitForPaint();
+
+    const statusNode = footer.querySelector("[role='status']");
+    const status = statusNode?.textContent?.trim() ?? "";
+    const modalRect = modal.getBoundingClientRect();
+    const contained = (element) => {
+      const bounds = element.getBoundingClientRect();
+      return {
+        label: element.getAttribute("aria-label") ?? element.textContent?.trim().slice(0, 40) ?? "",
+        left: bounds.left,
+        right: bounds.right,
+        withinModal: bounds.left >= modalRect.left - 1 && bounds.right <= modalRect.right + 1,
+        withinViewport: bounds.left >= -1 && bounds.right <= window.innerWidth + 1,
+      };
+    };
+    return {
+      status,
+      statusLength: status.length,
+      statusTitle: statusNode?.getAttribute("title") ?? null,
+      modalRect: { left: modalRect.left, right: modalRect.right, width: modalRect.width },
+      mainOverflowX: main.scrollWidth - main.clientWidth,
+      scrollOverflowX: scroll.scrollWidth - scroll.clientWidth,
+      footerControls: [...footer.querySelectorAll("button")].map(contained),
+      closeButton: contained(document.querySelector(".ls-close-button")),
+    };
+  })()\`);
+}
+
+/**
+ * The sidebar category list has to stay reachable at short heights.
+ *
+ * It is a grid row inside a fixed-height modal, so at 900x640 the category
+ * buttons can exceed the space between the sidebar's header and footer. When
+ * that happens the nav must own the overflow itself -- a clipped nav with no
+ * scroll owner hides whichever categories fall past the bottom edge, with no
+ * affordance and no way to reach them.
+ */
+async function inspectSidebarReach(window) {
+  return window.webContents.executeJavaScript(\`(async () => {
+    const waitForPaint = () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const nav = document.querySelector(".ls-settings-sidebar nav");
+    const sidebar = document.querySelector(".ls-settings-sidebar");
+    if (!(nav instanceof HTMLElement) || !(sidebar instanceof HTMLElement)) {
+      throw new Error("Settings sidebar is missing");
+    }
+    const overflowStyle = getComputedStyle(nav).overflowY;
+    const overflowY = nav.scrollHeight - nav.clientHeight;
+    const reach = async () => {
+      const buttons = [];
+      for (const button of nav.querySelectorAll("button")) {
+        button.scrollIntoView({ block: "nearest" });
+        await waitForPaint();
+        const bounds = button.getBoundingClientRect();
+        const viewport = nav.getBoundingClientRect();
+        buttons.push({
+          label: button.textContent?.trim() ?? "",
+          reachable: bounds.top >= viewport.top - 1 && bounds.bottom <= viewport.bottom + 1,
+          withinSidebar: bounds.bottom <= sidebar.getBoundingClientRect().bottom + 1,
+        });
+      }
+      nav.scrollTop = 0;
+      await waitForPaint();
+      return buttons;
+    };
+    const buttons = await reach();
+    /*
+     * Six categories fit at both supported sizes today, so measuring the list
+     * as-is proves nothing about what happens when it does not fit. Force the
+     * nav to half its content height and re-measure: that is the state a
+     * seventh category, a larger UI font, or a shorter window produces, and it
+     * is the state a clipped nav loses categories in.
+     */
+    const naturalMaxHeight = nav.style.maxHeight;
+    // scrollHeight is never smaller than the box, so halving it can still be
+    // taller than the list. Constrain against the buttons' own extent.
+    const first = nav.querySelector("button").getBoundingClientRect();
+    const last = [...nav.querySelectorAll("button")].pop().getBoundingClientRect();
+    const listHeight = last.bottom - first.top;
+    nav.style.maxHeight = Math.max(24, Math.floor(listHeight / 2)) + "px";
+    await waitForPaint();
+    const constrained = {
+      overflowY: nav.scrollHeight - nav.clientHeight,
+      scrollHeight: nav.scrollHeight,
+      clientHeight: nav.clientHeight,
+      appliedMaxHeight: nav.style.maxHeight,
+      computedMaxHeight: getComputedStyle(nav).maxHeight,
+      buttons: await reach(),
+    };
+    nav.style.maxHeight = naturalMaxHeight;
+    await waitForPaint();
+    return { overflowY, overflowStyle, buttons, constrained };
+  })()\`);
+}
+
+/**
+ * The permission poll spawns a native helper process every tick, so it must
+ * stop when the native window is hidden.
+ *
+ * Closing the Settings window only hides it: the renderer stays alive and the
+ * effect never unmounts. The Page Visibility API cannot be the gate either --
+ * backgroundThrottling:false pins document.visibilityState to "visible" and
+ * keeps intervals at full rate (verified in Electron 43), so main has to push
+ * the real native visibility. This drives that signal and counts IPC calls.
+ */
+async function exercisePermissionPollGating(window) {
+  return window.webContents.executeJavaScript(\`(async () => {
+    const harness = window.__localScribeSettingsHarness;
+    const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+    const pollWindowMs = 2_500;
+
+    await wait(pollWindowMs);
+    const whileVisible = harness.permissionPolls();
+    await wait(pollWindowMs);
+    const visibleGrowth = harness.permissionPolls() - whileVisible;
+
+    harness.setWindowVisible(false);
+    await wait(50);
+    const atHide = harness.permissionPolls();
+    await wait(pollWindowMs);
+    const hiddenGrowth = harness.permissionPolls() - atHide;
+
+    harness.setWindowVisible(true);
+    await wait(50);
+    const afterShowImmediate = harness.permissionPolls() - atHide - hiddenGrowth;
+    await wait(pollWindowMs);
+    const shownGrowth = harness.permissionPolls() - atHide - hiddenGrowth - afterShowImmediate;
+
+    return {
+      documentVisibilityState: document.visibilityState,
+      pollWindowMs,
+      visibleGrowth,
+      hiddenGrowth,
+      afterShowImmediate,
+      shownGrowth,
+    };
+  })()\`);
+}
+
 async function exerciseModelSelection(window, expectedResult) {
   return window.webContents.executeJavaScript(\`(async () => {
     const waitForPaint = () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
@@ -336,7 +523,7 @@ async function exerciseModelSelection(window, expectedResult) {
   })()\`);
 }
 
-async function inspectSize(width, height, platform, verification, settingsPreset = "default", applyResult = null) {
+async function inspectSize(width, height, platform, verification, settingsPreset = "default", applyResult = null, saveResult = null) {
   const window = new BrowserWindow({
     width,
     height,
@@ -375,6 +562,7 @@ async function inspectSize(width, height, platform, verification, settingsPreset
     harnessUrl.searchParams.set("verification", verification);
     harnessUrl.searchParams.set("settings", settingsPreset);
     if (applyResult) harnessUrl.searchParams.set("apply", applyResult);
+    if (saveResult) harnessUrl.searchParams.set("save", saveResult);
     void window.loadURL(harnessUrl.href).catch((error) => {
       stage(\`loadURL-rejected \${error instanceof Error ? error.message : String(error)}\`);
     });
@@ -401,20 +589,27 @@ async function inspectSize(width, height, platform, verification, settingsPreset
       ),
       await inspectTab(window, "Data & Privacy", "Automatic paste reads the active app identity and hashes limited focused-window metadata to confirm the dictation target. LocalScribe does not read field or document contents from other applications."),
     ];
+    const sidebar = await inspectSidebarReach(window);
     const saveReload = settingsPreset === "custom"
       ? await exerciseChangedSettings(window)
       : null;
     const modelSelection = applyResult ? await exerciseModelSelection(window, applyResult) : null;
+    const longFooterStatus = saveResult === "fail" ? await exerciseLongFooterStatus(window) : null;
+    const permissionPoll = saveResult === "fail" ? await exercisePermissionPollGating(window) : null;
     return {
       platform,
       verification,
       settingsPreset,
       applyResult,
+      saveResult,
       requestedSize: { width, height },
       contentSize,
       tabs,
+      sidebar,
       saveReload,
       modelSelection,
+      longFooterStatus,
+      permissionPoll,
     };
   } finally {
     if (!window.isDestroyed()) window.destroy();
@@ -455,6 +650,11 @@ async function run() {
   }
   results.push(await inspectSize(900, 640, "darwin", "verified", "default", "success"));
   results.push(await inspectSize(900, 640, "darwin", "verified", "default", "fail"));
+  // The footer status is the only settings surface whose width is driven by
+  // runtime text, so it is measured at both supported sizes.
+  for (const [width, height] of sizes) {
+    results.push(await inspectSize(width, height, "darwin", "missing", "default", null, "fail"));
+  }
   writeFileSync(resultFile, JSON.stringify({ results }, null, 2));
   allowQuit = true;
   app.quit();
@@ -595,6 +795,93 @@ function assertModelSelection(size) {
   }
 }
 
+function assertLongFooterStatus(size) {
+  const evidence = size.longFooterStatus;
+  if (!evidence) return;
+  const serialized = JSON.stringify({ requestedSize: size.requestedSize, ...evidence });
+  assert(
+    // 25-char prefix + the 160-char cap in rendererSafeErrorMessage.
+    evidence.status.startsWith("Could not save settings: ") && evidence.statusLength === 185,
+    `Long footer status: the harness did not reach a realistic worst-case status: ${serialized}`,
+  );
+  assert(
+    evidence.statusTitle === evidence.status,
+    `Long footer status: the ellipsized status is not recoverable from its title: ${serialized}`,
+  );
+  assert(
+    evidence.mainOverflowX <= 1,
+    `Long footer status: the settings pane overflows horizontally with no scroll owner: ${serialized}`,
+  );
+  assert(
+    evidence.footerControls.length >= 2,
+    `Long footer status: expected Cancel and Save changes in the footer: ${serialized}`,
+  );
+  for (const control of [...evidence.footerControls, evidence.closeButton]) {
+    assert(
+      control.withinModal && control.withinViewport,
+      `Long footer status: "${control.label}" is pushed outside the modal: ${serialized}`,
+    );
+  }
+}
+
+function assertSidebarReach(size) {
+  const evidence = size.sidebar;
+  const serialized = JSON.stringify({ requestedSize: size.requestedSize, ...evidence });
+  assert(evidence.buttons.length > 0, `Settings sidebar: no category buttons were found: ${serialized}`);
+  // The nav must own its own overflow whether or not it overflows right now.
+  // A clipped nav simply hides whichever categories fall past the bottom edge.
+  assert(
+    evidence.overflowStyle === "auto" || evidence.overflowStyle === "scroll",
+    `Settings sidebar: the category list is not a scroll owner (overflow-y: ${evidence.overflowStyle}): ${serialized}`,
+  );
+  const unreachable = [
+    ...evidence.buttons.filter((button) => !button.reachable),
+    ...evidence.constrained.buttons.filter((button) => !button.reachable),
+  ];
+  assert(
+    unreachable.length === 0,
+    `Settings sidebar: ${unreachable.map((button) => button.label).join(", ")} cannot be scrolled into view: ${serialized}`,
+  );
+  const escaping = evidence.buttons.filter((button) => !button.withinSidebar);
+  assert(
+    escaping.length === 0,
+    `Settings sidebar: ${escaping.map((button) => button.label).join(", ")} render outside the sidebar: ${serialized}`,
+  );
+  // The induced-overflow probe is only evidence if it actually overflowed.
+  assert(
+    evidence.constrained.overflowY > 0,
+    `Settings sidebar: the constrained probe did not overflow, so reachability was not exercised: ${serialized}`,
+  );
+}
+
+function assertPermissionPollGating(size) {
+  const evidence = size.permissionPoll;
+  if (!evidence) return;
+  const serialized = JSON.stringify(evidence);
+  assert(
+    evidence.visibleGrowth > 0,
+    `Permission poll: the poll never ran while the window was visible: ${serialized}`,
+  );
+  assert(
+    evidence.hiddenGrowth === 0,
+    `Permission poll: kept spawning the native permission helper while the window was hidden: ${serialized}`,
+  );
+  assert(
+    evidence.afterShowImmediate > 0,
+    `Permission poll: did not refresh immediately when the window came back: ${serialized}`,
+  );
+  assert(
+    evidence.shownGrowth > 0,
+    `Permission poll: did not resume after the window came back: ${serialized}`,
+  );
+  // The gate would be meaningless if the renderer could have derived this
+  // itself; record that it could not.
+  assert(
+    evidence.documentVisibilityState === "visible",
+    `Permission poll: expected backgroundThrottling:false to pin document.visibilityState: ${serialized}`,
+  );
+}
+
 function assertChangedSettings(size) {
   if (size.settingsPreset !== "custom") return;
   const byLabel = Object.fromEntries(size.tabs.map((tab) => [tab.label, tab]));
@@ -720,8 +1007,11 @@ try {
     assert(size.contentSize.width === size.requestedSize.width, "Electron width differs from requested content width");
     assert(size.contentSize.height === size.requestedSize.height, "Electron height differs from requested content height");
     for (const tab of size.tabs) assertTab(tab, size);
+    assertSidebarReach(size);
     assertChangedSettings(size);
     assertModelSelection(size);
+    assertLongFooterStatus(size);
+    assertPermissionPollGating(size);
   }
   console.log(JSON.stringify(report, null, 2));
 } catch (error) {

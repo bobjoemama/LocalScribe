@@ -73,6 +73,60 @@ describe("release hardening configuration", () => {
     expect(existsSync(resolve(root, ".github/workflows/release.yml"))).toBe(false);
   });
 
+  it("keeps every pinned install-script allowance resolvable to the locked version", () => {
+    // `npm ci --strict-allow-scripts` silently skips the install script of any package whose
+    // pinned entry has drifted away from the locked version, which would quietly stop building
+    // a native dependency. Keep every allowance resolvable to the version actually installed.
+    const packageJson = JSON.parse(projectFile("package.json")) as {
+      devDependencies?: Record<string, string>;
+      allowScripts?: Record<string, boolean>;
+    };
+    const packageLock = JSON.parse(projectFile("package-lock.json")) as {
+      packages: Record<string, { version?: string }>;
+    };
+
+    const lockedVersion = (name: string): string => {
+      const entries = Object.entries(packageLock.packages).filter(
+        ([specifier]) => specifier.endsWith(`node_modules/${name}`),
+      );
+      expect(
+        entries.length,
+        `${name} must resolve to exactly one locked install`,
+      ).toBe(1);
+      return entries[0]?.[1]?.version ?? "";
+    };
+
+    const allowScripts = packageJson.allowScripts ?? {};
+    expect(Object.keys(allowScripts).length).toBeGreaterThan(0);
+
+    for (const specifier of Object.keys(allowScripts)) {
+      const separator = specifier.lastIndexOf("@");
+      if (separator <= 0) {
+        // Unpinned entries (e.g. a blanket `fsevents: false` denial) carry no version to drift.
+        expect(allowScripts[specifier]).toBe(false);
+        continue;
+      }
+      const name = specifier.slice(0, separator);
+      const pinnedVersion = specifier.slice(separator + 1);
+      expect(
+        pinnedVersion,
+        `${name} install-script allowance is pinned to a version that is not installed`,
+      ).toBe(lockedVersion(name));
+    }
+
+  });
+
+  it("resolves the settings-layout Electron binary through the package, not a guessed path", () => {
+    // Regression: Electron 43 publishes no install script and downloads its binary lazily on
+    // first `require("electron")`. The harness hard-coded `node_modules/electron/dist/...` and
+    // spawned it directly, so a fresh `npm ci --strict-allow-scripts` checkout failed this gate
+    // with ENOENT before anything could provide the binary.
+    const harness = projectFile("scripts/test-settings-scroll-layout.mjs");
+
+    expect(harness).toContain('createRequire(import.meta.url)("electron")');
+    expect(harness).not.toContain("node_modules/electron/dist");
+  });
+
   it("cross-checks Windows npm and Python locks before target-machine packaging", () => {
     const packageJson = JSON.parse(projectFile("package.json")) as {
       scripts: Record<string, string>;
@@ -183,6 +237,13 @@ describe("release hardening configuration", () => {
     );
     expect(forgeConfig).toContain('normalizedPath.includes("/python-runtime/")');
     expect(forgeConfig).toContain("verify-macos-entitlements.mjs");
+    /*
+     * The main app's entitlements are compared with the release plist as an
+     * exact set. A presence check cannot reject an addition, so it let a build
+     * carrying `get-task-allow` or `disable-library-validation` ship.
+     */
+    expect(entitlementVerifier).toContain("assertMainAppEntitlements({");
+    expect(entitlementVerifier).toContain("declaredPlist: readFileSync(");
     expect(entitlementVerifier).toContain("assertNoEntitlementKeys(activeTarget)");
     expect(entitlementVerifier).toContain(
       "for (const binary of runtimeMachOFiles) assertNoEntitlementKeys(binary)",
@@ -201,20 +262,76 @@ describe("release hardening configuration", () => {
     expect(forgeConfig).toContain("[FuseV1Options.OnlyLoadAppFromAsar]: true");
   });
 
-  it("forbids renderer document embedding, object loading, base rewriting, and form egress", () => {
-    const rendererDocument = projectFile("index.html");
+  /*
+   * The renderer CSP used to be gated with `toContain("script-src 'self'")`
+   * plus `not.toContain("script-src 'self' 'unsafe-inline'")` and the same for
+   * 'unsafe-eval'. Those negatives reject exactly two adjacent spellings, so
+   * any source in between defeats them: an audit verified that
+   * `script-src 'self' blob: 'unsafe-inline'`, `script-src 'self'
+   * 'wasm-unsafe-eval' 'unsafe-inline'`, and `script-src 'self'
+   * https://cdn.example 'unsafe-eval'` all passed. It is the only CSP
+   * assertion in the repo, so nothing else would have caught it.
+   *
+   * Parsing the policy into directives and comparing token *sets* rejects any
+   * added source, not a list of spellings someone thought of in advance.
+   */
+  function rendererContentSecurityPolicy(): Map<string, Set<string>> {
+    const document = projectFile("index.html");
+    const meta = /<meta[^>]*http-equiv=["']Content-Security-Policy["'][^>]*>/iu.exec(document);
+    expect(meta, "index.html declares no Content-Security-Policy meta tag").not.toBeNull();
+    // Match the attribute's own delimiter: CSP source expressions are
+    // single-quoted, so a naive [^"']* stops at the first `'self'`.
+    const content = /content=(["'])([\s\S]*?)\1/iu.exec(meta?.[0] ?? "");
+    expect(content?.[2], "the CSP meta tag has no content attribute").toBeTruthy();
 
-    for (const directive of [
-      "base-uri 'none'",
-      "object-src 'none'",
-      "frame-src 'none'",
-      "form-action 'none'",
-    ]) {
-      expect(rendererDocument).toContain(directive);
+    const directives = new Map<string, Set<string>>();
+    for (const directive of (content?.[2] ?? "").split(";")) {
+      const tokens = directive.trim().split(/\s+/u).filter(Boolean);
+      const [name, ...sources] = tokens;
+      if (!name) continue;
+      expect(directives.has(name.toLowerCase()), `${name} is declared twice`).toBe(false);
+      directives.set(name.toLowerCase(), new Set(sources));
     }
-    expect(rendererDocument).toContain("script-src 'self'");
-    expect(rendererDocument).not.toContain("script-src 'self' 'unsafe-inline'");
-    expect(rendererDocument).not.toContain("script-src 'self' 'unsafe-eval'");
+    return directives;
+  }
+
+  it("forbids renderer document embedding, object loading, base rewriting, and form egress", () => {
+    const policy = rendererContentSecurityPolicy();
+
+    for (const name of ["base-uri", "object-src", "frame-src", "form-action"]) {
+      expect([...(policy.get(name) ?? [])], `${name} must be exactly 'none'`).toEqual(["'none'"]);
+    }
+  });
+
+  it("allows the renderer to execute nothing but its own bundled scripts", () => {
+    const policy = rendererContentSecurityPolicy();
+    const scriptSrc = policy.get("script-src");
+
+    expect(scriptSrc, "index.html declares no script-src").toBeDefined();
+    // An exact set: no CDN, no blob:, no data:, no 'unsafe-inline',
+    // no 'unsafe-eval', no nonce, no hash, however they are ordered.
+    expect([...(scriptSrc ?? [])].sort()).toEqual(["'self'"]);
+  });
+
+  it("rejects the mutations the previous adjacency check let through", () => {
+    // Guarding the guard: these are the exact policies an audit smuggled past
+    // the old assertions, run against the parser that replaced them.
+    const parse = (policy: string): Set<string> => {
+      const directive = policy.split(";").map((part) => part.trim())
+        .find((part) => part.startsWith("script-src"));
+      return new Set((directive ?? "").split(/\s+/u).slice(1).filter(Boolean));
+    };
+
+    for (const escape of [
+      "script-src 'self' blob: 'unsafe-inline'",
+      "script-src 'self' 'wasm-unsafe-eval' 'unsafe-inline'",
+      "script-src 'self' https://cdn.example 'unsafe-eval'",
+      "script-src 'unsafe-inline' 'self'",
+      "script-src 'self' data:",
+    ]) {
+      expect([...parse(escape)].sort(), `${escape} must not be accepted`).not.toEqual(["'self'"]);
+    }
+    expect([...parse("script-src 'self'")].sort()).toEqual(["'self'"]);
   });
 
   it("anchors CommonJS require to Electron's absolute app path", () => {
@@ -257,6 +374,52 @@ describe("release hardening configuration", () => {
     expect(main).toContain("if (!beginShutdown()) return;");
     expect(main).toContain("runtimeReleasePromise ??=");
     expect(main).toContain('if (quitting) throw new Error("LocalScribe is shutting down")');
+  });
+
+  /*
+   * `abort()` only kills the process that is running now. A model operation
+   * already queued behind it would start a replacement, so Quit during a repair
+   * spawned a fresh Python child and loaded a multi-gigabyte model that nothing
+   * would ever use. `retire()` latches the supervisor closed, and it only works
+   * if it lands first — the supervisor's own behaviour is covered in
+   * tests/workerSupervisor.test.ts, but nothing asserted that main calls it.
+   */
+  it("latches the worker supervisor closed before aborting it on quit", () => {
+    const main = projectFile("src/main.ts");
+    const shutdown = main.slice(main.indexOf("function beginShutdown"));
+    const body = shutdown.slice(0, shutdown.indexOf("function finishShutdown"));
+
+    const retire = body.indexOf('worker.retire();');
+    const abort = body.indexOf('worker.abort("LocalScribe is quitting")');
+    expect(retire).toBeGreaterThan(-1);
+    expect(abort).toBeGreaterThan(-1);
+    expect(retire).toBeLessThan(abort);
+  });
+
+  /*
+   * Quit closes the database while the worker shutdown and audio-cache removal
+   * are still running. The macOS menu bar stayed live for that whole window and
+   * several of its items read the database ("Copy Last Transcript", the My
+   * Voice counts), so a click after `database.close()` threw inside main.
+   */
+  it("retires the macOS application menu with the same shutdown latch", () => {
+    const main = projectFile("src/main.ts");
+    const shutdown = main.slice(main.indexOf("function beginShutdown"));
+    const body = shutdown.slice(0, shutdown.indexOf("function finishShutdown"));
+
+    expect(body).toContain('if (process.platform === "darwin") Menu.setApplicationMenu(null);');
+
+    // The menu really is database-backed, which is why this matters.
+    const menu = main.slice(
+      main.indexOf("function installApplicationMenu(): void"),
+      main.indexOf("Menu.setApplicationMenu(Menu.buildFromTemplate(template));"),
+    );
+    // Still database-backed after the reads were narrowed to counts: the menu
+    // no longer decrypts anything, but it does still query, which is what makes
+    // retiring it before the database closes necessary.
+    expect(menu).toContain("database.hasTranscriptions()");
+    expect(menu).toContain("database.countDictionary()");
+    expect(menu).toContain("database.getSettings()");
   });
 
   it("binds every platform-pruned loose resource to an expectation bundled in app.asar", () => {
@@ -500,6 +663,31 @@ describe("release hardening configuration", () => {
     expect(localMacVerification).toContain("codesign --verify --deep --strict");
     expect(localMacVerification).toContain("verify-macos-entitlements.mjs");
     expect(localMacVerification).not.toMatch(/npm run sbom/u);
+  });
+
+  /*
+   * `scripts/` was outside the typecheck, and everything that decides whether a
+   * build ships lives there: the entitlement policy, the provenance check, the
+   * settings-layout gate's renderer harness. Adding a required field to a
+   * contract compiled clean and then crashed the layout gate at runtime with
+   * "Cannot read properties of undefined", which is the failure mode a
+   * typechecker exists to prevent. Shrinking this list again silently removes
+   * that coverage, so it is pinned.
+   */
+  it("typechecks the scripts that gate a release", () => {
+    const tsconfig = JSON.parse(projectFile("tsconfig.json")) as { include?: string[] };
+    const included = tsconfig.include ?? [];
+
+    expect(included).toContain("src");
+    expect(included).toContain("tests");
+    for (const pattern of ["scripts/**/*.ts", "scripts/**/*.mts", "scripts/**/*.tsx"]) {
+      expect(included, `tsconfig no longer typechecks ${pattern}`).toContain(pattern);
+    }
+    // The gate command has to be the one that reads this config.
+    const packageJson = JSON.parse(projectFile("package.json")) as {
+      scripts?: Record<string, string>;
+    };
+    expect(packageJson.scripts?.typecheck).toBe("tsc --noEmit");
   });
 
   it("scopes explicit MLX license approval to the signed macOS build", () => {

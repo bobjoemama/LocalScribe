@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer } from "electron";
+import { z } from "zod";
 import {
   appInfoSchema,
   appSettingsPatchSchema,
@@ -16,6 +17,7 @@ import {
   modelRemoveRequestSchema,
   navigationTargetSchema,
   permissionSnapshotSchema,
+  pillModeSchema,
   scratchpadNoteSchema,
   sessionSnapshotSchema,
   snippetSchema,
@@ -120,6 +122,18 @@ const api: LocalScribeApi = {
       ipcRenderer.on(IPC.windowNavigate, wrapped);
       return () => ipcRenderer.removeListener(IPC.windowNavigate, wrapped);
     },
+    onVisibilityChanged: (listener) => {
+      const wrapped = (_event: Electron.IpcRendererEvent, visible: unknown) =>
+        listener(z.boolean().parse(visible));
+      ipcRenderer.on(IPC.windowVisibility, wrapped);
+      return () => ipcRenderer.removeListener(IPC.windowVisibility, wrapped);
+    },
+    onPillModeChanged: (listener) => {
+      const wrapped = (_event: Electron.IpcRendererEvent, mode: unknown) =>
+        listener(pillModeSchema.parse(mode));
+      ipcRenderer.on(IPC.windowPillMode, wrapped);
+      return () => ipcRenderer.removeListener(IPC.windowPillMode, wrapped);
+    },
   },
   system: {
     getPermissions: async () =>
@@ -129,6 +143,7 @@ const api: LocalScribeApi = {
     openPermission: async (kind) => ipcRenderer.invoke(IPC.systemOpenPermission, kind),
     appInfo: async () => appInfoSchema.parse(await ipcRenderer.invoke(IPC.systemAppInfo)),
     diagnostics: async () => diagnosticsSchema.parse(await ipcRenderer.invoke(IPC.systemDiagnostics)),
+    diagnosticsLog: async () => z.string().parse(await ipcRenderer.invoke(IPC.systemDiagnosticsLog)),
     modelCatalog: async () => modelCatalogSchema.parse(await ipcRenderer.invoke(IPC.systemModelCatalog)),
     addModelFamily: async (request) => {
       const input = modelFamilyLibraryRequestSchema.parse(request);

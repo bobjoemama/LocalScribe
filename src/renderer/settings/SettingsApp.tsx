@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { AppInfo } from "../../shared/contracts";
 import { HistoryScreen, InsightsScreen } from "./screens/HistoryInsights";
 import { DictionaryScreen, SnippetsScreen } from "./screens/LibraryNotes";
@@ -37,11 +37,26 @@ export function SettingsApp() {
     setSection(target);
   };
 
+  /*
+   * The dialog publishes its own dismissal gate here. Navigation used to close
+   * the dialog unconditionally, which meant every tray entry could unmount it
+   * in the middle of a model apply or install — the one path that bypassed the
+   * guard `closeSettings` already had. A refused dismissal leaves the hub on
+   * its current section too, because navigating behind a dialog that stayed
+   * open only makes the refusal harder to understand.
+   */
+  const dismissalGate = useRef<(() => boolean) | null>(null);
+  const registerDismissalGate = useCallback((gate: (() => boolean) | null) => {
+    dismissalGate.current = gate;
+  }, []);
+
   useEffect(() => window.localScribe.windows.onNavigate((target) => {
     if (target === "settings") {
       setSettingsOpen(true);
       return;
     }
+    // The gate is null whenever the dialog is closed, so this is a no-op then.
+    if (dismissalGate.current && !dismissalGate.current()) return;
     setSettingsOpen(false);
     openSection(target);
   }), []);
@@ -52,7 +67,14 @@ export function SettingsApp() {
 
   return (
     <main className="hub-shell">
-      <aside className="hub-sidebar">
+      {/*
+        * The settings dialog says aria-modal="true". `inert` is what makes that
+        * claim true for the keyboard as well as for assistive technology:
+        * without it the hub's navigation stayed in the tab order behind the
+        * backdrop, so Tab walked out of the modal and into content the dialog
+        * had just declared unavailable.
+        */}
+      <aside className="hub-sidebar" inert={settingsOpen}>
         <div className="window-drag-region" aria-hidden="true" />
         <button type="button" className="local-brand" onClick={() => openSection("dictation")} aria-label="Open LocalScribe dictation history">
           <span className="local-brand__mark">L</span>
@@ -94,7 +116,17 @@ export function SettingsApp() {
         </div>
       </aside>
 
-      <section className="hub-content" aria-live="polite">
+      {/*
+        * Deliberately not a live region. `aria-live="polite"` here wrapped all
+        * six screens, so VoiceOver re-read the entire filtered history on every
+        * search keystroke and spoke a whole screen on every sidebar
+        * navigation — and double-announced the role="alert" card in
+        * HistoryInsights, which blanks its own polite paragraph specifically to
+        * avoid that. Each screen already announces its own changes through
+        * targeted role="status" / role="alert" / aria-live elements; that is
+        * where an announcement can say what actually changed.
+        */}
+      <section className="hub-content" inert={settingsOpen}>
         {section === "dictation" && <HistoryScreen />}
         {section === "insights" && <InsightsScreen />}
         {section === "dictionary" && <DictionaryScreen />}
@@ -103,7 +135,12 @@ export function SettingsApp() {
         {section === "transforms" && <TransformsScreen />}
       </section>
 
-      {settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)} />}
+      {settingsOpen && (
+        <SettingsModal
+          onClose={() => setSettingsOpen(false)}
+          registerDismissalGate={registerDismissalGate}
+        />
+      )}
     </main>
   );
 }

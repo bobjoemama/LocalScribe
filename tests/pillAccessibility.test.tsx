@@ -57,7 +57,19 @@ describe("pill accessibility", () => {
     expect(css).toMatch(
       /body :where\(\*, \*::before, \*::after\)\s*\{ cursor: default !important; \}/,
     );
-    expect(css).toMatch(/textarea,[\s\S]*\{ cursor: text !important; \}/);
+    expect(css).toMatch(/textarea:not\(:disabled\),[\s\S]*\{ cursor: text !important; \}/);
     expect(css).not.toMatch(/cursor:\s*(?:pointer|wait|not-allowed)\s*!important/);
+    /*
+     * The I-beam must not be promised over a field that cannot be typed into.
+     * Because the rule is `!important`, a surface cannot opt out with a normal
+     * declaration — the scratchpad's `textarea:disabled { cursor: default }`
+     * was silently dead — so the exception belongs in this rule itself.
+     */
+    const ibeamSelector = css.slice(
+      css.indexOf("body :where(\n  input:not("),
+      css.indexOf("{ cursor: text !important; }"),
+    );
+    expect(ibeamSelector).toContain("textarea:not(:disabled)");
+    expect(ibeamSelector).toContain(":not(:disabled),\n");
   });
 });

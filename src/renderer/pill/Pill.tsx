@@ -7,10 +7,12 @@ import {
   type SessionSnapshot,
 } from "../../shared/contracts";
 import { ERROR_NOTICE_DURATION_MS, presentDictationError } from "../../shared/dictationErrors";
+import { selectableMicrophones } from "../../shared/microphones";
 import {
   pillErrorCountdownCssProperties,
   PILL_LAYOUT_CSS_PROPERTIES,
   type PillLayoutCssVariable,
+  rendererPillModeForMainMode,
 } from "../../shared/pillLayout";
 import {
   shortcutCompactLabel,
@@ -82,20 +84,7 @@ export async function listSelectableMicrophones(
   mediaDevices: Pick<MediaDevices, "enumerateDevices"> | undefined,
 ): Promise<MediaDeviceInfo[]> {
   if (!mediaDevices) throw new Error("Media device discovery is unavailable");
-  const devices = await mediaDevices.enumerateDevices();
-  const seen = new Set<string>();
-  return devices.filter((device) => {
-    if (
-      device.kind !== "audioinput"
-      || !device.deviceId
-      || device.deviceId === "default"
-      || seen.has(device.deviceId)
-    ) {
-      return false;
-    }
-    seen.add(device.deviceId);
-    return true;
-  });
+  return selectableMicrophones(await mediaDevices.enumerateDevices());
 }
 
 export function selectedMicrophoneIsUnavailable(
@@ -303,6 +292,8 @@ function IdlePill({
   const microphoneSelectionPending = useRef(false);
   const pointerInside = useRef(false);
   const pickerOpen = visualMode === "picker";
+  const visualModeRef = useRef(visualMode);
+  visualModeRef.current = visualMode;
   const loadingMicrophones = microphoneListStatus === "idle"
     || microphoneListStatus === "loading";
   const selectedMicrophoneUnavailable = microphoneListStatus === "ready"
@@ -348,6 +339,23 @@ function IdlePill({
       if (pointerInside.current) setVisualMode("hover");
     });
   };
+
+  /*
+   * Main owns the transparent window and resizes it from the real cursor
+   * position. Follow whatever it committed: a window that changes size under a
+   * stationary pointer does not produce pointerenter/pointerleave, so after
+   * main contracts on its own the expanded controls would otherwise stay
+   * mounted, clipped inside the 40x8 rail, with `pointerInside` still true.
+   *
+   * This never calls back into setPillMode — main is already there.
+   */
+  useEffect(() => window.localScribe.windows.onPillModeChanged((mode) => {
+    const next = rendererPillModeForMainMode(visualModeRef.current, mode);
+    if (next === visualModeRef.current) return;
+    pointerInside.current = next !== "collapsed";
+    if (next === "collapsed") setHoveredAction(null);
+    setVisualMode(next);
+  }), []);
 
   const hideControls = () => {
     pointerInside.current = false;
@@ -548,7 +556,9 @@ function ActivePill({
       <span className="pill__status-mark" aria-hidden="true">
         <CompactWave />
       </span>
-      <span className="pill__status-copy">{status}</span>
+      {/* The box is sized for the longest message the product composes, but a
+          future or localized string could still ellipsize; keep it readable. */}
+      <span className="pill__status-copy" title={status}>{status}</span>
       {(canAct || canCancel) && (
         <button
           className="pill__status-close"

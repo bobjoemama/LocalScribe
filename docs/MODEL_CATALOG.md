@@ -80,6 +80,49 @@ this signed build. It does not mean paste a Hugging Face repository or URL.
 Supporting user-supplied manifests would require a separate signed-catalog
 trust design and is deliberately not implemented.
 
+## Verification work and where it is authoritative
+
+Two independent parties hash artifacts, and they are not interchangeable.
+
+The **worker** hashes every manifest file of the artifact it is about to load,
+inside `_valid_model_directory`, on every `load_model`. That is the check that
+decides whether bytes enter memory, it is unconditional, and it is not cached.
+
+**Main** hashes artifacts to report status: the model library screen, the
+diagnostics payload, and the check that turns a failed Apply into "install this
+model" instead of a worker error. Those refreshes used to re-read the entire
+installed library every time — 2,373.8 ms for a 6.56 GB library on an M4 Max at
+2.57 GB/s, on the main thread. Main now memoizes a file's digest against its
+exact identity: device, inode, size, mtime, and ctime. Repeat refreshes of the
+same library measured 5.5 ms and 3.6 ms with byte-identical results.
+
+The identity key includes ctime, which the kernel stamps on any in-place write
+and which `utimes` cannot backdate, so a modified file cannot present the
+identity of the version that was hashed. Directory shape, symlink rejection,
+exact entry set, and exact file sizes are re-checked on every call regardless;
+only the content read is skipped. Nothing loads on the strength of a memoized
+digest, because the worker's own hash still runs first.
+
+**Apply** verifies only the artifact it is about to load. Verifying the whole
+family also hashed the tiers the user was switching away from, which could not
+change the outcome; on a family whose target tier is not installed that was
+1,112.9 ms of reads to reach the same "install this model" answer in 0.2 ms.
+
+## MLX memory between dictations
+
+The worker stays resident with the model warm, by design. MLX's buffer cache
+defaults to the device's recommended working set (48.96 GB was reported on the
+machine used here) and nothing trimmed it, so those scratch buffers accumulated
+for the life of the process: 5,884 MB after a 60 s dictation and 8,976 MB after
+a 600 s dictation on whisper-large-v3 fp16, held while the app was idle.
+
+The worker now calls `mx.clear_cache()` when a dictation finishes, on both the
+success and failure paths. Weights are untouched — active memory held at
+2,945 MB across every run — and inference time is unaffected: alternating the
+policy across nine 60 s runs inside one process measured 9.73–10.10 s
+regardless, because the cache refills during the next dictation. Only the idle
+footprint changes.
+
 ## Packaged manifest inventory
 
 Mac packages contain exactly these twelve MLX manifests:

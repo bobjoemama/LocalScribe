@@ -189,6 +189,19 @@ function renderModelSettings(overrides: Partial<ModelPerformanceSettingsProps> =
   return renderToStaticMarkup(<ModelPerformanceSettings {...props} />);
 }
 
+/** The opening tag of the single Apply button, so its state can be read. */
+function applyButtonTag(html: string): string {
+  const start = html.lastIndexOf("<button", html.indexOf("ls-model-apply-button"));
+  expect(start, "no Apply button in the rendered screen").toBeGreaterThanOrEqual(0);
+  return html.slice(start, html.indexOf(">", start) + 1);
+}
+
+/** Every Download / Repair / Remove button in the model library. */
+function storageButtonTags(html: string): string[] {
+  return [...html.matchAll(/<button[^>]*aria-label="(?:Download|Repair|Remove|Check \/ download)[^"]*"[^>]*>/gu)]
+    .map((match) => match[0]);
+}
+
 describe("ModelPerformanceSettings", () => {
   it("allows an exact verified persisted selection to load when its runtime is cold", () => {
     const eligibility = modelApplyEligibility({
@@ -209,10 +222,54 @@ describe("ModelPerformanceSettings", () => {
     expect(renderModelSettings({ currentModelLoaded: false })).toContain("Load current model");
   });
 
+  /*
+   * `expect(html).toContain("disabled")` used to stand in for this. It could
+   * not fail: the button always emits `aria-disabled`, so the substring is
+   * present whether the control is enabled or not. Read the button itself, and
+   * pin the enabled case alongside it so the assertion has a way to fail.
+   */
   it("keeps exact warm Apply idempotent", () => {
+    const warm = renderModelSettings({ currentModelLoaded: true });
+    expect(warm).toContain("Current model is loaded and ready.");
+    expect(applyButtonTag(warm)).toContain('disabled=""');
+    expect(applyButtonTag(warm)).toContain('aria-disabled="true"');
+
+    const changed = renderModelSettings({
+      pendingSelection: { familyId: "whisper-large-v3", performanceMode: "medium" },
+      mode: "medium",
+    });
+    expect(applyButtonTag(changed)).not.toContain('disabled=""');
+    expect(applyButtonTag(changed)).toContain('aria-disabled="false"');
+  });
+
+  /*
+   * Every other control goes inert during an Apply; the model library's
+   * Download/Repair/Remove buttons did not, so they advertised themselves as
+   * available while an unload/load ran. Main serialises model operations, so
+   * the click was never unsafe — it just silently queued.
+   */
+  it("takes the model library storage buttons out of service during an Apply", () => {
+    const idle = renderModelSettings({ applying: false });
+    const applying = renderModelSettings({ applying: true });
+
+    expect(storageButtonTags(idle).length).toBeGreaterThan(0);
+    expect(storageButtonTags(idle).some((tag) => tag.includes('disabled=""'))).toBe(false);
+    expect(storageButtonTags(applying).length).toBe(storageButtonTags(idle).length);
+    expect(storageButtonTags(applying).every((tag) => tag.includes('disabled=""'))).toBe(true);
+  });
+
+  /*
+   * Main keeps diagnostics observational and reports the unmodified free-memory
+   * reading, but the caption used to label that number "normalized for the warm
+   * model" — a different, larger figure that only exists inside apply
+   * eligibility. The readout and the Apply message then quoted two numbers the
+   * user could not reconcile.
+   */
+  it("does not describe the raw memory reading as normalized for the warm model", () => {
     const html = renderModelSettings({ currentModelLoaded: true });
-    expect(html).toContain("Current model is loaded and ready.");
-    expect(html).toContain("disabled");
+    expect(html).not.toContain("normalized for the warm model");
+    expect(html).not.toContain("Selection budget");
+    expect(html).toContain("Available now (a warm model is resident)");
   });
 
   it("enables one combined Apply only for a changed, verified, memory-eligible target", () => {

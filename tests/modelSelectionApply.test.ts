@@ -18,7 +18,10 @@ describe("atomic model selection architecture", () => {
     const probe = body.indexOf("await probeUnloadedAccelerator();", unload);
     const resolve = body.indexOf("targetResolution = resolveSelection", probe);
     const memory = body.indexOf("assertResolutionFitsMemory(targetResolution);", resolve);
-    const verify = body.indexOf("await verifyRuntimeModelCatalog", memory);
+    // Only the artifact being loaded gates the Apply; the other tiers of the
+    // family cannot change the outcome and hashing them cost gigabytes of reads.
+    const verify = body.indexOf("await verifyModelDirectory(modelRoot, targetResolution.tier.manifest)", memory);
+    expect(body).not.toContain("verifyRuntimeModelCatalog");
     const load = body.indexOf("await worker.ensureReady(workerSelection(targetResolution.tier));", verify);
     const persist = body.indexOf("const latestSettings = database.getSettings();", load);
     const notify = body.indexOf("notifySettingsChanged(settings);", persist);
@@ -83,6 +86,24 @@ describe("atomic model selection architecture", () => {
     expect(boundary).toContain("const liveSnapshot = await worker.deviceInfo();");
     expect(boundary).toContain("memorySnapshotWithoutWarmModel(liveSnapshot, cached)");
     expect(boundary).toContain("return cached;");
+    /*
+     * Auto is a memory-only policy, so a drift between dictations can land on a
+     * tier in the same family that was never downloaded. Switching kills the
+     * worker process before the load discovers the artifact is missing, so the
+     * user loses both the warm model and the dictation. The boundary must keep
+     * the warm tier instead.
+     */
+    expect(boundary).toContain("next.effectiveTier !== cached.effectiveTier");
+    /*
+     * This asserted `modelArtifactIsPresent(` while that function was still a
+     * size-only probe. A corrupted-in-place artifact keeps its size, so the
+     * guard passed, the warm model was killed by the switch, and the load then
+     * failed on the digest — costing the user both the model and the dictation.
+     * The guard now demands proof at the artifact's current file identity, and
+     * the weaker predicate must not come back here.
+     */
+    expect(boundary).toContain("modelArtifactIsVerifiedNow(");
+    expect(boundary).not.toContain("modelArtifactIsPresent(");
 
     const normalization = between(
       "function memorySnapshotWithoutWarmModel(",
@@ -92,12 +113,33 @@ describe("atomic model selection architecture", () => {
     expect(normalization).toContain("Math.min(");
   });
 
+  /*
+   * `worker.abort()` kills the worker process, so it discards the warm model.
+   * Cancel used to call it from "finalizing" and "inserting" too, where no
+   * transcribe request is in flight — the renderer is still encoding audio, or
+   * the worker has already returned — so pressing the pill's X cost a
+   * multi-gigabyte reload for nothing.
+   */
+  it("only kills the worker on cancel when a transcribe request is in flight", () => {
+    const cancel = between("handle(IPC.sessionCancel", "handle(IPC.sessionFail");
+    expect(cancel).toContain("insertion.cancelSession();");
+    expect(cancel).toContain('if (session.state === "transcribing") {');
+    expect(cancel).toContain('worker.abort("Dictation was cancelled")');
+    expect(cancel).not.toContain('session.state === "finalizing"');
+    expect(cancel).not.toContain('session.state === "inserting"');
+    expect(cancel).toContain('setSession({ state: "idle" })');
+  });
+
   it("keeps model-library storage operations from silently changing the active runtime", () => {
     const ipc = between("function registerIpc(): void", "function createTray(): Tray");
     const install = between("handle(IPC.systemInstallModel", "handle(IPC.systemRemoveModel");
     expect(install).toContain("replacesLoadedArtifact");
     expect(install).toContain("workerModelSelectionsMatch(warmSelection, workerSelection(modelResolution.tier))");
-    expect(install).toContain("worker.installModel(workerSelection(tier), { replacesLoadedArtifact })");
+    expect(install).toContain("worker.installModel(workerSelection(tier), {");
+    expect(install).toContain("replacesLoadedArtifact,");
+    // The install request budget scales with the artifact, so the size has to
+    // reach the supervisor with the request. See tests/workerSupervisor.test.ts.
+    expect(install).toContain("artifactBytes: Object.values(tier.manifest.files)");
 
     const remove = between("handle(IPC.systemRemoveModel", "\n  });\n}");
     expect(remove).toContain("Apply another model or performance tier before removing it");

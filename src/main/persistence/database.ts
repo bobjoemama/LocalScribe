@@ -67,6 +67,29 @@ interface ScratchpadNoteRow {
 const USER_ONLY_DIRECTORY_MODE = 0o700;
 const USER_ONLY_FILE_MODE = 0o600;
 
+/**
+ * Is this the failure of an unreadable stored record, or a bug in our own code?
+ *
+ * `tryDecrypt` used to catch everything, which made a programming fault
+ * indistinguishable from data this install can no longer read: a `TypeError`
+ * from a refactor would silently shrink every history, snippet, and scratchpad
+ * list instead of failing loudly, and the app would keep running while
+ * appearing to have lost the user's data.
+ *
+ * A genuine seal failure comes out of Electron's `safeStorage` (or the platform
+ * keystore beneath it) as a plain `Error`. The named JavaScript error types are
+ * programming faults by construction and are rethrown.
+ */
+export function isDecryptionFailure(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  return !(
+    error instanceof TypeError
+    || error instanceof RangeError
+    || error instanceof ReferenceError
+    || error instanceof SyntaxError
+  );
+}
+
 function bestEffortSetMode(targetPath: string, mode: number, expectedType: "directory" | "file"): void {
   let descriptor: number | undefined;
   try {
@@ -124,11 +147,29 @@ function hardenDatabasePermissions(databasePath: string): void {
 export class LocalDatabase {
   private readonly db: Database.Database;
 
+  /** Reads that hit a record this install could not decrypt. See tryDecrypt. */
+  private unreadableRecords = 0;
+
   constructor(path: string) {
     this.db = new Database(path);
     this.db.pragma("journal_mode = WAL");
     this.db.pragma("foreign_keys = ON");
     this.db.pragma("busy_timeout = 5000");
+    /*
+     * "Clear history" and the retention purge have to actually remove the
+     * transcript, not just unlink its row. SQLite's default is to leave the
+     * freed page contents in place, so every deleted transcript stayed in
+     * `localscribe.db` byte for byte until some later insert happened to reuse
+     * that page — a "Permanently delete encrypted transcripts" button that
+     * deleted nothing from the file. The stored values are ciphertext, so this
+     * is not a plaintext leak, but the app's own claim about deletion has to be
+     * true.
+     *
+     * `secure_delete` overwrites freed pages inside the delete itself, so it
+     * covers WAL frames too. It costs an extra write per freed page on delete;
+     * nothing measurable at this table size, and nothing at all on read.
+     */
+    this.db.pragma("secure_delete = ON");
     this.db.pragma("synchronous = NORMAL");
     this.migrate();
     this.normalizePersistedSettings();
@@ -149,32 +190,70 @@ export class LocalDatabase {
     const rows = this.db
       .prepare("SELECT * FROM transcriptions ORDER BY created_at DESC LIMIT ?")
       .all(bounded) as TranscriptionRow[];
-    return rows.map((row) => ({
-      id: row.id,
-      createdAt: row.created_at,
-      durationMs: row.duration_ms,
-      text: this.decrypt(row.text_encrypted),
-      language: row.language,
-      modelId: row.model_id,
-      status: row.status,
-      sourceAppId: row.source_app_id,
-    }));
+    return rows.flatMap((row) => {
+      const text = this.tryDecrypt(row.text_encrypted);
+      if (text === null) return [];
+      return [{
+        id: row.id,
+        createdAt: row.created_at,
+        durationMs: row.duration_ms,
+        text,
+        language: row.language,
+        modelId: row.model_id,
+        status: row.status,
+        sourceAppId: row.source_app_id,
+      }];
+    });
+  }
+
+  /*
+   * Counts and existence for the macOS application menu.
+   *
+   * The menu is rebuilt on every session transition — six times per dictation,
+   * on the thread that is also driving text insertion — and it needs three
+   * numbers: how many dictionary entries, how many snippets, and whether there
+   * is a transcript to copy. It was getting them by listing the tables, which
+   * decrypts every snippet expansion and one transcript to answer questions
+   * that no plaintext is needed for.
+   *
+   * `COUNT(*)` is also the more truthful answer: `listSnippets` drops a row it
+   * cannot decrypt, so a keychain problem quietly reduced the reported count
+   * rather than the snippets existing.
+   */
+  countDictionary(): number {
+    return (this.db
+      .prepare("SELECT COUNT(*) AS total FROM dictionary_entries")
+      .get() as { total: number }).total;
+  }
+
+  countSnippets(): number {
+    return (this.db
+      .prepare("SELECT COUNT(*) AS total FROM snippets")
+      .get() as { total: number }).total;
+  }
+
+  hasTranscriptions(): boolean {
+    return this.db.prepare("SELECT 1 FROM transcriptions LIMIT 1").get() !== undefined;
   }
 
   exportTranscriptions(): Transcription[] {
     const rows = this.db
       .prepare("SELECT * FROM transcriptions ORDER BY created_at DESC")
       .all() as TranscriptionRow[];
-    return rows.map((row) => ({
-      id: row.id,
-      createdAt: row.created_at,
-      durationMs: row.duration_ms,
-      text: this.decrypt(row.text_encrypted),
-      language: row.language,
-      modelId: row.model_id,
-      status: row.status,
-      sourceAppId: row.source_app_id,
-    }));
+    return rows.flatMap((row) => {
+      const text = this.tryDecrypt(row.text_encrypted);
+      if (text === null) return [];
+      return [{
+        id: row.id,
+        createdAt: row.created_at,
+        durationMs: row.duration_ms,
+        text,
+        language: row.language,
+        modelId: row.model_id,
+        status: row.status,
+        sourceAppId: row.source_app_id,
+      }];
+    });
   }
 
   saveTranscription(input: Omit<Transcription, "id" | "createdAt">): Transcription {
@@ -257,12 +336,16 @@ export class LocalDatabase {
     const rows = this.db
       .prepare("SELECT id, trigger, expansion_encrypted, created_at FROM snippets ORDER BY trigger")
       .all() as SnippetRow[];
-    return rows.map((row) => ({
-      id: row.id,
-      trigger: row.trigger,
-      expansion: this.decrypt(row.expansion_encrypted),
-      createdAt: row.created_at,
-    }));
+    return rows.flatMap((row) => {
+      const expansion = this.tryDecrypt(row.expansion_encrypted);
+      if (expansion === null) return [];
+      return [{
+        id: row.id,
+        trigger: row.trigger,
+        expansion,
+        createdAt: row.created_at,
+      }];
+    });
   }
 
   saveSnippet(input: Pick<Snippet, "trigger" | "expansion">): Snippet {
@@ -347,7 +430,11 @@ export class LocalDatabase {
          ORDER BY updated_at DESC, id DESC`,
       )
       .all() as ScratchpadNoteRow[];
-    return rows.map((row) => this.toScratchpadNote(row));
+    return rows.flatMap((row) => {
+      const body = this.tryDecrypt(row.body_encrypted);
+      if (body === null) return [];
+      return [this.buildScratchpadNote(row, body)];
+    });
   }
 
   createScratchpadNote(): ScratchpadNote {
@@ -379,14 +466,19 @@ export class LocalDatabase {
       .run(this.encrypt(body), now, id);
     if (result.changes === 0) throw new Error("Scratchpad note not found");
 
+    // Only `created_at` still has to be read back; the body is the caller's own
+    // plaintext, so decrypting the blob that was just sealed above would add a
+    // failure surface for a value already in hand.
     const row = this.db
-      .prepare(
-        `SELECT id, body_encrypted, created_at, updated_at
-         FROM scratchpad_notes
-         WHERE id = ?`,
-      )
-      .get(id) as ScratchpadNoteRow;
-    return this.toScratchpadNote(row);
+      .prepare("SELECT id, created_at FROM scratchpad_notes WHERE id = ?")
+      .get(id) as Pick<ScratchpadNoteRow, "id" | "created_at">;
+    return {
+      id: row.id,
+      body,
+      title: deriveScratchpadTitle(body),
+      createdAt: row.created_at,
+      updatedAt: now,
+    };
   }
 
   deleteScratchpadNote(id: string): void {
@@ -486,8 +578,84 @@ export class LocalDatabase {
     return safeStorage.decryptString(value);
   }
 
-  private toScratchpadNote(row: ScratchpadNoteRow): ScratchpadNote {
-    const body = this.decrypt(row.body_encrypted);
+  /**
+   * Decrypt a stored field, tolerating a record this install can no longer read.
+   *
+   * One unreadable row used to throw out of `listTranscriptions`, which blanked
+   * the entire history rather than losing one entry — so skipping is right. But
+   * skipping silently is its own defect: a history and an *export* both quietly
+   * became partial, and there was nothing anywhere to say so. An export that
+   * silently omits records is worse than one that fails, because the user keeps
+   * it and believes it is complete.
+   *
+   * So the skip is counted. `unreadableRecordCount()` feeds diagnostics and the
+   * affected screens, and `exportTranscriptions` refuses to pretend.
+   *
+   * Only a decryption failure is tolerated. A `TypeError` or any other
+   * programming fault is rethrown: swallowing those was how a code defect could
+   * masquerade as user data corruption and silently shrink every list in the
+   * app. Rows are never deleted here — unreadable data may become readable
+   * again once a keychain entry is restored.
+   */
+  private tryDecrypt(value: Buffer): string | null {
+    try {
+      return this.decrypt(value);
+    } catch (error) {
+      if (!isDecryptionFailure(error)) throw error;
+      this.unreadableRecords += 1;
+      // Never log the payload, encrypted or otherwise; only that one failed.
+      console.warn("LocalScribe could not decrypt a stored record");
+      return null;
+    }
+  }
+
+  /**
+   * How many stored records this process could not decrypt.
+   *
+   * Monotonic within a run and counts reads, not distinct rows: the same
+   * unreadable row seen by two list calls counts twice. It is a "something is
+   * wrong and here is roughly how much" signal for diagnostics, not an
+   * inventory.
+   */
+  unreadableRecordCount(): number {
+    return this.unreadableRecords;
+  }
+
+  /**
+   * Export, with an explicit statement about completeness.
+   *
+   * The caller must not be able to receive a silently short list, so the count
+   * of skipped records travels with the records themselves.
+   */
+  exportTranscriptionsWithIntegrity(): {
+    transcriptions: Transcription[];
+    skippedUnreadable: number;
+    complete: boolean;
+  } {
+    const before = this.unreadableRecords;
+    const rows = this.db
+      .prepare("SELECT * FROM transcriptions ORDER BY created_at DESC")
+      .all() as TranscriptionRow[];
+    const transcriptions: Transcription[] = [];
+    for (const row of rows) {
+      const text = this.tryDecrypt(row.text_encrypted);
+      if (text === null) continue;
+      transcriptions.push({
+        id: row.id,
+        createdAt: row.created_at,
+        durationMs: row.duration_ms,
+        text,
+        language: row.language,
+        modelId: row.model_id,
+        status: row.status,
+        sourceAppId: row.source_app_id,
+      });
+    }
+    const skippedUnreadable = this.unreadableRecords - before;
+    return { transcriptions, skippedUnreadable, complete: skippedUnreadable === 0 };
+  }
+
+  private buildScratchpadNote(row: ScratchpadNoteRow, body: string): ScratchpadNote {
     return {
       id: row.id,
       body,

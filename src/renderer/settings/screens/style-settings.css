@@ -100,14 +100,23 @@
   padding: 17px;
   text-align: left;
   cursor: pointer;
-  transition: border-color .15s, background .15s, transform .15s;
+  transition: border-color .15s, background .15s, box-shadow .15s;
 }
 
+/*
+ * The hover affordance must not change the card's geometry. A 1px lift moved
+ * the card's bottom edge above a pointer resting in its lowest row, which
+ * dropped :hover, which animated the card back down under the pointer, which
+ * re-triggered :hover — a continuous 1px jitter with the border and background
+ * strobing, over the 12px grid gap that guarantees empty space below every
+ * card. A shadow reads the same and takes part in neither layout nor hit
+ * testing.
+ */
 .ls-tone-card:hover,
 .ls-cleanup-card:hover,
-.ls-transform-card:hover { border-color: #cfc9c1; background: #fdfcfb; transform: translateY(-1px); }
+.ls-transform-card:hover { border-color: #cfc9c1; background: #fdfcfb; box-shadow: 0 2px 7px rgba(38, 33, 28, .09); }
 .ls-tone-card--preview { cursor: default; }
-.ls-tone-card--preview:hover { border-color: var(--ls-line); background: #fff; transform: none; }
+.ls-tone-card--preview:hover { border-color: var(--ls-line); background: #fff; box-shadow: none; }
 .ls-tone-card--unavailable { opacity: .68; }
 .ls-tone-card--preview .ls-status-chip { display: flex; width: fit-content; margin-bottom: 13px; }
 .ls-tone-card.is-selected,
@@ -182,7 +191,7 @@
 .ls-transform-card { min-height: 224px; }
 .ls-transform-card:disabled { color: inherit; }
 .ls-transform-card.is-unavailable { cursor: default; opacity: .68; }
-.ls-transform-card.is-unavailable:hover { border-color: var(--ls-line); background: #fff; transform: none; }
+.ls-transform-card.is-unavailable:hover { border-color: var(--ls-line); background: #fff; box-shadow: none; }
 .ls-transform-card .ls-status-chip { position: absolute; top: 16px; right: 16px; }
 .ls-transform-icon { display: grid; place-items: center; width: 36px; height: 36px; margin-bottom: 22px; border-radius: 10px; background: #f0eeea; }
 .ls-transform-icon svg { width: 18px; }
@@ -245,11 +254,25 @@
 .ls-settings-local > span { width: 6px; height: 6px; border-radius: 50%; background: #399b86; }
 .ls-settings-local small { grid-column: 2; color: #8b867f; font-size: 10px; font-weight: 400; }
 
-.ls-settings-main { min-width: 0; min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; overflow: hidden; background: #fff; }
-.ls-settings-header { display: flex; align-items: flex-start; justify-content: space-between; border-bottom: 1px solid #ede9e4; padding: 20px 24px 15px; }
+/*
+ * The single implicit column used to be `auto`, sized from the footer's
+ * content: a long status (`Could not save settings: <160 chars>`, or
+ * `Exported to <path>`) is `white-space: nowrap`, so the track grew to the
+ * unwrapped string and `overflow: hidden` here clipped Cancel, Save changes,
+ * and the close button off the modal with no horizontal scroll owner.
+ * Measured in Electron's Chromium at 1220x760 and 900x640: 445px of
+ * horizontal overflow at a 185-character status.
+ *
+ * The explicit `minmax(0, 1fr)` column and `min-width: 0` on `.ls-settings-footer`
+ * were each verified sufficient on their own; both are kept so neither the
+ * track definition nor the item minimum can silently regress alone.
+ */
+.ls-settings-main { min-width: 0; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr) auto; overflow: hidden; background: #fff; }
+.ls-settings-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; min-width: 0; border-bottom: 1px solid #ede9e4; padding: 20px 24px 15px; }
+.ls-settings-header > div { min-width: 0; }
 .ls-settings-header > div > span { color: #918b84; font-size: 10px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; }
 .ls-settings-header h1 { margin: 4px 0 0; font-size: 22px; line-height: 1.15; letter-spacing: -.025em; }
-.ls-close-button { display: grid; place-items: center; width: 29px; height: 29px; border-radius: 8px; background: #f3f1ed; color: #6f6a64 !important; }
+.ls-close-button { display: grid; place-items: center; flex: 0 0 auto; width: 29px; height: 29px; border-radius: 8px; background: #f3f1ed; color: #6f6a64 !important; }
 .ls-close-button:hover { background: #e9e6e1; color: #1e1d1b !important; }
 .ls-close-button svg { width: 15px; }
 .ls-settings-scroll { min-width: 0; min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; padding: 22px 24px 38px; }
@@ -560,8 +583,9 @@
 .ls-data-actions strong { font-size: 10px; }
 .ls-data-actions small { color: #8b857e; font-size: 10px; }
 
-.ls-settings-footer { display: flex; align-items: center; justify-content: flex-end; gap: 8px; border-top: 1px solid #e9e5df; background: #fbfaf8; padding: 11px 16px; }
-.ls-settings-footer > span { flex: 1; overflow: hidden; color: #3e786e; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.ls-settings-footer { display: flex; align-items: center; justify-content: flex-end; gap: 8px; min-width: 0; border-top: 1px solid #e9e5df; background: #fbfaf8; padding: 11px 16px; }
+.ls-settings-footer > span { flex: 1; min-width: 0; overflow: hidden; color: #3e786e; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.ls-settings-footer > button { flex: 0 0 auto; }
 .ls-settings-footer > span.is-error { color: #a34439; }
 
 /* Keep every functional label readable at normal desktop viewing distance. */
@@ -636,4 +660,22 @@
     padding: 7px 0;
   }
   .ls-model-tier-facts > div:last-child { border-bottom: 0; }
+}
+
+/*
+ * This stylesheet owns the settings surface, which previously honoured no
+ * reduced-motion preference at all. The tone/cleanup/transform cards lift on
+ * hover and the toggle knob slides, both of which are motion.
+ */
+@media (prefers-reduced-motion: reduce) {
+  .ls-tone-card,
+  .ls-cleanup-card,
+  .ls-transform-card,
+  .ls-shortcut-recorder__button,
+  .ls-switch,
+  .ls-switch::after { transition: none; }
+  /*
+   * The cards no longer move on hover — see .ls-transform-card:hover — so the
+   * only motion left to still is the colour/shadow transition above.
+   */
 }

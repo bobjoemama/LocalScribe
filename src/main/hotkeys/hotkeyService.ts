@@ -166,6 +166,36 @@ export class HotkeyService {
     return this.mode === "full" || this.fallbackMonitorStarted;
   }
 
+  /**
+   * Did the toggle accelerator actually get registered?
+   *
+   * `start()` deliberately does not throw when it cannot claim the toggle — a
+   * shortcut another app took while LocalScribe was closed must not stop
+   * push-to-talk from working. But the failure then went nowhere: it was stored
+   * privately, `console.warn`ed to a stdout that is /dev/null in the packaged
+   * app, and `start()` returned normally, so main recorded the startup as
+   * `hotkey/global_register: ok`. Meanwhile the tray menu still displayed the
+   * accelerator and Settings still advised the user to "use the toggle
+   * shortcut". Pressing it did nothing, with no surface anywhere reporting why.
+   *
+   * Neither existing signal covers this: `isGlobalHoldReady` is about the hold
+   * key's hook, and is true in exactly the situation where the toggle is dead.
+   */
+  isToggleReady(): boolean {
+    return this.toggleRegistered;
+  }
+
+  /**
+   * Why the toggle is unavailable, or null when it is fine.
+   *
+   * Deliberately not routed into diagnostics: the message can embed an error
+   * string from `globalShortcut.register`. Diagnostics gets a code; this is for
+   * the user's own screen.
+   */
+  toggleUnavailableReason(): string | null {
+    return this.toggleRegistered ? null : this.toggleRegistrationFailure;
+  }
+
   private startFull(requireToggle: boolean): void {
     if (this.mode === "full") return;
     if (this.mode === "fallback") {

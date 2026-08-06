@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -198,5 +199,63 @@ describe("runtime core SBOM generation", () => {
         ),
       ).toThrow(/pins disagree/u);
     }
+  });
+});
+
+/*
+ * `cpython@3.12.13` does not identify a build. `uv python install 3.12.13`
+ * resolves to a python-build-standalone release, and two releases can both call
+ * themselves 3.12.13 while shipping different binaries — so a version-only
+ * component cannot answer "which interpreter shipped in this app?" or be used
+ * to check one. The macOS component carries the release tag and a digest of the
+ * interpreter that was actually bundled.
+ */
+describe("bundled CPython distribution identity", () => {
+  it("names the exact python-build-standalone build and hashes the shipped interpreter", () => {
+    const bom = runtimeSbom("macos") as { components?: unknown };
+    const components = Array.isArray(bom.components) ? bom.components : [];
+    const cpython = components.find(
+      (component) => (component as { name?: unknown }).name === "CPython",
+    ) as {
+      hashes?: { alg?: string; content?: string }[];
+      properties?: { name?: string; value?: string }[];
+    } | undefined;
+    expect(cpython, "the runtime SBOM has no CPython component").toBeDefined();
+
+    const property = (name: string): string | undefined =>
+      cpython?.properties?.find((entry) => entry.name === name)?.value;
+    const distribution = property("com.localscribe.cpython-distribution");
+    expect(distribution).toBe("cpython-3.12.13-macos-aarch64-none");
+    expect(property("com.localscribe.cpython-build-tag")).toMatch(/^\d{8}$/u);
+
+    const digest = cpython?.hashes?.find((entry) => entry.alg === "SHA-256")?.content;
+    expect(digest, "the CPython component carries no interpreter digest").toMatch(
+      /^[0-9a-f]{64}$/u,
+    );
+    // Verified against the interpreter on disk, not merely well-formed.
+    const interpreter = resolve(
+      root,
+      "resources/python-runtime",
+      String(distribution),
+      "bin/python3.12",
+    );
+    expect(digest).toBe(
+      createHash("sha256").update(readFileSync(interpreter)).digest("hex"),
+    );
+    expect(readFileSync(resolve(root, "resources/python-runtime", String(distribution), "BUILD"), "utf8").trim())
+      .toBe(property("com.localscribe.cpython-build-tag"));
+  });
+
+  it("refuses a distribution directory with no release tag", async () => {
+    const module = await import(
+      pathToFileURL(resolve(root, "scripts/generate-runtime-sbom.mjs")).href
+    ) as { bundledCPythonDistribution: (input: unknown) => unknown };
+
+    expect(() => module.bundledCPythonDistribution({
+      runtimeRoot: "/does-not-matter",
+      version: "3.12.13",
+      readBuildTag: () => "not-a-release-tag",
+      readInterpreter: () => Buffer.from("interpreter"),
+    })).toThrow(/no python-build-standalone release tag/u);
   });
 });

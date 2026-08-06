@@ -1,7 +1,7 @@
 import path from "node:path";
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
-import { rm, writeFile } from "node:fs/promises";
+import { mkdir, rm, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import {
   app,
@@ -14,11 +14,15 @@ import {
   nativeImage,
   protocol,
   screen,
+  // `session` is this file's dictation-session state; the Electron export is
+  // only ever the default partition, so it is named for what it is used for.
+  session as electronSession,
   shell,
   systemPreferences,
   Tray,
   type IpcMainInvokeEvent,
   type MenuItemConstructorOptions,
+  type WebContents,
 } from "electron";
 import { z } from "zod";
 import {
@@ -46,6 +50,17 @@ import {
   type PillMode,
   type SessionSnapshot,
 } from "./shared/contracts";
+import { modelPerformanceTierLabel } from "./shared/modelPerformance";
+import { transcribeAudioAdmission } from "./shared/dictationSession";
+import { discardAudio, prepareTranscription } from "./main/session/transcribePrelude";
+import { createFinalizeWatchdog } from "./main/session/finalizeWatchdog";
+import { createNoticeTimer } from "./main/session/noticeTimer";
+import { normalizeDiagnosticCode } from "./shared/diagnosticsLog";
+import {
+  DiagnosticsRecorder,
+  nullDiagnosticsRecorder,
+  type DiagnosticsSink,
+} from "./main/diagnostics/diagnosticsRecorder";
 import { shortcutValidationRequestSchema } from "./shared/shortcuts";
 import {
   applySettingsPatchTransaction,
@@ -66,10 +81,13 @@ import { InsertionService } from "./main/insertion/insertionService";
 import { buildDictionaryAsrContext } from "./shared/dictionaryContext";
 import { applyLocalTextRules } from "./shared/textPipeline";
 import { transformDictation } from "./shared/text";
-import { ERROR_NOTICE_DURATION_MS, normalizeDictationErrorMessage } from "./shared/dictationErrors";
+import { normalizeDictationErrorMessage } from "./shared/dictationErrors";
 import {
   loadRuntimePlatformModelCatalog,
+  modelArtifactIsVerifiedNow,
+  type ModelSpec,
   resolveModelPerformance,
+  verifyModelDirectory,
   verifyRuntimeModelCatalog,
   type ModelPerformanceResolution,
   type RuntimeModelCatalog,
@@ -93,9 +111,9 @@ import {
 } from "./main/platformCapabilities";
 import { SETTINGS_WINDOW_LAYOUT } from "./shared/windowLayout.mts";
 import {
-  PILL_HOVER_HIT_PADDING,
   PILL_LAYOUT,
   PILL_WINDOW_BOTTOM_MARGIN,
+  pillHoverModeForPointer,
   pillSizeFor,
 } from "./shared/pillLayout";
 import {
@@ -104,6 +122,8 @@ import {
   resolvePackagedRendererPath,
   type RendererSurface,
 } from "./main/rendererProtocol";
+import { rendererPermissionAllowed } from "./main/rendererPermissions";
+import { writePrivateFile } from "./main/persistence/privateFile";
 import {
   cleanStaleAudioCaches,
   createAudioCache,
@@ -145,8 +165,47 @@ let hotkeys: HotkeyService;
 let tray: Tray | null = null;
 let pillDisplayTimer: NodeJS.Timeout | null = null;
 let accessibilityTimer: NodeJS.Timeout | null = null;
-let errorDismissTimer: NodeJS.Timeout | null = null;
+/** One timer factory for both session watchdogs, so neither can hold the event loop open. */
+function unrefTimer(callback: () => void, milliseconds: number): { cancel(): void } {
+  const timer = setTimeout(callback, milliseconds);
+  timer.unref();
+  return { cancel: () => clearTimeout(timer) };
+}
+/*
+ * `finalizing` is the only dictation state main cannot leave on its own, so it
+ * is the only one that could wedge the app until restart. See
+ * ./main/session/finalizeWatchdog.
+ */
+const finalizeWatchdog = createFinalizeWatchdog({
+  setTimer: unrefTimer,
+  currentSession: () => session,
+  fail: (reason) => {
+    failSession(reason);
+  },
+  record: (event) => diagnostics.record(event),
+});
+/*
+ * `success` and `error` are notices that have to clear themselves. See
+ * ./main/session/noticeTimer for why arming them from the transition rather
+ * than from the caller is what keeps a failed database write from stranding
+ * the session in `success`.
+ */
+const noticeTimer = createNoticeTimer({
+  setTimer: unrefTimer,
+  currentSession: () => session,
+  dismiss: (state) => {
+    if (state === "error") insertion.cancelSession();
+    setSession({ state: "idle" });
+  },
+});
 let audioCacheRoot: string | null = null;
+/**
+ * Where dictation failures get recorded.
+ *
+ * Starts as the null sink so every call site can record unconditionally from
+ * the first line of startup, before the real recorder's directory is known.
+ */
+let diagnostics: DiagnosticsSink = nullDiagnosticsRecorder;
 let pillMode: PillMode = "collapsed";
 // Environment-selected executable helpers are a useful development seam, but
 // must never override the helper bundled into a packaged application.
@@ -408,6 +467,42 @@ async function refreshAutoResolutionAtRecordingBoundary(): Promise<ModelPerforma
     const next = await refreshModelResolution({
       memory: memorySnapshotWithoutWarmModel(liveSnapshot, cached),
     });
+    /*
+     * Auto's policy is memory-only, so freeing memory between dictations can
+     * drift the selection onto a tier in the same family whose artifact was
+     * never downloaded — tiers are separate downloads. Switching to it kills
+     * the worker process (the unload guarantee) and only then discovers the
+     * artifact is missing, so the user loses a working warm model and the
+     * dictation. Prefer the warm tier that demonstrably loads.
+     *
+     * The guard has to be proof, not a hint. It was a size-only probe, which a
+     * corrupted-in-place artifact passes: the warm model was then killed and
+     * the load failed on the digest, costing the user a working model and the
+     * dictation in progress. `modelArtifactIsVerifiedNow` answers only for
+     * artifacts a full SHA-256 pass already matched at exactly their current
+     * file identity, so "yes" means the load cannot fail verification, and
+     * "no" simply keeps the tier that is already working.
+     */
+    if (
+      next.effectiveTier !== cached.effectiveTier
+      && !(await modelArtifactIsVerifiedNow(
+        modelRootForUserData(app.getPath("userData")),
+        next.tier.manifest,
+      ))
+    ) {
+      console.warn(
+        `Auto resolved to the ${next.effectiveTier} tier, which is not verified at its current `
+        + `file identity; keeping the warm ${cached.effectiveTier} tier.`,
+      );
+      diagnostics.record({
+        stage: "model",
+        event: "auto_tier_held",
+        outcome: "skipped",
+        modelTier: next.effectiveTier,
+      });
+      modelResolution = cached;
+      return cached;
+    }
     if (next.fitsMemoryBudget) previousAutoTier = next.effectiveTier;
     return next;
   } catch (error) {
@@ -449,6 +544,31 @@ async function currentModelResolution(): Promise<ModelPerformanceResolution> {
     previousTier: previousAutoTier,
     activeDictationTier,
   });
+}
+
+/**
+ * The curated manifest a worker selection refers to, searched across every
+ * packaged family rather than only the active one.
+ *
+ * The supervisor's guard runs for restores and post-install reloads too, and
+ * those can name a family the user has since switched away from. Returning
+ * `null` for an unrecognised selection is deliberate: the guard then declines
+ * to block, leaving the worker's own digest verification as the authority. It
+ * must never invent a manifest, because a wrong manifest would either refuse a
+ * good model or bless a bad one.
+ */
+function manifestForWorkerSelection(selection: WorkerModelSelection): ModelSpec | null {
+  for (const family of Object.values(platformModelCatalog().families)) {
+    for (const candidate of Object.values(family.tiers)) {
+      if (
+        candidate.manifest.modelId === selection.modelId
+        && candidate.tier === selection.tier
+      ) {
+        return candidate.manifest;
+      }
+    }
+  }
+  return null;
 }
 
 function workerSelection(tier: RuntimeModelTierSpec): WorkerModelSelection {
@@ -493,15 +613,19 @@ function assertResolutionFitsMemory(resolution: ModelPerformanceResolution): voi
 }
 
 function resolutionReasonMessage(resolution: ModelPerformanceResolution): string {
+  // Never interpolate the raw tier enum: this string is rendered verbatim
+  // beside a heading that uses the product label, so "medium" next to
+  // "Medium" read as two different facts.
+  const tier = modelPerformanceTierLabel(resolution.effectiveTier);
   switch (resolution.reason) {
     case "explicit":
-      return `${resolution.effectiveTier} was selected explicitly.`;
+      return `${tier} was selected explicitly.`;
     case "dictation-active":
-      return `${resolution.effectiveTier} is pinned until the active dictation finishes.`;
+      return `${tier} is pinned until the active dictation finishes.`;
     case "auto-highest-fit":
-      return `Auto selected ${resolution.effectiveTier}, the highest tier that fits the current memory budget.`;
+      return `Auto selected ${tier}, the highest tier that fits the current memory budget.`;
     case "auto-hysteresis-hold":
-      return `Auto kept ${resolution.effectiveTier} to avoid switching after a small memory change.`;
+      return `Auto kept ${tier} to avoid switching after a small memory change.`;
     case "auto-insufficient-memory":
       return "Auto could not verify enough free accelerator memory. Dictation stays blocked until a tier fits.";
   }
@@ -520,6 +644,7 @@ async function collectDiagnosticsForResolution(
     architecture: process.arch,
     backend: model.backend,
     databaseIntegrity: database.integrityCheck(),
+    unreadableRecords: database.unreadableRecordCount(),
     model: {
       familyId: resolution.tier.familyId,
       artifactId: resolution.tier.artifactId,
@@ -617,6 +742,45 @@ function commonWebPreferences() {
   } as const;
 }
 
+/** Which of this app's three renderers a webContents belongs to, if any. */
+function surfaceForWebContents(contents: WebContents): RendererSurface | null {
+  for (const [surface, window] of [
+    ["pill", pillWindow],
+    ["settings", settingsWindow],
+    ["scratchpad", scratchpadWindow],
+  ] as const) {
+    if (window && !window.isDestroyed() && window.webContents.id === contents.id) return surface;
+  }
+  return null;
+}
+
+/**
+ * Close Chromium's default grant-everything permission manager.
+ *
+ * Without this, every renderer — including the Scratchpad, which needs none of
+ * them — is granted media, clipboard-read, notifications, openExternal,
+ * pointerLock, midi and window-management on request. See
+ * ./main/rendererPermissions for what each surface is allowed and why.
+ */
+function installPermissionHandlers(): void {
+  const defaultSession = electronSession.defaultSession;
+  defaultSession.setPermissionRequestHandler((contents, permission, callback) => {
+    callback(rendererPermissionAllowed(surfaceForWebContents(contents), permission));
+  });
+  // The synchronous sibling. A handler on only one of the two leaves the other
+  // answering from the default manager, which is the behaviour being replaced.
+  defaultSession.setPermissionCheckHandler((contents, permission) =>
+    contents !== null && rendererPermissionAllowed(surfaceForWebContents(contents), permission),
+  );
+  // Screen and window capture is never part of dictation. Denying the request
+  // outright is narrower than any permission answer, which only decides
+  // whether the picker appears.
+  defaultSession.setDisplayMediaRequestHandler(
+    (_request, callback) => callback({}),
+    { useSystemPicker: false },
+  );
+}
+
 function hardenWindow(window: BrowserWindow): void {
   window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   window.webContents.on("will-navigate", (event, url) => {
@@ -630,6 +794,28 @@ function hideWindowInsteadOfClosing(window: BrowserWindow): void {
     event.preventDefault();
     window.hide();
   });
+}
+
+/**
+ * Tell a renderer when its native window is actually shown or hidden.
+ *
+ * `commonWebPreferences()` sets `backgroundThrottling: false` so dictation
+ * timers stay accurate, but that also pins `document.visibilityState` to
+ * "visible" and keeps intervals running at full rate in a hidden window
+ * (verified in Electron 43). Closing a window only hides it, so a renderer
+ * that tries to gate background work on the Page Visibility API never stops.
+ * Main owns the real signal, so main sends it.
+ */
+function reportWindowVisibility(window: BrowserWindow): void {
+  const send = (visible: boolean) => {
+    if (window.isDestroyed() || window.webContents.isDestroyed()) return;
+    window.webContents.send(IPC.windowVisibility, visible);
+  };
+  window.on("show", () => send(true));
+  window.on("restore", () => send(true));
+  window.on("hide", () => send(false));
+  window.on("minimize", () => send(false));
+  window.webContents.on("did-finish-load", () => send(window.isVisible()));
 }
 
 function createSettingsWindow(): BrowserWindow {
@@ -647,6 +833,7 @@ function createSettingsWindow(): BrowserWindow {
   });
   window.removeMenu();
   hideWindowInsteadOfClosing(window);
+  reportWindowVisibility(window);
   hardenWindow(window);
   void window.loadURL(rendererUrl("settings"));
   window.once("ready-to-show", () => window.show());
@@ -726,21 +913,41 @@ function resizePill(): void {
   positionPill(pillWindow);
 }
 
-function pointInside(bounds: Electron.Rectangle, point: Electron.Point, padding: number): boolean {
-  return point.x >= bounds.x - padding
-    && point.x < bounds.x + bounds.width + padding
-    && point.y >= bounds.y - padding
-    && point.y < bounds.y + bounds.height + padding;
+/** Where the pill window sits for a given size, without moving the window. */
+function pillBoundsFor(size: { width: number; height: number }, cursor: Electron.Point): Electron.Rectangle {
+  const { workArea } = screen.getDisplayNearestPoint(cursor);
+  return {
+    x: Math.round(workArea.x + (workArea.width - size.width) / 2),
+    y: Math.round(workArea.y + workArea.height - size.height - PILL_WINDOW_BOTTOM_MARGIN),
+    width: size.width,
+    height: size.height,
+  };
 }
 
-function bootstrapPillHover(): void {
+function followPillHover(): void {
   if (!pillWindow || pillWindow.isDestroyed() || !pillWindow.isVisible()) return;
-  if (session.state !== "idle" || pillMode !== "collapsed") return;
-  if (!pointInside(pillWindow.getBounds(), screen.getCursorScreenPoint(), PILL_HOVER_HIT_PADDING)) return;
-  // Only enlarge the transparent native surface here. The renderer still owns
+  if (session.state !== "idle") return;
+  const cursor = screen.getCursorScreenPoint();
+  // Only resize the transparent native surface here. The renderer still owns
   // when expanded controls become visible and hides them before contracting.
-  pillMode = "hover";
+  const next = pillHoverModeForPointer({
+    mode: pillMode,
+    cursor,
+    windowBounds: pillWindow.getBounds(),
+    hoverBounds: pillBoundsFor(PILL_LAYOUT.idle.hover, cursor),
+  });
+  if (next === pillMode) return;
+  pillMode = next;
   resizePill();
+  /*
+   * Tell the renderer what main just did. Resizing a window under a stationary
+   * pointer does not synthesize pointerenter/pointerleave, so after main
+   * contracts on its own — most visibly right after a microphone is chosen,
+   * when the pointer is left where the 212px-tall picker used to be — the
+   * renderer would otherwise keep the expanded controls mounted and clipped
+   * inside a 40x8 window, with its own `pointerInside` still true.
+   */
+  pillWindow.webContents.send(IPC.windowPillMode, pillMode);
 }
 
 function startPillDisplayFollowing(): void {
@@ -748,7 +955,7 @@ function startPillDisplayFollowing(): void {
   pillDisplayTimer = setInterval(() => {
     if (pillWindow && !pillWindow.isDestroyed() && pillWindow.isVisible()) {
       positionPill(pillWindow);
-      bootstrapPillHover();
+      followPillHover();
     }
   }, 75);
   pillDisplayTimer.unref();
@@ -817,10 +1024,6 @@ function syncPillVisibility(): void {
 }
 
 function setSession(next: SessionSnapshot): SessionSnapshot {
-  if (errorDismissTimer) {
-    clearTimeout(errorDismissTimer);
-    errorDismissTimer = null;
-  }
   const normalized = next.state === "error"
     ? { ...next, message: normalizeDictationErrorMessage(next.message) }
     : next;
@@ -837,16 +1040,10 @@ function setSession(next: SessionSnapshot): SessionSnapshot {
     if (window && !window.isDestroyed()) window.webContents.send(IPC.sessionChanged, session);
   }
   syncPillVisibility();
-  if (session.state === "error") {
-    const message = session.message;
-    errorDismissTimer = setTimeout(() => {
-      errorDismissTimer = null;
-      if (session.state !== "error" || session.message !== message) return;
-      insertion.cancelSession();
-      setSession({ state: "idle" });
-    }, ERROR_NOTICE_DURATION_MS);
-    errorDismissTimer.unref();
-  }
+  // Arms on entry to finalizing and disarms on every other transition.
+  finalizeWatchdog.observe(session);
+  // Arms on entry to success/error and disarms on every other transition.
+  noticeTimer.observe(session);
   return session;
 }
 
@@ -854,6 +1051,7 @@ function failSession(error: unknown): SessionSnapshot {
   insertion.cancelSession();
   return setSession({ state: "error", message: normalizeDictationErrorMessage(error) });
 }
+
 
 function notifyHistoryChanged(): void {
   if (settingsWindow && !settingsWindow.isDestroyed()) {
@@ -918,6 +1116,15 @@ function beginListening(activation: "hold" | "toggle" = "toggle"): SessionSnapsh
   insertion.beginSession();
   positionPill(pillWindow!);
   pillWindow?.showInactive();
+  diagnostics.record({
+    stage: "session",
+    event: "begin_listening",
+    outcome: "ok",
+    sessionId,
+    hotkeyMode: activation,
+    modelFamily: database.getSettings().activeModelFamilyId,
+    modelTier: activeDictationTier ?? undefined,
+  });
   return setSession({
     state: "listening",
     sessionId,
@@ -1025,8 +1232,10 @@ async function applyModelSelection(
       assertResolutionFitsMemory(targetResolution);
 
       const modelRoot = modelRootForUserData(app.getPath("userData"));
-      const verifications = await verifyRuntimeModelCatalog(modelRoot, targetCatalog);
-      const targetVerification = verifications[targetResolution.effectiveTier];
+      // Only the artifact about to be loaded gates the Apply. Verifying the whole
+      // family here also hashed the tiers the user is switching away from —
+      // gigabytes of reads that could not change the outcome.
+      const targetVerification = await verifyModelDirectory(modelRoot, targetResolution.tier.manifest);
       if (!targetVerification.verified || targetVerification.verificationStatus !== "verified") {
         const action = targetVerification.present ? "repair" : "install";
         throw new Error(
@@ -1109,11 +1318,17 @@ function registerIpc(): void {
   handle(IPC.sessionCancel, () => {
     insertion.cancelSession();
     activeSessionId = null;
-    if (
-      session.state === "finalizing"
-      || session.state === "transcribing"
-      || session.state === "inserting"
-    ) {
+    /*
+     * `abort()` kills the worker process — the unload guarantee — so it costs a
+     * multi-gigabyte model reload on the next dictation. Only "transcribing"
+     * has a transcribe request actually in flight: in "finalizing" the renderer
+     * is still encoding WAV audio and nothing has been sent, and in "inserting"
+     * the worker already returned its final result. Cancelling from either of
+     * those was discarding a warm model for nothing, against the invariant that
+     * an applied model stays warm between dictations. The session teardown
+     * above is what those states actually need.
+     */
+    if (session.state === "transcribing") {
       worker.abort("Dictation was cancelled");
     }
     return setSession({ state: "idle" });
@@ -1121,16 +1336,33 @@ function registerIpc(): void {
   handle(IPC.sessionFail, (_event, message: unknown) => failSession(message));
 
   handle(IPC.sessionTranscribe, async (_event, rawInput: unknown) => {
-    const input = transcribeAudioSchema.parse(rawInput);
-    if (session.state !== "finalizing" || session.sessionId !== input.sessionId) {
-      throw new Error("Rejected audio from an inactive dictation session");
-    }
-    assertActiveSession(input.sessionId);
-    const settings = database.getSettings();
-    const cacheRoot = audioCacheRoot;
-    if (!cacheRoot) throw new Error("Private audio storage is not ready.");
-    const audioPath = path.join(cacheRoot, `${randomUUID()}.wav`);
-    await writeFile(audioPath, new Uint8Array(input.wav), { mode: 0o600, flag: "wx" });
+    /*
+     * The renderer deliberately swallows this channel's rejection — main owns
+     * transcription failures — so anything that throws before the "transcribing"
+     * transition has to surface the failure itself. That whole stretch lives in
+     * `prepareTranscription` so its ordering guarantees can be tested with
+     * injected write and remove failures rather than asserted from source text.
+     */
+    const { input, settings, cacheRoot, audioPath } = await prepareTranscription(rawInput, {
+      parse: (raw) => transcribeAudioSchema.parse(raw),
+      admits: (sessionId) => transcribeAudioAdmission({
+        activeSessionId,
+        sessionState: session.state,
+        snapshotSessionId: session.sessionId,
+        sessionId,
+      }) === "accept",
+      isFinalizing: () => session.state === "finalizing",
+      readSettings: () => database.getSettings(),
+      audioCacheRoot: () => audioCacheRoot,
+      newAudioPath: (root) => path.join(root, `${randomUUID()}.wav`),
+      writeAudio: async (target, wav) => {
+        await writeFile(target, new Uint8Array(wav), { mode: 0o600, flag: "wx" });
+      },
+      removeAudio: (target) => rm(target, { force: true }),
+      failSession,
+      record: (event) => diagnostics.record(event),
+      errorCode: normalizeDiagnosticCode,
+    });
     setSession({
       state: "transcribing",
       sessionId: input.sessionId,
@@ -1148,6 +1380,7 @@ function registerIpc(): void {
         allowedRoot: cacheRoot,
         language: settings.language,
         context: terms,
+        durationMs: input.durationMs,
       });
       assertActiveSession(input.sessionId);
       const targetAppId = await insertion.targetAppId();
@@ -1228,18 +1461,38 @@ function registerIpc(): void {
           };
       const purged = database.purgeExpiredTranscriptions(settings.historyRetentionDays);
       if (settings.keepHistory || purged > 0) notifyHistoryChanged();
-      const completedSessionId = input.sessionId;
-      setTimeout(() => {
-        if (session.state === "success" && session.sessionId === completedSessionId) {
-          setSession({ state: "idle" });
-        }
-      }, 1_400);
+      diagnostics.record({
+        stage: "worker",
+        event: "transcribe",
+        outcome: "ok",
+        sessionId: input.sessionId,
+        durationMs: input.durationMs,
+        modelFamily: settings.activeModelFamilyId,
+        modelTier: resolution.effectiveTier,
+      });
+      // The return to idle is armed by `setSession` on entry to success, so
+      // nothing between there and here can leave the session stranded.
       return record;
     } catch (error) {
       if (activeSessionId === input.sessionId) failSession(error);
+      diagnostics.record({
+        stage: "worker",
+        event: "transcribe",
+        outcome: "failed",
+        sessionId: input.sessionId,
+        durationMs: input.durationMs,
+        detail: normalizeDiagnosticCode(error),
+      });
       throw error;
     } finally {
-      await rm(audioPath, { force: true });
+      // Never `await rm` directly here: this `finally` runs on the success path
+      // too, and a rejecting cleanup would reject an IPC call whose dictation
+      // had already been inserted and persisted.
+      await discardAudio(audioPath, {
+        removeAudio: (target) => rm(target, { force: true }),
+        record: (event) => diagnostics.record(event),
+        errorCode: normalizeDiagnosticCode,
+      }, input.sessionId);
     }
   });
 
@@ -1262,10 +1515,40 @@ function registerIpc(): void {
       ? await dialog.showSaveDialog(settingsWindow, options)
       : await dialog.showSaveDialog(options);
     if (result.canceled || !result.filePath) return null;
-    await writeFile(result.filePath, `${JSON.stringify(database.exportTranscriptions(), null, 2)}\n`, {
-      mode: 0o600,
-      flag: "w",
-    });
+    /*
+     * An export that silently omits records is worse than one that fails: the
+     * user keeps the file and believes it is their complete history. Records
+     * this install can no longer decrypt are still skipped — they cannot be
+     * written — but the file says so, at the top level, where anything reading
+     * it will see it.
+     */
+    const exported = database.exportTranscriptionsWithIntegrity();
+    if (!exported.complete) {
+      diagnostics.record({
+        stage: "lifecycle",
+        event: "history_export_partial",
+        outcome: "failed",
+        count: exported.skippedUnreadable,
+      });
+    }
+    const payload = {
+      exportedAt: new Date().toISOString(),
+      complete: exported.complete,
+      skippedUnreadableRecords: exported.skippedUnreadable,
+      ...(exported.complete
+        ? {}
+        : {
+          note:
+            "Some records could not be decrypted on this machine and are not included. "
+            + "They remain in the database and may be readable again once the original "
+            + "system keystore entry is available.",
+        }),
+      transcriptions: exported.transcriptions,
+    };
+    // Every transcript in this file is decrypted plaintext, so it is written
+    // through the helper that tightens an existing target's permissions rather
+    // than inheriting them. See ./main/persistence/privateFile.
+    await writePrivateFile(result.filePath, `${JSON.stringify(payload, null, 2)}\n`);
     return result.filePath;
   });
 
@@ -1395,6 +1678,7 @@ function registerIpc(): void {
       accessibilityGranted,
       hotkeys?.isGlobalHoldReady() ?? false,
       automaticPasteReady,
+      hotkeys?.isToggleReady() ?? false,
     );
   });
   handle(IPC.systemGetLaunchAtLoginStatus, () => launchAtLoginStatusFor(
@@ -1420,6 +1704,7 @@ function registerIpc(): void {
     platform: runtimePlatformFor(process.platform),
   }));
   handle(IPC.systemDiagnostics, () => collectDiagnostics());
+  handle(IPC.systemDiagnosticsLog, () => diagnostics.read());
   handle(IPC.systemModelCatalog, () => collectModelCatalog());
   handle(IPC.systemAddModelFamily, async (_event, rawRequest: unknown) => {
     const request = modelFamilyLibraryRequestSchema.parse(rawRequest);
@@ -1468,7 +1753,14 @@ function registerIpc(): void {
         modelRoot,
         model: tier.manifest,
         replaceExisting: request.replaceExisting,
-        install: () => worker.installModel(workerSelection(tier), { replacesLoadedArtifact }),
+        install: () => worker.installModel(workerSelection(tier), {
+          replacesLoadedArtifact,
+          // The request budget is derived from the artifact's own size; see
+          // installTimeoutMs. A flat cap made the largest tiers uninstallable
+          // on any link slower than about 21 Mbit/s.
+          artifactBytes: Object.values(tier.manifest.files)
+            .reduce((sum, file) => sum + file.bytes, 0),
+        }),
       });
       return collectDiagnostics();
     });
@@ -1529,6 +1821,11 @@ function createTray(): Tray {
 function installApplicationMenu(): void {
   if (process.platform !== "darwin") return;
 
+  /*
+   * Read lazily, inside the click handler. Building the menu must not decrypt
+   * anything: this runs on every session transition, six times per dictation,
+   * on the thread that is inserting text into the user's app.
+   */
   const latest = () => database.listTranscriptions(1)[0];
   const toggleShortcut = database.getSettings().toggleShortcut;
   const template: MenuItemConstructorOptions[] = [
@@ -1560,7 +1857,7 @@ function installApplicationMenu(): void {
         {
           label: "Copy Last Transcript",
           accelerator: "CommandOrControl+Shift+C",
-          enabled: Boolean(latest()),
+          enabled: database.hasTranscriptions(),
           click: () => {
             const transcript = latest();
             if (transcript) clipboard.writeText(transcript.text);
@@ -1573,8 +1870,8 @@ function installApplicationMenu(): void {
     {
       label: "My Voice",
       submenu: [
-        { label: `${database.listDictionary().length} dictionary entries`, enabled: false },
-        { label: `${database.listSnippets().length} snippets`, enabled: false },
+        { label: `${database.countDictionary()} dictionary entries`, enabled: false },
+        { label: `${database.countSnippets()} snippets`, enabled: false },
         { type: "separator" },
         { label: "Open Dictionary", click: () => showHub("dictionary") },
         { label: "Open Snippets", click: () => showHub("snippets") },
@@ -1586,6 +1883,19 @@ function installApplicationMenu(): void {
   ];
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
+
+/*
+ * The packaged smoke gate needs a deterministic startup verdict from an
+ * unattended run. Without one it could only infer success from the process
+ * still being alive — and a startup failure showed a modal NSAlert first,
+ * which blocks the main thread until someone dismisses it. With nobody at the
+ * machine the process stayed alive, so the gate passed builds that could never
+ * start. Under this flag the app reports readiness on stdout and fails without
+ * a dialog; unflagged runs are unchanged, keeping the visible failure notice a
+ * real user needs.
+ */
+const smokeMode = process.env.LOCALSCRIBE_SMOKE === "1";
+const SMOKE_READY_MARKER = "localscribe-startup-ready";
 
 startupPromise = app.whenReady().then(async () => {
   if (!hasSingleInstanceLock || quitting) return;
@@ -1599,7 +1909,20 @@ startupPromise = app.whenReady().then(async () => {
     throw new Error("The packaged native input helper could not be integrity-pinned.");
   }
   app.setName("LocalScribe");
+  /*
+   * Stand the failure trail up before anything that can fail. The packaged
+   * app's stdout and stderr are /dev/null, so any startup failure before this
+   * line is genuinely unobservable after the fact.
+   */
+  diagnostics = new DiagnosticsRecorder(path.join(app.getPath("userData"), "diagnostics"), {
+    version: app.getVersion(),
+    platform: process.platform,
+    arch: process.arch,
+    electron: process.versions.electron ?? "unknown",
+  });
+  diagnostics.record({ stage: "lifecycle", event: "startup", outcome: "ok" });
   installRendererProtocol();
+  installPermissionHandlers();
   runtimeModelPlatformCatalog = loadRuntimePlatformModelCatalog(runtimeModelManifestDirectory());
   database = new LocalDatabase(path.join(app.getPath("userData"), "localscribe.db"));
   databaseInitialized = true;
@@ -1615,6 +1938,18 @@ startupPromise = app.whenReady().then(async () => {
   const workerDirectory = process.platform === "win32"
     ? path.join(baseWorkerDirectory, "windows_transformers")
     : baseWorkerDirectory;
+  /*
+   * Persistent, app-owned, and deliberately outside the packaged resource tree
+   * the startup integrity check covers. Importing the ML stack is 1,492 modules
+   * and cost 2.11-2.86s on every model load while bytecode was disabled; a warm
+   * cache brings that to 0.70-0.87s. It is a cache in the ordinary sense —
+   * deleting it costs one slow load and nothing else — and CPython invalidates
+   * entries itself when a source file's timestamp or size changes, which is
+   * what makes an app update pick up new code rather than stale bytecode.
+   */
+  const bytecodeCacheDirectory = path.join(app.getPath("userData"), "python-bytecode-cache");
+  await mkdir(bytecodeCacheDirectory, { recursive: true });
+  if (quitting) return;
   worker = new WorkerSupervisor(
     workerDirectory,
     path.join(app.getPath("userData"), "models"),
@@ -1626,8 +1961,42 @@ startupPromise = app.whenReady().then(async () => {
       : null,
     process.platform === "win32" ? "localscribe_windows_worker" : "localscribe_worker",
     audioCacheRoot,
+    bytecodeCacheDirectory,
   );
   workerInitialized = true;
+  /*
+   * The last line of defence for the "never evict a working model for an
+   * unproven one" invariant. `ensureReadyUnlocked` calls this before it stops
+   * the running process, so every switch — Auto drift at a recording boundary,
+   * an Apply, a post-install reload — has to satisfy it, not only the paths
+   * that remembered to check first.
+   *
+   * The fast path is stat-only. It falls back to a full digest pass only when
+   * the artifact has not been verified in this process yet, which is the case
+   * where reading it is exactly what is required.
+   */
+  worker.setTargetLoadableGuard(async (selection) => {
+    const modelRoot = modelRootForUserData(app.getPath("userData"));
+    const manifest = manifestForWorkerSelection(selection);
+    if (!manifest) return;
+    if (await modelArtifactIsVerifiedNow(modelRoot, manifest)) return;
+    const verification = await verifyModelDirectory(modelRoot, manifest);
+    if (verification.verified) return;
+    diagnostics.record({
+      stage: "model",
+      event: "switch_refused",
+      outcome: "failed",
+      modelTier: selection.tier,
+      detail: verification.verificationStatus === "missing"
+        ? "model_not_installed"
+        : "model_verification_failed",
+    });
+    throw new Error(
+      verification.verificationStatus === "missing"
+        ? "Local speech model is not installed. Open LocalScribe Settings > Model & Performance to install it before dictating."
+        : "The selected local speech model failed verification, so LocalScribe kept the model that is currently working. Reinstall it from Settings > Model & Performance.",
+    );
+  });
   // Startup is an unloaded boundary. Capture one unbiased hardware snapshot;
   // later diagnostics remain observational and dictation keeps models warm.
   await refreshModelResolution({ reprobeUnloaded: true });
@@ -1666,27 +2035,67 @@ startupPromise = app.whenReady().then(async () => {
   if (process.platform !== "darwin" || systemPreferences.isTrustedAccessibilityClient(false)) {
     try {
       hotkeys.start();
+      diagnostics.record({ stage: "hotkey", event: "global_register", outcome: "ok" });
     } catch (error) {
+      /*
+       * This is the failure that made "my shortcut does nothing" impossible to
+       * diagnose: the warning went to a stdout that is /dev/null in the
+       * packaged app, and the fallback registration looks identical to success
+       * from the outside. Record which path actually took effect.
+       */
       console.warn("Global hold-to-talk could not start", error);
+      diagnostics.record({
+        stage: "hotkey",
+        event: "global_register",
+        outcome: "failed",
+        detail: normalizeDiagnosticCode(error),
+      });
       hotkeys.startFallback();
+      diagnostics.record({ stage: "hotkey", event: "fallback_register", outcome: "ok" });
     }
   } else {
     hotkeys.startFallback();
+    diagnostics.record({
+      stage: "hotkey",
+      event: "fallback_register",
+      outcome: "ok",
+      permission: "accessibility_denied",
+    });
   }
+  /*
+   * The toggle is recorded separately, and only after both branches above have
+   * run, because neither of them reports it.
+   *
+   * `hotkeys.start()` does not throw when the accelerator cannot be claimed —
+   * push-to-talk has to keep working when another app owns the toggle — so the
+   * `global_register: ok` above was written for runs in which nothing was
+   * registered at all. That "ok" then went into the durable diagnostics file,
+   * which is the artifact the user copies to answer "why does my shortcut do
+   * nothing". It answered wrongly.
+   */
+  diagnostics.record({
+    stage: "hotkey",
+    event: "toggle_register",
+    outcome: hotkeys.isToggleReady() ? "ok" : "failed",
+  });
   startAccessibilityUpgradeCheck();
 
   app.on("activate", () => {
     showHub("dictation");
   });
 });
-void startupPromise.catch(async (error: unknown) => {
+void startupPromise.then(() => {
+  if (smokeMode && !quitting) process.stdout.write(`${SMOKE_READY_MARKER}\n`);
+}).catch(async (error: unknown) => {
   if (quitting) return;
   quitting = true;
   console.error("LocalScribe startup failed", error);
-  dialog.showErrorBox(
-    "LocalScribe could not start",
-    "The local application could not initialize. Quit LocalScribe and try opening it again.",
-  );
+  if (!smokeMode) {
+    dialog.showErrorBox(
+      "LocalScribe could not start",
+      "The local application could not initialize. Quit LocalScribe and try opening it again.",
+    );
+  }
   await releaseRuntimeResources();
   app.exit(1);
 });
@@ -1758,10 +2167,10 @@ function beginShutdown(): boolean {
   quitting = true;
   if (pillDisplayTimer) clearInterval(pillDisplayTimer);
   if (accessibilityTimer) clearInterval(accessibilityTimer);
-  if (errorDismissTimer) clearTimeout(errorDismissTimer);
+  finalizeWatchdog.cancel();
+  noticeTimer.cancel();
   pillDisplayTimer = null;
   accessibilityTimer = null;
-  errorDismissTimer = null;
   // Prevent a forced hotkey reset from turning a held key into a new
   // finalization request while the app is already shutting down.
   insertion.cancelSession();
@@ -1773,8 +2182,21 @@ function beginShutdown(): boolean {
   } catch (error) {
     console.warn("LocalScribe hotkeys could not stop cleanly", error);
   }
+  /*
+   * Quit closes the database while the worker shutdown and temporary-audio
+   * removal are still running — seconds, for a large model. The macOS menu bar
+   * stayed installed and live for all of it, and "Copy Last Transcript" and the
+   * My Voice items read the database, so a click in that window threw inside
+   * main. Retire the menu with the same latch that retires everything else.
+   */
+  if (process.platform === "darwin") Menu.setApplicationMenu(null);
   try {
-    if (workerInitialized) worker.abort("LocalScribe is quitting");
+    if (workerInitialized) {
+      // Latch first: abort only kills the live process, and a model operation
+      // already queued would otherwise start a replacement.
+      worker.retire();
+      worker.abort("LocalScribe is quitting");
+    }
   } catch (error) {
     console.warn("LocalScribe worker could not be aborted cleanly", error);
   }

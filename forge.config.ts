@@ -33,6 +33,10 @@ import {
   type PackageProvenance,
 } from "./scripts/package-provenance.mts";
 import {
+  assertNoRunningPackagedApp,
+  listMacProcesses,
+} from "./scripts/running-app-guard";
+import {
   assertPackagedResourceIntegrity,
   prepareGeneratedResourceIntegrity,
   type PreparedResourceIntegrity,
@@ -132,6 +136,38 @@ function signingEntitlementsFor(filePath: string): string {
     return MAC_ACTIVE_TARGET_ENTITLEMENTS;
   }
   if (normalizedPath.includes("/python-runtime/")) {
+    return MAC_RUNTIME_ENTITLEMENTS;
+  }
+  /*
+   * Chromium's crash reporter. It fell through to the main app's plist below,
+   * so it shipped signed with `com.apple.security.device.audio-input` and
+   * `cs.allow-jit` — a crash handler holding the microphone entitlement. It
+   * needs neither. Nothing noticed because the packaged entitlement gate never
+   * walked Contents/Frameworks at all.
+   */
+  if (normalizedPath.endsWith("/chrome_crashpad_handler")) {
+    return MAC_RUNTIME_ENTITLEMENTS;
+  }
+  /*
+   * Squirrel's updater helper, and the same fall-through as the crash reporter
+   * above: it shipped signed with `device.audio-input` and `cs.allow-jit`. A
+   * process whose entire job is to replace the application bundle on disk had
+   * the microphone entitlement and permission to map writable-executable
+   * memory. It needs neither — it never records and never runs generated code.
+   *
+   * Found by the Contents/Frameworks walk added to
+   * scripts/verify-macos-entitlements.mjs, which is the first thing in this
+   * repository ever to look at a nested framework's signature.
+   *
+   * Matched on the framework rather than on the full versioned path, because
+   * @electron/osx-sign reaches this one binary under several: its `walkAsync`
+   * calls `stat` where it means `lstat`, so `isSymbolicLink()` is never true
+   * and it descends `Versions/Current` and `Resources` as if they were real
+   * directories. Pinning `Versions/A/Resources/ShipIt` matched one of those
+   * spellings and the later, unmatched one re-signed it with the main app's
+   * plist — which is exactly what the first attempt at this fix did.
+   */
+  if (normalizedPath.includes("/Squirrel.framework/") && normalizedPath.endsWith("/ShipIt")) {
     return MAC_RUNTIME_ENTITLEMENTS;
   }
   if (normalizedPath.includes("LocalScribe Helper (Plugin).app")) {
@@ -464,6 +500,14 @@ const config: ForgeConfig = {
   hooks: {
     preMake: async () => {
       makeBuildStartedAtMs = Date.now();
+      // Before anything is written. `prePackage` repeats this because `package`
+      // is also a standalone entry point that never runs `preMake`.
+      assertNoRunningPackagedApp({
+        outputDirectory: path.resolve("out"),
+        platform: process.platform,
+        listProcesses: listMacProcesses,
+        projectPath: path.resolve("."),
+      });
       if (process.platform !== "win32") return;
       clearWindowsMakerOutput(
         path.resolve("."),
@@ -481,6 +525,12 @@ const config: ForgeConfig = {
     },
     prePackage: async (_config, platform, arch) => {
       packageBuildStartedAtMs = Date.now();
+      assertNoRunningPackagedApp({
+        outputDirectory: path.resolve("out"),
+        platform: process.platform,
+        listProcesses: listMacProcesses,
+        projectPath: path.resolve("."),
+      });
       if (platform === "darwin") {
         const targetArchitecture =
           arch === MAC_RELEASE.target.arch ? MAC_RELEASE.target.arch : null;

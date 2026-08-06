@@ -205,6 +205,22 @@ export const permissionSnapshotSchema = z.object({
     supported: z.boolean(),
     ready: z.boolean(),
   }),
+  /*
+   * Whether the toggle accelerator is actually registered.
+   *
+   * Startup does not fail when it cannot be claimed, because push-to-talk must
+   * keep working. That left every surface — the tray menu, the app menu item,
+   * the Settings help text — confidently advertising a key that did nothing,
+   * and `globalHold.ready` is true in precisely that situation, so nothing
+   * existing could stand in for it.
+   *
+   * Carries no message: the underlying reason can embed an error string, and
+   * this crosses IPC. The renderer composes what the user reads.
+   */
+  globalToggle: z.object({
+    supported: z.boolean(),
+    ready: z.boolean(),
+  }),
 });
 export type PermissionSnapshot = z.infer<typeof permissionSnapshotSchema>;
 
@@ -262,6 +278,12 @@ export const diagnosticsSchema = z.object({
   architecture: z.string(),
   backend: z.string(),
   databaseIntegrity: z.string(),
+  /*
+   * Stored records this run could not decrypt. Non-zero means history,
+   * snippets, scratchpad, and export are all partial, which the user must be
+   * able to see rather than infer from a list that quietly got shorter.
+   */
+  unreadableRecords: z.number().int().nonnegative(),
   model: modelDiagnosticsSchema,
   accelerator: z.object({
     kind: z.enum(["apple-unified", "nvidia-cuda", "unsupported"]),
@@ -673,11 +695,14 @@ export const IPC = {
   windowCloseScratchpad: "window:close-scratchpad",
   windowToggleScratchpadSize: "window:toggle-scratchpad-size",
   windowNavigate: "window:navigate",
+  windowVisibility: "window:visibility",
+  windowPillMode: "window:pill-mode",
   systemGetPermissions: "system:get-permissions",
   systemGetLaunchAtLoginStatus: "system:get-launch-at-login-status",
   systemOpenPermission: "system:open-permission",
   systemAppInfo: "system:app-info",
   systemDiagnostics: "system:diagnostics",
+  systemDiagnosticsLog: "system:diagnostics-log",
   systemModelCatalog: "system:model-catalog",
   systemAddModelFamily: "system:add-model-family",
   systemApplyModelSelection: "system:apply-model-selection",
@@ -739,6 +764,26 @@ export interface LocalScribeApi {
     closeScratchpad(): Promise<void>;
     toggleScratchpadSize(): Promise<void>;
     onNavigate(listener: (target: NavigationTarget) => void): () => void;
+    /**
+     * Native window visibility, pushed from main.
+     *
+     * The renderer cannot derive this itself: every window sets
+     * `backgroundThrottling: false`, which pins `document.visibilityState` to
+     * "visible" and leaves timers running at full rate even while the window is
+     * hidden. Verified in Electron 43 — a hidden window still reported
+     * "visible" and a 100 ms interval still fired 10 times per second.
+     */
+    onVisibilityChanged(listener: (visible: boolean) => void): () => void;
+    /**
+     * The pill's committed native size, pushed from main.
+     *
+     * Main owns the transparent window and resizes it from the real cursor
+     * position, which the renderer cannot see. Resizing a window under a
+     * stationary pointer does not synthesize pointer boundary events, so
+     * without this the renderer keeps drawing the expanded controls inside a
+     * 40x8 window after main has already contracted it.
+     */
+    onPillModeChanged(listener: (mode: PillMode) => void): () => void;
   };
   system: {
     getPermissions(): Promise<PermissionSnapshot>;
@@ -746,6 +791,8 @@ export interface LocalScribeApi {
     openPermission(kind: "microphone" | "accessibility"): Promise<void>;
     appInfo(): Promise<AppInfo>;
     diagnostics(): Promise<Diagnostics>;
+    /** Redacted rotating failure trail, for "Copy diagnostics". */
+    diagnosticsLog(): Promise<string>;
     modelCatalog(): Promise<ModelCatalog>;
     addModelFamily(request: ModelFamilyLibraryRequest): Promise<ModelCatalog>;
     applyModelSelection(request: ModelSelectionApplyRequest): Promise<ModelSelectionApplyResult>;

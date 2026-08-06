@@ -218,6 +218,78 @@ describe("HotkeyService capture and validation", () => {
     warning.mockRestore();
   });
 
+  /*
+   * The test above proves `start()` does not throw, which is the intended
+   * behaviour — push-to-talk must survive a toggle another app has taken. What
+   * it could not prove is that anyone finds out. The failure was stored in a
+   * private field and `console.warn`ed to a stdout that is /dev/null in the
+   * packaged app, so main recorded `hotkey/global_register: ok` for a run in
+   * which nothing was registered, the tray and app menus went on displaying the
+   * accelerator, and Settings went on advising the user to "use the toggle
+   * shortcut". Pressing it did nothing and no surface said why.
+   */
+  it("reports that the toggle is not registered instead of only warning about it", () => {
+    const service = new HotkeyService(
+      vi.fn(), vi.fn(), vi.fn(), null, "Control", "Control+Space",
+    );
+    mocks.globalShortcut.register.mockReturnValue(false);
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    expect(service.isToggleReady()).toBe(false);
+    service.start();
+
+    // `start()` still succeeds, and the hold path still works...
+    expect(service.isGlobalHoldReady()).toBe(true);
+    // ...but the toggle is knowably dead, which is what nothing could see.
+    expect(service.isToggleReady()).toBe(false);
+    expect(service.toggleUnavailableReason()).toMatch(/Control\+Space is already used/u);
+    warning.mockRestore();
+  });
+
+  it("reports a registered toggle as ready", () => {
+    const service = new HotkeyService(
+      vi.fn(), vi.fn(), vi.fn(), null, "Control", "Control+Space",
+    );
+    service.start();
+
+    expect(service.isToggleReady()).toBe(true);
+    expect(service.toggleUnavailableReason()).toBeNull();
+  });
+
+  it("reports the toggle as ready again after a re-save clears the conflict", () => {
+    const service = new HotkeyService(
+      vi.fn(), vi.fn(), vi.fn(), null, "Control", "Control+Space",
+    );
+    mocks.globalShortcut.register.mockReturnValue(false);
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    service.start();
+    expect(service.isToggleReady()).toBe(false);
+
+    // The conflicting app quits and the user re-saves the same shortcut, which
+    // is the one path that retries a startup registration failure.
+    mocks.globalShortcut.register.mockReturnValue(true);
+    service.reconfigure("Control", "Control+Space");
+
+    expect(service.isToggleReady()).toBe(true);
+    expect(service.toggleUnavailableReason()).toBeNull();
+    warning.mockRestore();
+  });
+
+  it("reports the toggle as not ready in the fallback path too", () => {
+    const service = new HotkeyService(
+      vi.fn(), vi.fn(), vi.fn(), null, "Control", "Control+Space",
+    );
+    mocks.globalShortcut.register.mockReturnValue(false);
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    service.startFallback();
+
+    // Accessibility denied *and* the toggle taken is the total-failure case,
+    // and the only prior signal — globalHold.ready — is unrelated to it.
+    expect(service.isToggleReady()).toBe(false);
+    warning.mockRestore();
+  });
+
   it("removes partially registered hook listeners when listener setup fails", () => {
     const service = new HotkeyService(
       vi.fn(), vi.fn(), vi.fn(), null, "Control", "Control+Space",

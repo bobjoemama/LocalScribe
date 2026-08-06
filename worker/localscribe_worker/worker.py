@@ -208,6 +208,8 @@ class InferenceRuntime(Protocol):
         context: str,
     ) -> TranscriptionResult: ...
 
+    def release_transient_memory(self) -> None: ...
+
     def close(self) -> None: ...
 
 
@@ -469,24 +471,68 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _is_inert_directory_metadata(name: str, expected: frozenset[str]) -> bool:
+    """Is this an entry macOS deposited, rather than part of the artifact?
+
+    The exact-entry-set rule below is deliberately strict, and it was too strict
+    to survive contact with the Finder: opening the models folder writes a
+    ``.DS_Store`` into it, and copying through a non-HFS volume or a zip leaves
+    AppleDouble ``._name`` sidecars. Either made a model whose every pinned file
+    was digest-identical report as ``model_not_installed``, and the only remedy
+    the app offered was re-downloading up to 3.4 GB.
+
+    The exemption is narrow: two exact names, plus an AppleDouble sidecar only
+    for a filename the manifest actually declares. The caller additionally
+    requires each to be a regular file, because a directory or symlink wearing
+    one of these names is not something the OS produces. Nothing reads them —
+    the loaders address model files by manifest name — and their bytes are
+    never counted or hashed.
+
+    Kept byte-for-byte in step with ``isInertDirectoryMetadata`` in
+    src/main/modelSpec.ts; tests/modelDirectoryMetadata.test.ts runs both
+    implementations over the same cases.
+    """
+    if name in (".DS_Store", ".localized"):
+        return True
+    return name.startswith("._") and name[2:] in expected
+
+
 def _valid_model_directory(
     model_directory: Path,
     manifest: ModelManifest,
+    *,
+    verify_digests: bool = True,
 ) -> bool:
+    """Check an installed artifact against its pinned manifest.
+
+    ``verify_digests=False`` keeps every structural check — no symlinks, the
+    exact file set, regular files only, exact byte counts — but skips the
+    SHA-256 pass. It exists for the one caller that only needs to know whether
+    an artifact is installed at all, and whose answer is immediately followed by
+    an authoritative digest-verifying check. Never use it to decide whether an
+    artifact may be loaded.
+    """
     try:
         directory_metadata = model_directory.lstat()
         if model_directory.is_symlink() or not stat.S_ISDIR(directory_metadata.st_mode):
             return False
-        if frozenset(entry.name for entry in model_directory.iterdir()) != frozenset(
-            manifest.files
-        ):
-            return False
+        expected_names = frozenset(manifest.files)
+        for entry in model_directory.iterdir():
+            if entry.name in expected_names:
+                continue
+            if not _is_inert_directory_metadata(entry.name, expected_names):
+                return False
+            entry_metadata = entry.lstat()
+            if entry.is_symlink() or not stat.S_ISREG(entry_metadata.st_mode):
+                return False
         for filename, expected in manifest.files.items():
             candidate = model_directory / filename
             metadata = candidate.lstat()
             if candidate.is_symlink() or not stat.S_ISREG(metadata.st_mode):
                 return False
-            if metadata.st_size != expected.bytes or _sha256(candidate) != expected.sha256:
+            if metadata.st_size != expected.bytes:
+                return False
+            if verify_digests and _sha256(candidate) != expected.sha256:
                 return False
         return True
     except OSError:
@@ -501,14 +547,24 @@ def _remove_verified_huggingface_metadata(
 
     Hugging Face adds only a .cache directory to local_dir downloads. An
     explicit install/repair may remove that metadata if every signed-manifest
-    file is already exact; no other extra entry or symlink is accepted.
+    file is already exact; apart from the inert OS metadata that
+    ``_valid_model_directory`` also tolerates, no other extra entry or symlink
+    is accepted.
     """
     try:
         directory_metadata = model_directory.lstat()
         if model_directory.is_symlink() or not stat.S_ISDIR(directory_metadata.st_mode):
             return False
+        expected_names = frozenset(manifest.files)
         entries = {entry.name: entry for entry in model_directory.iterdir()}
-        if frozenset(entries) != frozenset((*manifest.files, ".cache")):
+        surplus = frozenset(entries) - expected_names - frozenset((".cache",))
+        for name in surplus:
+            if not _is_inert_directory_metadata(name, expected_names):
+                return False
+            surplus_metadata = entries[name].lstat()
+            if entries[name].is_symlink() or not stat.S_ISREG(surplus_metadata.st_mode):
+                return False
+        if ".cache" not in entries or not expected_names <= frozenset(entries):
             return False
         metadata_directory = entries[".cache"]
         metadata = metadata_directory.lstat()
@@ -1115,6 +1171,28 @@ class MLXWhisperRuntime:
             language=detected_language or language,
         )
 
+    def release_transient_memory(self) -> None:
+        """Frees MLX's scratch buffers while keeping the model weights resident.
+
+        MLX's buffer cache defaults to the device's recommended working set —
+        48.96 GB was reported on the machine this was measured on — and nothing
+        trimmed it between dictations. A 600 s dictation on whisper-large-v3
+        fp16 left 8,976 MB cached, and a 60 s dictation left 5,884 MB, held for
+        the whole life of the resident worker. LocalScribe deliberately keeps
+        that worker warm, so the user's "idle" dictation service sat on several
+        gigabytes of dead Metal buffers.
+
+        Measured cost: none. Alternating clear/keep across nine 60 s runs in one
+        process gave 9.73-10.10 s regardless of policy — the cache refills
+        during the next dictation, so only the idle footprint changes. Weights
+        stay put: active memory held at 2,945 MB across every run.
+        """
+        try:
+            self._mlx.synchronize()
+            self._mlx.clear_cache()
+        except Exception:
+            pass
+
     def close(self) -> None:
         try:
             self._mlx.synchronize()
@@ -1126,7 +1204,7 @@ class MLXWhisperRuntime:
         self._model = None
         gc.collect()
         try:
-            self._mlx.metal.clear_cache()
+            self._mlx.clear_cache()
         except Exception:
             pass
 
@@ -1226,12 +1304,20 @@ class MLXAudioRuntime:
             language=detected_language or language,
         )
 
+    def release_transient_memory(self) -> None:
+        """Frees MLX scratch buffers between dictations; see MLXWhisperRuntime."""
+        try:
+            self._mlx.synchronize()
+            self._mlx.clear_cache()
+        except Exception:
+            pass
+
     def close(self) -> None:
         self._model = None
         gc.collect()
         try:
             self._mlx.synchronize()
-            self._mlx.metal.clear_cache()
+            self._mlx.clear_cache()
         except Exception:
             pass
 
@@ -1415,9 +1501,17 @@ def run_worker(
                             },
                         )
                         continue
+                    # Refuse a load that cannot succeed *before* unloading the
+                    # warm model, so a mistaken request costs nothing. This is
+                    # only an is-it-installed question: model_installer below
+                    # runs the authoritative digest verification, and no runtime
+                    # is constructed until it passes. Hashing here as well meant
+                    # every cold load read the whole multi-gigabyte artifact
+                    # twice.
                     if not allow_download and not _valid_model_directory(
                         model_root / manifest.storage_directory,
                         manifest,
+                        verify_digests=False,
                     ):
                         raise WorkerError(
                             "model_not_installed",
@@ -1574,11 +1668,19 @@ def run_worker(
                         )
                     language = _normalize_language(message.get("language"))
                     started = time.perf_counter()
-                    result = runtime.transcribe(
-                        pcm16,
-                        language=language,
-                        context=context,
-                    )
+                    try:
+                        result = runtime.transcribe(
+                            pcm16,
+                            language=language,
+                            context=context,
+                        )
+                    finally:
+                        # The worker stays resident with the model warm. Return
+                        # the dictation's scratch buffers now rather than let
+                        # them accumulate for the life of the process, and do it
+                        # on the failure path too so a rejected dictation cannot
+                        # strand gigabytes.
+                        runtime.release_transient_memory()
                     if (
                         not isinstance(result.text, str)
                         or len(result.text) > MAX_RESULT_CHARS

@@ -346,6 +346,12 @@
 .hi-loading--insights { grid-template-columns: repeat(4, 1fr); margin-top: 28px; }
 .hi-loading--insights span { height: 145px; }
 @keyframes hi-shimmer { to { background-position: -240% 0; } }
+/*
+ * Action failures render here, in the document flow. This must never gain the
+ * off-screen treatment `.hi-live-region` uses — that is the defect it exists to
+ * fix — so it is deliberately positioned like any other card.
+ */
+.hi-action-notice { margin-bottom: 18px; }
 .hi-live-region { position: fixed; left: -9999px; }
 .hi-visually-hidden { position: absolute; width: 1px; height: 1px; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 
@@ -376,16 +382,29 @@
 .hi-insight-card { min-width: 0; padding: 21px; border: 1px solid var(--hi-border); border-radius: 14px; background: #f8f7f4; }
 .hi-card-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
 .hi-card-heading > span { color: var(--hi-muted); font-size: 12px; }
-.hi-chart { position: relative; height: 215px; margin-top: 20px; }
-.hi-chart-grid { position: absolute; inset: 0 0 29px; display: flex; flex-direction: column; justify-content: space-between; }
+/*
+ * One label height feeds the plot area, the gridline area, and the label box,
+ * so the bars, the gridlines, and the axis cannot drift apart.
+ *
+ * Regression: the column was a flex column and the bar carried `height: N%` of
+ * the whole 215px column. Any bar tall enough that bar + label exceeded 215px
+ * was resolved by flex-shrink instead, so the chart was not linear in its own
+ * data: measured at both settings sizes, a 65% day drew 139.75px against the
+ * 100% day's 190.30px — 73% as tall, not 65% — and the shrink also squeezed
+ * that column's date label from 27px to 24.7px. Giving the plot area its own
+ * definite grid row makes the percentage resolve against 188px for every
+ * column, and puts the tallest bar exactly on the top gridline.
+ */
+.hi-chart { --hi-chart-label-height: 27px; position: relative; height: 215px; margin-top: 20px; }
+.hi-chart-grid { position: absolute; inset: 0 0 var(--hi-chart-label-height); display: flex; flex-direction: column; justify-content: space-between; }
 .hi-chart-grid span { border-top: 1px dashed #e6e2dc; }
 .hi-chart-bars { position: absolute; inset: 0; display: flex; align-items: stretch; gap: clamp(3px, .7vw, 8px); }
-.hi-chart-column { position: relative; display: flex; min-width: 4px; flex: 1; flex-direction: column; justify-content: flex-end; align-items: stretch; border-radius: 5px; outline: none; cursor: default; }
+.hi-chart-column { position: relative; display: grid; min-width: 4px; flex: 1; grid-template-rows: minmax(0, 1fr) var(--hi-chart-label-height); align-items: end; border-radius: 5px; outline: none; cursor: default; }
 .hi-chart-column:focus-visible { outline: 2px solid var(--hi-teal); outline-offset: 2px; }
 .hi-chart-column > i { display: block; min-height: 2px; border-radius: 5px 5px 2px 2px; background: linear-gradient(180deg, #226b60, #6ba99d); transition: height .2s ease, filter .16s ease; }
 .hi-chart-column:hover > i,
 .hi-chart-column:focus-visible > i { filter: brightness(.84) saturate(1.12); }
-.hi-chart-label { height: 27px; padding-top: 7px; color: var(--hi-muted); text-align: center; font-size: 10px; }
+.hi-chart-label { height: var(--hi-chart-label-height); padding-top: 7px; color: var(--hi-muted); text-align: center; font-size: 10px; }
 .hi-chart-tooltip { position: absolute; z-index: 4; top: 4px; left: 50%; display: grid; min-width: 112px; max-width: min(180px, calc(100vw - 48px)); padding: 8px 10px; border: 1px solid rgba(255,255,255,.13); border-radius: 9px; background: rgba(20, 20, 19, .96); color: #fff; opacity: 0; pointer-events: none; transform: translate(-50%, -5px); transition: opacity .13s ease, transform .13s ease; box-shadow: 0 8px 24px rgba(25, 23, 20, .2); }
 .hi-chart-tooltip strong { font-size: 12px; font-weight: 700; white-space: nowrap; }
 .hi-chart-tooltip small { margin-top: 2px; color: #bbb9b5; font-size: 10px; white-space: nowrap; }
@@ -500,4 +519,9 @@
 @media (prefers-reduced-motion: reduce) {
   .hi-loading span { animation: none; }
   .hi-chart-bars i { transition: none; }
+  /*
+   * The tooltip is a <span>, so `.hi-chart-bars i` never matched it. It
+   * translates on hover/focus and must be stilled explicitly.
+   */
+  .hi-chart-tooltip { transition: none; }
 }

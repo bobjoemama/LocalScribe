@@ -8,11 +8,24 @@ telemetry service, or listening network port.
 
 ### macOS validation builds
 
-[**Open LocalScribe downloads**](https://github.com/bobjoemama/LocalScribe/releases)
+[**LocalScribe 0.1.0-dev.4 — macOS arm64**](https://github.com/bobjoemama/LocalScribe/releases/tag/v0.1.0-dev.4)
 
+- **This repository is private.** The link above resolves only for a GitHub
+  account that has access to it; everyone else gets a 404, not a download page.
+  Without that access, build from source instead — see
+  [Build from source](#build-from-source).
 - Requires an Apple Silicon Mac and macOS 14 or newer.
-- Choose the newest prerelease and download its `.dmg` asset. Do not download
-  the source-code ZIP when you want to install the app.
+- Download `LocalScribe-0.1.0-dev.4-arm64.dmg`. Do not download the
+  source-code ZIP, and do not use `LocalScribe-darwin-arm64-0.1.0-dev.4.zip`
+  expecting a Windows build — that ZIP is the same macOS app.
+- Verify the download against the release's `SHA256SUMS.txt` asset before
+  opening it:
+
+  ```sh
+  shasum -a 256 LocalScribe-0.1.0-dev.4-arm64.dmg
+  # 9faeb1b630c3ae1a10d3d364dd115e88f7f846c351f345cbe60ce2489bc1a487
+  ```
+
 - The release description states whether that exact artifact is a private
   Apple Development validation build or a notarized public candidate.
 - The model is downloaded separately inside LocalScribe after installation.
@@ -94,6 +107,12 @@ accepted. See the
 
 Raw audio is held in memory, written only to a permission-restricted temporary
 WAV for inference, and deleted afterward.
+
+Deleting a transcript — one entry, "Clear history", or an automatic retention
+purge — overwrites its bytes inside the database file rather than only unlinking
+the row. The database runs with SQLite's `secure_delete` pragma on, so freed
+pages are zeroed as part of the delete instead of keeping their contents until
+some later write happens to reuse them.
 
 ## System requirements
 

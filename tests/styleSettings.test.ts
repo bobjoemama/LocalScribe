@@ -1,6 +1,8 @@
+import { readFileSync } from "node:fs";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
+import { expectPrecedes, requireIndex } from "./support/order";
 import {
   DEFAULT_SETTINGS,
   type AppSettingsPatch,
@@ -29,6 +31,7 @@ import {
   shortcutHelpText,
   shortcutCommitErrorMessage,
   StyleScreen,
+  TOGGLE_UNREGISTERED_ADVICE,
   TransformsScreen,
   UNAVAILABLE_IN_THIS_BUILD_NOTICE,
 } from "../src/renderer/settings/screens/StyleSettings";
@@ -180,6 +183,48 @@ describe("settings loading truthfulness", () => {
     });
   });
 
+  /*
+   * The setting told a macOS user without Accessibility that dictation would be
+   * pasted "only when the app active at start is still the target" — a
+   * description of behaviour that cannot happen: main takes the copy path and
+   * the pill already says "Copied — allow Accessibility".
+   *
+   * `automaticPaste.ready` is `accessibilityGranted` on darwin
+   * (platformCapabilities.ts), so this state is every Mac that has not been
+   * granted Accessibility yet — the state every new install starts in.
+   */
+  it("does not promise a macOS user paste that Accessibility denial makes impossible", () => {
+    const denied = automaticPasteSettingsPresentation({
+      platform: "darwin",
+      automaticPaste: { supported: true, ready: false },
+    } as never);
+
+    expect(denied.detail).toMatch(/copied/iu);
+    expect(denied.detail).toMatch(/Accessibility/u);
+    // The wording that was wrong: it describes pasting as the outcome.
+    expect(denied.detail).not.toMatch(/Paste only when/u);
+  });
+
+  it("keeps the macOS switch usable so the preference survives granting access", () => {
+    // Unlike the Windows helper, this is a permission the user can grant, and
+    // the preference has to already be set for granting it to do anything.
+    expect(automaticPasteSettingsPresentation({
+      platform: "darwin",
+      automaticPaste: { supported: true, ready: false },
+    } as never)).toMatchObject({ editable: true, value: null });
+  });
+
+  it("describes the target check once Accessibility is granted", () => {
+    expect(automaticPasteSettingsPresentation({
+      platform: "darwin",
+      automaticPaste: { supported: true, ready: true },
+    } as never)).toEqual({
+      editable: true,
+      detail: "Paste only when the app active at start is still the target; otherwise copy.",
+      value: null,
+    });
+  });
+
   it("redacts machine paths and technical details from visible Settings errors", () => {
     expect(settingsLoadPresentation(
       null,
@@ -202,6 +247,7 @@ describe("settings loading truthfulness", () => {
     const windowsPermissions = {
       platform: "win32",
       globalHold: { ready: false },
+      globalToggle: { ready: true },
       accessibility: { granted: false },
     } as const;
     expect(shortcutHelpText(windowsPermissions as never, "Control+Shift")).toBe(
@@ -210,9 +256,97 @@ describe("settings loading truthfulness", () => {
     expect(shortcutHelpText({
       platform: "win32",
       globalHold: { ready: true },
+      globalToggle: { ready: true },
       accessibility: { granted: false },
     } as never, "Control")).toBe(
       "Shortcut changes apply immediately. Hold Control to dictate from any app.",
+    );
+  });
+});
+
+/*
+ * Every unavailable-hold branch of this copy recommended the toggle shortcut.
+ * That advice is worse than nothing on a Mac where another app already owns the
+ * accelerator: registration fails silently at startup, so the user is told to
+ * press a key that does nothing, with no other surface reporting why. These
+ * tests pin that the recommendation is withdrawn exactly when it is untrue.
+ */
+describe("push-to-talk help text when the toggle shortcut is not registered", () => {
+  const dead = { ready: false } as const;
+  const live = { ready: true } as const;
+
+  it("stops recommending the toggle when Accessibility is the blocker", () => {
+    const permissions = {
+      platform: "darwin",
+      globalHold: { ready: false },
+      accessibility: { granted: false },
+    } as const;
+
+    expect(shortcutHelpText({ ...permissions, globalToggle: live } as never, "Control")).toBe(
+      "The current push-to-talk key is Control. Grant Accessibility to use it globally; until then, use the toggle shortcut and LocalScribe will copy completed dictation.",
+    );
+
+    const withDeadToggle = shortcutHelpText(
+      { ...permissions, globalToggle: dead } as never,
+      "Control",
+    );
+    expect(withDeadToggle).toBe(
+      "The current push-to-talk key is Control. Grant Accessibility to use it globally."
+      + ` ${TOGGLE_UNREGISTERED_ADVICE}`,
+    );
+    // The wrong instruction is gone, not merely accompanied by a correction.
+    expect(withDeadToggle).not.toMatch(/use the toggle shortcut/u);
+  });
+
+  it("stops recommending the toggle when the hook is dead despite Accessibility", () => {
+    const permissions = {
+      platform: "darwin",
+      globalHold: { ready: false },
+      accessibility: { granted: true },
+    } as const;
+
+    expect(shortcutHelpText({ ...permissions, globalToggle: live } as never, "Control")).toMatch(
+      /Restart LocalScribe or use the toggle shortcut\.$/u,
+    );
+    const withDeadToggle = shortcutHelpText(
+      { ...permissions, globalToggle: dead } as never,
+      "Control",
+    );
+    expect(withDeadToggle).not.toMatch(/toggle shortcut\./u);
+    expect(withDeadToggle).toContain(TOGGLE_UNREGISTERED_ADVICE);
+    // The remaining diagnosis is still shown; only the bad advice is replaced.
+    expect(withDeadToggle).toContain("the global keyboard hook is not running");
+  });
+
+  it("still reports the dead toggle when push-to-talk works", () => {
+    const permissions = {
+      platform: "darwin",
+      globalHold: { ready: true },
+      accessibility: { granted: true },
+    } as const;
+
+    expect(shortcutHelpText({ ...permissions, globalToggle: live } as never, "Control")).toBe(
+      "Shortcut changes apply immediately. Hold Control to dictate from any app.",
+    );
+    // Hold covers dictation, but both menus still display the toggle
+    // accelerator, so its failure has to be reported somewhere.
+    expect(shortcutHelpText({ ...permissions, globalToggle: dead } as never, "Control")).toBe(
+      "Shortcut changes apply immediately. Hold Control to dictate from any app."
+      + ` ${TOGGLE_UNREGISTERED_ADVICE}`,
+    );
+  });
+
+  it("names an action the user can take rather than only reporting a failure", () => {
+    expect(TOGGLE_UNREGISTERED_ADVICE).toMatch(/Choose a different toggle shortcut/u);
+    expect(TOGGLE_UNREGISTERED_ADVICE).toMatch(/menu bar icon/u);
+    // No path, PID, app name, or accelerator of the conflicting app: main does
+    // not know it, and guessing would be a privacy leak as well as wrong.
+    expect(TOGGLE_UNREGISTERED_ADVICE).not.toMatch(/\/|\\|\.app\b/u);
+  });
+
+  it("leaves the unknown-permissions text alone", () => {
+    expect(shortcutHelpText(null, "Control")).toBe(
+      "Shortcut changes apply immediately. The current push-to-talk key is Control.",
     );
   });
 });
@@ -608,5 +742,74 @@ describe("model and performance presentation", () => {
         accelerator: { freeMemoryBytes: 4 * 1_073_741_824 },
       } as never,
     )).toContain("requires 9.00 GiB free accelerator memory, including 2.00 GiB reserved headroom; LocalScribe currently reports 4.00 GiB available");
+  });
+});
+
+/*
+ * `modelAction` disables the library buttons, but only from the render that
+ * carries it. Two dispatches in the same tick — a double click, or a click plus
+ * a keyboard activation — both see a null action and both run; whichever
+ * settles first clears `modelAction` and re-enables every button while the
+ * other is still downloading, and "Add to library" was reachable during an
+ * in-flight install. Each entry point takes a synchronous latch instead.
+ */
+describe("model-library actions are mutually exclusive before the next render", () => {
+  const source = readFileSync("src/renderer/settings/screens/StyleSettings.tsx", "utf8");
+
+  function body(name: string): string {
+    const start = requireIndex(source, `const ${name} = async (`, name);
+    // Unguarded, `indexOf` here returns -1 if the closing formatting ever
+    // changes, and `slice(start, -1)` then swallows most of the file — every
+    // `toContain` below would start matching unrelated handlers.
+    const end = source.indexOf("\n  };", start);
+    expect(end, `${name} handler is not closed as expected`).toBeGreaterThan(start);
+    return source.slice(start, end);
+  }
+
+  it.each(["installModel", "removeModel", "addModelFamily"])(
+    "%s refuses to start while another library action is in flight",
+    (name) => {
+      const handler = body(name);
+      expect(handler).toContain("if (modelLibraryActionInFlight.current) return;");
+      expect(handler).toContain("modelLibraryActionInFlight.current = true;");
+      expect(handler).toContain("modelLibraryActionInFlight.current = false;");
+
+      // The latch has to be taken before the first await, or the second
+      // dispatch runs before it is set and the guard proves nothing.
+      const latch = handler.indexOf("modelLibraryActionInFlight.current = true;");
+      const firstAwait = handler.indexOf("await ");
+      expect(latch).toBeGreaterThan(0);
+      expect(latch).toBeLessThan(firstAwait);
+
+      // And released in `finally`, so a rejected download does not wedge the
+      // whole model library until the window is reopened.
+      const release = handler.indexOf("modelLibraryActionInFlight.current = false;");
+      expect(handler.slice(0, release)).toContain("} finally {");
+    },
+  );
+
+  /*
+   * This assertion used to be `indexOf("window.confirm") < indexOf(latch)`,
+   * which passes when the confirmation is *absent*: `indexOf` returns -1 and
+   * -1 is less than any real index. It was the only test anywhere pinning that
+   * a destructive model removal asks first, and deleting the prompt entirely
+   * left it green. `expectPrecedes` requires both markers to exist.
+   */
+  it("asks for confirmation before taking the latch, so cancelling leaves the library usable", () => {
+    for (const name of ["installModel", "removeModel"]) {
+      expectPrecedes(
+        body(name),
+        "window.confirm",
+        "modelLibraryActionInFlight.current = true;",
+        name,
+      );
+    }
+  });
+
+  it("confirms the destructive action itself, not merely something", () => {
+    // Naming the prompt text pins that the confirmation covers the removal
+    // rather than being an unrelated dialog that happens to appear earlier.
+    expect(body("removeModel")).toContain("from this computer?");
+    expect(body("installModel")).toContain("of curated model data.");
   });
 });

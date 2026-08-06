@@ -8,6 +8,7 @@ import {
   GENERATIVE_TEXT_MODEL_REQUIRED_NOTICE,
 } from "../generativeTextAvailability";
 import { scratchpadNoteMatches } from "./search";
+import { createWordCountCache } from "./wordCounts";
 import "./scratchpad-window.css";
 
 type NoteSaveState = "saved" | "saving" | "save-error";
@@ -110,10 +111,6 @@ export function ScratchpadWindowControls({ platform }: { platform: RuntimePlatfo
   );
 }
 
-function wordCount(body: string): number {
-  return body.trim() ? body.trim().split(/\s+/u).length : 0;
-}
-
 export function ScratchpadWindow() {
   const [notes, setNotes] = useState<ScratchpadNote[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -137,6 +134,12 @@ export function ScratchpadWindow() {
   const creatingRef = useRef(false);
   const copyMessageTimerRef = useRef<number | null>(null);
   const flushPendingSavesRef = useRef<() => void>(() => undefined);
+  /*
+   * One cache for the window's lifetime, so a note keeps its count until its
+   * own body changes. See ./wordCounts for what recomputing all of them on
+   * every keystroke was costing.
+   */
+  const wordCountFor = useRef(createWordCountCache()).current;
 
   const replaceNotes = useCallback((next: ScratchpadNote[]) => {
     notesRef.current = next;
@@ -318,7 +321,7 @@ export function ScratchpadWindow() {
 
   const activeNote = notes.find((note) => note.id === selectedId) ?? null;
   const activeBody = activeNote?.body ?? "";
-  const activeWordCount = wordCount(activeBody);
+  const activeWordCount = activeNote ? wordCountFor(activeNote) : 0;
   const headerTitle = scratchpadHeaderTitle(activeNote?.title ?? null, status);
   const windowControlMode = scratchpadWindowControlMode(runtimePlatform);
   const filteredNotes = useMemo(() => notes.filter((note) => scratchpadNoteMatches(note, query)), [notes, query]);
@@ -453,7 +456,7 @@ export function ScratchpadWindow() {
 
             <div className="scratchpad-window__note-list" role="list" aria-label="Saved notes" tabIndex={0}>
               {filteredNotes.map((note) => {
-                const noteWordCount = wordCount(note.body);
+                const noteWordCount = wordCountFor(note);
                 const selected = note.id === selectedId;
                 const deleting = deletingIds.has(note.id);
                 return (
