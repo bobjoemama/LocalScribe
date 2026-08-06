@@ -141,10 +141,13 @@ def write_tiny_model(path: Path, manifest: ModelManifest) -> None:
 
 
 class FakeRuntime:
-    def __init__(self, label: str = "fake") -> None:
+    def __init__(self, label: str = "fake", *, fail: bool = False) -> None:
         self.label = label
         self.calls: list[tuple[bytes, str | None, str]] = []
         self.closed = False
+        self.releases = 0
+        self.releases_at_transcribe_return: list[int] = []
+        self._fail = fail
 
     def transcribe(
         self,
@@ -154,10 +157,16 @@ class FakeRuntime:
         context: str,
     ) -> TranscriptionResult:
         self.calls.append((pcm16, language, context))
+        self.releases_at_transcribe_return.append(self.releases)
+        if self._fail:
+            raise RuntimeError("transcription failed")
         return TranscriptionResult(
             text=f"Hello from {self.label}.",
             language=language or "en",
         )
+
+    def release_transient_memory(self) -> None:
+        self.releases += 1
 
     def close(self) -> None:
         self.closed = True
@@ -197,9 +206,13 @@ class WorkerProtocolTests(unittest.TestCase):
             # covered by ModelInstallationTests and install_model protocol tests.
             actual_validation = worker_module._valid_model_directory
 
-            def model_is_available(path: Path, manifest: ModelManifest) -> bool:
+            def model_is_available(
+                path: Path,
+                manifest: ModelManifest,
+                **kwargs: Any,
+            ) -> bool:
                 if manifest.model_id == "example/whisper":
-                    return actual_validation(path, manifest)
+                    return actual_validation(path, manifest, **kwargs)
                 return True
 
             with patch.object(
@@ -329,6 +342,55 @@ class WorkerProtocolTests(unittest.TestCase):
             self.assertEqual(messages[3]["tier"], "medium")
             self.assertEqual(messages[3]["computeType"], "int8")
             self.assertTrue(runtimes["medium"].closed)
+            # The dictation's scratch buffers are returned once the transcription
+            # is done, not left for the life of the resident worker.
+            self.assertEqual(runtimes["low"].releases_at_transcribe_return, [0])
+            self.assertEqual(runtimes["low"].releases, 1)
+
+    def test_transcription_failure_still_releases_scratch_memory(self) -> None:
+        """A rejected dictation must not strand the buffers it allocated.
+
+        The worker stays resident with the model warm, so anything not released
+        here is held until the user quits or switches models.
+        """
+        with tempfile.TemporaryDirectory() as temporary:
+            model_root = Path(temporary) / "models"
+            model_root.mkdir()
+            audio_root = Path(temporary) / "audio"
+            audio_root.mkdir()
+            audio_path = audio_root / "clip.wav"
+            write_wav(audio_path)
+            runtime = FakeRuntime("low", fail=True)
+
+            def installer(
+                path: Path,
+                manifest: ModelManifest,
+                allow_download: bool,
+            ) -> Path:
+                directory = path / manifest.storage_directory
+                directory.mkdir(parents=True, exist_ok=True)
+                return directory
+
+            messages, errors, exit_code = self.run_protocol(
+                encode_requests(
+                    load_request("low", model_root),
+                    request(
+                        "transcribe",
+                        audioPath=str(audio_path),
+                        allowedRoot=str(audio_root),
+                        language="English",
+                        context="",
+                    ),
+                    request("shutdown"),
+                ),
+                installer=installer,
+                factory=lambda directory, spec: runtime,
+            )
+
+            self.assertEqual(exit_code, 0)
+            self.assertIn("internal_error", errors)
+            self.assertEqual(messages[2]["type"], "error")
+            self.assertEqual(runtime.releases, 1)
 
     def test_same_tier_and_root_is_idempotent(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -538,6 +600,93 @@ class WorkerProtocolTests(unittest.TestCase):
             self.assertEqual(messages[1]["type"], "model_ready")
             self.assertEqual(messages[1]["modelId"], spec.model_id)
             self.assertTrue(runtime.closed)
+
+    def test_cold_load_hashes_the_artifact_exactly_once(self) -> None:
+        """A cold load used to read every artifact byte through SHA-256 twice.
+
+        The pre-check that refuses a load before the warm model is unloaded only
+        needs to know whether the artifact is installed; ``ensure_model`` runs
+        the authoritative digest verification immediately afterwards and no
+        runtime is constructed until it passes. Hashing in both places doubled
+        the load time of a multi-gigabyte artifact for no added guarantee.
+        """
+        with tempfile.TemporaryDirectory() as temporary:
+            model_root = Path(temporary) / "models"
+            spec = tier_spec("low")
+            selection = (spec.model_id, spec.tier, spec.compute_type)
+            manifest = tiny_manifest()
+            write_tiny_model(model_root / manifest.storage_directory, manifest)
+            hashed: list[str] = []
+            real_sha256 = worker_module._sha256
+
+            def counting_sha256(path: Path) -> str:
+                hashed.append(path.name)
+                return real_sha256(path)
+
+            with (
+                patch.dict(worker_module.MODEL_MANIFESTS, {selection: manifest}),
+                patch.object(worker_module, "_sha256", counting_sha256),
+            ):
+                messages, errors, exit_code = self.run_protocol(
+                    encode_requests(
+                        load_request("low", model_root, allow_download=False),
+                        request("shutdown"),
+                    ),
+                    factory=lambda _path, _spec: FakeRuntime(),
+                )
+
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(errors, "")
+            self.assertEqual(messages[1]["type"], "model_ready")
+            self.assertEqual(sorted(hashed), ["config.json", "weights.npz"])
+
+    def test_load_refuses_an_uninstalled_model_before_unloading_the_warm_one(
+        self,
+    ) -> None:
+        """The cheap pre-check must still fire, and must still fire early.
+
+        Skipping the digest pass must not turn "not installed" into an error
+        raised only after the previously applied model has been evicted.
+        """
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            model_root = root / "models"
+            spec = tier_spec("low")
+            selection = (spec.model_id, spec.tier, spec.compute_type)
+            manifest = tiny_manifest()
+            write_tiny_model(model_root / manifest.storage_directory, manifest)
+            audio_root = root / "audio"
+            audio_root.mkdir()
+            audio_path = audio_root / "utterance.wav"
+            write_wav(audio_path)
+            empty_root = root / "empty-models"
+            empty_root.mkdir()
+            warm = FakeRuntime("warm")
+
+            with patch.dict(worker_module.MODEL_MANIFESTS, {selection: manifest}):
+                messages, _errors, exit_code = self.run_protocol(
+                    encode_requests(
+                        load_request("low", model_root, allow_download=False),
+                        load_request("low", empty_root, allow_download=False),
+                        request(
+                            "transcribe",
+                            audioPath=str(audio_path),
+                            allowedRoot=str(audio_root),
+                            language="English",
+                            context="",
+                        ),
+                        request("shutdown"),
+                    ),
+                    factory=lambda _path, _spec: warm,
+                )
+
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(messages[1]["type"], "model_ready")
+            self.assertEqual(messages[2]["code"], "model_not_installed")
+            # The rejected load must not have cost the warm model: a dictation
+            # issued straight afterwards still runs on it.
+            self.assertEqual(messages[3]["type"], "final")
+            self.assertEqual(len(warm.calls), 1)
 
     def test_install_model_transactionally_verifies_without_constructing_runtime(
         self,
@@ -1168,6 +1317,68 @@ class ModelInstallationTests(unittest.TestCase):
             (model / "unexpected.bin").write_bytes(b"x")
             self.assertFalse(worker_module._valid_model_directory(model, manifest))
 
+    def test_finder_metadata_does_not_invalidate_a_byte_perfect_model(self) -> None:
+        """A .DS_Store must not cost the user a multi-gigabyte re-download.
+
+        Opening the models folder in the Finder writes one. The exact-entry-set
+        rule used to treat that as a corrupt artifact, so the next dictation
+        failed with model_not_installed and the only offered remedy was
+        re-downloading every pinned file that was already digest-identical.
+        """
+        manifest = tiny_manifest()
+        with tempfile.TemporaryDirectory() as temporary:
+            model = Path(temporary) / manifest.storage_directory
+            write_tiny_model(model, manifest)
+
+            for name in (".DS_Store", ".localized", "._weights.npz"):
+                with self.subTest(name=name):
+                    noise = model / name
+                    noise.write_bytes(b"\x00\x01\x02")
+                    # Both modes: the structural pre-check used by load_model
+                    # and the digest-verifying check used by install.
+                    self.assertTrue(
+                        worker_module._valid_model_directory(model, manifest)
+                    )
+                    self.assertTrue(
+                        worker_module._valid_model_directory(
+                            model, manifest, verify_digests=False
+                        )
+                    )
+                    # ensure_model must not reach for the downloader.
+                    ensure_model(Path(temporary), manifest, False)
+                    noise.unlink()
+
+    def test_finder_metadata_exemption_does_not_admit_a_payload(self) -> None:
+        manifest = tiny_manifest()
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            model = root / manifest.storage_directory
+            write_tiny_model(model, manifest)
+
+            # An AppleDouble sidecar is tolerated only for a file the manifest
+            # declares, so a plausible-looking name is not a way in.
+            payload = model / "._payload.bin"
+            payload.write_bytes(b"x")
+            self.assertFalse(worker_module._valid_model_directory(model, manifest))
+            payload.unlink()
+
+            # A directory wearing the name is not something the OS writes.
+            (model / ".DS_Store").mkdir()
+            self.assertFalse(worker_module._valid_model_directory(model, manifest))
+            (model / ".DS_Store").rmdir()
+
+            # Neither is a symlink, which could point anywhere.
+            external = root / "elsewhere"
+            external.write_bytes(b"x")
+            (model / ".DS_Store").symlink_to(external)
+            self.assertFalse(worker_module._valid_model_directory(model, manifest))
+            (model / ".DS_Store").unlink()
+
+            # And the exemption never covers a missing manifest file.
+            (model / "weights.npz").unlink()
+            (model / ".DS_Store").write_bytes(b"x")
+            self.assertFalse(worker_module._valid_model_directory(model, manifest))
+
     def test_catalog_manifest_rejects_a_url_as_manifest_model_identity(self) -> None:
         spec = tier_spec("low", family="v2")
         packaged_path = worker_module._manifest_path(spec.manifest_filename)
@@ -1379,6 +1590,52 @@ class RuntimeAndHardwareTests(unittest.TestCase):
         runtime.close()
         self.assertIsNone(Holder.model)
         self.assertIsNone(Holder.model_path)
+
+    def test_release_transient_memory_clears_the_mlx_buffer_cache(self) -> None:
+        """The doubles used above expose ``metal.clear_cache``, which the runtime
+        no longer calls, and both call sites swallow every exception — so an
+        AttributeError there was invisible and a deleted ``clear_cache`` stayed
+        green. Record the calls on the module the runtime actually uses.
+        """
+
+        class RecordingMlx:
+            def __init__(self) -> None:
+                self.calls: list[str] = []
+
+            def synchronize(self) -> None:
+                self.calls.append("synchronize")
+
+            def clear_cache(self) -> None:
+                self.calls.append("clear_cache")
+
+        class Holder:
+            model = None
+            model_path = None
+
+        whisper_mlx = RecordingMlx()
+        whisper = MLXWhisperRuntime(
+            mlx_module=whisper_mlx,
+            numpy_module=np,
+            model_holder=Holder,
+            transcribe_function=lambda waveform, **kwargs: {"text": "", "language": "en"},
+            model=object(),
+            model_path="/verified/local/model",
+        )
+        whisper.release_transient_memory()
+        self.assertEqual(whisper_mlx.calls, ["synchronize", "clear_cache"])
+
+        class Model:
+            def generate(self, waveform: Any, **kwargs: Any) -> Any:
+                raise AssertionError("generate must not run here")
+
+        audio_mlx = RecordingMlx()
+        audio = MLXAudioRuntime(
+            mlx_module=audio_mlx,
+            numpy_module=np,
+            model=Model(),
+        )
+        audio.release_transient_memory()
+        self.assertEqual(audio_mlx.calls, ["synchronize", "clear_cache"])
 
     def test_hardware_probe_parses_total_and_estimated_available_memory(self) -> None:
         outputs = {

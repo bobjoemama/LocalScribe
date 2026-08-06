@@ -30,13 +30,19 @@ button { color: inherit; }
  * hit targets as it expands, so mixing arrow, hand, busy, and forbidden
  * cursors makes a stationary pointer appear to flicker. Editable text keeps
  * the expected I-beam; every application control uses the stable arrow.
+ *
+ * `:not(:disabled)` is load-bearing. This rule is `!important`, so it beat any
+ * normal declaration a surface wrote to opt out — the scratchpad's own
+ * `textarea:disabled { cursor: default }` never applied, and the editor pane
+ * promised an I-beam over a field that cannot be typed into. An important rule
+ * has to carry its own exceptions.
  */
 html,
 body,
 body :where(*, *::before, *::after) { cursor: default !important; }
 body :where(
-  input:not([type="button"]):not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="reset"]):not([type="submit"]),
-  textarea,
+  input:not([type="button"]):not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="reset"]):not([type="submit"]):not(:disabled),
+  textarea:not(:disabled),
   [contenteditable="true"]
 ) { cursor: text !important; }
 
@@ -231,14 +237,29 @@ html[data-surface="pill"], html[data-surface="pill"] body, html[data-surface="pi
 }
 .pill--hover .pill__idle-menu, .pill--picker-open .pill__idle-menu { opacity: 1; pointer-events: auto; visibility: visible; transform: none; }
 .pill--picker-open .pill__idle-menu { width: var(--pill-idle-picker-width); height: var(--pill-picker-menu-height); justify-content: flex-end; }
+/*
+ * A block box, not a grid one, because of `text-overflow` below.
+ *
+ * `display: grid` puts this text in an anonymous grid item, and `text-overflow`
+ * is not inherited, so the ellipsis never applied to the box that actually
+ * overflows: every tooltip too wide for 117px was cut mid-glyph instead, with
+ * nothing to show the user that anything had been cut. Captured at the shipping
+ * rules (scripts/measure-pill-tooltip-widths.mjs), "Dictate · shortcut settings
+ * are unavailable" painted as "Dictate · shortcut settings a"; as a block box it
+ * paints "Dictate · shortcut setti…".
+ *
+ * `line-height` equal to the height is what centres the single line vertically
+ * once `place-items` is gone; the box has no border, so the two agree.
+ */
 .pill__idle-tooltip {
-  display: grid;
+  display: block;
   width: calc(var(--pill-idle-hover-width) - 9px);
   height: 32px;
   flex: 0 0 auto;
-  place-items: center;
   overflow: hidden;
   padding: 0 10px;
+  text-align: center;
+  line-height: 32px;
   margin-bottom: 6px;
   border: 0;
   border-radius: 999px;
@@ -423,7 +444,11 @@ html[data-surface="pill"], html[data-surface="pill"] body, html[data-surface="pi
 @keyframes pill-error-countdown { to { stroke-dashoffset: 40.84; } }
 
 @media (prefers-reduced-motion: reduce) {
-  .pill, .pill__idle-menu, .pill-wave i, .pill-compact-wave i, .pill-error-notice, .pill-error-notice__countdown-progress { animation: none; transition: none; }
+  /*
+   * .pill__idle-rail scales to .84 on hover, so it must be listed here too or
+   * the collapsed pill still animates a transform under reduced motion.
+   */
+  .pill, .pill__idle-menu, .pill__idle-rail, .pill-wave i, .pill-compact-wave i, .pill-error-notice, .pill-error-notice__countdown-progress { animation: none; transition: none; }
 }
 
 @media (max-width: 900px) {

@@ -41,6 +41,7 @@ const SETTINGS_CHANNELS = new Set<string>([
   IPC.systemOpenPermission,
   IPC.systemAppInfo,
   IPC.systemDiagnostics,
+  IPC.systemDiagnosticsLog,
   IPC.systemModelCatalog,
   IPC.systemAddModelFamily,
   IPC.systemApplyModelSelection,

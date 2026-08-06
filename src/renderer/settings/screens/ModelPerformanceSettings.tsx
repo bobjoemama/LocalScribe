@@ -5,12 +5,17 @@ import {
   type ModelPerformanceMode,
   type ModelPerformanceTier,
 } from "../../../shared/contracts";
+import { modelPerformanceTierLabel } from "../../../shared/modelPerformance";
 
+/*
+ * Tier labels come from the shared source so main-composed status copy and
+ * these renderer labels cannot spell the same tier two different ways.
+ */
 export const MODEL_MODE_CHOICES = [
   { id: "auto", label: "Auto" },
-  { id: "high", label: "High" },
-  { id: "medium", label: "Medium" },
-  { id: "low", label: "Low" },
+  { id: "high", label: modelPerformanceTierLabel("high") },
+  { id: "medium", label: modelPerformanceTierLabel("medium") },
+  { id: "low", label: modelPerformanceTierLabel("low") },
 ] as const satisfies readonly { id: ModelPerformanceMode; label: string }[];
 
 const TIER_ORDER: readonly ModelPerformanceTier[] = ["high", "medium", "low"];
@@ -647,8 +652,16 @@ function MemoryStatus({
           <small>
             {hardware.availableMemoryBytes === null
               ? "Availability · unavailable"
+              /*
+               * The number above is the raw reading main reports; diagnostics
+               * stay observational and are never normalized. The caption used
+               * to claim it was "normalized for the warm model", which is a
+               * different, larger figure computed only inside apply
+               * eligibility — so the readout and the Apply message quoted two
+               * irreconcilable numbers. Describe what is actually shown.
+               */
               : normalizedForWarmModel
-                ? `Selection budget · live telemetry normalized for the warm model · ${hardware.memoryBasis}`
+                ? `Available now (a warm model is resident) · live telemetry · ${hardware.memoryBasis}`
                 : `Available now · live telemetry · ${hardware.memoryBasis}`}
           </small>
         </span>
@@ -766,6 +779,7 @@ function ModelFamilyCard({
             isArtifactControl={firstTierForArtifact.get(tier.artifactId) === tier.tier}
             artifactControlTier={firstTierForArtifact.get(tier.artifactId) ?? tier.tier}
             action={action?.action === "adding" ? null : action}
+            operationsDisabled={selectionDisabled}
             runEligibilityUnknown={runEligibilityUnknown}
             onInstall={onInstall}
             onRepair={onRepair}
@@ -786,6 +800,7 @@ function ModelTierRow({
   isArtifactControl,
   artifactControlTier,
   action,
+  operationsDisabled,
   runEligibilityUnknown,
   onInstall,
   onRepair,
@@ -799,6 +814,7 @@ function ModelTierRow({
   isArtifactControl: boolean;
   artifactControlTier: ConcreteModelTier;
   action: ModelActionState;
+  operationsDisabled: boolean;
   runEligibilityUnknown: boolean;
   onInstall(familyId: ModelFamilyId, tier: ConcreteModelTier): void;
   onRepair(familyId: ModelFamilyId, tier: ConcreteModelTier): void;
@@ -811,7 +827,13 @@ function ModelTierRow({
     && action.tier === tier.tier
     ? action.action
     : null;
-  const anyAction = action !== null;
+  /*
+   * Every other control on this screen goes inert while an Apply runs; these
+   * did not. Main serialises model operations, so a click during an Apply was
+   * never unsafe — it silently queued behind an unload/load that can take tens
+   * of seconds, with the button still advertising itself as available.
+   */
+  const anyAction = action !== null || operationsDisabled;
   const tierLabel = MODEL_MODE_CHOICES.find((choice) => choice.id === tier.tier)?.label ?? tier.tier;
   const sharedWith = sharedArtifact ? "Shared artifact" : null;
 

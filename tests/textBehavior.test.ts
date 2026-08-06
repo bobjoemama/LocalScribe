@@ -290,3 +290,99 @@ describe("transformDictation", () => {
     });
   });
 });
+
+/*
+ * The tokenizer treated `.`, `:` and `@` as separators, so an alphanumeric run
+ * containing one was split; the renderer then glued the mark to the left and
+ * put a space before what followed, and sentence capitalization uppercased it.
+ * Every dictated price, decimal, clock time, email address and domain came out
+ * corrupted — on the default preset, silently, in the text pasted into the
+ * user's target app. 852 tests passed over it because no test in the suite
+ * dictated a digit, a currency sign, an email or a URL.
+ *
+ * The options below are exactly what src/main.ts:1325-1333 passes for the
+ * default settings.
+ */
+describe("text that contains a period, colon, or at-sign", () => {
+  const DEFAULTS = {
+    fillerMode: "conservative" as const,
+    punctuationCommands: true,
+    paragraphCommands: true,
+    scratchCommands: true,
+    capitalizeSentences: true,
+    terminalPunctuation: "ensure" as const,
+    normalizeWhitespace: true,
+  };
+
+  const render = (input: string): string => transformDictation(input, DEFAULTS).text;
+
+  it.each([
+    ["a price", "The price is $4.50 today.", "The price is $4.50 today."],
+    ["a decimal", "Version 3.14 shipped.", "Version 3.14 shipped."],
+    ["a clock time", "Meet at 3:30 today.", "Meet at 3:30 today."],
+    ["a thousands separator", "It cost 1,000 dollars.", "It cost 1,000 dollars."],
+    ["an email address", "Send it to jane@example.com now.", "Send it to jane@example.com now."],
+    ["a domain", "Check github.com for it.", "Check github.com for it."],
+    ["an abbreviation", "Meet at 3:30 p.m. sharp.", "Meet at 3:30 p.m. sharp."],
+    ["a version string", "Upgrade to 2.4.1 first.", "Upgrade to 2.4.1 first."],
+  ])("passes %s through unchanged", (_label, input, expected) => {
+    expect(render(input)).toBe(expected);
+  });
+
+  it("still capitalizes a real sentence boundary", () => {
+    // The repair must not turn every period into an interior one.
+    expect(render("this is a sentence. another one here.")).toBe(
+      "This is a sentence. Another one here.",
+    );
+    expect(render("done! next thing.")).toBe("Done! Next thing.");
+    expect(render("ready? go now.")).toBe("Ready? Go now.");
+  });
+
+  it("still separates a colon or comma between words", () => {
+    // The colon and comma bridges are digit-only precisely so this keeps working.
+    expect(render("note:this matters.")).toBe("Note: this matters.");
+    expect(render("alpha,beta gamma.")).toBe("Alpha, beta gamma.");
+  });
+
+  it("does not pad a straight quotation mark on both sides", () => {
+    expect(render('He said "hello there" loudly.')).toBe('He said "hello there" loudly.');
+  });
+
+  it("keeps a currency sign attached to its amount", () => {
+    expect(render("It costs $12 total.")).toBe("It costs $12 total.");
+    expect(render("It costs £7.50 total.")).toBe("It costs £7.50 total.");
+  });
+
+  it("corrupts nothing when every cleanup is off", () => {
+    const verbatim = "Send $4.50 to jane@example.com at 3:30.";
+    expect(transformDictation(verbatim, cleanupOptionsForPreset("verbatim")).text).toBe(verbatim);
+  });
+});
+
+/*
+ * The closing-punctuation branch of renderTokens did `output.trimEnd() + value`,
+ * which also removed the newline a break token had just written. A dictated
+ * bullet list collapsed onto one line.
+ */
+describe("spoken line breaks followed by punctuation", () => {
+  it("keeps the break when a bullet marker follows it", () => {
+    const result = transformDictation(
+      "groceries colon new line hyphen milk new line hyphen eggs",
+    ).text;
+
+    expect(result.split("\n")).toHaveLength(3);
+    expect(result).toContain("milk");
+    expect(result).toContain("eggs");
+    // The defect signature: everything on one line, joined by the hyphens.
+    expect(result).not.toContain("milk-eggs");
+  });
+
+  it("keeps a paragraph break that is followed by a comma", () => {
+    expect(transformDictation("hello new paragraph comma world").text).toContain("\n\n");
+  });
+
+  it("still renders break-then-word correctly", () => {
+    expect(transformDictation("one new line two new paragraph three").text)
+      .toBe("One\nTwo\n\nThree");
+  });
+});

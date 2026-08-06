@@ -10,6 +10,16 @@ interface DictionaryContextEntry {
  * Produces a bounded recognizer hint without weakening post-transcription
  * dictionary replacement. Newer entries are preferred when the complete
  * dictionary does not fit the worker protocol's context limit.
+ *
+ * The selected terms are emitted lowest-priority first, so the highest-priority
+ * terms sit at the end of the string. That ordering exists because the Whisper
+ * backend truncates this hint again, from the front: mlx-whisper feeds it as
+ * `initial_prompt`, and `DecodingTask._get_initial_tokens` keeps only
+ * `prompt_tokens[-(n_ctx // 2 - 1):]` — 223 tokens for large-v3, far less than
+ * the 4,000 characters this builder is allowed to emit. Emitting newest-first
+ * meant Whisper's own truncation discarded precisely the newest entries this
+ * function had just gone out of its way to prioritise. Emitting newest-last
+ * makes that truncation drop the lowest-priority terms instead.
  */
 export function buildDictionaryAsrContext(
   entries: readonly DictionaryContextEntry[],
@@ -36,5 +46,5 @@ export function buildDictionaryAsrContext(
     length += addedLength;
   }
 
-  return selected.join(", ");
+  return selected.reverse().join(", ");
 }

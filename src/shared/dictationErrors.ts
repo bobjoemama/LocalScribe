@@ -2,6 +2,15 @@ import { rendererSafeErrorMessage } from "./rendererErrors";
 
 export const ERROR_NOTICE_DURATION_MS = 8_000;
 
+/**
+ * How long the pill shows a finished dictation before returning to idle.
+ *
+ * Unchanged from the value that used to live inline at the transcribe call
+ * site; it moved here so the transition can arm its own return to idle rather
+ * than depending on a caller reaching the line after it.
+ */
+export const SUCCESS_NOTICE_DURATION_MS = 1_400;
+
 export interface DictationErrorPresentation {
   title: string;
   detail: string;

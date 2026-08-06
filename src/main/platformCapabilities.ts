@@ -27,6 +27,12 @@ export function permissionSnapshotForPlatform(
   accessibilityGranted: boolean,
   globalHoldReady: boolean,
   automaticPasteReady: boolean,
+  /*
+   * Defaults to true only so existing callers keep compiling; every real
+   * caller passes the live value. A default of `false` would be worse: it
+   * would make the app report a working toggle as broken.
+   */
+  globalToggleReady = true,
 ): PermissionSnapshot {
   const isMac = platform === "darwin";
   const isWindows = platform === "win32";
@@ -48,6 +54,13 @@ export function permissionSnapshotForPlatform(
       // prove that either that hook or the bare-Control fallback actually
       // started. Keep capability support separate from runtime readiness.
       ready: (isMac || isWindows) && globalHoldReady,
+    },
+    globalToggle: {
+      // Every desktop platform can register an accelerator; whether this one
+      // was claimed is a separate, per-run question, and it is the question
+      // that was going unanswered.
+      supported: true,
+      ready: globalToggleReady,
     },
   };
 }

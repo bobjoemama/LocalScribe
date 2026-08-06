@@ -35,7 +35,11 @@ cleanup() {
 }
 trap cleanup EXIT
 
-"$executable" "--user-data-dir=$profile_path" >"$stdout_path" 2>"$stderr_path" &
+# LOCALSCRIBE_SMOKE makes the packaged app report startup completion on stdout
+# and fail without a modal dialog. Both matter here: a modal NSAlert blocks the
+# main thread until dismissed, so an unattended run saw a live process and
+# passed a build whose startup had already failed.
+LOCALSCRIBE_SMOKE=1 "$executable" "--user-data-dir=$profile_path" >"$stdout_path" 2>"$stderr_path" &
 candidate_pid="$!"
 sleep 8
 
@@ -49,8 +53,19 @@ kill -TERM "$candidate_pid"
 wait "$candidate_pid" || true
 candidate_pid=""
 
+# A positive assertion. Liveness alone cannot distinguish "started" from
+# "blocked in a failure dialog".
+if ! grep -Fq 'localscribe-startup-ready' "$stdout_path"; then
+  cat "$stdout_path" "$stderr_path" >&2
+  echo "Packaged macOS main process never reported a completed startup." >&2
+  exit 1
+fi
+
+# These patterns are the ones the product actually emits. The previous
+# alternation searched for a resource-integrity phrase that appears nowhere
+# outside this script, so every resource-integrity failure mode passed the scan.
 if grep -Eiq \
-  'ERR_INVALID_ARG_VALUE|uncaught exception|javascript error|resource integrity verification failed|fatal error|UnhandledPromiseRejection|database connection is not open' \
+  'ERR_INVALID_ARG_VALUE|uncaught exception|javascript error|fatal error|UnhandledPromiseRejection|database connection is not open|LocalScribe startup failed|Resource integrity (rejected|mismatch|is missing|found an unexpected|detected)' \
   "$stdout_path" "$stderr_path"; then
   cat "$stdout_path" "$stderr_path" >&2
   echo "Packaged macOS main process emitted a startup or shutdown error." >&2

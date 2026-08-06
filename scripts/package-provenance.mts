@@ -32,6 +32,9 @@ const COMMON_RELEASE_INPUTS = [
   "scripts/release-metadata.mjs",
   "scripts/release-metadata.mts",
   "scripts/run-forge-target.mjs",
+  "scripts/verify-local-source.mjs",
+  "scripts/verify-packaged-archive.mjs",
+  "scripts/verify-packaged-main.mjs",
   "scripts/verify-release-assets.mjs",
   "src",
   "tsconfig.json",
@@ -61,7 +64,21 @@ const MAC_RELEASE_INPUTS = [
   "resources/model-manifest/qwen3-asr-0-6b-mlx-8bit.json",
   "resources/model-manifest/qwen3-asr-0-6b-mlx-bf16.json",
   "resources/native/macos/active-target.swift",
+  /*
+   * The macOS gate scripts decide whether an artifact may ship, so a change to
+   * one of them has to invalidate the artifact it approved — exactly as the
+   * Windows list already does for its own gate. Without these, a signed app
+   * could be re-approved by a weakened checker while still reporting the same
+   * source provenance.
+   */
   "scripts/build-worker-runtime.sh",
+  "scripts/generate-runtime-sbom.mjs",
+  "scripts/macos-entitlement-policy.mts",
+  "scripts/smoke-packaged-macos.sh",
+  "scripts/verify-local-macos.sh",
+  "scripts/verify-macos-artifacts.mjs",
+  "scripts/verify-macos-bundle.mjs",
+  "scripts/verify-macos-entitlements.mjs",
   "worker/localscribe_worker",
   "worker/pyproject.toml",
   "worker/uv.lock",

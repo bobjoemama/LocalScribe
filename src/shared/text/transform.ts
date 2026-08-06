@@ -3,16 +3,44 @@ import { removeFillers } from "./fillers";
 import { DEFAULT_CLEANUP_OPTIONS } from "./profiles";
 import type { TextCleanupOptions, TextTransformResult } from "./types";
 
+/*
+ * Does the `.` at `index` close an abbreviation rather than a sentence?
+ *
+ * Only the shape is available here, and one shape is unambiguous enough to act
+ * on: a single letter preceded by another period \u2014 "p.m.", "e.g.", "U.S.".
+ * Treating those as sentence ends is what produced "Meet at 3:30 p.m. Sharp."
+ */
+function closesAbbreviation(characters: readonly string[], index: number): boolean {
+  const letter = characters[index - 1];
+  return letter !== undefined && /\p{L}/u.test(letter) && characters[index - 2] === ".";
+}
+
 function capitalizeSentences(text: string): string {
+  const characters = [...text];
   let atSentenceStart = true;
-  return [...text]
-    .map((character) => {
+  return characters
+    .map((character, index) => {
       if (atSentenceStart && /\p{L}/u.test(character)) {
         atSentenceStart = false;
         return character.toLocaleUpperCase();
       }
-      if (/[.!?\n]/u.test(character)) atSentenceStart = true;
-      else if (!/\s|[\u201c"'([{]/u.test(character)) atSentenceStart = false;
+      if (character === "\n") {
+        atSentenceStart = true;
+        return character;
+      }
+      if (/[.!?]/u.test(character)) {
+        /*
+         * A period only ends a sentence when something ends after it. The
+         * unconditional version capitalized the letter after every period,
+         * including the ones inside a token: "jane@example.com" became
+         * "jane@example.Com" and "3:30 p.m. sharp" became "p.M. Sharp".
+         */
+        const next = characters[index + 1];
+        atSentenceStart = (next === undefined || /[\s\u201d"')}\]]/u.test(next))
+          && !closesAbbreviation(characters, index);
+        return character;
+      }
+      if (!/\s|[\u201c"'([{]/u.test(character)) atSentenceStart = false;
       return character;
     })
     .join("");

@@ -1,5 +1,6 @@
 import { createPackage } from "@electron/asar";
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
   rmSync,
@@ -7,7 +8,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import path from "node:path";
+import path, { resolve } from "node:path";
 import { finished } from "node:stream/promises";
 import { afterEach, describe, expect, it } from "vitest";
 import {
@@ -131,6 +132,37 @@ describe("package source provenance", () => {
       .sort();
 
     expect(provenanceManifests).toEqual(packagedManifests);
+  });
+
+  /*
+   * A gate script that can be changed without invalidating the artifact it
+   * approved is not a gate. The Windows list already binds its own gate
+   * scripts; the macOS list bound only the worker-runtime builder, so
+   * `verify-local-macos.sh`, the packaged smoke, the bundle/entitlement/
+   * artifact verifiers, and the SBOM generator could all be weakened while a
+   * previously signed app kept reporting the same source provenance.
+   */
+  it("binds every script that decides whether a macOS artifact may ship", () => {
+    const macInputs = releaseInputCandidates("darwin");
+    const gateScripts = [
+      "scripts/generate-runtime-sbom.mjs",
+      "scripts/macos-entitlement-policy.mts",
+      "scripts/smoke-packaged-macos.sh",
+      "scripts/verify-local-macos.sh",
+      "scripts/verify-local-source.mjs",
+      "scripts/verify-macos-artifacts.mjs",
+      "scripts/verify-macos-bundle.mjs",
+      "scripts/verify-macos-entitlements.mjs",
+      "scripts/verify-packaged-archive.mjs",
+      "scripts/verify-packaged-main.mjs",
+      "scripts/verify-release-assets.mjs",
+    ];
+    expect(gateScripts.filter((script) => !macInputs.includes(script))).toEqual([]);
+
+    // Every one of them is a real file, so a rename cannot silently drop it.
+    for (const script of gateScripts) {
+      expect(existsSync(resolve(process.cwd(), script)), `missing ${script}`).toBe(true);
+    }
   });
 
   it("canonicalizes POSIX and Windows ASAR entry separators identically", () => {

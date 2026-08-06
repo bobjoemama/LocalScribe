@@ -30,6 +30,17 @@ const harnessVerification = (
 ) as "missing" | "invalid" | "verified";
 const harnessSettingsPreset = harnessParams.get("settings") === "custom" ? "custom" : "default";
 const harnessApplyResult = harnessParams.get("apply") === "fail" ? "fail" : "success";
+/*
+ * `save=fail` makes settings.patch reject with the longest message the product
+ * can actually show. rendererSafeErrorMessage caps the detail at 160 characters
+ * and StyleSettings prefixes "Could not save settings: ", so 185 characters is
+ * the real worst case for the footer status. The harness reproduces that exact
+ * string so the layout gate measures the widest status a user can hit.
+ */
+const harnessSaveFails = harnessParams.get("save") === "fail";
+const LONGEST_SAVE_FAILURE_DETAIL = "The local settings store rejected this change and kept the previous values, "
+  + "so nothing was modified; close this window and try saving again once the machine is idle and "
+  + "no other copy of the application is running.";
 const isWindows = harnessPlatform === "win32";
 const usesCustomSettings = harnessSettingsPreset === "custom";
 Object.defineProperty(navigator, "platform", {
@@ -114,6 +125,8 @@ if (harnessParams.has("apply")) {
   });
 }
 const settingsPatchCalls: AppSettingsPatch[] = [];
+let permissionPollCount = 0;
+const windowVisibilityListeners = new Set<(visible: boolean) => void>();
 const modelApplyCalls: ModelSelectionApplyRequest[] = [];
 const settingsListeners = new Set<(settings: AppSettings) => void>();
 let launchAtLoginStatus: LaunchAtLoginStatus = usesCustomSettings
@@ -155,6 +168,7 @@ const permissions: PermissionSnapshot = {
   accessibility: { supported: !isWindows, granted: !isWindows },
   automaticPaste: { supported: true, ready: true },
   globalHold: { supported: true, ready: true },
+  globalToggle: { supported: true, ready: true },
 };
 
 const catalog: ModelCatalog = {
@@ -321,6 +335,12 @@ const diagnostics: Diagnostics = {
   architecture: isWindows ? "x64" : "arm64",
   backend,
   databaseIntegrity: "ok",
+  /*
+   * Added when `scripts/` joined the typecheck: the contract has carried this
+   * field since unreadable history rows became countable, and the harness
+   * fixture had silently drifted behind it.
+   */
+  unreadableRecords: 0,
   model: {
     familyId: "whisper-large-v3",
     artifactId: activeArtifactIds[0]!,
@@ -387,6 +407,7 @@ window.localScribe = {
     get: async () => appSettingsSchema.parse(persistedSettings),
     patch: async (patch: AppSettingsPatch) => {
       settingsPatchCalls.push({ ...patch });
+      if (harnessSaveFails) throw new Error(LONGEST_SAVE_FAILURE_DETAIL);
       persistedSettings = appSettingsSchema.parse({ ...persistedSettings, ...patch });
       if (patch.launchAtLogin !== undefined) {
         launchAtLoginStatus = {
@@ -400,7 +421,7 @@ window.localScribe = {
       for (const listener of settingsListeners) listener(persistedSettings);
       return appSettingsSchema.parse(persistedSettings);
     },
-    onChanged: (listener) => {
+    onChanged: (listener: (settings: AppSettings) => void) => {
       settingsListeners.add(listener);
       return () => settingsListeners.delete(listener);
     },
@@ -417,13 +438,16 @@ window.localScribe = {
     }] : [],
   },
   system: {
-    getPermissions: async () => permissions,
+    getPermissions: async () => {
+      permissionPollCount += 1;
+      return permissions;
+    },
     getLaunchAtLoginStatus: async () => ({ ...launchAtLoginStatus }),
     diagnostics: async () => diagnostics,
     modelCatalog: async () => catalog,
     openPermission: async () => undefined,
     addModelFamily: async () => catalog,
-    applyModelSelection: async (request) => {
+    applyModelSelection: async (request: ModelSelectionApplyRequest) => {
       modelApplyCalls.push({ ...request });
       if (harnessApplyResult === "fail") throw new Error("Harness model load failed");
       persistedSettings = appSettingsSchema.parse({
@@ -452,6 +476,18 @@ window.localScribe = {
     installModel: async () => diagnostics,
     removeModel: async () => diagnostics,
   },
+  windows: {
+    /*
+     * Main pushes native window visibility because the renderer cannot derive
+     * it: backgroundThrottling: false pins document.visibilityState to
+     * "visible". The harness stands in for main so the gate can prove the
+     * permission poll actually stops when the window is hidden.
+     */
+    onVisibilityChanged: (listener: (visible: boolean) => void) => {
+      windowVisibilityListeners.add(listener);
+      return () => windowVisibilityListeners.delete(listener);
+    },
+  },
 } as unknown as LocalScribeApi;
 
 const root = createRoot(document.getElementById("root")!);
@@ -466,10 +502,16 @@ const renderSettings = () => {
     applyCalls: ModelSelectionApplyRequest[];
     persisted(): AppSettings;
     remount(): void;
+    permissionPolls(): number;
+    setWindowVisible(visible: boolean): void;
   };
 }).__localScribeSettingsHarness = {
   patchCalls: settingsPatchCalls,
   applyCalls: modelApplyCalls,
+  permissionPolls: () => permissionPollCount,
+  setWindowVisible: (visible: boolean) => {
+    for (const listener of windowVisibilityListeners) listener(visible);
+  },
   persisted: () => persistedSettings,
   remount: renderSettings,
 };

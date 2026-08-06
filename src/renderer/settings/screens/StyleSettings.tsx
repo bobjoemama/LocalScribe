@@ -23,6 +23,7 @@ import {
   type ModelPerformanceTier,
   type PermissionSnapshot,
 } from "../../../shared/contracts";
+import { selectableMicrophones } from "../../../shared/microphones";
 import { rendererSafeErrorMessage } from "../../../shared/rendererErrors";
 import { shortcutDisplayLabel } from "../../../shared/shortcuts";
 import {
@@ -30,6 +31,7 @@ import {
   UNAVAILABLE_IN_THIS_BUILD_NOTICE,
 } from "../../generativeTextAvailability";
 import { ShortcutRecorder, type ShortcutValidationOutcome } from "../components/ShortcutRecorder";
+import { decideSettingsDismissal } from "../dismissal";
 import {
   DICTATION_LANGUAGE_DETAIL,
   dictationLanguageOptionsFor,
@@ -192,6 +194,24 @@ export function automaticPasteSettingsPresentation(
       editable: false,
       detail: "The local Windows paste helper is unavailable. Completed dictation will be copied until the helper is available.",
       value: "Copy only",
+    };
+  }
+  /*
+   * macOS derives readiness from Accessibility, and this branch was gated on
+   * win32, so a Mac without Accessibility fell through to a switch the user
+   * could turn on above a sentence promising it would paste. Main has always
+   * taken the copy path in that state and says so on the pill ("Copied — allow
+   * Accessibility"); the setting was the one surface still claiming otherwise.
+   *
+   * The switch stays editable, unlike the Windows case: Accessibility is a
+   * permission the user can grant from the Privacy tab, and the preference
+   * takes effect the moment they do. Only the promise is corrected.
+   */
+  if (!permissions.automaticPaste.ready) {
+    return {
+      editable: true,
+      detail: "Accessibility is not granted, so completed dictation is copied instead. Grant it under Privacy and this starts pasting.",
+      value: null,
     };
   }
   return {
@@ -884,7 +904,15 @@ export function TransformsScreen() {
   );
 }
 
-export function SettingsModal({ onClose }: { onClose(): void }) {
+export function SettingsModal({ onClose, registerDismissalGate }: {
+  onClose(): void;
+  /**
+   * Publishes the dialog's own dismissal gate so the hub can consult it before
+   * unmounting the dialog on a navigation request. Called with `null` on
+   * unmount.
+   */
+  registerDismissalGate?(gate: (() => boolean) | null): void;
+}) {
   const [tab, setTab] = useState<SettingsTab>("general");
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [settingsLoadError, setSettingsLoadError] = useState<unknown | null>(null);
@@ -902,17 +930,68 @@ export function SettingsModal({ onClose }: { onClose(): void }) {
   const [pendingModelSelection, setPendingModelSelection] = useState<ModelSelectionDraft | null>(null);
   const [modelApplying, setModelApplying] = useState(false);
   const modelApplyInFlight = useRef(false);
+  /*
+   * `modelAction` disables the library buttons, but only after React commits
+   * the render that carries it. Two dispatches in the same tick — a double
+   * click, or a click plus a keyboard activation — both still see a null
+   * action, so both run, and whichever finishes first clears `modelAction`
+   * and re-enables every button while the other is still downloading. This
+   * ref closes that window the way `applyModelSelection` already does.
+   */
+  const modelLibraryActionInFlight = useRef(false);
   const [modelFeedback, setModelFeedback] = useState<{ message: string; isError: boolean } | null>(null);
   const shortcutPlatform = permissions?.platform === "darwin"
     || permissions?.platform === "win32"
     || permissions?.platform === "linux"
     ? permissions.platform
     : null;
-  const closeSettings = useCallback(() => {
-    if (modelApplyInFlight.current) return;
+  const dialogRef = useRef<HTMLElement>(null);
+  /*
+   * The dialog declares aria-modal="true", which tells assistive technology the
+   * hub behind it is inert — but nothing made that true for the keyboard.
+   * Focus stayed wherever it was (the hub's Settings button, or `document.body`
+   * on a menu-driven open), so a keyboard user opened a modal and remained
+   * outside it. Move focus in on open and hand it back on close; SettingsApp
+   * marks the hub itself `inert` for the duration.
+   */
+  useEffect(() => {
+    const opener = document.activeElement;
+    dialogRef.current?.focus();
+    return () => {
+      if (opener instanceof HTMLElement && opener.isConnected) opener.focus();
+    };
+  }, []);
+
+  /*
+   * Returns whether the dialog actually closed, so `SettingsApp` can leave the
+   * hub where it is when a navigation request is refused. A refusal is
+   * announced on two surfaces because the footer suppresses `status` on the
+   * model tab and `modelFeedback` only renders on it — between them every tab
+   * is covered.
+   */
+  const attemptDismissal = useCallback((): boolean => {
+    const decision = decideSettingsDismissal({
+      applyInFlight: modelApplyInFlight.current,
+      libraryActionInFlight: modelLibraryActionInFlight.current,
+    });
+    if (!decision.dismiss) {
+      setStatus(decision.message);
+      setModelFeedback({ message: decision.message, isError: false });
+      return false;
+    }
     setPendingModelSelection(null);
     onClose();
+    return true;
   }, [onClose]);
+
+  const closeSettings = useCallback(() => {
+    attemptDismissal();
+  }, [attemptDismissal]);
+
+  useEffect(() => {
+    registerDismissalGate?.(attemptDismissal);
+    return () => registerDismissalGate?.(null);
+  }, [registerDismissalGate, attemptDismissal]);
 
   const refresh = useCallback(async () => {
     const [permissionResult, launchAtLoginResult, diagnosticsResult, profileResult] = await Promise.allSettled([
@@ -962,8 +1041,12 @@ export function SettingsModal({ onClose }: { onClose(): void }) {
       return;
     }
     try {
-      const devices = await mediaDevices.enumerateDevices();
-      setMicrophones(devices.filter((device) => device.kind === "audioinput"));
+      /*
+       * Must be the same filter the pill applies. Listing raw audioinput
+       * devices offered "Default", whose id the pill rejects, so selecting it
+       * made the pill report the working microphone as unavailable.
+       */
+      setMicrophones(selectableMicrophones(await mediaDevices.enumerateDevices()));
     } catch (error) {
       setMicrophones([]);
       throw error;
@@ -1023,12 +1106,41 @@ export function SettingsModal({ onClose }: { onClose(): void }) {
     const refreshVisibleState = () => {
       if (document.visibilityState === "visible") refreshForegroundState();
     };
-    const interval = window.setInterval(refreshPermissions, 1_000);
+    /*
+     * The poll spawns a native helper process on every tick, so it must stop
+     * when nobody can see the result. Closing the Settings window only hides
+     * it — the renderer stays alive and this effect never unmounts — and
+     * `backgroundThrottling: false` pins `document.visibilityState` to
+     * "visible" and keeps intervals at full rate, so the Page Visibility API
+     * cannot be used as the gate. Main pushes the real native visibility.
+     */
+    let interval: number | null = null;
+    const stopPolling = () => {
+      if (interval === null) return;
+      window.clearInterval(interval);
+      interval = null;
+    };
+    const startPolling = () => {
+      if (interval === null) interval = window.setInterval(refreshPermissions, 1_000);
+    };
+    startPolling();
+    const unsubscribeVisibility = window.localScribe.windows.onVisibilityChanged((visible) => {
+      if (disposed) return;
+      if (!visible) {
+        stopPolling();
+        return;
+      }
+      // Permissions can only have been changed in System Settings while the
+      // window was away, so refresh immediately rather than waiting a tick.
+      refreshForegroundState();
+      startPolling();
+    });
     window.addEventListener("focus", refreshForegroundState);
     document.addEventListener("visibilitychange", refreshVisibleState);
     return () => {
       disposed = true;
-      window.clearInterval(interval);
+      stopPolling();
+      unsubscribeVisibility();
       window.removeEventListener("focus", refreshForegroundState);
       document.removeEventListener("visibilitychange", refreshVisibleState);
     };
@@ -1130,11 +1242,45 @@ export function SettingsModal({ onClose }: { onClose(): void }) {
     }
   };
 
+  /*
+   * The packaged app writes stdout and stderr to /dev/null, so when a dictation
+   * fails there is nothing in the app, in Console.app, or in `log show` for a
+   * user to send. This is the only way that trail leaves the machine.
+   *
+   * Nothing is redacted here on purpose: `diagnosticsLog()` returns content the
+   * recorder has already re-checked against the redaction rules on the way out,
+   * and withholds the file entirely if it fails. Filtering again in the
+   * renderer would create a second, weaker rule that could silently disagree
+   * with the real one.
+   */
+  const copyDiagnostics = async () => {
+    let trail: string;
+    try {
+      trail = await window.localScribe.system.diagnosticsLog();
+    } catch (error) {
+      setStatus(`Could not read the diagnostics log: ${errorDetail(error)}`);
+      return;
+    }
+    if (trail.trim().length === 0) {
+      // Distinct from a failure: nothing has gone wrong yet, so there is
+      // nothing to send, and saying "copied" would produce an empty paste.
+      setStatus("No diagnostics have been recorded yet");
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(trail);
+      setStatus(DIAGNOSTICS_COPIED_STATUS);
+    } catch (error) {
+      setStatus(`Could not copy the diagnostics log: ${errorDetail(error)}`);
+    }
+  };
+
   const installModel = async (
     familyId: ModelFamilyId,
     tier: ModelPerformanceTier,
     replaceExisting: boolean,
   ) => {
+    if (modelLibraryActionInFlight.current) return;
     const model = catalogModelProfile(modelCatalog, familyId, tier);
     if (!model) {
       setModelFeedback({ message: "Curated model details are not available yet. Refresh model status and try again.", isError: true });
@@ -1147,6 +1293,7 @@ export function SettingsModal({ onClose }: { onClose(): void }) {
       `${replaceExisting ? "Repair" : "Download"} ${scope.confirmationTarget}? `
       + `LocalScribe will use its fixed local runtime to download and verify ${expectedSize} of curated model data.`,
     )) return;
+    modelLibraryActionInFlight.current = true;
     setModelAction({ action: replaceExisting ? "repairing" : "installing", familyId, tier });
     setModelFeedback({
       message: `${replaceExisting ? "Repairing" : "Downloading"} ${scope.progressTarget} and verifying ${expectedSize}…`,
@@ -1175,11 +1322,13 @@ export function SettingsModal({ onClose }: { onClose(): void }) {
         isError: true,
       });
     } finally {
+      modelLibraryActionInFlight.current = false;
       setModelAction(null);
     }
   };
 
   const removeModel = async (familyId: ModelFamilyId, tier: ModelPerformanceTier) => {
+    if (modelLibraryActionInFlight.current) return;
     const model = catalogModelProfile(modelCatalog, familyId, tier);
     if (!model) {
       setModelFeedback({ message: "Curated model details are not available yet. Refresh model status and try again.", isError: true });
@@ -1187,6 +1336,7 @@ export function SettingsModal({ onClose }: { onClose(): void }) {
     }
     const scope = modelArtifactScopePresentation(modelCatalog, familyId, tier);
     if (!window.confirm(`Remove ${scope.removalTarget} from this computer?`)) return;
+    modelLibraryActionInFlight.current = true;
     setModelAction({ action: "removing", familyId, tier });
     setModelFeedback({ message: `Removing ${scope.progressTarget}…`, isError: false });
     try {
@@ -1207,6 +1357,7 @@ export function SettingsModal({ onClose }: { onClose(): void }) {
         isError: true,
       });
     } finally {
+      modelLibraryActionInFlight.current = false;
       setModelAction(null);
     }
   };
@@ -1225,11 +1376,13 @@ export function SettingsModal({ onClose }: { onClose(): void }) {
   };
 
   const addModelFamily = async (familyId: ModelFamilyId) => {
+    if (modelLibraryActionInFlight.current) return;
     const family = modelCatalog?.families.find((candidate) => candidate.familyId === familyId);
     if (!family) {
       setModelFeedback({ message: "The curated model catalog is unavailable. Refresh model status and try again.", isError: true });
       return;
     }
+    modelLibraryActionInFlight.current = true;
     setModelAction({ action: "adding", familyId });
     setModelFeedback({ message: `Adding ${family.displayName} to your local model library…`, isError: false });
     try {
@@ -1240,6 +1393,7 @@ export function SettingsModal({ onClose }: { onClose(): void }) {
     } catch (error) {
       setModelFeedback({ message: `Could not add ${family.displayName}: ${errorDetail(error)}`, isError: true });
     } finally {
+      modelLibraryActionInFlight.current = false;
       setModelAction(null);
     }
   };
@@ -1292,6 +1446,11 @@ export function SettingsModal({ onClose }: { onClose(): void }) {
 
   const loadPresentation = settingsLoadPresentation(settings, settingsLoadError);
   const loadingPresentation = settingsLoadPresentation(null, settingsLoadError)!;
+  const footerStatus = settingsLoadError
+    ? "Saved settings could not be loaded."
+    : tab === "model"
+      ? "Model choices apply only with the Apply model button above."
+      : status;
   const automaticPastePresentation = automaticPasteSettingsPresentation(permissions);
   const launchAtLoginPresentation = settings
     ? launchAtLoginSettingsPresentation(
@@ -1312,7 +1471,14 @@ export function SettingsModal({ onClose }: { onClose(): void }) {
       role="presentation"
       onMouseDown={(event) => { if (event.target === event.currentTarget) closeSettings(); }}
     >
-      <section className="ls-settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+      <section
+        ref={dialogRef}
+        className="ls-settings-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="settings-title"
+        tabIndex={-1}
+      >
         <aside className="ls-settings-sidebar">
           <div className="ls-settings-brand"><span>L</span><strong>Settings</strong></div>
           <nav aria-label="Settings categories">
@@ -1542,6 +1708,7 @@ export function SettingsModal({ onClose }: { onClose(): void }) {
                   <button type="button" onClick={() => void exportHistory()}><DownloadIcon /><span><strong>Export history</strong><small>Save a local copy of your transcripts.</small></span></button>
                   <button type="button" onClick={() => void clearHistory()} className="is-danger"><TrashIcon /><span><strong>Clear history</strong><small>Permanently delete encrypted transcripts.</small></span></button>
                   <button type="button" onClick={() => void refreshWithStatus()}><RefreshIcon /><span><strong>Refresh diagnostics</strong><small>Recheck permissions, storage, and model.</small></span></button>
+                  <button type="button" onClick={() => void copyDiagnostics()}><CopyIcon /><span><strong>Copy diagnostics</strong><small>Redacted failure log — no transcripts or paths.</small></span></button>
                 </div>
                 <div className="ls-settings-note"><InfoIcon /><span>Automatic paste reads the active app identity and hashes limited focused-window metadata to confirm the dictation target. LocalScribe does not read field or document contents from other applications.</span></div>
               </>
@@ -1551,14 +1718,25 @@ export function SettingsModal({ onClose }: { onClose(): void }) {
           </div>
 
           <footer className="ls-settings-footer">
-            <span className={settingsLoadError || status.startsWith("Could not") || status.startsWith("Model removed, but") ? "is-error" : ""} role="status" aria-live="polite">
-              {settingsLoadError
-                ? "Saved settings could not be loaded."
-                : tab === "model"
-                  ? "Model choices apply only with the Apply model button above."
-                  : status}
+            {/*
+              The status ellipsizes rather than widening the footer, so a long
+              message (a save failure, or an export path) would otherwise lose
+              its tail. `title` keeps the whole string recoverable on hover.
+            */}
+            <span
+              className={settingsLoadError || status.startsWith("Could not") || status.startsWith("Model removed, but") ? "is-error" : ""}
+              role="status"
+              aria-live="polite"
+              title={footerStatus}
+            >
+              {footerStatus}
             </span>
-            <button type="button" className="ls-secondary-button" disabled={modelApplying} onClick={closeSettings}>Cancel</button>
+            {/*
+              Disabled for library work too, not just Apply. A model install is
+              the longest operation in the app, and Cancel sat fully enabled
+              throughout it — the button offered an exit it would not honour.
+            */}
+            <button type="button" className="ls-secondary-button" disabled={modelApplying || modelAction !== null} onClick={closeSettings}>Cancel</button>
             {tab !== "model" && (
               <button type="button" className="ls-primary-button" disabled={busy || !settings} onClick={() => void save()}>{busy ? "Saving…" : "Save changes"}</button>
             )}
@@ -1773,6 +1951,17 @@ export function resolvedModelEngine(diagnostics: Diagnostics | null): string {
   return diagnostics?.backend ?? "Checking";
 }
 
+/*
+ * Says what was copied, so a user knows what they are about to paste into a
+ * public issue tracker. The trail is redacted by construction, and telling them
+ * that is what makes it reasonable to ask them to share it.
+ */
+export const DIAGNOSTICS_COPIED_STATUS =
+  "Diagnostics copied. It records what failed and when — never transcripts, audio, or file paths.";
+
+export const TOGGLE_UNREGISTERED_ADVICE =
+  "The toggle shortcut is not registered — another app is already using it. Choose a different toggle shortcut below, or start dictation from the menu bar icon.";
+
 export function shortcutHelpText(
   permissions: PermissionSnapshot | null,
   holdShortcut: string,
@@ -1784,19 +1973,46 @@ export function shortcutHelpText(
     : undefined;
   const label = shortcutDisplayLabel(holdShortcut, platform);
   if (!permissions) return `Shortcut changes apply immediately. The current push-to-talk key is ${label}.`;
+
+  /*
+   * Every branch below used to fall back to "use the toggle shortcut" — advice
+   * that is actively wrong when the toggle accelerator was never registered.
+   * Startup does not fail in that case, so a user could be told to press a key
+   * that does nothing while the only record of the failure was a console
+   * warning going to /dev/null. Say it plainly instead.
+   */
+  const toggleDead = !permissions.globalToggle.ready;
+  const withToggle = (whenLive: string, whenDead: string): string =>
+    toggleDead ? `${whenDead} ${TOGGLE_UNREGISTERED_ADVICE}` : whenLive;
+
   if (permissions.globalHold.ready) {
-    return `Shortcut changes apply immediately. Hold ${label} to dictate from any app.`;
+    const hold = `Shortcut changes apply immediately. Hold ${label} to dictate from any app.`;
+    // Hold works, so this is not urgent — but the toggle is still advertised in
+    // both menus and the recorder below, and pressing it does nothing.
+    return withToggle(hold, hold);
   }
   if (permissions.platform === "darwin") {
     if (permissions.accessibility.granted) {
-      return `The current push-to-talk key is ${label}. Accessibility is granted, but the global keyboard hook is not running. Restart LocalScribe or use the toggle shortcut.`;
+      return withToggle(
+        `The current push-to-talk key is ${label}. Accessibility is granted, but the global keyboard hook is not running. Restart LocalScribe or use the toggle shortcut.`,
+        `The current push-to-talk key is ${label}. Accessibility is granted, but the global keyboard hook is not running.`,
+      );
     }
-    return `The current push-to-talk key is ${label}. Grant Accessibility to use it globally; until then, use the toggle shortcut and LocalScribe will copy completed dictation.`;
+    return withToggle(
+      `The current push-to-talk key is ${label}. Grant Accessibility to use it globally; until then, use the toggle shortcut and LocalScribe will copy completed dictation.`,
+      `The current push-to-talk key is ${label}. Grant Accessibility to use it globally.`,
+    );
   }
   if (permissions.platform === "win32") {
-    return `The current push-to-talk key is ${label}. The Windows global keyboard hook is not running; restart LocalScribe or use the toggle shortcut.`;
+    return withToggle(
+      `The current push-to-talk key is ${label}. The Windows global keyboard hook is not running; restart LocalScribe or use the toggle shortcut.`,
+      `The current push-to-talk key is ${label}. The Windows global keyboard hook is not running.`,
+    );
   }
-  return `The current push-to-talk key is ${label}. Global push-to-talk is unavailable on this platform; the toggle shortcut still works.`;
+  return withToggle(
+    `The current push-to-talk key is ${label}. Global push-to-talk is unavailable on this platform; the toggle shortcut still works.`,
+    `The current push-to-talk key is ${label}. Global push-to-talk is unavailable on this platform.`,
+  );
 }
 
 function errorDetail(error: unknown): string {
@@ -1819,4 +2035,5 @@ function CloseIcon(props: IconProps) { return <Icon {...props}><path d="m6 6 12 
 function InfoIcon(props: IconProps) { return <Icon {...props}><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></Icon>; }
 function DownloadIcon(props: IconProps) { return <Icon {...props}><path d="M12 3v12M7 10l5 5 5-5M5 21h14"/></Icon>; }
 function RefreshIcon(props: IconProps) { return <Icon {...props}><path d="M20 7v5h-5M4 17v-5h5"/><path d="M6.1 8a7 7 0 0 1 11.7-1L20 12M4 12l2.2 5a7 7 0 0 0 11.7-1"/></Icon>; }
+function CopyIcon(props: IconProps) { return <Icon {...props}><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h8"/></Icon>; }
 function GaugeIcon(props: IconProps) { return <Icon {...props}><path d="M4 14a8 8 0 1 1 16 0"/><path d="m12 14 4-4"/><path d="M5 18h14"/></Icon>; }

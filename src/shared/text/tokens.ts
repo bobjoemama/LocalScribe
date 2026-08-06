@@ -3,7 +3,33 @@ export type TextToken =
   | { kind: "punctuation"; value: string; role?: "open" | "close" | "joiner" | "dash" }
   | { kind: "break"; lines: 1 | 2 };
 
-const TOKEN_PATTERN = /\r\n|\r|\n|[\p{L}\p{M}\p{N}]+(?:['\u2019-][\p{L}\p{M}\p{N}]+)*|[^\s]/gu;
+/*
+ * A "word" is an alphanumeric run plus the characters that live *inside* one.
+ *
+ * Only apostrophes and hyphens used to bridge, so every `.`, `:` and `@` split
+ * the run \u2014 and the renderer then treated the mark as closing punctuation and
+ * re-spaced what followed. On the default preset every dictated price, decimal,
+ * clock time, email address and domain came out corrupted, silently, in the
+ * text pasted into the target app:
+ *
+ *   "The price is $4.50 today."     -> "The price is $ 4. 50 today."
+ *   "Send it to jane@example.com"   -> "Send it to jane @ example. Com"
+ *   "Meet at 3:30 p.m. sharp."      -> "Meet at 3: 30 p. M. Sharp."
+ *
+ * The bridges are deliberately asymmetric. A period or an at-sign between two
+ * alphanumerics is always internal (3.14, example.com, p.m, jane@example.com).
+ * A colon or comma is internal only between digits (3:30, 1,000) \u2014 between
+ * words they are ordinary separators, and "note:this" must keep becoming
+ * "note: this".
+ */
+const TOKEN_PATTERN = new RegExp(
+  [
+    String.raw`\r\n|\r|\n`,
+    String.raw`[\p{L}\p{M}\p{N}]+(?:(?:['\u2019\-.@][\p{L}\p{M}\p{N}]+)|(?:[:,]\p{N}+))*`,
+    String.raw`[^\s]`,
+  ].join("|"),
+  "gu",
+);
 
 export function tokenizeText(text: string): TextToken[] {
   const tokens: TextToken[] = [];
@@ -56,7 +82,9 @@ function isClosingPunctuation(token: TextToken): boolean {
 function isOpeningPunctuation(token: TextToken): boolean {
   return (
     token.kind === "punctuation" &&
-    (token.role === "open" || "([{".includes(token.value))
+    // A currency sign binds to the amount that follows it, exactly like a
+    // bracket binds to what it opens: "$4.50", never "$ 4.50".
+    (token.role === "open" || "([{".includes(token.value) || /^\p{Sc}$/u.test(token.value))
   );
 }
 
@@ -69,11 +97,33 @@ export function renderTokens(tokens: readonly TextToken[], normalizeWhitespace =
 
   let output = "";
   let previous: TextToken | undefined;
+  /*
+   * A straight `"` is the same character opening and closing, and the token
+   * stream has already dropped the spacing that would say which it is, so it
+   * fell into the generic branch and was padded on both sides:
+   * `He said " hello there " loudly.` Alternate instead — the first is an
+   * opener, the next a closer — which is right for balanced quotes and no worse
+   * than the old behaviour for unbalanced ones.
+   */
+  let straightQuoteIsOpening = true;
 
   for (const token of tokens) {
     if (token.kind === "break") {
       output = output.trimEnd() + (token.lines === 2 ? "\n\n" : "\n");
       previous = token;
+      continue;
+    }
+
+    if (token.kind === "punctuation" && token.value === '"' && token.role === undefined) {
+      if (straightQuoteIsOpening) {
+        if (output.length > 0 && !output.endsWith(" ") && !output.endsWith("\n")) output += " ";
+        output += token.value;
+        previous = { kind: "punctuation", value: token.value, role: "open" };
+      } else {
+        output = output.trimEnd() + token.value;
+        previous = { kind: "punctuation", value: token.value, role: "close" };
+      }
+      straightQuoteIsOpening = !straightQuoteIsOpening;
       continue;
     }
 
@@ -87,7 +137,13 @@ export function renderTokens(tokens: readonly TextToken[], normalizeWhitespace =
     }
 
     if (isClosingPunctuation(token) || isJoiner(token)) {
-      output = output.trimEnd() + token.value;
+      /*
+       * `trimEnd()` also ate the newline a preceding break token had just
+       * appended, so "new line hyphen milk new line hyphen eggs" collapsed to
+       * a single line. Both neighbouring branches already guard for this; only
+       * this one did not.
+       */
+      output = output.endsWith("\n") ? output + token.value : output.trimEnd() + token.value;
       previous = token;
       continue;
     }

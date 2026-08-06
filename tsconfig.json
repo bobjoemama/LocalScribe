@@ -16,5 +16,12 @@
     "allowSyntheticDefaultImports": true,
     "types": ["node", "vite/client"]
   },
-  "include": ["src", "tests", "*.ts"]
+  "include": [
+    "src",
+    "tests",
+    "*.ts",
+    "scripts/**/*.ts",
+    "scripts/**/*.mts",
+    "scripts/**/*.tsx"
+  ]
 }

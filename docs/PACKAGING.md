@@ -134,6 +134,55 @@ node scripts/verify-release-assets.mjs --platform darwin
 the current checkout. It intentionally rejects an old `out/` package after any
 release input changes; rebuild before treating that artifact as current.
 
+The macOS gate runs the worker unit tests through
+`resources/python-runtime/venv`, and `npm run make:mac` refreshes that venv from
+`worker/` first. Running that unittest command on its own tests whatever copy of
+`localscribe_worker` the last bundle installed, not the current source; add
+`PYTHONPATH="$PWD/worker"` when checking a worker edit outside the gate.
+
+## What source provenance binds on macOS
+
+`MAC_RELEASE_INPUTS` covers the macOS gate scripts as well as the app's own
+inputs: `verify-local-macos.sh`, `smoke-packaged-macos.sh`, the bundle,
+entitlement, and artifact verifiers, and the SBOM generator. The Windows list
+already bound its own gate scripts; the macOS list bound only the worker-runtime
+builder, so a weakened checker could re-approve a signed app that still reported
+the same source provenance. `verify-local-source.mjs`, `verify-packaged-main.mjs`,
+and `verify-packaged-archive.mjs` gate both platforms and are in the common list.
+`tests/packageProvenance.test.ts` fails if one of them stops being covered.
+
+## What the entitlement gate proves
+
+`resources/entitlements.mac.plist` is the allowlist, not a floor. The gate used
+to assert only that `com.apple.security.cs.allow-jit` and
+`com.apple.security.device.audio-input` were present on the signed app, and a
+presence check cannot reject an addition: a build that also carried
+`com.apple.security.get-task-allow` (debuggable release — any process the user
+runs can attach and read decrypted transcripts out of memory) or
+`com.apple.security.cs.disable-library-validation` passed unchanged.
+`scripts/macos-entitlement-policy.mts` now compares the signature with the
+declared plist as an exact set, rejects a plist that itself declares a
+hardened-runtime escape, and names the six escapes explicitly.
+`tests/macosEntitlementPolicy.test.ts` covers both directions; the verifier
+prints the entitlements that actually shipped rather than "capabilities
+present".
+
+## What the runtime SBOM says about CPython
+
+`cpython@3.12.13` does not identify a build. `uv python install 3.12.13`
+resolves to a python-build-standalone release, and two releases can both call
+themselves 3.12.13 while shipping different binaries. The macOS CPython
+component therefore carries the distribution directory
+(`cpython-3.12.13-macos-aarch64-none`), the release tag from that directory's
+`BUILD` file, and a SHA-256 of the interpreter that shipped
+(`bin/python3.12`). `tests/runtimeSbomSecurity.test.ts` re-hashes the
+interpreter on disk and compares it with the digest in the generated SBOM.
+
+Startup verifies the packaged loose-resource tree before anything else, with
+synchronous reads on the main thread: 12,217 files and 1.01 GB on the current
+macOS package. The scan reuses one 1 MiB read buffer instead of allocating one
+per file, which measured 0.65 s against 0.80 s with a warm page cache.
+
 The Windows app and portable package must be produced on Windows:
 
 ```powershell

@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
@@ -37,6 +38,30 @@ function componentReference(component) {
     throw new Error("Runtime SBOM received a component without a stable identity.");
   }
   return `${component.name}@${component.version}`;
+}
+
+/**
+ * Identity of the CPython distribution actually bundled for macOS.
+ *
+ * The pinned version alone does not identify a build: `uv python install
+ * 3.12.13` resolves to a python-build-standalone release, and two releases can
+ * both call themselves 3.12.13 while shipping different binaries. The
+ * distribution directory records its release tag in `BUILD`, so the SBOM can
+ * name the exact build and carry a digest of the interpreter that shipped
+ * instead of a bare version string.
+ */
+export function bundledCPythonDistribution({ runtimeRoot, version, readBuildTag, readInterpreter }) {
+  const [major, minor] = version.split(".");
+  const directory = `cpython-${version}-macos-aarch64-none`;
+  const buildTag = readBuildTag(path.join(runtimeRoot, directory, "BUILD")).trim();
+  if (!/^\d{8}$/u.test(buildTag)) {
+    throw new Error(
+      `Bundled CPython distribution ${directory} has no python-build-standalone release tag.`,
+    );
+  }
+  const interpreterPath = path.join(runtimeRoot, directory, "bin", `python${major}.${minor}`);
+  const digest = createHash("sha256").update(readInterpreter(interpreterPath)).digest("hex");
+  return { directory, buildTag, interpreterPath, sha256: digest };
 }
 
 function npmPackageLockPath(name) {
@@ -152,6 +177,24 @@ if (
 ) {
   throw new Error("Runtime SBOM rejected the pinned CrispASR runtime manifest.");
 }
+/*
+ * On macOS the bundled interpreter is a release input, so the SBOM names the
+ * exact python-build-standalone build and hashes the binary that shipped. The
+ * runtime is built by `npm run worker:bundle` before the package gate ever
+ * asks for an SBOM; running the generator on a checkout that has not built it
+ * yet still produces the version-only component rather than failing, and says
+ * so by omitting the distribution properties.
+ */
+const cpythonDistribution = platform === "darwin" && existsSync(
+  path.join(projectRoot, "resources/python-runtime", `cpython-${macPython}-macos-aarch64-none`),
+)
+  ? bundledCPythonDistribution({
+    runtimeRoot: path.join(projectRoot, "resources/python-runtime"),
+    version: macPython,
+    readBuildTag: (buildPath) => readFileSync(buildPath, "utf8"),
+    readInterpreter: (interpreterPath) => readFileSync(interpreterPath),
+  })
+  : null;
 const helperName = platform === "darwin"
   ? "native/macos/active-target"
   : "native/windows/active-target.exe";
@@ -170,7 +213,22 @@ const supplementalComponents = [
     name: "CPython",
     version: macPython,
     purl: `pkg:generic/cpython@${macPython}`,
-    properties: [{ name: "com.localscribe.runtime-role", value: "worker-interpreter" }],
+    ...(cpythonDistribution
+      ? {
+          hashes: [{ alg: "SHA-256", content: cpythonDistribution.sha256 }],
+          properties: [
+            { name: "com.localscribe.runtime-role", value: "worker-interpreter" },
+            {
+              name: "com.localscribe.cpython-distribution",
+              value: cpythonDistribution.directory,
+            },
+            {
+              name: "com.localscribe.cpython-build-tag",
+              value: cpythonDistribution.buildTag,
+            },
+          ],
+        }
+      : { properties: [{ name: "com.localscribe.runtime-role", value: "worker-interpreter" }] }),
   },
   {
     type: "application",

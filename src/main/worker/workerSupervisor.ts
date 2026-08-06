@@ -3,8 +3,140 @@ import { randomUUID } from "node:crypto";
 import { existsSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
+import { AUDIO_MAX_DURATION_MS } from "../../shared/audioProtocol";
 import { modelPerformanceTierSchema, type ModelPerformanceTier } from "../../shared/modelPerformance";
 import { validatedWindowsRuntimeEnvironment } from "../nativeHelperEnvironment";
+
+/*
+ * Two different numbers get called "realtime", and confusing them produced a
+ * watchdog two orders of magnitude too slow. Both are named here so the
+ * confusion cannot recur silently:
+ *
+ *   REALTIME FACTOR = inference wall clock / audio duration   (lower is faster)
+ *   SPEED MULTIPLE  = audio duration / inference wall clock   (higher is faster)
+ *
+ * The previous constant read a measurement of 142 s for 600 s of audio as
+ * "4.24x realtime" and multiplied by it. 142/600 is 0.237 — the 4.24 was the
+ * SPEED MULTIPLE, i.e. the model is 4.24x FASTER than realtime. Multiplying by
+ * it inverted the safety margin: the budget became 60 s + 600 s x 12 = 7,260 s,
+ * a 121-minute timeout on a ten-minute recording. A wedged worker could hold
+ * the session for two hours.
+ */
+
+/**
+ * Fixed allowance for a worker start plus a cold model load.
+ *
+ * Measured cold loads on the packaged runtime, M4 Max: whisper-large-v3 fp16
+ * 3.7 s - 16.6 s (page-cache dependent), qwen3-asr-0.6b 8-bit 5.5 s - 6.0 s.
+ * 90 s is roughly 5x the slowest observed load and is spent only once per
+ * process, so it costs nothing on the warm path this app is built around.
+ */
+export const TRANSCRIBE_COLD_LOAD_BUDGET_MS = 90_000;
+
+/**
+ * Worst REALTIME FACTOR measured across the supported macOS tiers, recorded so
+ * the budget below can be checked against evidence rather than intuition.
+ *
+ * Packaged runtime, Apple M4 Max, 600 s of continuous speech (the longest
+ * recording the protocol accepts):
+ *
+ *   whisper-large-v3 fp16   135.6 s   factor 0.226   (4.4x faster than realtime)
+ *   qwen3-asr-0.6b 8-bit     10.5 s   factor 0.018   (57x faster than realtime)
+ *
+ * Whisper large-v3 fp16 is the heaviest artifact the macOS catalog ships, so
+ * 0.226 is the number to size against.
+ */
+export const MEASURED_WORST_REALTIME_FACTOR = 0.226;
+
+/**
+ * REALTIME FACTOR the watchdog tolerates before declaring the worker wedged.
+ *
+ * 1.0 means "inference may take as long as the recording itself". That is 4.4x
+ * the worst factor measured here, which covers Apple silicon several times
+ * slower than an M4 Max — an M1 is roughly 3-4x slower for MLX inference, which
+ * lands near 0.9 and still fits. It is chosen to be generous to slow hardware
+ * and stingy with wedged workers, which is the only trade-off this constant
+ * controls.
+ */
+export const TRANSCRIBE_REALTIME_FACTOR_BUDGET = 1;
+
+/**
+ * The budget is bounded because the duration is clamped to the longest
+ * recording the app will accept, not by a separate wall-clock cap — an
+ * independent cap would silently re-introduce the defect at the top of the
+ * range. This is a last-resort backstop: a user who sees dictation hang
+ * cancels, which aborts the in-flight request immediately.
+ *
+ * At the shipped constants this is 90 s + 600 s = 690 s (11.5 minutes) for a
+ * maximum-length dictation, against 121 minutes before.
+ */
+export const TRANSCRIBE_TIMEOUT_CEILING_MS =
+  TRANSCRIBE_COLD_LOAD_BUDGET_MS
+  + AUDIO_MAX_DURATION_MS * TRANSCRIBE_REALTIME_FACTOR_BUDGET;
+
+/** Fixed allowance for the worker start, hashing, and the promotion rename. */
+const INSTALL_STARTUP_BUDGET_MS = 5 * 60_000;
+/**
+ * Slowest sustained transfer the install budget tolerates: 1 MiB/s, about
+ * 8 Mbit/s.
+ */
+export const INSTALL_MIN_BYTES_PER_SECOND = 1024 * 1024;
+/**
+ * Clamp on the manifest byte total, so a malformed manifest cannot mint an
+ * unbounded timer. Twice the largest artifact the macOS catalog ships
+ * (qwen3-asr-1.7b-mlx-bf16, 4,080,710,353 bytes).
+ */
+export const INSTALL_MAX_ARTIFACT_BYTES = 8 * 1024 * 1024 * 1024;
+
+/**
+ * A model install is a multi-gigabyte download, so a constant budget is a
+ * throughput requirement in disguise.
+ *
+ * The budget was a flat 20 minutes for every artifact. Finishing inside it
+ * therefore demanded 20.6 Mbit/s for whisper-large-v3 (3,083,520,685 bytes) and
+ * 27.2 Mbit/s for qwen3-asr-1.7b bf16 (4,080,710,353 bytes), with zero margin
+ * for TLS, verification, or a slow mirror. Below that, the timeout terminated
+ * the worker mid-download and the next attempt started over, so the flagship
+ * tiers could not be installed at all on an ordinary home or tethered link.
+ *
+ * This is a stall backstop, not a deadline: `huggingface_hub`'s own socket
+ * timeouts fail a genuinely dead transfer long before this fires. Sizing it
+ * from the artifact keeps the requirement at a fixed floor throughput rather
+ * than one that rises with model size.
+ */
+export function installTimeoutMs(artifactBytes: number): number {
+  const bounded = Math.max(0, Math.min(artifactBytes, INSTALL_MAX_ARTIFACT_BYTES));
+  return INSTALL_STARTUP_BUDGET_MS
+    + Math.ceil(bounded / INSTALL_MIN_BYTES_PER_SECOND) * 1000;
+}
+
+/**
+ * How long one transcribe request may take before the worker is treated as
+ * wedged.
+ *
+ * Inference cost scales with audio length, so a constant budget cannot cover a
+ * maximum-length dictation: the original flat 120 s was already too small for a
+ * 600 s recording on the fastest Apple silicon available (measured 135.6 s).
+ * The replacement over-corrected in the other direction by multiplying the
+ * duration by a speed multiple it had mistaken for a realtime factor, giving a
+ * 121-minute ceiling.
+ *
+ * Both failures are user-visible in the same way: on a timeout the supervisor
+ * terminates the worker, the caller deletes the WAV, and the recording is
+ * unrecoverable — but one destroys valid dictations and the other lets a hung
+ * one sit for two hours. A watchdog must never decide a valid dictation is
+ * lost, and must still fire while the user is plausibly still waiting.
+ *
+ * Cancellation is unaffected and remains immediate: `abort()` does not queue
+ * behind this timer.
+ */
+export function transcribeTimeoutMs(durationMs: number): number {
+  const bounded = Math.max(0, Math.min(durationMs, AUDIO_MAX_DURATION_MS));
+  return Math.min(
+    TRANSCRIBE_TIMEOUT_CEILING_MS,
+    TRANSCRIBE_COLD_LOAD_BUDGET_MS + bounded * TRANSCRIBE_REALTIME_FACTOR_BUDGET,
+  );
+}
 
 const computeTypeSchema = z.enum([
   "float16",
@@ -166,6 +298,20 @@ export const WORKER_RUNTIME_IDENTITIES = {
   },
 } as const;
 
+/**
+ * Tag a supervisor-level failure with the diagnostic code it represents.
+ *
+ * The worker's own failures arrive as a structured `code` in the protocol, but
+ * these three are facts about the child process rather than replies from it, so
+ * they had no code at all. The diagnostics log recorded them as `Error:len21`
+ * and `Error:len32`, which made a crashed worker and a wedged one look like the
+ * same anonymous failure in a bug report. The message is unchanged — it is what
+ * the user sees — and the code is what the log records.
+ */
+function workerProcessError(message: string, code: "worker_exited" | "worker_timeout"): Error {
+  return Object.assign(new Error(message), { code });
+}
+
 export class WorkerSupervisor {
   private process: ChildProcessWithoutNullStreams | null = null;
   private readonly retiringProcesses = new Map<
@@ -179,6 +325,7 @@ export class WorkerSupervisor {
   private stdoutBuffer = Buffer.alloc(0);
   private activeModel: WorkerModelSelection | null = null;
   private operationTail: Promise<void> = Promise.resolve();
+  private retired = false;
 
   constructor(
     private readonly workerDirectory: string,
@@ -187,10 +334,67 @@ export class WorkerSupervisor {
     private readonly bundledRuntimeDirectory: string | null = null,
     private readonly workerModule = "localscribe_worker",
     private readonly temporaryDirectory: string | null = null,
+    /*
+     * Where CPython may keep compiled bytecode.
+     *
+     * Left null, the worker runs exactly as it always has: `-B` plus
+     * `PYTHONDONTWRITEBYTECODE`, recompiling every module on every start. That
+     * default is not laziness — the worker's sources live in the packaged
+     * Resources tree, which is covered by the startup integrity hash and is
+     * code-signed, so letting Python drop `__pycache__` next to them would add
+     * files to a protected tree and make the *next* launch fail verification.
+     * `.pyc` is on the forbidden packaged-resource list for the same reason.
+     *
+     * Given a directory outside that tree, the cache is safe and the saving is
+     * large: importing the ML stack is 1,492 modules, measured at 2.11-2.86s
+     * every single model load without a cache and 0.70-0.87s with a warm one.
+     */
+    private readonly bytecodeCacheDirectory: string | null = null,
   ) {
     if (temporaryDirectory !== null && !path.isAbsolute(temporaryDirectory)) {
       throw new Error("ASR worker temporary storage must be an absolute path");
     }
+    if (bytecodeCacheDirectory !== null) {
+      if (!path.isAbsolute(bytecodeCacheDirectory)) {
+        throw new Error("ASR worker bytecode cache must be an absolute path");
+      }
+      /*
+       * The one thing that must never happen. A cache inside the worker or
+       * bundled-runtime tree would corrupt the integrity expectation the next
+       * launch checks, turning a startup optimisation into a build that
+       * refuses to start.
+       */
+      for (const protectedRoot of [workerDirectory, bundledRuntimeDirectory]) {
+        if (protectedRoot === null) continue;
+        const relative = path.relative(protectedRoot, bytecodeCacheDirectory);
+        if (relative.length > 0 && !relative.startsWith("..") && !path.isAbsolute(relative)) {
+          throw new Error(
+            "ASR worker bytecode cache must not live inside the packaged resource tree",
+          );
+        }
+        if (path.resolve(protectedRoot) === path.resolve(bytecodeCacheDirectory)) {
+          throw new Error(
+            "ASR worker bytecode cache must not live inside the packaged resource tree",
+          );
+        }
+      }
+    }
+  }
+
+  /**
+   * Gate that must pass before a *working* model is unloaded for a different
+   * one. Injected rather than imported so the supervisor keeps no dependency on
+   * the catalog, and so tests can drive both outcomes directly.
+   *
+   * Left unset the supervisor behaves as before, which is why main sets it
+   * during startup and `tests/modelSwitchSafety.test.ts` pins that it does.
+   */
+  private assertTargetLoadable: ((selection: WorkerModelSelection) => Promise<void>) | null = null;
+
+  setTargetLoadableGuard(
+    guard: (selection: WorkerModelSelection) => Promise<void>,
+  ): void {
+    this.assertTargetLoadable = guard;
   }
 
   ensureReady(selection: WorkerModelSelection): Promise<void> {
@@ -214,7 +418,7 @@ export class WorkerSupervisor {
    */
   installModel(
     selection: WorkerModelSelection,
-    options: { replacesLoadedArtifact?: boolean } = {},
+    options: { replacesLoadedArtifact?: boolean; artifactBytes?: number } = {},
   ): Promise<void> {
     return this.serialize(async () => {
       const previousSelection = this.activeModel ? { ...this.activeModel } : null;
@@ -232,7 +436,7 @@ export class WorkerSupervisor {
             modelRoot: this.modelRoot,
             allowDownload: true,
           },
-          20 * 60_000,
+          installTimeoutMs(options.artifactBytes ?? INSTALL_MAX_ARTIFACT_BYTES),
         );
         const installed = modelInstalledMessageSchema.safeParse(response);
         if (!installed.success) {
@@ -254,7 +458,10 @@ export class WorkerSupervisor {
           // Finish the installer process before reconstructing the exact prior
           // selection, so replacement never overlaps the old native runtime.
           await this.stopProcessUnlocked();
-          await this.ensureReadyUnlocked(previousSelection);
+          // Never rebuild a runtime the application is in the middle of
+          // discarding: Quit during a repair would otherwise wait out a full
+          // multi-gigabyte load before the process could exit.
+          if (!this.retired) await this.ensureReadyUnlocked(previousSelection);
         }
       }
     });
@@ -266,6 +473,7 @@ export class WorkerSupervisor {
     allowedRoot: string;
     language: string;
     context: string;
+    durationMs: number;
   }): Promise<WorkerTranscription> {
     return this.serialize(async () => {
       // Dictation is deliberately incapable of downloading. Installation is
@@ -279,7 +487,7 @@ export class WorkerSupervisor {
           language: input.language,
           context: input.context,
         },
-        120_000,
+        transcribeTimeoutMs(input.durationMs),
       );
       if (response.type !== "final") {
         const error = new Error(`Unexpected worker response: ${response.type}`);
@@ -313,7 +521,11 @@ export class WorkerSupervisor {
         const memory = mac.data.hardware.unifiedMemory;
         return {
           kind: "apple-unified",
-          displayName: mac.data.hardware.chip ?? "Apple Silicon GPU · MLX",
+          // Hardware fact only. The engine suffix is appended once, by
+          // acceleratorDiagnostics() in main; baking " · MLX" into the
+          // fallback rendered "Apple Silicon GPU · MLX · MLX" whenever the
+          // sysctl chip-brand probe failed.
+          displayName: mac.data.hardware.chip ?? "Apple Silicon GPU",
           totalMemoryBytes: memory.totalBytes,
           freeMemoryBytes: memory.availableBytes,
           memoryBasis: "estimated",
@@ -350,6 +562,20 @@ export class WorkerSupervisor {
   }
 
   /**
+   * Latches the supervisor closed because the application is quitting.
+   *
+   * `shutdown()` is serialized, so it waits behind whatever model operation is
+   * already running. A repair of the warm artifact restores the previous
+   * selection in its `finally`, which meant choosing Quit during a repair
+   * spawned a fresh Python process and loaded a multi-gigabyte model that the
+   * next queued operation would immediately discard — while the UI was already
+   * refusing IPC. After this call, no path starts a worker process again.
+   */
+  retire(): void {
+    this.retired = true;
+  }
+
+  /**
    * Cancels an in-flight request without waiting behind the serialized model
    * queue. This is reserved for user cancellation and process shutdown.
    */
@@ -373,6 +599,23 @@ export class WorkerSupervisor {
   private async ensureReadyUnlocked(selection: WorkerModelSelection): Promise<void> {
     if (sameSelection(this.activeModel, selection)) return;
     if (this.activeModel) {
+      /*
+       * Prove the target before discarding what works.
+       *
+       * The unload below is irreversible within this operation: it kills the
+       * Python process, which is the "never two large models resident"
+       * guarantee, and the target's pinned digests are not checked until the
+       * `load_model` request further down. So for the window between those two
+       * points the application has destroyed a working runtime on the strength
+       * of nothing at all — and a corrupted-but-same-size artifact used to make
+       * it all the way here, because the only upstream guard compared sizes.
+       *
+       * `assertTargetLoadable` closes that window. It throws before anything is
+       * stopped, so a target that cannot be proved good leaves the warm model
+       * exactly as it was and the caller sees the failure with dictation still
+       * possible.
+       */
+      await this.assertTargetLoadable?.(selection);
       // A fresh process is the narrowest cross-backend unload guarantee. It
       // prevents two large runtimes from overlapping during a tier switch.
       await this.stopProcessUnlocked();
@@ -429,6 +672,9 @@ export class WorkerSupervisor {
   private async ensureStarted(): Promise<void> {
     await this.waitForRetiringProcesses();
     if (this.process && this.hello) return this.hello;
+    // A retired supervisor must not leave a Python child behind for a quit
+    // that has already started tearing the application down.
+    if (this.retired) throw new Error("LocalScribe is shutting down");
     this.hello = new Promise<void>((resolve, reject) => {
       this.resolveHello = resolve;
       this.rejectHello = reject;
@@ -439,9 +685,15 @@ export class WorkerSupervisor {
       throw new Error("Bundled Python runtime is missing from this LocalScribe build");
     }
     const command = bundledPython ?? "uv";
+    /*
+     * `-B` is the argument form of PYTHONDONTWRITEBYTECODE, so it has to go
+     * whenever a cache directory is configured — leaving it would silently
+     * cancel the cache and keep paying the full recompile.
+     */
+    const noBytecode = this.bytecodeCacheDirectory === null ? ["-B"] : [];
     const args = bundledPython
-      ? ["-B", "-m", this.workerModule]
-      : ["run", "--project", this.workerDirectory, "python", "-B", "-m", this.workerModule];
+      ? [...noBytecode, "-m", this.workerModule]
+      : ["run", "--project", this.workerDirectory, "python", ...noBytecode, "-m", this.workerModule];
     const child = spawn(
       command,
       args,
@@ -461,11 +713,17 @@ export class WorkerSupervisor {
     });
     child.on("error", (error) => this.handleExit(child, error));
     child.on("exit", (code, signal) =>
-      this.handleExit(child, new Error(`ASR worker exited (${code ?? signal ?? "unknown"})`)),
+      this.handleExit(
+        child,
+        workerProcessError(`ASR worker exited (${code ?? signal ?? "unknown"})`, "worker_exited"),
+      ),
     );
 
     const startupTimeout = setTimeout(() => {
-      this.terminateWorker(child, new Error("ASR worker did not start in time"));
+      this.terminateWorker(
+        child,
+        workerProcessError("ASR worker did not start in time", "worker_timeout"),
+      );
     }, 30_000);
     startupTimeout.unref();
     try {
@@ -478,7 +736,11 @@ export class WorkerSupervisor {
   private workerEnvironment(usingBundledPython: boolean): NodeJS.ProcessEnv {
     const environment: NodeJS.ProcessEnv = {
       PYTHONUNBUFFERED: "1",
-      PYTHONDONTWRITEBYTECODE: "1",
+      ...(this.bytecodeCacheDirectory === null
+        ? { PYTHONDONTWRITEBYTECODE: "1" }
+        // Redirects every __pycache__ write out of the signed resource tree and
+        // into one app-owned directory, keyed by source path.
+        : { PYTHONPYCACHEPREFIX: this.bytecodeCacheDirectory }),
       // Redirected stdio on Windows can otherwise inherit a legacy ANSI code
       // page and fail when a transcription contains non-Latin text.
       PYTHONUTF8: "1",
@@ -552,7 +814,7 @@ export class WorkerSupervisor {
         // can accidentally reuse that stale state.
         this.terminateWorker(
           child,
-          new Error(`ASR worker request timed out: ${String(payload.type)}`),
+          workerProcessError(`ASR worker request timed out: ${String(payload.type)}`, "worker_timeout"),
         );
       }, timeoutMs);
       timeout.unref();

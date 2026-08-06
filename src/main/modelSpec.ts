@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { lstat, open, readdir } from "node:fs/promises";
+import { lstat, open, readdir, stat } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 import {
@@ -772,9 +772,62 @@ function buildResolution(
 }
 
 /**
+ * Entries macOS itself deposits in a directory, which must not invalidate an
+ * otherwise byte-perfect artifact.
+ *
+ * The exact-entry-set rule below is deliberately strict, and it was too strict
+ * to survive contact with the Finder. Opening the models folder to check disk
+ * usage writes a `.DS_Store` into it; copying through a non-HFS volume or a zip
+ * leaves AppleDouble `._name` sidecars. Either one made a model whose every
+ * pinned file was digest-identical report as *not installed*, and the only
+ * offered remedy was re-downloading up to 3.4 GB. That is a serious harm caused
+ * by a check that was supposed to prevent one.
+ *
+ * The exemption is narrow on purpose:
+ *
+ *  - `.DS_Store` and `.localized` by exact name, nothing else;
+ *  - an AppleDouble sidecar only for a filename the manifest actually declares,
+ *    so `._weights.npz` is tolerated next to `weights.npz` while a planted
+ *    `._payload.bin` is not;
+ *  - each must be a regular file. A *directory* or symlink named `.DS_Store`
+ *    is not something the Finder produces, and it could hide arbitrary
+ *    content, so it is still rejected.
+ *
+ * Tolerating them is safe because the loaders address model files by manifest
+ * name; nothing reads these, and their bytes are never counted or hashed.
+ */
+export function isInertDirectoryMetadata(name: string, expectedNames: ReadonlySet<string>): boolean {
+  if (name === ".DS_Store" || name === ".localized") return true;
+  return name.startsWith("._") && expectedNames.has(name.slice(2));
+}
+
+/**
+ * Every manifest file is present and nothing else is, except inert OS metadata.
+ * Throws through to the caller's own catch on an unreadable directory, so an
+ * IO failure is never mistaken for a clean negative.
+ */
+async function entrySetMatchesManifest(
+  modelDirectory: string,
+  entries: readonly string[],
+  expectedNames: ReadonlySet<string>,
+): Promise<boolean> {
+  const present = new Set<string>();
+  for (const entry of entries) {
+    if (expectedNames.has(entry)) {
+      present.add(entry);
+      continue;
+    }
+    if (!isInertDirectoryMetadata(entry, expectedNames)) return false;
+    const metadata = await lstat(path.join(modelDirectory, entry));
+    if (!metadata.isFile() || metadata.isSymbolicLink()) return false;
+  }
+  return present.size === expectedNames.size;
+}
+
+/**
  * A verified directory must contain exactly the files in the immutable
- * manifest. Extra files, directories, or symlinks make it invalid rather
- * than silently trusting a mixed artifact.
+ * manifest, ignoring the OS metadata named above. Extra files, directories, or
+ * symlinks make it invalid rather than silently trusting a mixed artifact.
  */
 export async function verifyModelDirectory(
   modelRoot: string,
@@ -815,7 +868,7 @@ export async function verifyModelDirectory(
       };
     }
     const entries = await readdir(modelDirectory);
-    exactEntries = entries.length === expectedNames.size && entries.every((entry) => expectedNames.has(entry));
+    exactEntries = await entrySetMatchesManifest(modelDirectory, entries, expectedNames);
   } catch (error) {
     // Only a genuinely absent artifact is "missing". Existing but unreadable
     // data must be repaired explicitly instead of silently becoming Download.
@@ -859,6 +912,108 @@ export async function verifyModelDirectory(
     verifiedFiles,
     expectedFiles: expectedEntries.length,
   };
+}
+
+/**
+ * Metadata-only check that an artifact's every manifest file exists at its
+ * pinned size.
+ *
+ * WARNING: a size match is not an integrity check. A file whose bytes were
+ * corrupted in place — a bad sector, an interrupted copy, a partially rewritten
+ * download — keeps its size and passes this function. Never use it to decide
+ * whether a model may be loaded, and never use it to decide whether a *working*
+ * model may be discarded in favour of this one. For that, use
+ * `modelArtifactIsVerifiedNow`.
+ *
+ * It survives only as an early negative in status reporting, where the answer
+ * "these files are not even present" is worth having without a hash.
+ */
+export async function modelArtifactIsPresent(
+  modelRoot: string,
+  model: ModelSpec,
+): Promise<boolean> {
+  if (await inspectModelRootDirectory(modelRoot) !== "safe") return false;
+  const modelDirectory = path.join(modelRoot, model.storageDirectory);
+  try {
+    const directory = await lstat(modelDirectory);
+    if (!directory.isDirectory() || directory.isSymbolicLink()) return false;
+    for (const [filename, expected] of Object.entries(model.files)) {
+      const metadata = await lstat(path.join(modelDirectory, filename));
+      if (!metadata.isFile() || metadata.size !== expected.bytes) return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Is this artifact *proved* good, right now, without re-reading it?
+ *
+ * This exists because of a defect that could destroy a working setup. Auto's
+ * tier selection runs at every recording boundary and could land on a
+ * different tier of the same family. Switching tiers calls
+ * `WorkerSupervisor.ensureReady`, which kills the running Python process
+ * *before* asking the new one to load — that ordering is the "never two large
+ * models resident at once" guarantee and is correct. The digest check happens
+ * afterwards, inside the load.
+ *
+ * So the previous guard, a size-only probe, was load-bearing in a way it could
+ * not support: a same-sized corrupted artifact passed it, the warm model was
+ * killed, and the load then failed on the digest. The user lost a working model
+ * and the dictation they were in the middle of, and got there through a file
+ * that was never actually checked.
+ *
+ * The invariant this restores: *an artifact that has not been authoritatively
+ * verified at its current file identity must never evict a working model.*
+ *
+ * It is cheap because it does not hash. It asks whether this exact file — same
+ * device, inode, size, mtime, and ctime — is one that a full SHA-256 pass in
+ * this process already matched against the manifest. `sha256File` records that
+ * as it verifies, so an ordinary catalog refresh or a completed install
+ * populates it. `ctime` is what makes the identity trustworthy: the kernel
+ * stamps it on any in-place write and `utimes` cannot backdate it, so modified
+ * content cannot masquerade as verified content.
+ *
+ * Answering "no" is always safe: it means Auto keeps the model that is already
+ * working, and an explicit Apply still runs the full verification itself.
+ */
+export async function modelArtifactIsVerifiedNow(
+  modelRoot: string,
+  model: ModelSpec,
+): Promise<boolean> {
+  if (await inspectModelRootDirectory(modelRoot) !== "safe") return false;
+  const modelDirectory = path.join(modelRoot, model.storageDirectory);
+  const expectedEntries = Object.entries(model.files);
+  try {
+    const directory = await lstat(modelDirectory);
+    if (!directory.isDirectory() || directory.isSymbolicLink()) return false;
+    // Exactly the manifest's entries, no more: an extra file means something
+    // other than the curated install wrote here, whatever the digests say.
+    // `isInertDirectoryMetadata` is the one narrow exception, because otherwise
+    // a Finder visit to the models folder permanently blocks every model switch.
+    const entries = await readdir(modelDirectory);
+    const expectedNames = new Set(expectedEntries.map(([filename]) => filename));
+    if (!await entrySetMatchesManifest(modelDirectory, entries, expectedNames)) return false;
+
+    for (const [filename, expected] of expectedEntries) {
+      const filePath = path.join(modelDirectory, filename);
+      const metadata = await lstat(filePath);
+      if (!metadata.isFile() || metadata.isSymbolicLink()) return false;
+      if (metadata.size !== expected.bytes) return false;
+      const attested = digestByFileIdentity.get(filePath);
+      if (!attested) return false;
+      // The digest must be the manifest's, not merely *a* digest we once
+      // computed for this path: the cache is keyed by path and a reinstall of a
+      // different revision reuses paths.
+      if (attested.digest !== expected.sha256) return false;
+      const current = fileIdentity(await stat(filePath, { bigint: true }));
+      if (!sameFileIdentity(attested, current)) return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -940,6 +1095,63 @@ export async function verifyRuntimePlatformModelCatalog(
   return results;
 }
 
+interface FileIdentity {
+  readonly dev: bigint;
+  readonly ino: bigint;
+  readonly size: bigint;
+  readonly mtimeNs: bigint;
+  readonly ctimeNs: bigint;
+}
+
+/**
+ * Digests of files this process already hashed, keyed by exact file identity.
+ *
+ * The curated library is multiple gigabytes, and main hashes it whenever the
+ * model screen, diagnostics, or an Apply refreshes catalog status. Re-reading
+ * 6.1GB at the 2.57GB/s this machine sustains cost about 2.4s of main-thread
+ * work per refresh, for files that had not changed.
+ *
+ * The key includes ctime, which the kernel stamps on any in-place write and
+ * which `utimes` cannot backdate, so a modified file cannot present the
+ * identity of the version that was hashed. Every structural check —
+ * directory shape, symlink rejection, exact entry set, exact sizes — still runs
+ * on every call; only the content read is skipped. And this cache is main's
+ * status reporting only: the worker independently hashes each manifest file
+ * inside `_valid_model_directory` before any load, so nothing enters memory on
+ * the strength of a cached digest.
+ */
+const digestByFileIdentity = new Map<string, FileIdentity & { readonly digest: string }>();
+const DIGEST_CACHE_LIMIT = 256;
+
+function fileIdentity(stats: {
+  dev: bigint;
+  ino: bigint;
+  size: bigint;
+  mtimeNs: bigint;
+  ctimeNs: bigint;
+}): FileIdentity {
+  return {
+    dev: stats.dev,
+    ino: stats.ino,
+    size: stats.size,
+    mtimeNs: stats.mtimeNs,
+    ctimeNs: stats.ctimeNs,
+  };
+}
+
+function sameFileIdentity(left: FileIdentity, right: FileIdentity): boolean {
+  return left.dev === right.dev
+    && left.ino === right.ino
+    && left.size === right.size
+    && left.mtimeNs === right.mtimeNs
+    && left.ctimeNs === right.ctimeNs;
+}
+
+/** Test seam: drops every memoized digest so the next call re-reads from disk. */
+export function forgetVerifiedModelDigests(): void {
+  digestByFileIdentity.clear();
+}
+
 async function sha256File(filePath: string, expectedBytes: number): Promise<string> {
   const handle = await open(filePath, "r");
   try {
@@ -956,6 +1168,10 @@ async function sha256File(filePath: string, expectedBytes: number): Promise<stri
     ) {
       throw new Error("Model file changed before verification");
     }
+
+    const identity = fileIdentity(await handle.stat({ bigint: true }));
+    const memoized = digestByFileIdentity.get(filePath);
+    if (memoized && sameFileIdentity(memoized, identity)) return memoized.digest;
 
     const digest = createHash("sha256");
     const buffer = Buffer.allocUnsafe(16 * 1024 * 1024);
@@ -986,7 +1202,15 @@ async function sha256File(filePath: string, expectedBytes: number): Promise<stri
     ) {
       throw new Error("Model file changed during verification");
     }
-    return digest.digest("hex");
+    const hex = digest.digest("hex");
+    // Re-read the identity after the content: caching what the file looked like
+    // before the read could memoize a digest against a stale stamp.
+    const identityAfter = fileIdentity(await handle.stat({ bigint: true }));
+    if (sameFileIdentity(identity, identityAfter)) {
+      if (digestByFileIdentity.size >= DIGEST_CACHE_LIMIT) digestByFileIdentity.clear();
+      digestByFileIdentity.set(filePath, { ...identityAfter, digest: hex });
+    }
+    return hex;
   } finally {
     await handle.close();
   }
