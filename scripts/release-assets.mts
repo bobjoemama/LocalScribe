@@ -131,6 +131,58 @@ function requireCycloneDxSbom(filePath: string): void {
   }
 }
 
+/**
+ * Checks the SHA-256 the README tells people to compare against.
+ *
+ * That line is the only integrity check a downloader is ever asked to perform,
+ * and nothing verified it. Bumping the version rewrote the artifact filename in
+ * the README and left the *previous* release's hash sitting under it, with
+ * every gate green — which is worse than publishing no hash at all: it teaches
+ * whoever does check that a mismatch is normal.
+ *
+ * The README is prose, so this is anchored to the exact `shasum -a 256 <name>`
+ * command it documents rather than to any hash-shaped text elsewhere in it.
+ */
+function requireDocumentedChecksums(
+  projectPath: string,
+  verified: readonly VerifiedReleaseAsset[],
+): void {
+  const readmePath = path.join(projectPath, "README.md");
+  if (!existsSync(readmePath)) fail("README.md is missing");
+  const readme = readFileSync(readmePath, "utf8");
+
+  let documented = 0;
+  for (const asset of verified) {
+    /*
+     * The filename carries a version with dots, so it has to be escaped before
+     * it goes anywhere near a pattern.
+     */
+    const escaped = asset.name.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+    const command = new RegExp(
+      `shasum\\s+-a\\s+256\\s+${escaped}\\s*\\n\\s*#\\s*([0-9a-f]{64})\\b`,
+      "u",
+    );
+    const match = command.exec(readme);
+    if (!match?.[1]) continue;
+    documented += 1;
+    if (match[1] !== asset.sha256) {
+      fail(
+        `README documents the wrong SHA-256 for ${asset.name}: ` +
+        `it says ${match[1]}, the artifact is ${asset.sha256}`,
+      );
+    }
+  }
+
+  /*
+   * Without this the check passes by matching nothing — exactly what happens if
+   * the README stops naming the artifact, which is the same silent failure in a
+   * different costume.
+   */
+  if (documented === 0) {
+    fail("README documents no verifiable SHA-256 for any release artifact");
+  }
+}
+
 export async function verifyReleaseAssets(
   platform: ReleasePlatform,
   projectPath = process.cwd(),
@@ -176,6 +228,7 @@ export async function verifyReleaseAssets(
       `missing [${missingRows.join(", ")}], unexpected [${unexpectedRows.join(", ")}]`,
     );
   }
+  requireDocumentedChecksums(projectPath, verified);
   verified.push({
     ...checksum,
     sha256: sha256(checksum),
