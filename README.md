@@ -23,7 +23,7 @@ telemetry service, or listening network port.
 
   ```sh
   shasum -a 256 LocalScribe-0.1.0-dev.5-arm64.dmg
-  # 465870d2a2883e035d1a46d4c8e3acf4301febcf0e4ec53e0f145142cead0e44
+  # 42cfe27715c035def296f810ad6e1e68c6accb8cf9d415a6999dacfbef43a7c7
   ```
 
 - The release description states whether that exact artifact is a private

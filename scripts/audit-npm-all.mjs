@@ -5,57 +5,50 @@ import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 
-const KNOWN_ADVISORY_URL =
-  "https://github.com/advisories/GHSA-mh99-v99m-4gvg";
+/**
+ * The advisories behind the residual, pinned exactly. An advisory whose URL,
+ * package, severity, or affected range is not spelled here fails the gate.
+ *
+ * Reviewed 2026-08-07: both are denial-of-service parsing loops in
+ * `image-size`, which `appdmg` uses to read the volume icon while building the
+ * DMG. The only images it ever parses are this repository's own committed
+ * icons, so reaching either loop would require an attacker who can already
+ * modify the source tree. `image-size` is a build-time devDependency and is
+ * absent from the packaged application, which `audit:production` proves
+ * independently by staying clean. There is no patched `appdmg` release that
+ * `electron-installer-dmg` accepts, so this cannot be resolved by upgrading.
+ */
+export const EXPECTED_BUILD_TOOL_ADVISORIES = Object.freeze({
+  "https://github.com/advisories/GHSA-w3rx-r6r6-pgpr": Object.freeze({
+    name: "image-size",
+    dependency: "image-size",
+    severity: "high",
+    range: "<=2.0.2",
+  }),
+  "https://github.com/advisories/GHSA-5p2g-fcmc-qvqq": Object.freeze({
+    name: "image-size",
+    dependency: "image-size",
+    severity: "high",
+    range: "<=2.0.2",
+  }),
+});
 
 /**
  * npm reports every affected ancestor as a vulnerability entry. Keep this
  * exact node inventory deliberately narrow: a new package, path, or advisory
  * must fail the gate and receive a fresh review.
+ *
+ * Re-recorded 2026-08-07. The previous inventory was the whole Forge tree
+ * hanging off one `brace-expansion` advisory; upstream shipped patched
+ * releases, so that residual is gone and this smaller `image-size` chain is
+ * what remains. `nanoid` also appeared here and was not recorded, because a
+ * compatible patched release existed and `npm update nanoid` took it.
  */
 export const EXPECTED_BUILD_TOOL_VULNERABILITY_NODES = Object.freeze({
-  "@electron-forge/cli": ["node_modules/@electron-forge/cli"],
-  "@electron-forge/core": ["node_modules/@electron-forge/core"],
-  "@electron-forge/core-utils": ["node_modules/@electron-forge/core-utils"],
-  "@electron-forge/maker-base": ["node_modules/@electron-forge/maker-base"],
   "@electron-forge/maker-dmg": ["node_modules/@electron-forge/maker-dmg"],
-  "@electron-forge/maker-squirrel": ["node_modules/@electron-forge/maker-squirrel"],
-  "@electron-forge/maker-zip": ["node_modules/@electron-forge/maker-zip"],
-  "@electron-forge/plugin-auto-unpack-natives": [
-    "node_modules/@electron-forge/plugin-auto-unpack-natives",
-  ],
-  "@electron-forge/plugin-base": ["node_modules/@electron-forge/plugin-base"],
-  "@electron-forge/plugin-fuses": ["node_modules/@electron-forge/plugin-fuses"],
-  "@electron-forge/plugin-vite": ["node_modules/@electron-forge/plugin-vite"],
-  "@electron-forge/publisher-base": ["node_modules/@electron-forge/publisher-base"],
-  "@electron-forge/shared-types": ["node_modules/@electron-forge/shared-types"],
-  "@electron-forge/template-base": ["node_modules/@electron-forge/template-base"],
-  "@electron-forge/template-vite": ["node_modules/@electron-forge/template-vite"],
-  "@electron-forge/template-vite-typescript": [
-    "node_modules/@electron-forge/template-vite-typescript",
-  ],
-  "@electron-forge/template-webpack": [
-    "node_modules/@electron-forge/template-webpack",
-  ],
-  "@electron-forge/template-webpack-typescript": [
-    "node_modules/@electron-forge/template-webpack-typescript",
-  ],
-  "@electron/asar": ["node_modules/@electron/asar"],
-  "@electron/packager": ["node_modules/@electron/packager"],
-  "@electron/universal": ["node_modules/@electron/universal"],
-  "brace-expansion": [
-    "node_modules/@electron/universal/node_modules/brace-expansion",
-    "node_modules/brace-expansion",
-  ],
-  "dir-compare": ["node_modules/dir-compare"],
-  "electron-winstaller": ["node_modules/electron-winstaller"],
-  glob: ["node_modules/glob"],
-  minimatch: [
-    "node_modules/@electron/universal/node_modules/minimatch",
-    "node_modules/minimatch",
-  ],
-  rimraf: ["node_modules/temp/node_modules/rimraf"],
-  temp: ["node_modules/temp"],
+  appdmg: ["node_modules/appdmg"],
+  "electron-installer-dmg": ["node_modules/electron-installer-dmg"],
+  "image-size": ["node_modules/image-size"],
 });
 
 function isRecord(value) {
@@ -107,7 +100,7 @@ export function evaluateFullNpmAudit(report) {
   }
   assertMetadataCounts(report, expectedNames.length);
 
-  let advisoryCount = 0;
+  const seenAdvisories = new Set();
   for (const name of expectedNames) {
     const vulnerability = report.vulnerabilities[name];
     const expectedNodes = EXPECTED_BUILD_TOOL_VULNERABILITY_NODES[name];
@@ -123,26 +116,42 @@ export function evaluateFullNpmAudit(report) {
 
     for (const via of vulnerability.via) {
       if (typeof via === "string") continue;
+      /*
+       * `Object.hasOwn` rather than a bare lookup: a report naming
+       * `constructor` or `__proto__` would otherwise resolve to an inherited
+       * value and could satisfy the comparison below by accident.
+       */
+      const reviewed =
+        isRecord(via) &&
+        typeof via.url === "string" &&
+        Object.hasOwn(EXPECTED_BUILD_TOOL_ADVISORIES, via.url)
+          ? EXPECTED_BUILD_TOOL_ADVISORIES[via.url]
+          : undefined;
       if (
-        !isRecord(via) ||
-        via.name !== "brace-expansion" ||
-        via.dependency !== "brace-expansion" ||
-        via.url !== KNOWN_ADVISORY_URL ||
-        via.severity !== "high" ||
-        via.range !== "<=5.0.7"
+        !reviewed ||
+        via.name !== reviewed.name ||
+        via.dependency !== reviewed.dependency ||
+        via.severity !== reviewed.severity ||
+        via.range !== reviewed.range
       ) {
         throw new Error("npm audit found an advisory outside the exact reviewed residual.");
       }
-      advisoryCount += 1;
+      seenAdvisories.add(via.url);
     }
   }
-  if (advisoryCount !== 1) {
-    throw new Error("npm audit did not contain exactly one reviewed advisory.");
+  /*
+   * An exact set, not a count. A report that repeated one reviewed advisory
+   * twice while dropping the other would keep the count right and still be a
+   * different residual than the one that was reviewed.
+   */
+  const expectedAdvisories = Object.keys(EXPECTED_BUILD_TOOL_ADVISORIES).sort();
+  if (!sameStrings([...seenAdvisories].sort(), expectedAdvisories)) {
+    throw new Error("npm audit did not contain exactly the reviewed advisories.");
   }
 
   return {
     status: "known-residual",
-    advisory: KNOWN_ADVISORY_URL,
+    advisories: expectedAdvisories,
   };
 }
 
@@ -183,7 +192,7 @@ function runAudit() {
     );
   }
   console.warn(
-    `KNOWN UNPATCHED BUILD-TOOL RESIDUAL: ${evaluation.advisory}. ` +
+    `KNOWN UNPATCHED BUILD-TOOL RESIDUAL: ${evaluation.advisories.join(", ")}. ` +
       "The independent production audit must remain clean. Full npm audit is not clean; " +
       "the current upstream Forge dependency graph has no compatible patched release.",
   );
