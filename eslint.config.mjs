@@ -5,11 +5,23 @@ import globals from "globals";
 import tseslint from "typescript-eslint";
 
 export default defineConfig(
+  /*
+   * These mirror the "JavaScript build and dependency output" section of
+   * `.gitignore`. ESLint's flat config does not read `.gitignore`, so the two
+   * lists have to be kept in step by hand — and they had drifted: `main.js` is
+   * the bundled main process that `make:mac` writes to the repository root, so
+   * `npm run lint` failed with 41 errors on minified output for anyone who had
+   * built before linting. `tests/eslintIgnoresBuildOutput.test.ts` now asserts
+   * the correspondence through ESLint's own resolver so it cannot drift again.
+   */
   globalIgnores([
     ".worker-venv/**",
     ".vite/**",
     "**/.venv/**",
+    "artifacts/**",
+    "coverage/**",
     "dist/**",
+    "main.js",
     "node_modules/**",
     "out/**",
     "resources/python-runtime/**",
