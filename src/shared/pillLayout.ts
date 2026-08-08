@@ -81,6 +81,39 @@ export const PILL_LAYOUT = {
   pickerMenuHeight: number;
 };
 
+/**
+ * Listening-waveform bar geometry.
+ *
+ * The bars render at `maxHeight` and are scaled, never resized: a level
+ * arrives every 32ms, and animating a layout property that often reflowed the
+ * pill on every frame of every recording. Both the stylesheet and the scale
+ * below read these numbers, so the rendered height and the scale that divides
+ * it cannot drift apart — if they did the waveform would silently render at
+ * the wrong amplitude, which no layout assertion would catch.
+ */
+export const PILL_WAVE_BAR = {
+  /** Height of a bar at silence. Keeps a visible resting line. */
+  minHeight: 2,
+  /** Height of a bar at full scale, and the unscaled height of every bar. */
+  maxHeight: 19,
+  /** Below 1, so quiet speech is still legible against loud speech. */
+  exponent: 0.72,
+} as const;
+
+/**
+ * Vertical scale for a waveform bar at `sample`, in 0..1.
+ *
+ * The level is clamped first: `Math.pow` of a negative base with a fractional
+ * exponent is NaN, and a NaN transform silently drops the bar rather than
+ * failing anywhere visible.
+ */
+export function pillWaveBarScale(sample: number): number {
+  const level = Number.isFinite(sample) ? Math.min(1, Math.max(0, sample)) : 0;
+  const span = PILL_WAVE_BAR.maxHeight - PILL_WAVE_BAR.minHeight;
+  const height = Math.round(PILL_WAVE_BAR.minHeight + Math.pow(level, PILL_WAVE_BAR.exponent) * span);
+  return height / PILL_WAVE_BAR.maxHeight;
+}
+
 export const PILL_WINDOW_BOTTOM_MARGIN = 8;
 export const PILL_HOVER_HIT_PADDING = 10;
 
@@ -192,7 +225,8 @@ export type PillLayoutCssVariable =
   | "--pill-error-notice-width"
   | "--pill-error-notice-min-height"
   | "--pill-rail-width"
-  | "--pill-rail-height";
+  | "--pill-rail-height"
+  | "--pill-wave-bar-height";
 
 const px = (value: number): string => `${value}px`;
 
@@ -217,6 +251,7 @@ export const PILL_LAYOUT_CSS_PROPERTIES = {
   "--pill-error-notice-min-height": px(PILL_LAYOUT.error.notice.minHeight),
   "--pill-rail-width": px(PILL_LAYOUT.rail.width),
   "--pill-rail-height": px(PILL_LAYOUT.rail.height),
+  "--pill-wave-bar-height": px(PILL_WAVE_BAR.maxHeight),
 } as const satisfies Record<PillLayoutCssVariable, string>;
 
 export const PILL_ERROR_NOTICE_DURATION_CSS_VARIABLE = "--pill-error-notice-duration" as const;

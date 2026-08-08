@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+#
+# Runs the source-level gate suite before anything reaches the remote.
+#
+# LocalScribe deliberately has no hosted CI (docs/RELEASING.md), so nothing on
+# the server side will catch a broken push. This is where that check lives
+# instead. It runs the same pipeline a release candidate runs — toolchain pins,
+# both npm audits, dependency locks, lint, typecheck, and the full test suite —
+# and refuses the push if any of it fails.
+#
+# It deliberately does NOT run the macOS packaging gates. Those need an Apple
+# Silicon machine, signing identity, and several minutes; making every push pay
+# that cost would only teach people to reach for --no-verify. Run `npm run
+# ci:macos` before publishing a release.
+#
+# Install with: npm run hooks:install
+# Bypass, when you genuinely mean to: git push --no-verify
+set -euo pipefail
+
+# Pushing only deletions has nothing to verify.
+only_deletes=1
+while read -r _local_ref local_sha _remote_ref _remote_sha; do
+  if [ "$local_sha" != "0000000000000000000000000000000000000000" ]; then
+    only_deletes=0
+  fi
+done
+if [ "$only_deletes" -eq 1 ]; then
+  exit 0
+fi
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+
+echo "pre-push: running the local gate suite (npm run ci)"
+if ! npm run --silent ci; then
+  echo ""
+  echo "pre-push: gates failed - push refused."
+  echo "  Fix the failure, or use 'git push --no-verify' if you accept it."
+  exit 1
+fi
+echo "pre-push: gates passed."
