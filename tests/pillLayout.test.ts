@@ -13,6 +13,8 @@ import {
   PILL_LAYOUT,
   PILL_LAYOUT_CSS_PROPERTIES,
   pillSizeFor,
+  pillWaveBarScale,
+  PILL_WAVE_BAR,
   rendererPillModeForMainMode,
   STATUS_CHROME_WIDTH,
   STATUS_COPY_WIDTH,
@@ -294,5 +296,84 @@ describe("pill status width contract", () => {
     expect(copy).toContain("font-weight: 600");
     expect(copy).toContain("text-overflow: ellipsis");
     expect(pillSource).toContain('className="pill__status-copy" title={status}');
+  });
+});
+
+/*
+ * The listening waveform used to set an inline pixel `height` on 15 bars and
+ * transition it, while `audioRecorder.ts` emits a level every 32ms. That is a
+ * layout property changing ~31 times a second for the whole of every
+ * recording, in an always-on-top transparent window. It now renders at a fixed
+ * height and scales.
+ *
+ * The refactor has to be visually identical, and the pill is not something this
+ * suite can look at, so parity is asserted numerically instead: the scale must
+ * reproduce the exact pixel height the old formula produced, for every level.
+ */
+describe("listening waveform", () => {
+  /** The implementation this replaced, kept verbatim as the parity oracle. */
+  const legacyHeight = (sample: number): number => Math.round(2 + Math.pow(sample, 0.72) * 17);
+
+  it("renders every level at exactly the height it rendered before", () => {
+    for (let sample = 0; sample <= 1; sample += 0.001) {
+      const rendered = pillWaveBarScale(sample) * PILL_WAVE_BAR.maxHeight;
+      expect(rendered, `level ${sample} moved`).toBeCloseTo(legacyHeight(sample), 10);
+    }
+  });
+
+  it("spans the full bar, from a visible resting line to the top", () => {
+    expect(pillWaveBarScale(0) * PILL_WAVE_BAR.maxHeight).toBe(PILL_WAVE_BAR.minHeight);
+    expect(pillWaveBarScale(1)).toBe(1);
+  });
+
+  /*
+   * `Math.pow` of a negative base with a fractional exponent is NaN, and
+   * `scaleY(NaN)` is an invalid declaration the browser drops silently — the
+   * bar would simply stop moving with no error anywhere.
+   */
+  it("clamps levels that would produce an invalid transform", () => {
+    for (const level of [-1, -0.001, Number.NaN, Number.POSITIVE_INFINITY, 1.5]) {
+      const scale = pillWaveBarScale(level);
+      expect(Number.isFinite(scale), `level ${level} produced ${scale}`).toBe(true);
+      expect(scale).toBeGreaterThanOrEqual(pillWaveBarScale(0));
+      expect(scale).toBeLessThanOrEqual(1);
+    }
+  });
+
+  /*
+   * Stylesheet assertions, because a node-environment suite has no layout
+   * engine to observe. They are narrow on purpose: the property that must not
+   * come back is `height` in the transition.
+   */
+  it("animates only compositor properties", () => {
+    const bar = cssRule(".pill-wave i");
+    const transition = /transition:([^;]*)/.exec(bar);
+    expect(transition, ".pill-wave i no longer declares a transition").not.toBeNull();
+    const animated = transition![1]!;
+    expect(animated).toContain("transform");
+    for (const layoutProperty of ["height", "width", "margin", "padding", "all"]) {
+      expect(animated, `${layoutProperty} is a layout property and must not be animated`)
+        .not.toContain(layoutProperty);
+    }
+  });
+
+  it("takes its fixed height from the same constant the scale divides by", () => {
+    expect(cssRule(".pill-wave i")).toContain("height: var(--pill-wave-bar-height)");
+    expect(PILL_LAYOUT_CSS_PROPERTIES["--pill-wave-bar-height"])
+      .toBe(`${PILL_WAVE_BAR.maxHeight}px`);
+  });
+
+  /* A bar taller than the row it sits in would be clipped by `overflow: hidden`. */
+  it("fits inside the waveform row", () => {
+    /*
+     * Anchored to the start of a line: `cssRule` matches the first occurrence
+     * of the selector, and `.pill--hold-listening .pill-wave` — a width-only
+     * override — is declared above the rule that actually sets the height.
+     */
+    const rule = /^\.pill-wave \{([^}]*)\}/m.exec(stylesheet);
+    expect(rule, "missing stylesheet rule: .pill-wave").not.toBeNull();
+    const row = /height:\s*(\d+)px/.exec(rule![1]!);
+    expect(row).not.toBeNull();
+    expect(PILL_WAVE_BAR.maxHeight).toBeLessThanOrEqual(Number(row![1]));
   });
 });

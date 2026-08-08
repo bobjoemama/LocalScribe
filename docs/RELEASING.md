@@ -39,6 +39,34 @@ npm simulation, a locked Windows binary-wheel resolution, ESLint, Ruff for both
 workers, the dependency-light Windows worker suite, TypeScript, and the
 complete Vitest suite.
 
+`npm run ci` is an alias for the same gates, and `npm run ci:macos` for the
+macOS pipeline below. They exist so the pipeline has a name that does not
+change when the underlying script is renamed.
+
+## Local CI
+
+There is no server to catch a broken push, so the check runs before the push
+instead. Install it once per clone:
+
+```sh
+npm run hooks:install
+```
+
+That points `core.hooksPath` at `.githooks`, whose `pre-push` hook runs
+`npm run ci` and refuses the push if any gate fails. Pushes that only delete
+refs skip it. `git push --no-verify` bypasses it when you mean to.
+
+The hook deliberately does not run the macOS packaging gates: those need an
+Apple Silicon machine, a signing identity, and several minutes, and charging
+every push that cost would only teach people to bypass the hook. Run
+`npm run ci:macos` before publishing a release.
+
+`tests/ciPipeline.test.ts` asserts the pipeline is intact — that `npm run ci`
+still reaches the runner, that the runner still invokes every required gate,
+that no check names a script that has been renamed away, and that the hook is
+present and executable. A hook without the execute bit is silently ignored by
+git, which is indistinguishable from having no hook at all.
+
 ## Complete macOS verification
 
 On an Apple Silicon Mac:

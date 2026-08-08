@@ -10,6 +10,7 @@ import { ERROR_NOTICE_DURATION_MS, presentDictationError } from "../../shared/di
 import { selectableMicrophones } from "../../shared/microphones";
 import {
   pillErrorCountdownCssProperties,
+  pillWaveBarScale,
   PILL_LAYOUT_CSS_PROPERTIES,
   type PillLayoutCssVariable,
   rendererPillModeForMainMode,
@@ -628,7 +629,7 @@ function Wave({ samples }: { samples: number[] }) {
         <i
           key={index}
           style={{
-            height: Math.round(2 + Math.pow(sample, 0.72) * 17),
+            transform: `scaleY(${pillWaveBarScale(sample)})`,
             opacity: 0.48 + sample * 0.52,
           }}
         />

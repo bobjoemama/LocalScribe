@@ -331,7 +331,20 @@ html[data-surface="pill"], html[data-surface="pill"] body, html[data-surface="pi
 .pill__end--finish { background: white; color: #101010; }
 .pill__end--finish:hover { background: #dedede; }
 .pill-wave { display: flex; width: 48px; height: 21px; align-items: center; justify-content: flex-end; gap: 1px; overflow: hidden; }
-.pill-wave i { width: 1.5px; min-height: 2px; flex: 0 0 auto; border-radius: 3px; background: white; transition: height 45ms linear, opacity 45ms linear; }
+/*
+ * The bars are a fixed height and scaled, never resized. `audioRecorder.ts`
+ * emits a level every 32ms, so animating `height` here meant 15 elements
+ * changing a layout property ~31 times a second for the whole of a recording:
+ * every frame reflowed the flex row and repainted the panel. `transform` is
+ * not a layout property, so the same animation costs no layout at all.
+ * `transform-origin` is the default centre, which reproduces the centring the
+ * flex container gave the old variable-height bars.
+ *
+ * `will-change` is deliberately absent: it would promote 15 separate
+ * compositor layers to save repaints of a 48x21 region, which is the worse
+ * trade. Removing the layout pass is the win.
+ */
+.pill-wave i { width: 1.5px; height: var(--pill-wave-bar-height); flex: 0 0 auto; border-radius: 3px; background: white; transition: transform 45ms linear, opacity 45ms linear; }
 .pill-wave[data-active="true"] i { opacity: 1; }
 
 .pill--status {
