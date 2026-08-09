@@ -8,22 +8,22 @@ telemetry service, or listening network port.
 
 ### macOS validation builds
 
-[**LocalScribe 0.1.0-dev.7 — macOS arm64**](https://github.com/bobjoemama/LocalScribe/releases/tag/v0.1.0-dev.7)
+[**LocalScribe 0.1.0-dev.8 — macOS arm64**](https://github.com/bobjoemama/LocalScribe/releases/tag/v0.1.0-dev.8)
 
 - **This repository is private.** The link above resolves only for a GitHub
   account that has access to it; everyone else gets a 404, not a download page.
   Without that access, build from source instead — see
   [Build from source](#build-from-source).
 - Requires an Apple Silicon Mac and macOS 14 or newer.
-- Download `LocalScribe-0.1.0-dev.7-arm64.dmg`. Do not download the
-  source-code ZIP, and do not use `LocalScribe-darwin-arm64-0.1.0-dev.7.zip`
+- Download `LocalScribe-0.1.0-dev.8-arm64.dmg`. Do not download the
+  source-code ZIP, and do not use `LocalScribe-darwin-arm64-0.1.0-dev.8.zip`
   expecting a Windows build — that ZIP is the same macOS app.
 - Verify the download against the release's `SHA256SUMS.txt` asset before
   opening it:
 
   ```sh
-  shasum -a 256 LocalScribe-0.1.0-dev.7-arm64.dmg
-  # 5a75100797fe7a75321f96b0e8121c5d32c087069e955b310ea0991f51e79ac3
+  shasum -a 256 LocalScribe-0.1.0-dev.8-arm64.dmg
+  # CHECKSUM-WILL-BE-FILLED-FROM-THE-VERIFIED-RELEASE-ARTIFACT
   ```
 
 - The release description states whether that exact artifact is a private
