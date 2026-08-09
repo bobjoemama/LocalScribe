@@ -6,9 +6,10 @@ export interface AccessibilityHotkeyService {
 type WarningSink = (message: string, error: unknown) => void;
 
 /**
- * Reconciles macOS Accessibility changes without allowing native hook
+ * Reconciles macOS Accessibility changes without allowing the rare-key hook
  * start/stop failures to escape an interval callback into Electron's main
- * process. A later interval tick remains free to retry.
+ * process. Common chords stay on the permission-free monitor in both states;
+ * a later interval tick remains free to retry either path.
  */
 export function reconcileAccessibilityHotkeys(
   accessibilityGranted: boolean,

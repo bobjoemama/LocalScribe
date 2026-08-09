@@ -127,7 +127,7 @@ Mac app and installer:
 ```sh
 npm run verify:local:macos
 node scripts/release-metadata.mjs --platform darwin --format json
-node scripts/verify-release-assets.mjs --platform darwin
+node scripts/verify-release-assets.mjs --platform darwin --candidate
 ```
 
 `verify-packaged-archive.mjs` compares the archive’s embedded source root with

@@ -171,6 +171,18 @@ describe("release asset verification", () => {
     );
   });
 
+  it("lets a local candidate differ from a previously published README hash", async () => {
+    const root = makeProject();
+    const { readmePath } = writeReleaseFixture(root, "darwin");
+    const readme = readFileSync(readmePath, "utf8");
+    writeFileSync(readmePath, readme.replace(/# [0-9a-f]{64}/u, `# ${"a".repeat(64)}`));
+
+    const result = await verifyReleaseAssets("darwin", root, "candidate");
+
+    expect(result.platform).toBe("darwin");
+    expect(result.assets).toHaveLength(5);
+  });
+
   /*
    * Without this the check passes by matching nothing, which is the same
    * silent failure wearing a different costume.

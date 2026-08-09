@@ -513,6 +513,11 @@ private func selfTest() -> Bool {
     let fingerprint = String(repeating: "a", count: 64)
     let elementFingerprint = String(repeating: "b", count: 64)
     guard
+        let holdShortcut = parseHoldShortcut("Command+Control"),
+        holdShortcut.modifierOnly,
+        holdShortcut.groups.count == 2,
+        parseHoldShortcut("Control+Space")?.modifierOnly == false,
+        parseHoldShortcut("F21") == nil,
         let expectation = parsePasteExpectation([
             "darwin",
             "42",
@@ -591,57 +596,138 @@ private func selfTest() -> Bool {
         && !targetMatches(otherFocusedElement, expectation: expectation)
 }
 
-private let controlKeyCodes: Set<CGKeyCode> = [59, 62]
-private let spaceKeyCode: CGKeyCode = 49
-
 private func keyIsDown(_ keyCode: CGKeyCode) -> Bool {
     CGEventSource.keyState(.combinedSessionState, key: keyCode)
 }
 
-private func anotherKeyIsDown() -> Bool {
+private let macKeyCodes: [String: CGKeyCode] = [
+    "A": 0, "S": 1, "D": 2, "F": 3, "H": 4, "G": 5,
+    "Z": 6, "X": 7, "C": 8, "V": 9, "B": 11, "Q": 12,
+    "W": 13, "E": 14, "R": 15, "Y": 16, "T": 17,
+    "1": 18, "2": 19, "3": 20, "4": 21, "6": 22, "5": 23,
+    "Equal": 24, "9": 25, "7": 26, "Minus": 27, "8": 28, "0": 29,
+    "BracketRight": 30, "O": 31, "U": 32, "BracketLeft": 33,
+    "I": 34, "P": 35, "Return": 36, "Enter": 36, "L": 37,
+    "J": 38, "Quote": 39, "K": 40, "Semicolon": 41,
+    "Backslash": 42, "Comma": 43, "Slash": 44, "N": 45,
+    "M": 46, "Period": 47, "Tab": 48, "Space": 49,
+    "Backquote": 50, "Backspace": 51, "Escape": 53,
+    "CapsLock": 57, "numdec": 65, "nummult": 67, "numadd": 69,
+    "NumLock": 71, "numdiv": 75, "NumpadEnter": 76, "numsub": 78,
+    "num0": 82, "num1": 83, "num2": 84, "num3": 85, "num4": 86,
+    "num5": 87, "num6": 88, "num7": 89, "num8": 91, "num9": 92,
+    "F5": 96, "F6": 97, "F7": 98, "F3": 99, "F8": 100,
+    "F9": 101, "F11": 103, "F13": 105, "F16": 106, "F14": 107,
+    "F10": 109, "F12": 111, "F15": 113, "Insert": 114,
+    "Home": 115, "PageUp": 116, "Delete": 117, "F4": 118,
+    "End": 119, "F2": 120, "PageDown": 121, "F1": 122,
+    "Left": 123, "Right": 124, "Down": 125, "Up": 126,
+    "F17": 64, "F18": 79, "F19": 80, "F20": 90,
+]
+
+private let modifierTokens: Set<String> = [
+    "CommandOrControl", "Command", "Control", "Alt", "AltGr",
+    "Shift", "Super", "Meta",
+]
+
+private func keyGroups(for token: String) -> [[CGKeyCode]]? {
+    switch token {
+    case "CommandOrControl", "Command", "Super", "Meta": return [[55, 54]]
+    case "Control": return [[59, 62]]
+    case "Alt": return [[58, 61]]
+    case "AltGr": return [[61]]
+    case "Shift": return [[56, 60]]
+    case "Plus": return [[56, 60], [24]]
+    default:
+        guard let keyCode = macKeyCodes[token] else { return nil }
+        return [[keyCode]]
+    }
+}
+
+private func parseHoldShortcut(_ shortcut: String) -> (groups: [[CGKeyCode]], modifierOnly: Bool)? {
+    let tokens = shortcut.split(separator: "+", omittingEmptySubsequences: false).map(String.init)
+    guard !tokens.isEmpty, tokens.count <= 8, !tokens.contains(where: { $0.isEmpty }) else {
+        return nil
+    }
+    var groups: [[CGKeyCode]] = []
+    var identities = Set<String>()
+    for token in tokens {
+        guard let tokenGroups = keyGroups(for: token) else { return nil }
+        for group in tokenGroups {
+            let identity = group.sorted().map(String.init).joined(separator: ",")
+            if identities.insert(identity).inserted { groups.append(group) }
+        }
+    }
+    guard !groups.isEmpty else { return nil }
+    return (groups, tokens.allSatisfy(modifierTokens.contains))
+}
+
+private func anyRequiredKeyIsDown(_ groups: [[CGKeyCode]]) -> Bool {
+    groups.contains { group in group.contains(where: keyIsDown) }
+}
+
+private func allRequiredKeysAreDown(_ groups: [[CGKeyCode]]) -> Bool {
+    groups.allSatisfy { group in group.contains(where: keyIsDown) }
+}
+
+private func anotherKeyIsDown(excluding required: Set<CGKeyCode>) -> Bool {
     for rawKeyCode in 0...127 {
         let keyCode = CGKeyCode(rawKeyCode)
-        if controlKeyCodes.contains(keyCode) || keyCode == spaceKeyCode { continue }
+        if required.contains(keyCode) { continue }
         if keyIsDown(keyCode) { return true }
     }
-    return CGEventSource.buttonState(.combinedSessionState, button: .left)
+    return false
+}
+
+private func anyMouseButtonIsDown() -> Bool {
+    CGEventSource.buttonState(.combinedSessionState, button: .left)
         || CGEventSource.buttonState(.combinedSessionState, button: .right)
         || CGEventSource.buttonState(.combinedSessionState, button: .center)
 }
 
-private func monitorControlKey() throws -> Never {
-    var controlWasDown = false
-    var spaceWasDown = false
-    var modifiedInputSent = false
+private func monitorHoldShortcut(_ shortcut: String) throws -> Never {
+    guard let parsed = parseHoldShortcut(shortcut) else { throw HelperError.invalidCommand }
+    let required = Set(parsed.groups.flatMap { $0 })
+    var chordWasDown = false
+    var suppressedUntilRelease = false
     var iterations = 0
 
     while true {
         if iterations % 125 == 0 && getppid() == 1 { exit(0) }
         iterations &+= 1
 
-        let controlIsDown = controlKeyCodes.contains(where: keyIsDown)
-        let spaceIsDown = keyIsDown(spaceKeyCode)
+        let anyRequiredDown = anyRequiredKeyIsDown(parsed.groups)
+        let allRequiredDown = allRequiredKeysAreDown(parsed.groups)
 
-        if controlIsDown && !controlWasDown {
-            modifiedInputSent = false
-            try writeJSON(ControlEventPayload(event: "control-down"))
+        if suppressedUntilRelease {
+            if chordWasDown && !allRequiredDown {
+                try writeJSON(ControlEventPayload(event: "hold-up"))
+                chordWasDown = false
+            }
+            if !anyRequiredDown { suppressedUntilRelease = false }
+            Thread.sleep(forTimeInterval: 0.008)
+            continue
         }
 
-        if controlIsDown && spaceIsDown && !spaceWasDown {
-            modifiedInputSent = true
-            try writeJSON(ControlEventPayload(event: "space-down"))
-        } else if controlIsDown && !modifiedInputSent && anotherKeyIsDown() {
-            modifiedInputSent = true
+        let partialChordModified = anyRequiredDown
+            && !allRequiredDown
+            && anotherKeyIsDown(excluding: required)
+        let pendingModifierChordModified = parsed.modifierOnly
+            && allRequiredDown
+            && anotherKeyIsDown(excluding: required)
+        let mouseModified = anyRequiredDown && anyMouseButtonIsDown()
+        if partialChordModified || pendingModifierChordModified || mouseModified {
             try writeJSON(ControlEventPayload(event: "modified-input"))
+            suppressedUntilRelease = true
+        } else if allRequiredDown && !chordWasDown {
+            chordWasDown = true
+            try writeJSON(ControlEventPayload(event: "hold-down"))
+        } else if chordWasDown && !allRequiredDown {
+            try writeJSON(ControlEventPayload(event: "hold-up"))
+            chordWasDown = false
+            suppressedUntilRelease = true
         }
 
-        if !controlIsDown && controlWasDown {
-            try writeJSON(ControlEventPayload(event: "control-up"))
-            modifiedInputSent = false
-        }
-
-        controlWasDown = controlIsDown
-        spaceWasDown = spaceIsDown
         Thread.sleep(forTimeInterval: 0.008)
     }
 }
@@ -674,9 +760,9 @@ do {
             throw HelperError.invalidCommand
         }
         try writeJSON(SelfTestPayload(selfTest: true))
-    case "control-monitor":
-        guard CommandLine.arguments.count == 2 else { throw HelperError.invalidCommand }
-        try monitorControlKey()
+    case "hold-monitor":
+        guard CommandLine.arguments.count == 3 else { throw HelperError.invalidCommand }
+        try monitorHoldShortcut(CommandLine.arguments[2])
     default:
         throw HelperError.invalidCommand
     }

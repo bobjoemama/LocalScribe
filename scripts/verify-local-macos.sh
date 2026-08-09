@@ -83,7 +83,7 @@ done
     > "$(basename "$checksum_path")"
   shasum -a 256 -c "$(basename "$checksum_path")"
 )
-node scripts/verify-release-assets.mjs --platform darwin >/dev/null
+node scripts/verify-release-assets.mjs --platform darwin --candidate >/dev/null
 
 codesign --verify --deep --strict --verbose=4 "$app_path"
 node scripts/verify-macos-entitlements.mjs "$app_path"

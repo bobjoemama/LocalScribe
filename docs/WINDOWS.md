@@ -188,7 +188,7 @@ same metadata used by Forge:
 
 ```powershell
 node scripts/release-metadata.mjs --platform win32 --format json
-node scripts/verify-release-assets.mjs --platform win32
+node scripts/verify-release-assets.mjs --platform win32 --candidate
 ```
 
 Forge extracts the ZIP into a private temporary directory, rejects

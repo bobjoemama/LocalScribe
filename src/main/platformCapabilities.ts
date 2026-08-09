@@ -50,9 +50,9 @@ export function permissionSnapshotForPlatform(
     },
     globalHold: {
       supported: isMac || isWindows,
-      // Accessibility permits the full macOS hook, but only HotkeyService can
-      // prove that either that hook or the bare-Control fallback actually
-      // started. Keep capability support separate from runtime readiness.
+      // Common Mac chords use the narrow native key-state monitor; rare keys
+      // without a macOS virtual-key code retain the Accessibility hook. Only
+      // HotkeyService can prove that the selected path actually started.
       ready: (isMac || isWindows) && globalHoldReady,
     },
     globalToggle: {
