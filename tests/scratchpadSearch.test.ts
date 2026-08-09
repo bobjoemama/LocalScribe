@@ -86,18 +86,40 @@ describe("scratchpad utility search", () => {
   });
 
   /*
-   * The performance property, as a behaviour rather than a claim in a comment.
-   * Collecting every match instead of stopping at the first is semantically
-   * identical, so nothing else here can see the difference — but on a 4.5 MB
-   * body with 500k hits it is 16 ms against 0.003 ms, per note, per keystroke.
-   * The bound below is ~1000x the measured cost and ~5x under the collecting
-   * version, so it fails on the reversion without being sensitive to load.
+   * Prove the performance property without a wall-clock threshold. A test
+   * process can be pre-empted between two performance.now() calls, which made
+   * the old 3 ms assertion fail intermittently even though this function had
+   * already stopped at its first hit. RegExp.prototype.test delegates through
+   * `exec`, so a temporary counting implementation can prove that, after
+   * escaping the query, the matcher checks the title once, the body once, and
+   * never asks for a second body hit.
    */
-  it("answers a heavily-matching body without scanning all of it", () => {
-    const note = { title: "Long", body: "needle x ".repeat(500_000) };
-    const start = performance.now();
-    expect(scratchpadNoteMatches(note, "needle")).toBe(true);
-    expect(performance.now() - start).toBeLessThan(3);
+  it("stops after the first body match", () => {
+    const originalExec = RegExp.prototype.exec;
+    const inputs: string[] = [];
+    RegExp.prototype.exec = function boundedExec(input: string): RegExpExecArray | null {
+      inputs.push(input);
+      if (input === "Long") return null;
+      if (input === "needle x needle x") {
+        if (inputs.filter((value) => value === input).length > 1) {
+          throw new Error("matcher scanned beyond the first body hit");
+        }
+        const match = ["needle"] as RegExpExecArray;
+        match.index = 0;
+        match.input = input;
+        return match;
+      }
+      return originalExec.call(this, input);
+    };
+
+    let matched: boolean;
+    try {
+      matched = scratchpadNoteMatches({ title: "Long", body: "needle x needle x" }, "needle");
+    } finally {
+      RegExp.prototype.exec = originalExec;
+    }
+    expect(matched).toBe(true);
+    expect(inputs).toEqual(["needle", "Long", "needle x needle x"]);
   });
 
   it("still matches a body whose only hit is at the very end", () => {
