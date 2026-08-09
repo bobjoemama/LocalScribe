@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
 import { z } from "zod";
+import { shortcutTokens, type HoldShortcut } from "../../shared/shortcuts";
 import {
   resolveNativeActiveTargetHelperPath,
   type NativeActiveTargetHelperPathOptions,
@@ -8,9 +9,8 @@ import {
 import { nativeHelperEnvironment } from "../nativeHelperEnvironment";
 
 export const CONTROL_MONITOR_EVENTS = [
-  "control-down",
-  "control-up",
-  "space-down",
+  "hold-down",
+  "hold-up",
   "modified-input",
 ] as const;
 
@@ -21,11 +21,35 @@ const controlMonitorPayloadSchema = z.object({
 }).strict();
 
 export interface ControlMonitor {
+  supports(shortcut: HoldShortcut): boolean;
   start(
+    shortcut: HoldShortcut,
     listener: (event: ControlMonitorEvent) => void,
     onStopped?: () => void,
   ): boolean;
   stop(): void;
+}
+
+/*
+ * Carbon does not define physical virtual-key codes for these PC-only or
+ * post-F20 keys. Preserve the uiohook path for them instead of claiming the
+ * permission-free monitor can observe a key that macOS does not identify.
+ */
+const UNSUPPORTED_NATIVE_MAC_TOKENS = new Set([
+  "ScrollLock",
+  "PrintScreen",
+  "F21",
+  "F22",
+  "F23",
+  "F24",
+]);
+
+export function nativeMacHoldMonitorSupports(shortcut: HoldShortcut): boolean {
+  try {
+    return shortcutTokens(shortcut).every((token) => !UNSUPPORTED_NATIVE_MAC_TOKENS.has(token));
+  } catch {
+    return false;
+  }
 }
 
 export function parseControlMonitorLine(line: string): ControlMonitorEvent | null {
@@ -47,14 +71,19 @@ export class MacControlMonitor implements ControlMonitor {
     private readonly platform: NodeJS.Platform = process.platform,
   ) {}
 
+  supports(shortcut: HoldShortcut): boolean {
+    return this.platform === "darwin" && nativeMacHoldMonitorSupports(shortcut);
+  }
+
   start(
+    shortcut: HoldShortcut,
     listener: (event: ControlMonitorEvent) => void,
     onStopped?: () => void,
   ): boolean {
     if (this.process) return true;
-    if (this.platform !== "darwin" || !existsSync(this.executablePath)) return false;
+    if (!this.supports(shortcut) || !existsSync(this.executablePath)) return false;
 
-    const child = spawn(this.executablePath, ["control-monitor"], {
+    const child = spawn(this.executablePath, ["hold-monitor", shortcut], {
       env: nativeHelperEnvironment(this.platform),
       shell: false,
       stdio: ["ignore", "pipe", "pipe"],
@@ -77,15 +106,15 @@ export class MacControlMonitor implements ControlMonitor {
     child.stderr?.setEncoding("utf8");
     child.stderr?.on("data", (chunk: string) => {
       const message = chunk.trim();
-      if (message) console.warn(`[control-monitor] ${message.slice(0, 500)}`);
+      if (message) console.warn(`[hold-monitor] ${message.slice(0, 500)}`);
     });
     child.once("error", (error) => {
-      console.warn("Permission-free Control monitor could not start", error);
+      console.warn("Permission-free hold monitor could not start", error);
       this.handleStopped(child);
     });
     child.once("exit", (code, signal) => {
       this.handleStopped(child);
-      if (code && code !== 0) console.warn(`Control monitor exited (${code ?? signal ?? "unknown"})`);
+      if (code && code !== 0) console.warn(`Hold monitor exited (${code ?? signal ?? "unknown"})`);
     });
     return true;
   }

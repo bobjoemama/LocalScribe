@@ -282,7 +282,7 @@ foreach ($Line in Get-Content -LiteralPath $ChecksumPath) {
   }
 }
 
-& $NodeExecutable scripts/verify-release-assets.mjs --platform win32 | Out-Null
+& $NodeExecutable scripts/verify-release-assets.mjs --platform win32 --candidate | Out-Null
 if ($LASTEXITCODE -ne 0) {
   throw "Windows release asset verification failed."
 }

@@ -333,7 +333,8 @@ describe("HotkeyService capture and validation", () => {
     const onRelease = vi.fn();
     const monitorState: { listener: ((event: ControlMonitorEvent) => void) | null } = { listener: null };
     const monitor = {
-      start: vi.fn((nextListener: (event: ControlMonitorEvent) => void) => {
+      supports: vi.fn(() => true),
+      start: vi.fn((_shortcut: string, nextListener: (event: ControlMonitorEvent) => void) => {
         monitorState.listener = nextListener;
         return true;
       }),
@@ -352,21 +353,77 @@ describe("HotkeyService capture and validation", () => {
     service.startFallback();
     expect(monitor.start).toHaveBeenCalledOnce();
     expect(service.isGlobalHoldReady()).toBe(true);
-    monitorState.listener?.("control-down");
+    monitorState.listener?.("hold-down");
     vi.advanceTimersByTime(160);
     expect(onPress).toHaveBeenCalledOnce();
-    monitorState.listener?.("control-up");
+    monitorState.listener?.("hold-up");
     expect(onRelease).toHaveBeenCalledOnce();
   });
 
-  it("closes an active fallback hold before upgrading to the full macOS hook", () => {
+  it("uses the narrow native monitor as the normal macOS hold path", () => {
+    const monitorState: { listener: ((event: ControlMonitorEvent) => void) | null } = {
+      listener: null,
+    };
+    const onPress = vi.fn();
+    const onRelease = vi.fn();
+    const monitor = {
+      supports: vi.fn(() => true),
+      start: vi.fn((_shortcut: string, listener: (event: ControlMonitorEvent) => void) => {
+        monitorState.listener = listener;
+        return true;
+      }),
+      stop: vi.fn(),
+    };
+    const service = new HotkeyService(
+      onPress,
+      onRelease,
+      vi.fn(),
+      monitor,
+      "Command+Control",
+      "Control+Space",
+      "darwin",
+    );
+
+    service.start();
+
+    expect(monitor.start).toHaveBeenCalledWith(
+      "Command+Control",
+      expect.any(Function),
+      expect.any(Function),
+    );
+    expect(mocks.uIOhook.start).not.toHaveBeenCalled();
+    monitorState.listener?.("hold-down");
+    vi.advanceTimersByTime(160);
+    expect(onPress).toHaveBeenCalledOnce();
+    monitorState.listener?.("hold-up");
+    expect(onRelease).toHaveBeenCalledOnce();
+  });
+
+  it("keeps the Accessibility hook for macOS keys the native monitor cannot identify", () => {
+    const monitor = {
+      supports: vi.fn(() => false),
+      start: vi.fn(() => true),
+      stop: vi.fn(),
+    };
+    const service = new HotkeyService(
+      vi.fn(), vi.fn(), vi.fn(), monitor, "F21", "Control+Space", "darwin",
+    );
+
+    service.start();
+
+    expect(monitor.start).not.toHaveBeenCalled();
+    expect(mocks.uIOhook.start).toHaveBeenCalledOnce();
+  });
+
+  it("keeps an active native hold when Accessibility becomes available", () => {
     const onPress = vi.fn();
     const onRelease = vi.fn();
     const monitorState: {
       listener: ((event: ControlMonitorEvent) => void) | null;
     } = { listener: null };
     const monitor = {
-      start: vi.fn((nextListener: (event: ControlMonitorEvent) => void) => {
+      supports: vi.fn(() => true),
+      start: vi.fn((_shortcut: string, nextListener: (event: ControlMonitorEvent) => void) => {
         monitorState.listener = nextListener;
         return true;
       }),
@@ -382,15 +439,17 @@ describe("HotkeyService capture and validation", () => {
       "darwin",
     );
     service.startFallback();
-    monitorState.listener?.("control-down");
+    monitorState.listener?.("hold-down");
     vi.advanceTimersByTime(160);
     expect(onPress).toHaveBeenCalledOnce();
 
     service.start();
 
+    expect(onRelease).not.toHaveBeenCalled();
+    expect(monitor.stop).not.toHaveBeenCalled();
+    expect(mocks.uIOhook.start).not.toHaveBeenCalled();
+    monitorState.listener?.("hold-up");
     expect(onRelease).toHaveBeenCalledOnce();
-    expect(monitor.stop).toHaveBeenCalledOnce();
-    expect(mocks.uIOhook.start).toHaveBeenCalledOnce();
   });
 
   it("downgrades after Accessibility revocation and recovers after fallback monitor death", () => {
@@ -399,7 +458,9 @@ describe("HotkeyService capture and validation", () => {
     let monitorListener: ((event: ControlMonitorEvent) => void) | undefined;
     let onStopped: (() => void) | undefined;
     const monitor = {
+      supports: vi.fn(() => true),
       start: vi.fn((
+        _shortcut: string,
         nextListener: (event: ControlMonitorEvent) => void,
         nextOnStopped?: () => void,
       ) => {
@@ -421,11 +482,11 @@ describe("HotkeyService capture and validation", () => {
     service.start();
 
     service.startFallback();
-    expect(mocks.uIOhook.stop).toHaveBeenCalledOnce();
+    expect(mocks.uIOhook.stop).not.toHaveBeenCalled();
     expect(monitor.start).toHaveBeenCalledOnce();
     expect(service.isGlobalHoldReady()).toBe(true);
 
-    monitorListener?.("control-down");
+    monitorListener?.("hold-down");
     vi.advanceTimersByTime(160);
     expect(onPress).toHaveBeenCalledOnce();
     onStopped?.();
@@ -452,7 +513,7 @@ describe("HotkeyService capture and validation", () => {
       vi.fn(),
       vi.fn(),
       vi.fn(),
-      { start: vi.fn(() => false), stop: vi.fn() },
+      { supports: vi.fn(() => true), start: vi.fn(() => false), stop: vi.fn() },
       "Control",
       "Control+Space",
       "darwin",
@@ -571,8 +632,12 @@ describe("HotkeyService capture and validation", () => {
     warning.mockRestore();
   });
 
-  it("uses macOS physical aliases for equality while retaining the Control-only fallback", () => {
-    const monitor = { start: vi.fn(() => true), stop: vi.fn() };
+  it("uses macOS physical aliases and supports arbitrary native modifier holds", () => {
+    const monitor = {
+      supports: vi.fn(() => true),
+      start: vi.fn(() => true),
+      stop: vi.fn(),
+    };
     const service = new HotkeyService(
       vi.fn(),
       vi.fn(),
@@ -596,8 +661,12 @@ describe("HotkeyService capture and validation", () => {
 
     const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     service.startFallback();
-    expect(monitor.start).not.toHaveBeenCalled();
-    expect(warning).toHaveBeenCalledWith("CommandOrControl push-to-talk requires Accessibility on macOS");
+    expect(monitor.start).toHaveBeenCalledWith(
+      "CommandOrControl",
+      expect.any(Function),
+      expect.any(Function),
+    );
+    expect(warning).not.toHaveBeenCalled();
     warning.mockRestore();
   });
 });

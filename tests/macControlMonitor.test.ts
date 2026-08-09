@@ -9,6 +9,7 @@ vi.mock("node:child_process", () => ({
 
 import {
   MacControlMonitor,
+  nativeMacHoldMonitorSupports,
   parseControlMonitorLine,
 } from "../src/main/hotkeys/macControlMonitor";
 import { resolveNativeActiveTargetHelperPath } from "../src/main/nativeHelperPath";
@@ -26,18 +27,25 @@ afterEach(() => {
   vi.unstubAllEnvs();
 });
 
-describe("macOS Control monitor protocol", () => {
-  it("accepts only the four non-content key-state events", () => {
-    expect(parseControlMonitorLine('{"event":"control-down"}')).toBe("control-down");
-    expect(parseControlMonitorLine('{"event":"control-up"}')).toBe("control-up");
-    expect(parseControlMonitorLine('{"event":"space-down"}')).toBe("space-down");
+describe("macOS hold monitor protocol", () => {
+  it("accepts only the three non-content key-state events", () => {
+    expect(parseControlMonitorLine('{"event":"hold-down"}')).toBe("hold-down");
+    expect(parseControlMonitorLine('{"event":"hold-up"}')).toBe("hold-up");
     expect(parseControlMonitorLine('{"event":"modified-input"}')).toBe("modified-input");
   });
 
   it("rejects malformed, extra, and content-bearing payloads", () => {
     expect(parseControlMonitorLine("not json")).toBeNull();
     expect(parseControlMonitorLine('{"event":"key-down","key":"A"}')).toBeNull();
-    expect(parseControlMonitorLine('{"event":"control-down","key":"Control"}')).toBeNull();
+    expect(parseControlMonitorLine('{"event":"hold-down","key":"Control"}')).toBeNull();
+  });
+
+  it("routes common Mac chords through the narrow helper and preserves rare-key fallback", () => {
+    expect(nativeMacHoldMonitorSupports("Command+Control")).toBe(true);
+    expect(nativeMacHoldMonitorSupports("Alt+Space")).toBe(true);
+    expect(nativeMacHoldMonitorSupports("F20")).toBe(true);
+    expect(nativeMacHoldMonitorSupports("F21")).toBe(false);
+    expect(nativeMacHoldMonitorSupports("PrintScreen")).toBe(false);
   });
 
   it("passes no ambient secrets and reports asynchronous helper death once", () => {
@@ -52,7 +60,8 @@ describe("macOS Control monitor protocol", () => {
     const stopped = vi.fn();
     const monitor = new MacControlMonitor(process.execPath, "darwin");
 
-    expect(monitor.start(vi.fn(), stopped)).toBe(true);
+    expect(monitor.start("Command+Control", vi.fn(), stopped)).toBe(true);
+    expect(vi.mocked(spawn).mock.calls[0]?.[1]).toEqual(["hold-monitor", "Command+Control"]);
     const options = vi.mocked(spawn).mock.calls[0]?.[2];
     expect(options).toMatchObject({
       env: {},
@@ -67,14 +76,14 @@ describe("macOS Control monitor protocol", () => {
     first.emit("exit", 1, null);
     expect(stopped).toHaveBeenCalledOnce();
 
-    expect(monitor.start(vi.fn(), stopped)).toBe(true);
+    expect(monitor.start("Alt+Space", vi.fn(), stopped)).toBe(true);
     expect(spawn).toHaveBeenCalledTimes(2);
     warning.mockRestore();
   });
 });
 
 describe("native active-target helper resolution", () => {
-  it("uses the explicit development override for both insertion and Control monitoring", () => {
+  it("uses the explicit development override for both insertion and hold monitoring", () => {
     const override = path.resolve("test-fixtures", "test-helper");
     expect(resolveNativeActiveTargetHelperPath({
       platform: "darwin",

@@ -36,6 +36,8 @@ export interface VerifiedReleaseAssets {
   assets: readonly VerifiedReleaseAsset[];
 }
 
+export type ReleaseAssetVerificationPurpose = "candidate" | "publication";
+
 function fail(message: string): never {
   throw new Error(`Release asset verification failed: ${message}`);
 }
@@ -186,6 +188,7 @@ function requireDocumentedChecksums(
 export async function verifyReleaseAssets(
   platform: ReleasePlatform,
   projectPath = process.cwd(),
+  purpose: ReleaseAssetVerificationPurpose = "publication",
 ): Promise<VerifiedReleaseAssets> {
   const metadata = loadReleaseMetadata(projectPath);
   const layout = releaseLayout(metadata, platform, projectPath);
@@ -228,7 +231,15 @@ export async function verifyReleaseAssets(
       `missing [${missingRows.join(", ")}], unexpected [${unexpectedRows.join(", ")}]`,
     );
   }
-  requireDocumentedChecksums(projectPath, verified);
+  /*
+   * A normal local gate verifies a newly-created candidate. DMGs contain
+   * filesystem and signing metadata and are not byte-reproducible, so a fresh
+   * build cannot honestly be required to equal the checksum of an older,
+   * already-published artifact from the same commit. Publication verification
+   * is the separate boundary that proves the README names the exact bytes a
+   * downloader receives.
+   */
+  if (purpose === "publication") requireDocumentedChecksums(projectPath, verified);
   verified.push({
     ...checksum,
     sha256: sha256(checksum),

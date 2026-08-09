@@ -8,22 +8,22 @@ telemetry service, or listening network port.
 
 ### macOS validation builds
 
-[**LocalScribe 0.1.0-dev.6 — macOS arm64**](https://github.com/bobjoemama/LocalScribe/releases/tag/v0.1.0-dev.6)
+[**LocalScribe 0.1.0-dev.7 — macOS arm64**](https://github.com/bobjoemama/LocalScribe/releases/tag/v0.1.0-dev.7)
 
 - **This repository is private.** The link above resolves only for a GitHub
   account that has access to it; everyone else gets a 404, not a download page.
   Without that access, build from source instead — see
   [Build from source](#build-from-source).
 - Requires an Apple Silicon Mac and macOS 14 or newer.
-- Download `LocalScribe-0.1.0-dev.6-arm64.dmg`. Do not download the
-  source-code ZIP, and do not use `LocalScribe-darwin-arm64-0.1.0-dev.6.zip`
+- Download `LocalScribe-0.1.0-dev.7-arm64.dmg`. Do not download the
+  source-code ZIP, and do not use `LocalScribe-darwin-arm64-0.1.0-dev.7.zip`
   expecting a Windows build — that ZIP is the same macOS app.
 - Verify the download against the release's `SHA256SUMS.txt` asset before
   opening it:
 
   ```sh
-  shasum -a 256 LocalScribe-0.1.0-dev.6-arm64.dmg
-  # 724f609bc2888a3b410282fe4e4d1cf374474e3dbb8fae1bb8de5a55cc92164f
+  shasum -a 256 LocalScribe-0.1.0-dev.7-arm64.dmg
+  # 6cde3c6dbd453c6d93f51a5cbf44aaf9815544627ead7840562a51426105a32c
   ```
 
 - The release description states whether that exact artifact is a private
@@ -49,8 +49,10 @@ for the exact validation boundary.
 2. Open the DMG.
 3. Drag **LocalScribe** into **Applications**.
 4. Open LocalScribe and allow **Microphone** access.
-5. Allow **Accessibility** access when prompted if you want global shortcuts
-   and automatic insertion into text boxes.
+5. Allow **Accessibility** access when prompted if you want automatic insertion
+   into text boxes. Common push-to-talk chords and toggle shortcuts work through
+   narrow system APIs without that permission; uncommon PC-only hold keys may
+   still require it.
 
 If macOS refuses to open this validation build, do not disable system-wide
 security protections. Use the local source-build instructions below or wait for
@@ -118,7 +120,7 @@ some later write happens to reuse them.
 
 | Platform | Supported configuration |
 | --- | --- |
-| macOS | Apple Silicon, macOS 14+, Microphone permission, Accessibility permission for global shortcuts and insertion |
+| macOS | Apple Silicon, macOS 14+, Microphone permission; Accessibility is required for automatic insertion and uncommon PC-only hold keys |
 | Windows | Windows 11 x64, supported NVIDIA GPU and driver, pinned CTranslate2 and CrispASR CUDA runtimes |
 
 Intel Macs, Linux, Windows ARM, AMD/Intel GPUs, DirectML, and CPU-only Windows

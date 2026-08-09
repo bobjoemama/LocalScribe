@@ -75,6 +75,11 @@ describe("local ci pipeline", () => {
     expect(resolveScript(scripts, "ci")).toBe("node scripts/verify-local-source.mjs");
   });
 
+  it("runs the macOS gate directly so npm forwards smoke arguments", () => {
+    const scripts = readScripts();
+    expect(scripts["ci:macos"]).toBe("bash scripts/verify-local-macos.sh");
+  });
+
   it("runs every required gate", () => {
     const invoked = new Set(
       SOURCE_VERIFICATION_CHECKS.filter((check) => check[0] === "run").map((check) => check[1]),

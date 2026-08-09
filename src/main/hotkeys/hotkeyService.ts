@@ -155,12 +155,17 @@ export class HotkeyService {
   }
 
   start(): void {
+    if (this.nativeMacMonitorSupports(this.holdShortcut)) {
+      if (this.mode === "full") this.stopForReconfigure(true);
+      this.startFallbackMode(false);
+      return;
+    }
     this.startFull(false);
   }
 
   /**
    * Reports only a hook that this service started successfully. On macOS this
-   * includes the permission-free, bare-Control native monitor fallback.
+   * includes the permission-free native hold monitor.
    */
   isGlobalHoldReady(): boolean {
     return this.mode === "full" || this.fallbackMonitorStarted;
@@ -201,7 +206,7 @@ export class HotkeyService {
     if (this.mode === "fallback") {
       // The fallback listener cannot deliver the eventual key-up after it is
       // removed. Resetting here releases any active push-to-talk session before
-      // Accessibility-driven full-hook startup.
+      // rare-key full-hook startup.
       this.stopForReconfigure(true);
     } else {
       this.stopFallbackMonitor();
@@ -242,7 +247,7 @@ export class HotkeyService {
   startFallback(): void {
     if (this.mode === "full") {
       // Accessibility can be revoked while the app is running. Give up the
-      // full hook and retain the registered toggle while falling back.
+      // rare-key full hook and retain the registered toggle while falling back.
       this.stopForReconfigure(true);
     }
     this.startFallbackMode(false);
@@ -259,9 +264,10 @@ export class HotkeyService {
       this.mode = "fallback";
       return;
     }
-    if (this.holdShortcut === "Control" && !this.fallbackMonitorStarted) {
+    if (this.nativeMacMonitorSupports(this.holdShortcut) && !this.fallbackMonitorStarted) {
       try {
         this.fallbackMonitorStarted = this.fallbackMonitor?.start(
+          this.holdShortcut,
           this.handleMonitorEvent,
           this.handleFallbackMonitorStopped,
         ) ?? false;
@@ -277,7 +283,7 @@ export class HotkeyService {
           `${this.holdShortcut} push-to-talk is unavailable because the native key-state monitor could not start`,
         );
       }
-    } else if (this.holdShortcut !== "Control" && enteringFallback) {
+    } else if (!this.nativeMacMonitorSupports(this.holdShortcut) && enteringFallback) {
       console.warn(`${this.holdShortcut} push-to-talk requires Accessibility on macOS`);
     }
     this.mode = "fallback";
@@ -426,6 +432,18 @@ export class HotkeyService {
         error: `${this.platformLabel()} push-to-talk is unavailable because the global keyboard hook did not start. Toggle dictation remains available.`,
       };
     }
+    if (
+      input.kind === "hold"
+      && this.mode === "fallback"
+      && this.platform === "darwin"
+      && !this.nativeMacMonitorSupports(shortcut)
+    ) {
+      return {
+        shortcut,
+        available: false,
+        error: `${shortcut} push-to-talk requires Accessibility on macOS.`,
+      };
+    }
     if (this.captureActive || globalShortcut.isSuspended()) {
       return {
         shortcut,
@@ -545,9 +563,9 @@ export class HotkeyService {
   };
 
   private readonly handleMonitorEvent = (event: ControlMonitorEvent): void => {
-    if (this.captureActive || this.mode === "full" || this.holdShortcut !== "Control") return;
-    if (event === "control-down") this.gesture.keyDown();
-    else if (event === "control-up") this.gesture.keyUp();
+    if (this.captureActive || this.mode === "full") return;
+    if (event === "hold-down") this.gesture.keyDown();
+    else if (event === "hold-up") this.gesture.keyUp();
     else this.gesture.modifiedInput();
   };
 
@@ -674,7 +692,13 @@ export class HotkeyService {
   }
 
   private startMode(mode: HotkeyMode, requireToggle: boolean): void {
-    if (mode === "full") this.startFull(requireToggle);
+    if (this.nativeMacMonitorSupports(this.holdShortcut)) {
+      this.startFallbackMode(requireToggle);
+    } else if (mode === "full") this.startFull(requireToggle);
     else if (mode === "fallback") this.startFallbackMode(requireToggle);
+  }
+
+  private nativeMacMonitorSupports(shortcut: string): boolean {
+    return this.platform === "darwin" && (this.fallbackMonitor?.supports(shortcut) ?? false);
   }
 }

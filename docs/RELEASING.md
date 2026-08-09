@@ -90,6 +90,12 @@ The command first runs every source gate, then:
    `scripts/release-metadata.mjs`;
 9. performs strict deep code-signature and entitlement verification.
 
+This local gate verifies the exact candidate and its generated checksum
+manifest. It deliberately does not compare a fresh, non-byte-reproducible DMG
+with the README hash of an already-published build. The publication command
+below performs that separate downloader-facing check and fails unless the
+README matches the exact bytes selected for upload.
+
 The output remains under `out/` for manual inspection. A normal build uses an
 available Apple Development identity or an ad-hoc signature and is a local
 validation artifact, not a public release.
