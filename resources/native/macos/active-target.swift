@@ -158,6 +158,10 @@ private func hashFingerprint(_ descriptor: String) -> String {
     return digest.map { String(format: "%02x", $0) }.joined()
 }
 
+private func unambiguousWindowNumber(_ windowNumbers: [CGWindowID]) -> CGWindowID? {
+    windowNumbers.count == 1 ? windowNumbers[0] : nil
+}
+
 private func parseProcessId(_ argument: String) -> Int32? {
     let bytes = Array(argument.utf8)
     guard
@@ -233,9 +237,7 @@ private func coreGraphicsWindowFingerprint(for processId: pid_t) -> String? {
         return nil
     }
 
-    // CGWindowList is ordered front-to-back. For the frontmost application,
-    // its first normal-layer window is a permission-free, opaque identity for
-    // the window that would receive a paste. No window name leaves the helper.
+    var windowNumbers: [CGWindowID] = []
     for window in windowInfo {
         guard
             let ownerPid = window[kCGWindowOwnerPID as String] as? pid_t,
@@ -246,43 +248,37 @@ private func coreGraphicsWindowFingerprint(for processId: pid_t) -> String? {
         else {
             continue
         }
-        return hashFingerprint("\(processId)\u{0}cg-window:\(windowNumber)")
+        windowNumbers.append(windowNumber)
     }
-    return nil
+    // Without Accessibility geometry, only one normal-layer window is
+    // unambiguous. Never guess the frontmost member of a multi-window app.
+    guard let windowNumber = unambiguousWindowNumber(windowNumbers) else {
+        return nil
+    }
+    return hashFingerprint("\(processId)\u{0}cg-window:\(windowNumber)")
 }
 
 private func focusedWindowFingerprint(for processId: pid_t) -> String? {
-    let systemWide = AXUIElementCreateSystemWide()
-    var focusedApplicationValue: CFTypeRef?
-    guard AXUIElementCopyAttributeValue(
-        systemWide,
-        kAXFocusedApplicationAttribute as CFString,
-        &focusedApplicationValue
-    ) == .success,
-    let focusedApplicationValue,
-    CFGetTypeID(focusedApplicationValue) == AXUIElementGetTypeID() else {
-        return nil
-    }
-
-    let focusedApplication = unsafeBitCast(focusedApplicationValue, to: AXUIElement.self)
-    var focusedPid: pid_t = 0
-    guard AXUIElementGetPid(focusedApplication, &focusedPid) == .success,
-          focusedPid == processId else {
-        return nil
-    }
-
-    var focusedWindowValue: CFTypeRef?
-    guard AXUIElementCopyAttributeValue(
+    /*
+     * Query the already-confirmed frontmost process directly. On newer macOS
+     * builds the system-wide element can report a trusted process while still
+     * declining kAXFocusedApplicationAttribute and
+     * kAXFocusedUIElementAttribute. AXUIElementCreateApplication does not
+     * weaken the identity boundary: captureTarget confirms the frontmost PID
+     * immediately before and after these reads.
+     */
+    let focusedApplication = AXUIElementCreateApplication(processId)
+    let focusedElement = attributeElement(
         focusedApplication,
-        kAXFocusedWindowAttribute as CFString,
-        &focusedWindowValue
-    ) == .success,
-    let focusedWindowValue,
-    CFGetTypeID(focusedWindowValue) == AXUIElementGetTypeID() else {
-        return nil
-    }
-
-    let focusedWindow = unsafeBitCast(focusedWindowValue, to: AXUIElement.self)
+        kAXFocusedUIElementAttribute as CFString
+    )
+    guard let focusedWindow = (
+        attributeElement(focusedApplication, kAXFocusedWindowAttribute as CFString)
+            ?? attributeElement(focusedApplication, kAXMainWindowAttribute as CFString)
+            ?? focusedElement.flatMap {
+                attributeElement($0, kAXWindowAttribute as CFString)
+            }
+    ) else { return coreGraphicsWindowFingerprint(for: processId) }
     guard
         let position = attributePoint(focusedWindow, kAXPositionAttribute as CFString),
         let size = attributeSize(focusedWindow, kAXSizeAttribute as CFString),
@@ -290,9 +286,7 @@ private func focusedWindowFingerprint(for processId: pid_t) -> String? {
             [.optionOnScreenOnly, .excludeDesktopElements],
             kCGNullWindowID
         ) as? [[String: Any]]
-    else {
-        return nil
-    }
+    else { return coreGraphicsWindowFingerprint(for: processId) }
     let title = attributeString(focusedWindow, kAXTitleAttribute as CFString) ?? ""
     let tolerance: CGFloat = 1
     var matchingWindowNumbers: [CGWindowID] = []
@@ -325,12 +319,13 @@ private func focusedWindowFingerprint(for processId: pid_t) -> String? {
         }
         matchingWindowNumbers.append(windowNumber)
     }
-    // Ambiguous geometry is safer as copy-only than guessing the first window
-    // of the process (two same-titled documents are a common collision).
-    guard matchingWindowNumbers.count == 1, let windowNumber = matchingWindowNumbers.first else {
-        return nil
+    if let windowNumber = unambiguousWindowNumber(matchingWindowNumbers) {
+        return hashFingerprint("\(processId)\u{0}cg-window:\(windowNumber)")
     }
-    return hashFingerprint("\(processId)\u{0}cg-window:\(windowNumber)")
+    // Some current macOS applications expose the focused control but omit or
+    // distort the window geometry. A single normal-layer process window is
+    // still an exact identity; multiple windows remain copy-only.
+    return coreGraphicsWindowFingerprint(for: processId)
 }
 
 private func accessibilityPathDescriptor(for element: AXUIElement) -> String? {
@@ -359,10 +354,10 @@ private func focusedElementState(
     for processId: pid_t,
     windowFingerprint: String?
 ) -> FocusedElementState {
-    let systemWide = AXUIElementCreateSystemWide()
+    let focusedApplication = AXUIElementCreateApplication(processId)
     var focusedElementValue: CFTypeRef?
     guard AXUIElementCopyAttributeValue(
-        systemWide,
+        focusedApplication,
         kAXFocusedUIElementAttribute as CFString,
         &focusedElementValue
     ) == .success,
@@ -513,6 +508,9 @@ private func selfTest() -> Bool {
     let fingerprint = String(repeating: "a", count: 64)
     let elementFingerprint = String(repeating: "b", count: 64)
     guard
+        unambiguousWindowNumber([7]) == 7,
+        unambiguousWindowNumber([]) == nil,
+        unambiguousWindowNumber([7, 8]) == nil,
         let holdShortcut = parseHoldShortcut("Command+Control"),
         holdShortcut.modifierOnly,
         holdShortcut.groups.count == 2,

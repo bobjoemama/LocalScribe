@@ -78,6 +78,7 @@ import { HotkeyService } from "./main/hotkeys/hotkeyService";
 import { defaultMacControlMonitorPath, MacControlMonitor } from "./main/hotkeys/macControlMonitor";
 import { reconcileAccessibilityHotkeys } from "./main/hotkeys/accessibilityReconciler";
 import { InsertionService } from "./main/insertion/insertionService";
+import { insertionDiagnosticEvent } from "./main/insertion/insertionDiagnostics";
 import { buildDictionaryAsrContext } from "./shared/dictionaryContext";
 import { applyLocalTextRules } from "./shared/textPipeline";
 import { transformDictation } from "./shared/text";
@@ -1411,6 +1412,10 @@ function registerIpc(): void {
         // Do not inject text into LocalScribe's own UI.
         const outcome = await insertion.copyAndPaste(text, false);
         assertActiveSession(input.sessionId);
+        diagnostics.record({
+          ...insertionDiagnosticEvent(outcome, false, false),
+          sessionId: input.sessionId,
+        });
         setSession({
           state: "success",
           sessionId: input.sessionId,
@@ -1426,6 +1431,10 @@ function registerIpc(): void {
         });
         const outcome = await insertion.copyAndPaste(text, canAutoPaste);
         assertActiveSession(input.sessionId);
+        diagnostics.record({
+          ...insertionDiagnosticEvent(outcome, settings.autoPaste, automaticPasteReady),
+          sessionId: input.sessionId,
+        });
         const copiedMessage = settings.autoPaste && !automaticPasteReady && process.platform === "darwin"
           ? "Copied — allow Accessibility"
           : "Copied to clipboard";
