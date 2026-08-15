@@ -34,6 +34,24 @@ afterEach(() => {
 });
 
 describe("model performance settings persistence", () => {
+  it("uses an injected platform default only for a fresh database and preserves existing settings", () => {
+    const filePath = databasePath();
+    const macDefault: AppSettings = {
+      ...DEFAULT_SETTINGS,
+      activeModelFamilyId: "parakeet-unified-en-0-6b",
+      modelLibraryFamilyIds: ["parakeet-unified-en-0-6b"],
+      asrMode: "after-stop",
+    };
+    const fresh = new LocalDatabase(filePath, macDefault);
+    expect(fresh.getSettings()).toEqual(macDefault);
+    fresh.saveSettings(DEFAULT_SETTINGS);
+    fresh.close();
+
+    const reopened = new LocalDatabase(filePath, macDefault);
+    expect(reopened.getSettings()).toEqual(DEFAULT_SETTINGS);
+    reopened.close();
+  });
+
   it("upgrades legacy settings without a mode to Auto and ignores the old concrete model ID", () => {
     const filePath = databasePath();
     const initial = new LocalDatabase(filePath);

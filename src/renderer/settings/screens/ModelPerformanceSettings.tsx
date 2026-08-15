@@ -42,25 +42,31 @@ export interface ModelFamilyPresentation {
 
 export function modelFamilyPresentation(family: CatalogFamily): ModelFamilyPresentation {
   const identity = `${family.familyId} ${family.displayName} ${catalogFamilyBackendLabel(family)}`.toLowerCase();
-  if (identity.includes("moonshine") || identity.includes("streaming") || identity.includes("nemotron")) {
+  const experiences = family.capabilities.modes;
+  const languageLabel = family.capabilities.supportedLanguages.includes("auto")
+    ? "Multilingual"
+    : family.capabilities.supportedLanguages.length === 1
+      ? family.capabilities.supportedLanguages[0] === "en"
+        ? "English"
+        : family.capabilities.supportedLanguages[0]!
+      : `${family.capabilities.supportedLanguages.length} languages`;
+  if (experiences.length === 1 && experiences[0] === "live") {
     return {
       experience: "live",
       experiences: ["live"],
       recommendation: "live",
       summary: "Recognizes while you speak, then finalizes before insertion.",
-      languageLabel: identity.includes("english") ? "English" : "Language support shown after install",
+      languageLabel,
       latencyLabel: "Live preview",
     };
   }
-  if (identity.includes("parakeet")) {
+  if (experiences.includes("live")) {
     return {
       experience: "after-stop",
-      experiences: identity.includes("unified") ? ["after-stop", "live"] : ["after-stop"],
-      recommendation: "recommended",
-      summary: identity.includes("unified")
-        ? "One fast local model for either final-only dictation or a live private preview."
-        : "Fast, accurate local dictation tuned for Apple silicon.",
-      languageLabel: identity.includes("v3") ? "25 European languages" : "English",
+      experiences,
+      recommendation: family.recommendedDefault ? "recommended" : "live",
+      summary: "One verified local model for either final-only dictation or live recognition.",
+      languageLabel,
       latencyLabel: "Fast after stop",
     };
   }
@@ -70,7 +76,7 @@ export function modelFamilyPresentation(family: CatalogFamily): ModelFamilyPrese
       experiences: ["after-stop"],
       recommendation: "accurate",
       summary: "Strong multilingual recognition with a little more model weight.",
-      languageLabel: "Multilingual",
+      languageLabel,
       latencyLabel: "Balanced after stop",
     };
   }
@@ -80,16 +86,16 @@ export function modelFamilyPresentation(family: CatalogFamily): ModelFamilyPrese
       experiences: ["after-stop"],
       recommendation: "legacy",
       summary: "Older Whisper generation retained for compatibility.",
-      languageLabel: "Multilingual",
+      languageLabel,
       latencyLabel: "After stop",
     };
   }
   return {
     experience: "after-stop",
-    experiences: ["after-stop"],
-    recommendation: "balanced",
+    experiences,
+    recommendation: family.recommendedDefault ? "recommended" : "balanced",
     summary: "Reliable local transcription after you finish speaking.",
-    languageLabel: "Multilingual",
+    languageLabel,
     latencyLabel: "After stop",
   };
 }
@@ -104,6 +110,7 @@ export type ModelModeChoice = ModelPerformanceMode;
 export type ConcreteModelTier = ModelPerformanceTier;
 export interface ModelSelectionDraft {
   familyId: ModelFamilyId;
+  asrMode: RecognitionExperience;
   performanceMode: ModelPerformanceMode;
 }
 export type ModelVerificationState = "missing" | "invalid" | "verified" | "unknown";
@@ -238,6 +245,7 @@ export function modelApplyEligibility({
   if (!catalog) return unavailable("The model catalog is still loading.");
   if (
     currentSelection.familyId === pendingSelection.familyId
+    && currentSelection.asrMode === pendingSelection.asrMode
     && currentSelection.performanceMode === pendingSelection.performanceMode
     && currentModelLoaded
   ) {
@@ -246,6 +254,9 @@ export function modelApplyEligibility({
 
   const family = catalog.families.find((candidate) => candidate.familyId === pendingSelection.familyId);
   if (!family) return unavailable("The selected model is not available on this platform.");
+  if (!family.capabilities.modes.includes(pendingSelection.asrMode)) {
+    return unavailable("The selected model does not support this dictation experience.");
+  }
   if (!family.inLibrary) return unavailable(`Add ${family.displayName} to your library first.`);
   if (!hardware || hardware.totalMemoryBytes === null || hardware.availableMemoryBytes === null) {
     return unavailable("Refresh accelerator memory before applying.");
@@ -320,6 +331,7 @@ export function modelApplyEligibility({
   return {
     enabled: true,
     reason: currentSelection.familyId === pendingSelection.familyId
+      && currentSelection.asrMode === pendingSelection.asrMode
       && currentSelection.performanceMode === pendingSelection.performanceMode
       ? "Ready to verify and load the current model."
       : "Ready to unload the current model and load this selection.",
@@ -509,6 +521,7 @@ export function ModelPerformanceSettings({
     else setUncontrolledBrowsingExperience(experience);
   };
   const selectionChanged = currentSelection.familyId !== pendingSelection.familyId
+    || currentSelection.asrMode !== pendingSelection.asrMode
     || currentSelection.performanceMode !== pendingSelection.performanceMode;
   const applyEligibility = modelApplyEligibility({
     currentSelection,
@@ -537,16 +550,16 @@ export function ModelPerformanceSettings({
         <div>
           <span>{selectionChanged ? "Pending model change" : "Current model selection"}</span>
           <h2 id="model-apply-heading">
-            {pendingFamily?.displayName ?? pendingSelection.familyId} · {pendingModeLabel}
+            {pendingFamily?.displayName ?? pendingSelection.familyId} · {pendingSelection.asrMode === "live" ? "Live" : "After I stop"} · {pendingModeLabel}
           </h2>
           <dl className="ls-model-selection-summary">
             <div>
               <dt>Currently using</dt>
-              <dd>{currentFamily?.displayName ?? currentSelection.familyId} · {currentModeLabel}</dd>
+              <dd>{currentFamily?.displayName ?? currentSelection.familyId} · {currentSelection.asrMode === "live" ? "Live" : "After I stop"} · {currentModeLabel}</dd>
             </div>
             <div>
               <dt>After applying</dt>
-              <dd>{pendingFamily?.displayName ?? pendingSelection.familyId} · {pendingModeLabel}</dd>
+              <dd>{pendingFamily?.displayName ?? pendingSelection.familyId} · {pendingSelection.asrMode === "live" ? "Live" : "After I stop"} · {pendingModeLabel}</dd>
             </div>
           </dl>
           <p>{applyEligibility.reason}</p>

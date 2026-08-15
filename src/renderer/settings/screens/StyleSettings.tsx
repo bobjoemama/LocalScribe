@@ -1402,6 +1402,7 @@ export function SettingsModal({ onClose, registerDismissalGate }: {
     if (!settings || modelApplyInFlight.current) return;
     const selection = pendingModelSelection ?? {
       familyId: settings.activeModelFamilyId,
+      asrMode: settings.asrMode,
       performanceMode: settings.modelPerformanceMode,
     };
     modelApplyInFlight.current = true;
@@ -1461,6 +1462,7 @@ export function SettingsModal({ onClose, registerDismissalGate }: {
     : null;
   const currentModelSelection: ModelSelectionDraft | null = settings ? {
     familyId: settings.activeModelFamilyId,
+    asrMode: settings.asrMode,
     performanceMode: settings.modelPerformanceMode,
   } : null;
   const displayedModelSelection = pendingModelSelection ?? currentModelSelection;
@@ -1637,6 +1639,35 @@ export function SettingsModal({ onClose, registerDismissalGate }: {
                 action={modelAction}
                 feedback={modelFeedback}
                 applying={modelApplying}
+                recognitionExperience={displayedModelSelection!.asrMode}
+                onRecognitionExperienceChange={(asrMode) => {
+                  const currentFamily = modelCatalog?.families.find((candidate) => (
+                    candidate.familyId === displayedModelSelection!.familyId
+                  ));
+                  const compatibleFamily = currentFamily?.capabilities.modes.includes(asrMode)
+                    ? currentFamily
+                    : modelCatalog?.families.find((candidate) => (
+                      candidate.recommendedDefault && candidate.capabilities.modes.includes(asrMode)
+                    )) ?? modelCatalog?.families.find((candidate) => (
+                      candidate.capabilities.modes.includes(asrMode)
+                    ));
+                  if (!compatibleFamily) {
+                    setModelFeedback({
+                      message: `${asrMode === "live" ? "Live" : "After-stop"} recognition is unavailable in this local model catalog.`,
+                      isError: true,
+                    });
+                    return;
+                  }
+                  setPendingModelSelection({
+                    ...displayedModelSelection!,
+                    familyId: compatibleFamily.familyId,
+                    asrMode,
+                  });
+                  setModelFeedback({
+                    message: `${asrMode === "live" ? "Live" : "After-stop"} recognition selected with ${compatibleFamily.displayName}. Nothing changes until you press Apply model.`,
+                    isError: false,
+                  });
+                }}
                 onModeChange={(mode) => {
                   setPendingModelSelection({
                     ...displayedModelSelection!,
@@ -1652,6 +1683,9 @@ export function SettingsModal({ onClose, registerDismissalGate }: {
                   setPendingModelSelection({
                     ...displayedModelSelection!,
                     familyId,
+                    asrMode: family?.capabilities.modes.includes(displayedModelSelection!.asrMode)
+                      ? displayedModelSelection!.asrMode
+                      : family?.capabilities.modes[0] ?? "after-stop",
                   });
                   setModelFeedback({
                     message: `${family?.displayName ?? familyId} selected. Nothing changes until you press Apply model.`,

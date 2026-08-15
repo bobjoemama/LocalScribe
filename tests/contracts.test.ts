@@ -76,6 +76,7 @@ describe("IPC contracts", () => {
   it("keeps model routing out of generic settings patches", () => {
     expect(appSettingsPatchSchema.parse({ autoPaste: false })).toEqual({ autoPaste: false });
     for (const forbidden of [
+      { asrMode: "live" },
       { modelPerformanceMode: "medium" },
       { activeModelFamilyId: "qwen3-asr-0-6b" },
       { modelLibraryFamilyIds: ["whisper-large-v3", "qwen3-asr-0-6b"] },
@@ -96,6 +97,15 @@ describe("IPC contracts", () => {
     expect(() => modelSelectionApplyRequestSchema.parse({
       familyId: "qwen3-asr-0-6b",
     })).toThrow();
+    expect(modelSelectionApplyRequestSchema.parse({
+      familyId: "parakeet-unified-en-0-6b",
+      asrMode: "live",
+      performanceMode: "medium",
+    })).toEqual({
+      familyId: "parakeet-unified-en-0-6b",
+      asrMode: "live",
+      performanceMode: "medium",
+    });
     expect(() => modelSelectionApplyRequestSchema.parse({
       familyId: "qwen3-asr-0-6b",
       performanceMode: "medium",

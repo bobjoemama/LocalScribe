@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  defaultSettingsForRuntimeCatalog,
   loadRuntimeModelCatalog,
   loadRuntimePlatformModelCatalog,
   loadRuntimeModelSpec,
@@ -43,6 +44,29 @@ function sha256(value: string): string {
 }
 
 describe("packaged model specifications", () => {
+  it("chooses the platform recommendation only for fresh runtime defaults", () => {
+    const manifests = path.resolve("resources/model-manifest");
+    const mac = defaultSettingsForRuntimeCatalog(
+      loadRuntimePlatformModelCatalog(manifests, "darwin", "arm64"),
+    );
+    const windows = defaultSettingsForRuntimeCatalog(
+      loadRuntimePlatformModelCatalog(manifests, "win32", "x64"),
+    );
+
+    expect(mac).toMatchObject({
+      activeModelFamilyId: "parakeet-unified-en-0-6b",
+      modelLibraryFamilyIds: ["parakeet-unified-en-0-6b"],
+      asrMode: "after-stop",
+      modelPerformanceMode: "auto",
+    });
+    expect(windows).toMatchObject({
+      activeModelFamilyId: "whisper-large-v3",
+      modelLibraryFamilyIds: ["whisper-large-v3"],
+      asrMode: "after-stop",
+      modelPerformanceMode: "auto",
+    });
+  });
+
   it("accepts repository IDs but rejects manifest-supplied URLs and local paths", () => {
     const base = {
       schemaVersion: 1,

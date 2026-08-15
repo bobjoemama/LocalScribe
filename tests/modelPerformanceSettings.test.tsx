@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
-import type { ModelCatalog } from "../src/shared/contracts";
+import type { ModelCapabilities, ModelCatalog } from "../src/shared/contracts";
 import {
   modelApplyEligibility,
   modelFamilyPresentation,
@@ -10,6 +10,15 @@ import {
 } from "../src/renderer/settings/screens/ModelPerformanceSettings";
 
 const GIBIBYTE = 1_073_741_824;
+const afterStopCapabilities: ModelCapabilities = {
+  modes: ["after-stop"],
+  partialResults: false,
+  timestamps: false,
+  languageDetection: true,
+  promptContext: true,
+  keywordBoost: false,
+  supportedLanguages: ["auto", "en"],
+};
 
 function catalog({
   platform = "darwin-arm64",
@@ -50,11 +59,14 @@ function catalog({
   return {
     platform,
     activeModelFamilyId: activeFamilyId,
+    recommendedDefaultFamilyId: "whisper-large-v3",
     modelLibraryFamilyIds: v2IsInLibrary ? ["whisper-large-v3", "whisper-large-v2"] : ["whisper-large-v3"],
     families: [
       {
         familyId: "whisper-large-v3",
         displayName: "Whisper large-v3",
+        capabilities: afterStopCapabilities,
+        recommendedDefault: true,
         active: activeFamilyId === "whisper-large-v3",
         inLibrary: true,
         artifacts: v3Artifacts,
@@ -72,6 +84,8 @@ function catalog({
       {
         familyId: "whisper-large-v2",
         displayName: "Whisper large-v2",
+        capabilities: afterStopCapabilities,
+        recommendedDefault: false,
         active: activeFamilyId === "whisper-large-v2",
         inLibrary: v2IsInLibrary,
         artifacts: [{
@@ -128,11 +142,13 @@ function renderModelSettings(overrides: Partial<ModelPerformanceSettingsProps> =
   const props: ModelPerformanceSettingsProps = {
     currentSelection: {
       familyId: "whisper-large-v3",
+      asrMode: "after-stop",
       performanceMode: "auto",
     },
     currentModelLoaded: true,
     pendingSelection: {
       familyId: "whisper-large-v3",
+      asrMode: "after-stop",
       performanceMode: "auto",
     },
     mode: "auto",
@@ -205,17 +221,29 @@ function storageButtonTags(html: string): string[] {
 }
 
 describe("ModelPerformanceSettings", () => {
-  it("keeps model experience copy in a renderer-only compatibility adapter", () => {
+  it("derives model experience from catalog capabilities rather than family-name guesses", () => {
     const base = catalog().families[0]!;
     const parakeet = {
       ...base,
       familyId: "parakeet-unified-en" as unknown as typeof base.familyId,
       displayName: "Parakeet Unified EN",
+      capabilities: {
+        ...afterStopCapabilities,
+        modes: ["after-stop", "live"] as ("after-stop" | "live")[],
+        partialResults: true,
+        supportedLanguages: ["en"],
+      },
     };
     const live = {
       ...base,
       familyId: "moonshine-streaming-medium" as unknown as typeof base.familyId,
       displayName: "Moonshine Streaming Medium",
+      capabilities: {
+        ...afterStopCapabilities,
+        modes: ["live"] as ("after-stop" | "live")[],
+        partialResults: true,
+        supportedLanguages: ["en"],
+      },
     };
 
     expect(modelFamilyPresentation(parakeet)).toMatchObject({
@@ -254,9 +282,9 @@ describe("ModelPerformanceSettings", () => {
 
   it("allows an exact verified persisted selection to load when its runtime is cold", () => {
     const eligibility = modelApplyEligibility({
-      currentSelection: { familyId: "whisper-large-v3", performanceMode: "auto" },
+      currentSelection: { familyId: "whisper-large-v3", asrMode: "after-stop", performanceMode: "auto" },
       currentModelLoaded: false,
-      pendingSelection: { familyId: "whisper-large-v3", performanceMode: "auto" },
+      pendingSelection: { familyId: "whisper-large-v3", asrMode: "after-stop", performanceMode: "auto" },
       resolvedTier: "high",
       catalog: catalog(),
       catalogError: null,
@@ -284,7 +312,7 @@ describe("ModelPerformanceSettings", () => {
     expect(applyButtonTag(warm)).toContain('aria-disabled="true"');
 
     const changed = renderModelSettings({
-      pendingSelection: { familyId: "whisper-large-v3", performanceMode: "medium" },
+      pendingSelection: { familyId: "whisper-large-v3", asrMode: "after-stop", performanceMode: "medium" },
       mode: "medium",
     });
     expect(applyButtonTag(changed)).not.toContain('disabled=""');
@@ -324,9 +352,9 @@ describe("ModelPerformanceSettings", () => {
   it("enables one combined Apply only for a changed, verified, memory-eligible target", () => {
     const modelCatalog = catalog();
     const eligibility = modelApplyEligibility({
-      currentSelection: { familyId: "whisper-large-v3", performanceMode: "auto" },
+      currentSelection: { familyId: "whisper-large-v3", asrMode: "after-stop", performanceMode: "auto" },
       currentModelLoaded: true,
-      pendingSelection: { familyId: "whisper-large-v3", performanceMode: "medium" },
+      pendingSelection: { familyId: "whisper-large-v3", asrMode: "after-stop", performanceMode: "medium" },
       resolvedTier: "high",
       catalog: modelCatalog,
       catalogError: null,
@@ -357,9 +385,9 @@ describe("ModelPerformanceSettings", () => {
 
   it("accounts conservatively for memory released by the warm model before Apply", () => {
     const eligibility = modelApplyEligibility({
-      currentSelection: { familyId: "whisper-large-v3", performanceMode: "high" },
+      currentSelection: { familyId: "whisper-large-v3", asrMode: "after-stop", performanceMode: "high" },
       currentModelLoaded: true,
-      pendingSelection: { familyId: "whisper-large-v3", performanceMode: "medium" },
+      pendingSelection: { familyId: "whisper-large-v3", asrMode: "after-stop", performanceMode: "medium" },
       resolvedTier: "high",
       catalog: catalog(),
       catalogError: null,
@@ -395,8 +423,8 @@ describe("ModelPerformanceSettings", () => {
 
   it("disables Apply when the exact selected artifact is missing", () => {
     const html = renderModelSettings({
-      currentSelection: { familyId: "whisper-large-v3", performanceMode: "auto" },
-      pendingSelection: { familyId: "whisper-large-v3", performanceMode: "high" },
+      currentSelection: { familyId: "whisper-large-v3", asrMode: "after-stop", performanceMode: "auto" },
+      pendingSelection: { familyId: "whisper-large-v3", asrMode: "after-stop", performanceMode: "high" },
       mode: "high",
     });
 
@@ -407,13 +435,13 @@ describe("ModelPerformanceSettings", () => {
   it("derives current and pending labels from the catalog", () => {
     const html = renderModelSettings({
       catalog: catalog({ v2InLibrary: true }),
-      currentSelection: { familyId: "whisper-large-v3", performanceMode: "auto" },
-      pendingSelection: { familyId: "whisper-large-v2", performanceMode: "low" },
+      currentSelection: { familyId: "whisper-large-v3", asrMode: "after-stop", performanceMode: "auto" },
+      pendingSelection: { familyId: "whisper-large-v2", asrMode: "after-stop", performanceMode: "low" },
       mode: "low",
     });
 
-    expect(html).toContain("Currently using</dt><dd>Whisper large-v3 · Auto");
-    expect(html).toContain("After applying</dt><dd>Whisper large-v2 · Low");
+    expect(html).toContain("Currently using</dt><dd>Whisper large-v3 · After I stop · Auto");
+    expect(html).toContain("After applying</dt><dd>Whisper large-v2 · After I stop · Low");
     expect(html).toContain("Selected to apply");
   });
 
@@ -442,6 +470,8 @@ describe("ModelPerformanceSettings", () => {
     modelCatalog.families.splice(1, 0, {
       familyId: "qwen3-asr-1-7b",
       displayName: "Qwen3-ASR 1.7B",
+      capabilities: afterStopCapabilities,
+      recommendedDefault: false,
       active: false,
       inLibrary: false,
       artifacts: (["bf16", "8bit", "4bit"] as const).map((precision, index) => ({

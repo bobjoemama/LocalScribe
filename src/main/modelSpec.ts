@@ -4,9 +4,11 @@ import { lstat, open, readdir, stat } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 import {
+  DEFAULT_SETTINGS,
   DEFAULT_MODEL_FAMILY_ID,
   MODEL_FAMILY_IDS,
   type AsrMode,
+  type AppSettings,
   type ModelCapabilities,
   modelFamilyIdSchema,
   type ModelFamilyId,
@@ -139,6 +141,29 @@ export interface RuntimePlatformModelCatalog {
   recommendedDefaultFamilyId: ModelFamilyId;
   /** A platform may omit a family rather than pretending it has a backend. */
   families: Partial<Record<ModelFamilyId, RuntimeModelCatalog>>;
+}
+
+/**
+ * Runtime-aware defaults are used only when a database has no settings row.
+ * Existing valid user selections are migrated field-by-field and are never
+ * replaced merely because a newer catalog recommendation exists.
+ */
+export function defaultSettingsForRuntimeCatalog(
+  catalog: RuntimePlatformModelCatalog,
+): AppSettings {
+  const family = catalog.families[catalog.recommendedDefaultFamilyId];
+  if (!family) {
+    throw new Error("The runtime catalog recommendation is unavailable on this platform.");
+  }
+  const asrMode: AsrMode = family.capabilities.modes.includes("after-stop")
+    ? "after-stop"
+    : family.capabilities.modes[0]!;
+  return {
+    ...DEFAULT_SETTINGS,
+    asrMode,
+    activeModelFamilyId: family.familyId,
+    modelLibraryFamilyIds: [family.familyId],
+  };
 }
 
 export interface ResolveModelPerformanceInput {

@@ -14,6 +14,7 @@ import {
   type LaunchAtLoginStatus,
   type LocalScribeApi,
   type ModelCatalog,
+  type ModelCapabilities,
   type ModelSelectionApplyRequest,
   type PermissionSnapshot,
 } from "../src/shared/contracts";
@@ -171,9 +172,20 @@ const permissions: PermissionSnapshot = {
   globalToggle: { supported: true, ready: true },
 };
 
+const afterStopCapabilities: ModelCapabilities = {
+  modes: ["after-stop"],
+  partialResults: false,
+  timestamps: false,
+  languageDetection: true,
+  promptContext: true,
+  keywordBoost: false,
+  supportedLanguages: ["auto", "en"],
+};
+
 const catalog: ModelCatalog = {
   platform: isWindows ? "win32-x64-cuda" : "darwin-arm64",
   activeModelFamilyId: "whisper-large-v3",
+  recommendedDefaultFamilyId: "whisper-large-v3",
   modelLibraryFamilyIds: harnessParams.has("apply")
     ? ["whisper-large-v3", "qwen3-asr-1-7b"]
     : ["whisper-large-v3"],
@@ -181,6 +193,8 @@ const catalog: ModelCatalog = {
     {
       familyId: "whisper-large-v3",
       displayName: "Whisper large-v3",
+      capabilities: afterStopCapabilities,
+      recommendedDefault: true,
       active: true,
       inLibrary: true,
       artifacts: activeArtifacts,
@@ -198,6 +212,8 @@ const catalog: ModelCatalog = {
     {
       familyId: "qwen3-asr-0-6b",
       displayName: "Qwen3-ASR 0.6B",
+      capabilities: afterStopCapabilities,
+      recommendedDefault: false,
       active: false,
       inLibrary: false,
       artifacts: qwen06Artifacts,
@@ -221,6 +237,8 @@ const catalog: ModelCatalog = {
     {
       familyId: "qwen3-asr-1-7b",
       displayName: "Qwen3-ASR 1.7B",
+      capabilities: afterStopCapabilities,
+      recommendedDefault: false,
       active: false,
       inLibrary: harnessParams.has("apply"),
       artifacts: qwenArtifacts,
@@ -244,6 +262,8 @@ const catalog: ModelCatalog = {
     {
       familyId: "whisper-large-v2",
       displayName: "Whisper large-v2",
+      capabilities: afterStopCapabilities,
+      recommendedDefault: false,
       active: false,
       inLibrary: false,
       artifacts: [{

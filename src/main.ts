@@ -85,6 +85,7 @@ import { transformDictation } from "./shared/text";
 import { normalizeDictationErrorMessage } from "./shared/dictationErrors";
 import {
   loadRuntimePlatformModelCatalog,
+  defaultSettingsForRuntimeCatalog,
   modelArtifactIsVerifiedNow,
   runtimeModelTier,
   type ModelSpec,
@@ -1948,7 +1949,10 @@ startupPromise = app.whenReady().then(async () => {
   installRendererProtocol();
   installPermissionHandlers();
   runtimeModelPlatformCatalog = loadRuntimePlatformModelCatalog(runtimeModelManifestDirectory());
-  database = new LocalDatabase(path.join(app.getPath("userData"), "localscribe.db"));
+  database = new LocalDatabase(
+    path.join(app.getPath("userData"), "localscribe.db"),
+    defaultSettingsForRuntimeCatalog(platformModelCatalog()),
+  );
   databaseInitialized = true;
   database.purgeExpiredTranscriptions(database.getSettings().historyRetentionDays);
   const temporaryDirectory = app.getPath("temp");

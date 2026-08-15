@@ -146,11 +146,13 @@ function hardenDatabasePermissions(databasePath: string): void {
 
 export class LocalDatabase {
   private readonly db: Database.Database;
+  private readonly defaultSettings: AppSettings;
 
   /** Reads that hit a record this install could not decrypt. See tryDecrypt. */
   private unreadableRecords = 0;
 
-  constructor(path: string) {
+  constructor(path: string, defaultSettings: AppSettings = DEFAULT_SETTINGS) {
+    this.defaultSettings = appSettingsSchema.parse(defaultSettings);
     this.db = new Database(path);
     this.db.pragma("journal_mode = WAL");
     this.db.pragma("foreign_keys = ON");
@@ -491,7 +493,7 @@ export class LocalDatabase {
       .get() as { value_json: string } | undefined;
     return row
       ? migratePersistedAppSettings(JSON.parse(row.value_json))
-      : appSettingsSchema.parse(DEFAULT_SETTINGS);
+      : appSettingsSchema.parse(this.defaultSettings);
   }
 
   saveSettings(settings: AppSettings): AppSettings {
@@ -548,7 +550,7 @@ export class LocalDatabase {
       // replacing only the active settings row with current validated policy
       // defaults. This keeps recovery evidence without repeatedly failing
       // every startup.
-      const recovered = appSettingsSchema.parse(DEFAULT_SETTINGS);
+      const recovered = this.defaultSettings;
       this.db.transaction(() => {
         this.db
           .prepare("INSERT INTO settings (key, value_json, updated_at) VALUES (?, ?, ?)")
