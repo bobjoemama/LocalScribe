@@ -55,4 +55,13 @@ describe("settings modal layout", () => {
     expect(html).toContain('class="ls-settings-scroll" role="region" aria-labelledby="settings-title"');
     expect(html).toContain('tabindex="0"');
   });
+
+  it("keeps the model confirmation reachable while a long catalog scrolls", () => {
+    const apply = declarations(".ls-model-apply-card");
+    expect(apply).toMatch(/position:\s*sticky\s*;/);
+    expect(apply).toMatch(/top:\s*0\s*;/);
+
+    expect(settingsCss).toMatch(/\.ls-settings-modal button,[\s\S]*?cursor:\s*default !important\s*;/);
+    expect(declarations(".ls-model-experience-options")).toMatch(/grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\)\s*;/);
+  });
 });

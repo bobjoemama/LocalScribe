@@ -578,7 +578,7 @@ async function inspectSize(width, height, platform, verification, settingsPreset
         "Model & Performance",
         platform === "win32"
           ? ".localscribe-model-install-deadbeefdeadbeefdeadbeefdeadbeef"
-          : "Additional model families appear here only after their complete High, Medium, and Low profiles have pinned manifests and package validation for this local runtime.",
+          : "Additional model families appear only after their supported profiles have pinned manifests and package validation for this local runtime.",
       ),
       await inspectTab(
         window,

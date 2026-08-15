@@ -3,7 +3,9 @@ import { describe, expect, it, vi } from "vitest";
 import type { ModelCatalog } from "../src/shared/contracts";
 import {
   modelApplyEligibility,
+  modelFamilyPresentation,
   ModelPerformanceSettings,
+  supportedModeChoices,
   type ModelPerformanceSettingsProps,
 } from "../src/renderer/settings/screens/ModelPerformanceSettings";
 
@@ -203,6 +205,53 @@ function storageButtonTags(html: string): string[] {
 }
 
 describe("ModelPerformanceSettings", () => {
+  it("keeps model experience copy in a renderer-only compatibility adapter", () => {
+    const base = catalog().families[0]!;
+    const parakeet = {
+      ...base,
+      familyId: "parakeet-unified-en" as unknown as typeof base.familyId,
+      displayName: "Parakeet Unified EN",
+    };
+    const live = {
+      ...base,
+      familyId: "moonshine-streaming-medium" as unknown as typeof base.familyId,
+      displayName: "Moonshine Streaming Medium",
+    };
+
+    expect(modelFamilyPresentation(parakeet)).toMatchObject({
+      experience: "after-stop",
+      experiences: ["after-stop", "live"],
+      recommendation: "recommended",
+      latencyLabel: "Fast after stop",
+    });
+    expect(modelFamilyPresentation(live)).toMatchObject({
+      experience: "live",
+      recommendation: "live",
+      latencyLabel: "Live preview",
+    });
+  });
+
+  it("only exposes profiles that the selected family actually supplies", () => {
+    const family = {
+      ...catalog().families[0]!,
+      profiles: catalog().families[0]!.profiles.filter((profile) => profile.tier !== "low"),
+    };
+
+    expect(supportedModeChoices(family).map((choice) => choice.id)).toEqual(["auto", "high", "medium"]);
+  });
+
+  it("uses a mode-first picker and keeps unavailable live recognition visibly unavailable", () => {
+    const html = renderModelSettings();
+
+    expect(html).toContain("Choose when LocalScribe recognizes your speech");
+    expect(html).toContain('<strong>After I stop</strong>');
+    expect(html).toContain('<strong>Live</strong>');
+    expect(html).toContain("Streaming model not installed yet");
+    expect(html).toContain("will not silently substitute another model");
+    expect(html).toContain("Model library and technical details");
+    expect(html).toContain("Technical details");
+  });
+
   it("allows an exact verified persisted selection to load when its runtime is cold", () => {
     const eligibility = modelApplyEligibility({
       currentSelection: { familyId: "whisper-large-v3", performanceMode: "auto" },
@@ -420,7 +469,7 @@ describe("ModelPerformanceSettings", () => {
     const html = renderModelSettings({ catalog: modelCatalog });
 
     expect(html).toContain("Qwen3-ASR 1.7B");
-    expect(html).toContain("Catalog backend: MLX Audio");
+    expect(html).toContain("<dt>Runtime</dt><dd>MLX Audio</dd>");
     expect(html).toContain("BF16");
     expect(html).toContain("8-bit");
     expect(html).toContain("4-bit");
@@ -451,7 +500,7 @@ describe("ModelPerformanceSettings", () => {
     });
 
     expect(html).toContain("Whisper large-v3");
-    expect(html).toContain("Catalog backend: faster-whisper/CTranslate2");
+    expect(html).toContain("<dt>Runtime</dt><dd>faster-whisper/CTranslate2</dd>");
     expect(html).toContain("Run eligibility is unknown");
     expect(html).toContain("Availability · unavailable");
     expect(html).not.toContain("Available now · unavailable");
@@ -622,7 +671,7 @@ describe("ModelPerformanceSettings", () => {
       html.indexOf("<h3>Whisper large-v2</h3>"),
     );
 
-    expect(inactiveDefault).toContain("Catalog backend: Catalog-provided macOS backend");
+    expect(inactiveDefault).toContain("<dt>Runtime</dt><dd>Catalog-provided macOS backend</dd>");
     expect(inactiveDefault).toContain("Select and apply this family to load its runtime quality details.");
     expect(inactiveDefault).toContain("Check / download");
     expect(inactiveDefault).not.toContain("Built-in family");
