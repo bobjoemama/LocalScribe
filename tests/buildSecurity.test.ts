@@ -230,6 +230,12 @@ describe("release hardening configuration", () => {
     expect(forgeConfig).toContain("MAC_ACTIVE_TARGET_ENTITLEMENTS");
     expect(forgeConfig).toContain("MAC_RUNTIME_ENTITLEMENTS");
     expect(forgeConfig).toContain("signProtectedMacResources();");
+    expect(forgeConfig).toContain("snapshotTrackedFluidAudioHelper();");
+    expect(forgeConfig).toContain("restoreTrackedFluidAudioHelper();");
+    expect(forgeConfig).toContain('process.once("exit", restoreTrackedFluidAudioHelper)');
+    expect(forgeConfig.indexOf("snapshotTrackedFluidAudioHelper();")).toBeLessThan(
+      forgeConfig.indexOf("signProtectedMacResources();"),
+    );
     expect(forgeConfig).toContain("ignore: isPreSignedProtectedMacResource");
     expect(forgeConfig).toContain("codesign\", [\"--verify\", \"--strict\", binary]");
     expect(forgeConfig).toContain(
