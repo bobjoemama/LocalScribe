@@ -7,12 +7,17 @@ import { FusesPlugin } from "@electron-forge/plugin-fuses";
 import { VitePlugin } from "@electron-forge/plugin-vite";
 import { FuseV1Options, FuseVersion } from "@electron/fuses";
 import {
+  chmodSync,
   closeSync,
   existsSync,
   lstatSync,
   openSync,
+  readFileSync,
   readSync,
   readdirSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
 } from "node:fs";
 import { execFileSync } from "node:child_process";
 import path from "node:path";
@@ -105,6 +110,40 @@ let resourceIntegrityPreparation: PreparedResourceIntegrity | null = null;
 let packageProvenanceExpectation: PackageProvenance | null = null;
 let packageBuildStartedAtMs = 0;
 let makeBuildStartedAtMs = 0;
+let originalFluidAudioHelper: { bytes: Buffer; mode: number } | null = null;
+
+function snapshotTrackedFluidAudioHelper(): void {
+  if (originalFluidAudioHelper) {
+    throw new Error("The tracked FluidAudio helper already has an active packaging snapshot.");
+  }
+  const metadata = lstatSync(MAC_FLUID_AUDIO_HELPER);
+  if (!metadata.isFile() || metadata.isSymbolicLink()) {
+    throw new Error("The tracked FluidAudio helper must be an ordinary file before signing.");
+  }
+  originalFluidAudioHelper = {
+    bytes: readFileSync(MAC_FLUID_AUDIO_HELPER),
+    mode: metadata.mode & 0o777,
+  };
+}
+
+function restoreTrackedFluidAudioHelper(): void {
+  const original = originalFluidAudioHelper;
+  originalFluidAudioHelper = null;
+  if (!original) return;
+  const temporaryPath = `${MAC_FLUID_AUDIO_HELPER}.restore.${process.pid}`;
+  try {
+    writeFileSync(temporaryPath, original.bytes, { flag: "wx", mode: original.mode });
+    renameSync(temporaryPath, MAC_FLUID_AUDIO_HELPER);
+    chmodSync(MAC_FLUID_AUDIO_HELPER, original.mode);
+  } finally {
+    rmSync(temporaryPath, { force: true });
+  }
+}
+
+// A failed Forge hook must not strand a signed, timestamped mutation in the
+// tracked source tree. Normal restoration happens in postPackage; this covers
+// an exception or interrupt before Forge reaches that hook.
+process.once("exit", restoreTrackedFluidAudioHelper);
 
 function validatePublicReleaseConfiguration(): void {
   if (!PUBLIC_RELEASE) return;
@@ -551,6 +590,7 @@ const config: ForgeConfig = {
           "-o",
           path.resolve("resources/native/macos/active-target"),
         ], { stdio: "inherit" });
+        snapshotTrackedFluidAudioHelper();
         signProtectedMacResources();
       }
       if (platform !== "darwin" && platform !== "win32") {
@@ -638,6 +678,7 @@ const config: ForgeConfig = {
           }
         }
       } finally {
+        restoreTrackedFluidAudioHelper();
         resourceIntegrityPreparation?.restore();
         resourceIntegrityPreparation = null;
         packageProvenanceExpectation = null;
