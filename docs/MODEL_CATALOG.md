@@ -1,11 +1,19 @@
 # Curated model catalog
 
-LocalScribe ships a fixed, platform-specific catalog. Whisper large-v3 is the
-default family. Qwen3-ASR 0.6B, Qwen3-ASR 1.7B, and the older Whisper large-v2
-are curated families that a user may add to the local library; none is selected
-from an arbitrary repository or URL. Qwen3-ASR 0.6B is included as the smaller
-lower-latency candidate, but comparative latency and quality remain a
-real-device benchmark question rather than a release claim.
+LocalScribe ships a fixed, platform-specific catalog. On Apple Silicon,
+**Parakeet Unified EN 0.6B** is the fresh-install recommendation: its pinned
+CoreML artifact supports both after-stop and live dictation through FluidAudio
+on the Apple Neural Engine. The global persisted fallback remains Whisper
+large-v3 so an existing database, or a fresh Windows database, never points at
+a Mac-only backend. The main process reconciles a new macOS database to the
+catalog recommendation; existing active selections are preserved when still
+available.
+
+Whisper large-v3, Qwen3-ASR 0.6B, Qwen3-ASR 1.7B, and the older Whisper
+large-v2 remain curated families that a user may add to the local library; none
+is selected from an arbitrary repository or URL. Qwen3-ASR 0.6B is included as
+the smaller lower-latency candidate, but comparative latency and quality remain
+a real-device benchmark question rather than a release claim.
 
 Model weights are not in the app installer. An explicit install action fetches
 only the selected manifest-pinned revision into a staging directory, verifies
@@ -15,8 +23,9 @@ dictation does not download a missing model.
 
 ## Catalog contract
 
-| Platform | Family | Fixed engine | High / Medium / Low |
+| Platform | Family | Fixed engine | Supported profiles and modes |
 | --- | --- | --- | --- |
+| macOS arm64 | Parakeet Unified EN 0.6B | FluidAudio / CoreML / ANE | High FLOAT16, Medium INT8; after-stop and live; English |
 | macOS arm64 | Whisper large-v3 and large-v2 | MLX Whisper | distinct FP16 / 8-bit / 4-bit artifacts |
 | macOS arm64 | Qwen3-ASR 0.6B | MLX Audio | distinct BF16 / 8-bit / 4-bit artifacts |
 | macOS arm64 | Qwen3-ASR 1.7B | MLX Audio | distinct BF16 / 8-bit / 4-bit artifacts |
@@ -24,11 +33,20 @@ dictation does not download a missing model.
 | Windows x64 NVIDIA | Qwen3-ASR 0.6B | CrispASR / GGML CUDA | distinct F16 / Q8_0 / Q4_K GGUF artifacts |
 | Windows x64 NVIDIA | Qwen3-ASR 1.7B | CrispASR / GGML CUDA | distinct F16 / Q8_0 / Q4_K GGUF artifacts |
 
+Families advertise only profiles backed by a complete pinned artifact. In
+particular, Parakeet has **no Low profile**: LocalScribe never presents a fake
+4-bit option or silently substitutes another model. High always denotes an
+unquantized original-precision runtime. Auto can choose only among the
+available profiles of the currently selected family and never changes family.
+An unsupported mode, profile, language capability, or platform family is a
+closed error before the app unloads a warm model or starts a download.
+
 The model-memory figures shown in Settings are conservative inference ranges,
 not just file sizes:
 
 | Platform and family | High | Medium | Low |
 | --- | ---: | ---: | ---: |
+| Mac Parakeet Unified EN 0.6B | 0.8–1.3 GiB | 0.6–1.1 GiB | Not offered |
 | Mac Whisper large-v3 or large-v2 | 4.0–5.5 GiB | 2.5–3.5 GiB | 1.8–2.7 GiB |
 | Mac Qwen3-ASR 0.6B | 2.0–3.0 GiB | 1.4–2.3 GiB | 1.1–2.0 GiB |
 | Mac Qwen3-ASR 1.7B | 4.2–5.4 GiB | 2.6–3.6 GiB | 1.8–2.8 GiB |
@@ -41,9 +59,16 @@ inference has been exercised on an M4 Max; that evidence does not establish
 Qwen3-ASR 0.6B latency or memory. Every Windows Qwen tier remains subject to the
 physical Windows/NVIDIA release gate.
 
-The only performance choices are Auto, High, Medium, and Low. Auto resolves to
-one of the three concrete profiles from local accelerator-memory policy; it is
+The only performance choices are Auto, High, Medium, and Low. A family need
+not offer every concrete tier: Parakeet offers High and Medium only. Auto
+resolves only among concrete profiles that exist for the selected family; it is
 not a model, manifest, or fourth physical artifact.
+
+Parakeet's live mode uses the upstream `70_7_7` streaming encoder: the model
+card reports 2.25% WER, 1.12 s algorithmic latency, and 33× real-time throughput
+on LibriSpeech test-clean for that tier. Those are upstream benchmark figures,
+not a LocalScribe end-to-end latency guarantee; microphone capture, endpointing,
+and cross-app insertion are outside that measurement.
 
 Family and performance controls edit one pending selection. They do not unload,
 load, download, or persist a model by themselves. **Apply model** is the commit
@@ -74,7 +99,7 @@ from the packaged manifests instead of being copied into TypeScript and both
 Python workers. This is safe in a release because the loose-resource integrity
 root covers the exact platform manifest files before startup. The remaining
 allowlist is intentional and smaller: the app package fixes manifest
-filenames, family IDs, platform engine, three compute profiles, and memory
+filenames, family IDs, platform engine, curated compute profiles, and memory
 policy. “Add model” therefore means add/activate a model already curated into
 this signed build. It does not mean paste a Hugging Face repository or URL.
 Supporting user-supplied manifests would require a separate signed-catalog
@@ -125,12 +150,14 @@ footprint changes.
 
 ## Packaged manifest inventory
 
-Mac packages contain exactly these twelve MLX manifests:
+Mac packages contain these MLX and CoreML manifests:
 
 ```text
 whisper-large-v3-mlx.json
 whisper-large-v3-mlx-8bit.json
 whisper-large-v3-mlx-4bit.json
+parakeet-unified-en-0-6b-coreml-fp16.json
+parakeet-unified-en-0-6b-coreml-int8.json
 qwen3-asr-1-7b-mlx-bf16.json
 qwen3-asr-1-7b-mlx-8bit.json
 qwen3-asr-1-7b-mlx-4bit.json
@@ -181,6 +208,10 @@ The pinned Qwen3-ASR 0.6B and 1.7B model repositories declare Apache-2.0. The Wi
 CrispASR runtime is MIT-licensed; its exact release archive and retained DLLs
 are SHA-256 pinned, and its license and third-party notices are included in the
 Windows package.
+
+The pinned Parakeet Unified CoreML artifact declares **CC-BY-4.0** at its exact
+revision. FluidAudio itself is Apache-2.0, but that does not change the model
+artifact's attribution obligations.
 
 ## Turbo
 

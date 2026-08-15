@@ -9,6 +9,8 @@ import {
   loadRuntimeModelSpec,
   modelManifestPath,
   modelSpecSchema,
+  runtimeModelTier,
+  supportedTiers,
   verifyModelDirectory,
   verifyRuntimeModelCatalog,
   verifyRuntimePlatformModelCatalog,
@@ -16,6 +18,8 @@ import {
 
 const temporaryRoots: string[] = [];
 const MAC_MANIFEST_FILENAMES = [
+  "parakeet-unified-en-0-6b-coreml-fp16.json",
+  "parakeet-unified-en-0-6b-coreml-int8.json",
   "whisper-large-v3-mlx.json",
   "whisper-large-v3-mlx-8bit.json",
   "whisper-large-v3-mlx-4bit.json",
@@ -70,7 +74,7 @@ describe("packaged model specifications", () => {
     }
   });
 
-  it("loads default v3 and addable v2 pinned tiers for both packaged platforms", () => {
+  it("loads the Mac-recommended Parakeet family while retaining pinned Whisper and Qwen families", () => {
     const manifestDirectory = path.resolve("resources/model-manifest");
     const mac = loadRuntimeModelCatalog(manifestDirectory, "darwin", "arm64");
     const windows = loadRuntimeModelCatalog(manifestDirectory, "win32", "x64");
@@ -80,6 +84,7 @@ describe("packaged model specifications", () => {
     expect(platformMac.families["whisper-large-v3"]).toMatchObject({ familyId: mac.familyId });
     expect(platformWindows.families["whisper-large-v3"]).toMatchObject({ familyId: windows.familyId });
     expect(Object.keys(platformMac.families)).toEqual([
+      "parakeet-unified-en-0-6b",
       "whisper-large-v3",
       "qwen3-asr-0-6b",
       "qwen3-asr-1-7b",
@@ -91,6 +96,19 @@ describe("packaged model specifications", () => {
       "qwen3-asr-1-7b",
       "whisper-large-v2",
     ]);
+
+    expect(platformMac.recommendedDefaultFamilyId).toBe("parakeet-unified-en-0-6b");
+    expect(platformWindows.recommendedDefaultFamilyId).toBe("whisper-large-v3");
+    expect(platformWindows.families["parakeet-unified-en-0-6b"]).toBeUndefined();
+    expect(platformMac.families["parakeet-unified-en-0-6b"]).toMatchObject({
+      engine: "fluid-audio",
+      capabilities: { modes: ["after-stop", "live"], partialResults: true },
+      tiers: {
+        high: { precision: "coreml-fp16", artifactId: "parakeet-unified-en-0-6b-coreml-fp16" },
+        medium: { precision: "coreml-int8", artifactId: "parakeet-unified-en-0-6b-coreml-int8" },
+      },
+    });
+    expect(platformMac.families["parakeet-unified-en-0-6b"]?.tiers.low).toBeUndefined();
 
     expect(mac).toMatchObject({
       platform: "darwin-arm64",
@@ -134,26 +152,26 @@ describe("packaged model specifications", () => {
       },
     });
 
-    expect(Object.values(mac.tiers).map((tier) => tier.engine)).toEqual([
+    expect(supportedTiers(mac).map((name) => runtimeModelTier(mac, name).engine)).toEqual([
       "mlx-whisper",
       "mlx-whisper",
       "mlx-whisper",
     ]);
-    expect(Object.values(windows.tiers).map((tier) => tier.engine)).toEqual([
+    expect(supportedTiers(windows).map((name) => runtimeModelTier(windows, name).engine)).toEqual([
       "faster-whisper",
       "faster-whisper",
       "faster-whisper",
     ]);
-    expect(new Set(Object.values(windows.tiers).map((tier) => tier.manifest.modelId))).toEqual(
+    expect(new Set(supportedTiers(windows).map((name) => runtimeModelTier(windows, name).manifest.modelId))).toEqual(
       new Set(["Systran/faster-whisper-large-v3"]),
     );
-    expect(windows.tiers.high.manifest).toEqual(windows.tiers.medium.manifest);
-    expect(windows.tiers.medium.manifest).toEqual(windows.tiers.low.manifest);
-    expect(new Set(Object.values(mac.tiers).map((tier) => tier.manifest.modelId)).size).toBe(3);
-    expect(new Set(Object.values(mac.tiers).map((tier) => tier.manifest.storageDirectory)).size).toBe(3);
+    expect(runtimeModelTier(windows, "high").manifest).toEqual(runtimeModelTier(windows, "medium").manifest);
+    expect(runtimeModelTier(windows, "medium").manifest).toEqual(runtimeModelTier(windows, "low").manifest);
+    expect(new Set(supportedTiers(mac).map((name) => runtimeModelTier(mac, name).manifest.modelId)).size).toBe(3);
+    expect(new Set(supportedTiers(mac).map((name) => runtimeModelTier(mac, name).manifest.storageDirectory)).size).toBe(3);
 
-    const macV2 = platformMac.families["whisper-large-v2"];
-    const windowsV2 = platformWindows.families["whisper-large-v2"];
+    const macV2 = platformMac.families["whisper-large-v2"]!;
+    const windowsV2 = platformWindows.families["whisper-large-v2"]!;
     expect(macV2).toMatchObject({
       familyId: "whisper-large-v2",
       tiers: {
@@ -162,7 +180,7 @@ describe("packaged model specifications", () => {
         low: { artifactId: "whisper-large-v2-mlx-int4", profileId: "whisper-large-v2-low" },
       },
     });
-    expect(macV2.tiers.high.manifest).toMatchObject({
+    expect(runtimeModelTier(macV2, "high").manifest).toMatchObject({
       modelId: "mlx-community/whisper-large-v2-mlx",
       storageDirectory: "whisper-large-v2-mlx-cce8622",
       revision: "cce86229e2765266197fef869ce9f7e2550067ab",
@@ -172,13 +190,13 @@ describe("packaged model specifications", () => {
         "weights.npz": { bytes: 3_083_149_424, sha256: "c9888a2d03b4e9906c2864151f56dc21e58d617938da0eb818152e3f99adc3f1" },
       },
     });
-    expect(macV2.tiers.medium.manifest).toMatchObject({
+    expect(runtimeModelTier(macV2, "medium").manifest).toMatchObject({
       modelId: "mlx-community/whisper-large-v2-mlx-8bit",
       storageDirectory: "whisper-large-v2-mlx-8bit-ee1ab58",
       revision: "ee1ab587ec0827941f04d9bb0ff9c2005444ef80",
       license: "Undeclared",
     });
-    expect(macV2.tiers.low.manifest).toMatchObject({
+    expect(runtimeModelTier(macV2, "low").manifest).toMatchObject({
       modelId: "mlx-community/whisper-large-v2-mlx-4bit",
       storageDirectory: "whisper-large-v2-mlx-4bit-79e71f0",
       revision: "79e71f0c4946290e517db80c7a5cba6f91bdfcaf",
@@ -192,7 +210,7 @@ describe("packaged model specifications", () => {
         low: { artifactId: "whisper-large-v2-ctranslate2", profileId: "whisper-large-v2-low" },
       },
     });
-    expect(windowsV2.tiers.high.manifest).toMatchObject({
+    expect(runtimeModelTier(windowsV2, "high").manifest).toMatchObject({
       modelId: "Systran/faster-whisper-large-v2",
       storageDirectory: "faster-whisper-large-v2-f0fe815",
       revision: "f0fe81560cb8b68660e564f55dd99207059c092e",
@@ -265,11 +283,12 @@ describe("packaged model specifications", () => {
         },
       },
     });
-    expect(windowsV2.tiers.high.manifest).toEqual(windowsV2.tiers.medium.manifest);
-    expect(windowsV2.tiers.medium.manifest).toEqual(windowsV2.tiers.low.manifest);
+    expect(runtimeModelTier(windowsV2, "high").manifest).toEqual(runtimeModelTier(windowsV2, "medium").manifest);
+    expect(runtimeModelTier(windowsV2, "medium").manifest).toEqual(runtimeModelTier(windowsV2, "low").manifest);
 
     for (const catalog of [mac, windows]) {
-      for (const tier of Object.values(catalog.tiers)) {
+      for (const tierName of supportedTiers(catalog)) {
+        const tier = runtimeModelTier(catalog, tierName);
         expect(tier.downloadEvidence.kind).toBe("measured");
         expect(tier.acceleratorMemory.evidence.kind).toBe("estimated");
         expect(tier.acceleratorMemory.maximumBytes).toBeGreaterThan(
@@ -343,6 +362,8 @@ describe("packaged model specifications", () => {
     await expect(
       verifyRuntimePlatformModelCatalog("/models", mac, macVerifier),
     ).resolves.toEqual([
+      expect.objectContaining({ familyId: "parakeet-unified-en-0-6b", artifactId: "parakeet-unified-en-0-6b-coreml-fp16" }),
+      expect.objectContaining({ familyId: "parakeet-unified-en-0-6b", artifactId: "parakeet-unified-en-0-6b-coreml-int8" }),
       expect.objectContaining({ familyId: "whisper-large-v3", artifactId: "whisper-large-v3-mlx-fp16" }),
       expect.objectContaining({ familyId: "whisper-large-v3", artifactId: "whisper-large-v3-mlx-int8" }),
       expect.objectContaining({ familyId: "whisper-large-v3", artifactId: "whisper-large-v3-mlx-int4" }),
@@ -356,7 +377,7 @@ describe("packaged model specifications", () => {
       expect.objectContaining({ familyId: "whisper-large-v2", artifactId: "whisper-large-v2-mlx-int8" }),
       expect.objectContaining({ familyId: "whisper-large-v2", artifactId: "whisper-large-v2-mlx-int4" }),
     ]);
-    expect(macVerifier).toHaveBeenCalledTimes(12);
+    expect(macVerifier).toHaveBeenCalledTimes(14);
 
     await expect(
       verifyRuntimePlatformModelCatalog("/models", windows, windowsVerifier),
@@ -376,8 +397,8 @@ describe("packaged model specifications", () => {
   it("rejects cross-family storage aliasing before verification or removal can target it", async () => {
     const manifestDirectory = path.resolve("resources/model-manifest");
     const windows = loadRuntimePlatformModelCatalog(manifestDirectory, "win32", "x64");
-    const sharedDirectory = windows.families["whisper-large-v3"].tiers.high.manifest.storageDirectory;
-    const v2 = windows.families["whisper-large-v2"];
+    const sharedDirectory = runtimeModelTier(windows.families["whisper-large-v3"]!, "high").manifest.storageDirectory;
+    const v2 = windows.families["whisper-large-v2"]!;
     const crossed = {
       ...windows,
       families: {
@@ -444,12 +465,12 @@ describe("packaged model specifications", () => {
     low.revision = "c".repeat(40);
     await writeFile(lowPath, JSON.stringify(low));
 
-    const tier = loadRuntimeModelCatalog(
+    const tier = runtimeModelTier(loadRuntimeModelCatalog(
       root,
       "darwin",
       "arm64",
       "whisper-large-v2",
-    ).tiers.low;
+    ), "low");
     expect(tier).toMatchObject({
       artifactId: "whisper-large-v2-mlx-int4-custom",
       expectedDownloadBytes: 973_192_389,

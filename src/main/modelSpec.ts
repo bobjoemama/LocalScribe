@@ -6,6 +6,8 @@ import { z } from "zod";
 import {
   DEFAULT_MODEL_FAMILY_ID,
   MODEL_FAMILY_IDS,
+  type AsrMode,
+  type ModelCapabilities,
   modelFamilyIdSchema,
   type ModelFamilyId,
 } from "../shared/contracts";
@@ -27,6 +29,19 @@ const manifestFileSchema = z.object({
   sha256: sha256Schema,
 }).strict();
 
+const MAX_MANIFEST_FILE_ENTRIES = 512;
+const MAX_MANIFEST_PATH_DEPTH = 16;
+const MAX_MANIFEST_PATH_LENGTH = 1_024;
+const manifestRelativePathSchema = z.string()
+  .min(1)
+  .max(MAX_MANIFEST_PATH_LENGTH)
+  // POSIX-relative paths only. Each segment begins with an alphanumeric
+  // character, which excludes empty, dot, and dot-dot traversal segments.
+  .regex(/^(?:\.gitattributes|[A-Za-z0-9][A-Za-z0-9._-]*(?:\/[A-Za-z0-9][A-Za-z0-9._-]*)*)$/)
+  .refine((value) => value.split("/").length <= MAX_MANIFEST_PATH_DEPTH, {
+    message: `manifest file path depth must not exceed ${MAX_MANIFEST_PATH_DEPTH}`,
+  });
+
 /**
  * A packaged manifest is the sole authority for an artifact's repository,
  * immutable revision, files, and stable artifact identity. Nothing supplied
@@ -46,9 +61,14 @@ export const modelSpecSchema = z.object({
   // metadata; do not infer a project-wide license from another model family.
   license: z.string().min(1).max(120),
   files: z.record(
-    z.string().regex(/^(?:\.gitattributes|[A-Za-z0-9][A-Za-z0-9._-]*)$/),
+    // CoreML `.mlmodelc` bundles are directory trees, but manifests must
+    // never escape their owned artifact or make traversal unbounded.
+    manifestRelativePathSchema,
     manifestFileSchema,
-  ).refine((files) => Object.keys(files).length > 0, "a model manifest must list files"),
+  ).refine((files) => {
+    const count = Object.keys(files).length;
+    return count > 0 && count <= MAX_MANIFEST_FILE_ENTRIES;
+  }, `a model manifest must list at most ${MAX_MANIFEST_FILE_ENTRIES} files`),
 }).strict();
 
 export type ModelSpec = z.infer<typeof modelSpecSchema>;
@@ -57,6 +77,7 @@ export type ModelCatalogPlatform = ModelSpec["platform"];
 export type ModelEngine =
   | "mlx-whisper"
   | "mlx-audio"
+  | "fluid-audio"
   | "faster-whisper"
   | "crispasr";
 export type ModelPrecision =
@@ -68,7 +89,9 @@ export type ModelPrecision =
   | "int8_float16"
   | "int8"
   | "q8_0"
-  | "q4_k";
+  | "q4_k"
+  | "coreml-fp16"
+  | "coreml-int8";
 
 export interface ModelResourceEvidence {
   kind: ModelResourceEvidenceKind;
@@ -104,13 +127,18 @@ export interface RuntimeModelCatalog {
   familyId: ModelFamilyId;
   displayName: string;
   engine: ModelEngine;
-  tiers: Record<ModelPerformanceTier, RuntimeModelTierSpec>;
+  capabilities: ModelCapabilities;
+  /** A family may omit a tier when no curated artifact exists for it. */
+  tiers: Partial<Record<ModelPerformanceTier, RuntimeModelTierSpec>>;
 }
 
 /** Complete curated catalog for a platform, independent of device probing. */
 export interface RuntimePlatformModelCatalog {
   platform: ModelCatalogPlatform;
-  families: Record<ModelFamilyId, RuntimeModelCatalog>;
+  /** Recommendation for a fresh installation on this runtime, not persisted state. */
+  recommendedDefaultFamilyId: ModelFamilyId;
+  /** A platform may omit a family rather than pretending it has a backend. */
+  families: Partial<Record<ModelFamilyId, RuntimeModelCatalog>>;
 }
 
 export interface ResolveModelPerformanceInput {
@@ -149,7 +177,7 @@ export interface ModelVerification {
   expectedFiles: number;
 }
 
-export type ModelCatalogVerifications = Record<ModelPerformanceTier, ModelVerification>;
+export type ModelCatalogVerifications = Partial<Record<ModelPerformanceTier, ModelVerification>>;
 export type ModelRootDirectoryStatus = "missing" | "safe" | "invalid";
 
 export interface RuntimeModelArtifactVerification extends ModelVerification {
@@ -177,12 +205,14 @@ interface FamilyCatalogDefinition {
   familyId: ModelFamilyId;
   displayName: string;
   engine: ModelEngine;
-  tiers: Record<ModelPerformanceTier, CatalogTierDefinition>;
+  capabilities: ModelCapabilities;
+  tiers: Partial<Record<ModelPerformanceTier, CatalogTierDefinition>>;
 }
 
 type PlatformCatalogDefinition = {
   [Platform in ModelCatalogPlatform]: {
-    families: Record<ModelFamilyId, FamilyCatalogDefinition>;
+    recommendedDefaultFamilyId: ModelFamilyId;
+    families: Partial<Record<ModelFamilyId, FamilyCatalogDefinition>>;
   };
 };
 
@@ -277,10 +307,80 @@ const crispAsrTier = (
   ),
 });
 
+const fluidAudioTier = (
+  input: {
+    manifestFilename: string;
+    precision: "coreml-fp16" | "coreml-int8";
+    memory: readonly [number, number];
+  },
+): CatalogTierDefinition => ({
+  manifestFilename: input.manifestFilename,
+  engine: "fluid-audio",
+  precision: input.precision,
+  acceleratorMemory: estimatedMemory(
+    `FluidAudio CoreML / ANE ${input.precision} model working-set estimate; physical LocalScribe benchmark pending`,
+    input.memory[0],
+    input.memory[1],
+  ),
+});
+
+const AFTER_STOP_CAPABILITIES: ModelCapabilities = {
+  modes: ["after-stop"],
+  partialResults: false,
+  timestamps: false,
+  languageDetection: false,
+  promptContext: false,
+  keywordBoost: false,
+  supportedLanguages: ["auto"],
+};
+
+const QWEN_CAPABILITIES: ModelCapabilities = {
+  ...AFTER_STOP_CAPABILITIES,
+  languageDetection: true,
+  promptContext: true,
+  supportedLanguages: ["auto", "en", "es", "fr", "de", "hi"],
+};
+
+const PARAKEET_UNIFIED_CAPABILITIES: ModelCapabilities = {
+  modes: ["after-stop", "live"],
+  partialResults: true,
+  timestamps: false,
+  languageDetection: false,
+  promptContext: false,
+  keywordBoost: false,
+  supportedLanguages: ["en"],
+};
+
+/**
+ * Apple-native English default. The two precision profiles are separately
+ * pinned, verified artifacts: users do not download both encoders merely to
+ * select one, and no profile pretends it can use files from the other.
+ * There is no fake Low profile.
+ */
+const parakeetUnifiedMac: FamilyCatalogDefinition = {
+  familyId: "parakeet-unified-en-0-6b",
+  displayName: "Parakeet Unified EN 0.6B",
+  engine: "fluid-audio",
+  capabilities: PARAKEET_UNIFIED_CAPABILITIES,
+  tiers: {
+    high: fluidAudioTier({
+      manifestFilename: "parakeet-unified-en-0-6b-coreml-fp16.json",
+      precision: "coreml-fp16",
+      memory: [0.8, 1.3],
+    }),
+    medium: fluidAudioTier({
+      manifestFilename: "parakeet-unified-en-0-6b-coreml-int8.json",
+      precision: "coreml-int8",
+      memory: [0.6, 1.1],
+    }),
+  },
+};
+
 const v3Mac: FamilyCatalogDefinition = {
   familyId: "whisper-large-v3",
   displayName: "Whisper large-v3",
   engine: "mlx-whisper",
+  capabilities: AFTER_STOP_CAPABILITIES,
   tiers: {
     high: mlxTier("whisper-large-v3", {
       manifestFilename: "whisper-large-v3-mlx.json",
@@ -304,6 +404,7 @@ const v2Mac: FamilyCatalogDefinition = {
   familyId: "whisper-large-v2",
   displayName: "Whisper large-v2",
   engine: "mlx-whisper",
+  capabilities: AFTER_STOP_CAPABILITIES,
   tiers: {
     high: mlxTier("whisper-large-v2", {
       manifestFilename: "whisper-large-v2-mlx.json",
@@ -327,6 +428,7 @@ const qwenMac: FamilyCatalogDefinition = {
   familyId: "qwen3-asr-1-7b",
   displayName: "Qwen3-ASR 1.7B",
   engine: "mlx-audio",
+  capabilities: QWEN_CAPABILITIES,
   tiers: {
     high: mlxAudioTier("Qwen3-ASR 1.7B", {
       manifestFilename: "qwen3-asr-1-7b-mlx-bf16.json",
@@ -350,6 +452,7 @@ const qwen06Mac: FamilyCatalogDefinition = {
   familyId: "qwen3-asr-0-6b",
   displayName: "Qwen3-ASR 0.6B",
   engine: "mlx-audio",
+  capabilities: QWEN_CAPABILITIES,
   tiers: {
     high: mlxAudioTier("Qwen3-ASR 0.6B", {
       manifestFilename: "qwen3-asr-0-6b-mlx-bf16.json",
@@ -385,6 +488,7 @@ const windowsFamily = (
   familyId,
   displayName,
   engine: "faster-whisper",
+  capabilities: AFTER_STOP_CAPABILITIES,
   tiers: {
     high: windowsTier(familyId, "float16", { ...artifact, memory: [4.5, 5.5] }),
     medium: windowsTier(familyId, "int8_float16", { ...artifact, memory: [2.9, 3.5] }),
@@ -396,6 +500,7 @@ const qwenWindows: FamilyCatalogDefinition = {
   familyId: "qwen3-asr-1-7b",
   displayName: "Qwen3-ASR 1.7B",
   engine: "crispasr",
+  capabilities: QWEN_CAPABILITIES,
   tiers: {
     high: crispAsrTier("Qwen3-ASR 1.7B", {
       manifestFilename: "qwen3-asr-1-7b-crisp-f16.json",
@@ -419,6 +524,7 @@ const qwen06Windows: FamilyCatalogDefinition = {
   familyId: "qwen3-asr-0-6b",
   displayName: "Qwen3-ASR 0.6B",
   engine: "crispasr",
+  capabilities: QWEN_CAPABILITIES,
   tiers: {
     high: crispAsrTier("Qwen3-ASR 0.6B", {
       manifestFilename: "qwen3-asr-0-6b-crisp-f16.json",
@@ -441,7 +547,9 @@ const qwen06Windows: FamilyCatalogDefinition = {
 /** Every shipped family is declared for both supported runtime platforms. */
 export const MODEL_CATALOG_DEFINITIONS = {
   "darwin-arm64": {
+    recommendedDefaultFamilyId: "parakeet-unified-en-0-6b",
     families: {
+      "parakeet-unified-en-0-6b": parakeetUnifiedMac,
       "whisper-large-v3": v3Mac,
       "qwen3-asr-0-6b": qwen06Mac,
       "qwen3-asr-1-7b": qwenMac,
@@ -449,6 +557,9 @@ export const MODEL_CATALOG_DEFINITIONS = {
     },
   },
   "win32-x64-cuda": {
+    // No Windows Parakeet entry until a native backend is physically verified.
+    // Omitting it is safer than presenting an installable-looking no-op.
+    recommendedDefaultFamilyId: "whisper-large-v3",
     families: {
       "whisper-large-v3": windowsFamily("whisper-large-v3", "Whisper large-v3", v3WindowsArtifact),
       "qwen3-asr-0-6b": qwen06Windows,
@@ -457,6 +568,13 @@ export const MODEL_CATALOG_DEFINITIONS = {
     },
   },
 } as const satisfies PlatformCatalogDefinition;
+
+function platformCatalogDefinition(platform: ModelCatalogPlatform): PlatformCatalogDefinition[ModelCatalogPlatform] {
+  // `satisfies` keeps the literal manifest names useful while this boundary
+  // deliberately erases the union of platform object shapes. A Windows
+  // catalog can omit a macOS-only family, so indexing must remain optional.
+  return MODEL_CATALOG_DEFINITIONS[platform] as PlatformCatalogDefinition[ModelCatalogPlatform];
+}
 
 export function manifestPlatformForRuntime(platform: NodeJS.Platform, architecture: string): ModelCatalogPlatform {
   if (platform === "darwin" && architecture === "arm64") return "darwin-arm64";
@@ -472,9 +590,17 @@ export function modelManifestPath(
   familyId: ModelFamilyId = DEFAULT_MODEL_FAMILY_ID,
 ): string {
   const manifestPlatform = manifestPlatformForRuntime(platform, architecture);
+  const family = platformCatalogDefinition(manifestPlatform).families[familyId];
+  if (!family) {
+    throw new Error(`Model family ${familyId} is not supported on ${manifestPlatform}`);
+  }
+  const profile = family.tiers[tier];
+  if (!profile) {
+    throw new Error(`Model family ${familyId} has no ${tier} profile on ${manifestPlatform}`);
+  }
   return path.join(
     manifestDirectory,
-    MODEL_CATALOG_DEFINITIONS[manifestPlatform].families[familyId].tiers[tier].manifestFilename,
+    profile.manifestFilename,
   );
 }
 
@@ -497,7 +623,7 @@ export function loadModelSpec(
   return manifest;
 }
 
-/** Legacy single-family loader; default remains the shipped v3 family. */
+/** Legacy single-family loader; default remains the cross-platform v3 family. */
 export function loadRuntimeModelSpec(
   manifestDirectory: string,
   platform: NodeJS.Platform = process.platform,
@@ -505,7 +631,7 @@ export function loadRuntimeModelSpec(
   tier: ModelPerformanceTier = "medium",
   familyId: ModelFamilyId = DEFAULT_MODEL_FAMILY_ID,
 ): ModelSpec {
-  return loadRuntimeModelCatalog(manifestDirectory, platform, architecture, familyId).tiers[tier].manifest;
+  return requiredTier(loadRuntimeModelCatalog(manifestDirectory, platform, architecture, familyId), tier).manifest;
 }
 
 /** Legacy active-family catalog loader; callers that need all families use the platform loader below. */
@@ -515,7 +641,10 @@ export function loadRuntimeModelCatalog(
   architecture = process.arch,
   familyId: ModelFamilyId = DEFAULT_MODEL_FAMILY_ID,
 ): RuntimeModelCatalog {
-  return loadRuntimePlatformModelCatalog(manifestDirectory, platform, architecture).families[familyId];
+  const catalog = loadRuntimePlatformModelCatalog(manifestDirectory, platform, architecture);
+  const family = catalog.families[familyId];
+  if (!family) throw new Error(`Model family ${familyId} is not supported on ${catalog.platform}`);
+  return family;
 }
 
 /** Loads every curated family for one platform without touching accelerator diagnostics. */
@@ -525,11 +654,15 @@ export function loadRuntimePlatformModelCatalog(
   architecture = process.arch,
 ): RuntimePlatformModelCatalog {
   const catalogPlatform = manifestPlatformForRuntime(platform, architecture);
-  const platformDefinition = MODEL_CATALOG_DEFINITIONS[catalogPlatform];
-  const families = Object.fromEntries(MODEL_FAMILY_IDS.map((familyId) => {
+  const platformDefinition = platformCatalogDefinition(catalogPlatform);
+  const familyEntries: Array<[ModelFamilyId, RuntimeModelCatalog]> = [];
+  for (const familyId of MODEL_FAMILY_IDS) {
     const definition = platformDefinition.families[familyId];
-    const entries = MODEL_TIER_PRIORITY.map((tier) => {
+    if (!definition) continue;
+    const entries: Array<[ModelPerformanceTier, RuntimeModelTierSpec]> = [];
+    for (const tier of MODEL_TIER_PRIORITY) {
       const tierDefinition = definition.tiers[tier];
+      if (!tierDefinition) continue;
       const manifest = loadModelSpec(
         path.join(manifestDirectory, tierDefinition.manifestFilename),
         catalogPlatform,
@@ -537,7 +670,7 @@ export function loadRuntimePlatformModelCatalog(
       assertManifestMatchesCatalog(manifest, definition, tierDefinition, tier);
       const expectedDownloadBytes = Object.values(manifest.files)
         .reduce((sum, file) => sum + file.bytes, 0);
-      return [tier, {
+      entries.push([tier, {
         familyId,
         artifactId: manifest.artifactId,
         profileId: `${familyId}-${tier}`,
@@ -550,22 +683,24 @@ export function loadRuntimePlatformModelCatalog(
         acceleratorMemory: tierDefinition.acceleratorMemory,
         manifestFilename: tierDefinition.manifestFilename,
         manifest,
-      }] as const;
-    });
-    const catalog: RuntimeModelCatalog = {
+      }]);
+    }
+    const familyCatalog: RuntimeModelCatalog = {
       platform: catalogPlatform,
       familyId,
       displayName: definition.displayName,
       engine: definition.engine,
-      tiers: Object.fromEntries(entries) as Record<ModelPerformanceTier, RuntimeModelTierSpec>,
+      capabilities: definition.capabilities,
+      tiers: Object.fromEntries(entries) as Partial<Record<ModelPerformanceTier, RuntimeModelTierSpec>>,
     };
-    assertCatalogRouting(catalog);
-    assertCatalogArtifactIdentity(catalog);
-    return [familyId, catalog] as const;
-  }));
+    assertCatalogRouting(familyCatalog);
+    assertCatalogArtifactIdentity(familyCatalog);
+    familyEntries.push([familyId, familyCatalog]);
+  }
   const catalog: RuntimePlatformModelCatalog = {
     platform: catalogPlatform,
-    families: families as Record<ModelFamilyId, RuntimeModelCatalog>,
+    recommendedDefaultFamilyId: platformDefinition.recommendedDefaultFamilyId,
+    families: Object.fromEntries(familyEntries),
   };
   assertPlatformCatalogIsolation(catalog);
   return catalog;
@@ -584,30 +719,39 @@ export function resolveModelPerformance(
       );
 
   if (input.activeDictationTier) {
+    requiredTier(input.catalog, input.activeDictationTier);
     return buildResolution(input, input.activeDictationTier, "dictation-active", memory, headroom);
   }
   if (input.preference !== "auto") {
+    requiredTier(input.catalog, input.preference);
     return buildResolution(input, input.preference, "explicit", memory, headroom);
   }
 
   const baseFit = (tier: ModelPerformanceTier) => tierFitsMemory(
-    input.catalog.tiers[tier], memory, headroom, 0,
+    requiredTier(input.catalog, tier), memory, headroom, 0,
   );
-  const highestBaseFit = MODEL_TIER_PRIORITY.find(baseFit);
+  const availableTiers = supportedTiers(input.catalog);
+  const highestBaseFit = availableTiers.find(baseFit);
   if (!highestBaseFit) {
-    return buildResolution(input, "low", "auto-insufficient-memory", memory, headroom);
+    return buildResolution(
+      input,
+      availableTiers.at(-1) ?? failNoProfiles(input.catalog),
+      "auto-insufficient-memory",
+      memory,
+      headroom,
+    );
   }
-  if (!input.previousTier || !baseFit(input.previousTier)) {
+  if (!input.previousTier || !input.catalog.tiers[input.previousTier] || !baseFit(input.previousTier)) {
     return buildResolution(input, highestBaseFit, "auto-highest-fit", memory, headroom);
   }
 
-  const previousIndex = MODEL_TIER_PRIORITY.indexOf(input.previousTier);
-  const upgrade = MODEL_TIER_PRIORITY.slice(0, previousIndex).find((tier) => tierFitsMemory(
-    input.catalog.tiers[tier], memory, headroom, AUTO_UPGRADE_HYSTERESIS_BYTES,
+  const previousIndex = availableTiers.indexOf(input.previousTier);
+  const upgrade = availableTiers.slice(0, previousIndex).find((tier) => tierFitsMemory(
+    requiredTier(input.catalog, tier), memory, headroom, AUTO_UPGRADE_HYSTERESIS_BYTES,
   ));
   if (upgrade) return buildResolution(input, upgrade, "auto-highest-fit", memory, headroom);
 
-  const highestBaseFitIndex = MODEL_TIER_PRIORITY.indexOf(highestBaseFit);
+  const highestBaseFitIndex = availableTiers.indexOf(highestBaseFit);
   if (highestBaseFitIndex > previousIndex) {
     return buildResolution(input, highestBaseFit, "auto-highest-fit", memory, headroom);
   }
@@ -615,12 +759,70 @@ export function resolveModelPerformance(
 }
 
 const MODEL_TIER_PRIORITY: readonly ModelPerformanceTier[] = ["high", "medium", "low"];
+const UNQUANTIZED_PRECISIONS = new Set<ModelPrecision>([
+  "fp16",
+  "bf16",
+  "float16",
+  "coreml-fp16",
+]);
+
+/** Curated profiles in descending quality/resource order. */
+export function supportedTiers(catalog: RuntimeModelCatalog): ModelPerformanceTier[] {
+  return MODEL_TIER_PRIORITY.filter((tier): tier is ModelPerformanceTier => catalog.tiers[tier] !== undefined);
+}
+
+/**
+ * Capability and profile policy gate for every model-selection request. This
+ * deliberately has no fallback path: calling it before side effects means a
+ * live request cannot be quietly served by a batch-only family, and a missing
+ * explicit profile cannot become a lower quality model.
+ */
+export function assertModelSelectionSupported(
+  catalog: RuntimePlatformModelCatalog,
+  input: { familyId: ModelFamilyId; asrMode: AsrMode; preference: ModelPerformancePreference },
+): RuntimeModelCatalog {
+  const family = catalog.families[input.familyId];
+  if (!family) throw new Error(`Model family ${input.familyId} is unavailable on ${catalog.platform}`);
+  if (!family.capabilities.modes.includes(input.asrMode)) {
+    throw new Error(`${family.displayName} does not support ${input.asrMode} dictation`);
+  }
+  if (input.preference !== "auto") requiredTier(family, input.preference);
+  if (supportedTiers(family).length === 0) failNoProfiles(family);
+  return family;
+}
+
+/**
+ * Reads a concrete curated profile or throws before a caller can dereference
+ * an absent optional tier. Use this at every runtime boundary (IPC, loading,
+ * installation, and removal); never index `catalog.tiers` directly.
+ */
+export function runtimeModelTier(
+  catalog: RuntimeModelCatalog,
+  tier: ModelPerformanceTier,
+): RuntimeModelTierSpec {
+  const profile = catalog.tiers[tier];
+  if (!profile) throw new Error(`${catalog.displayName} has no ${tier} performance profile`);
+  return profile;
+}
+
+const requiredTier = runtimeModelTier;
+
+function failNoProfiles(catalog: RuntimeModelCatalog): never {
+  throw new Error(`${catalog.displayName} has no curated performance profiles`);
+}
 
 function assertCatalogRouting(catalog: RuntimeModelCatalog): void {
-  const definition = MODEL_CATALOG_DEFINITIONS[catalog.platform].families[catalog.familyId];
+  const definition = platformCatalogDefinition(catalog.platform).families[catalog.familyId];
+  if (!definition) throw new Error(`Model catalog family ${catalog.familyId} is unavailable on ${catalog.platform}`);
   const expectedEngine = definition.engine;
-  for (const tierName of MODEL_TIER_PRIORITY) {
-    const tier = catalog.tiers[tierName];
+  const availableTiers = supportedTiers(catalog);
+  if (availableTiers.length === 0) failNoProfiles(catalog);
+  for (const tierName of availableTiers) {
+    const tier = requiredTier(catalog, tierName);
+    const tierDefinition = definition.tiers[tierName];
+    if (!tierDefinition) {
+      throw new Error(`Model catalog ${catalog.platform}/${catalog.familyId}/${tierName} has no packaged profile definition`);
+    }
     if (
       catalog.engine !== expectedEngine
       || tier.tier !== tierName
@@ -629,12 +831,15 @@ function assertCatalogRouting(catalog: RuntimeModelCatalog): void {
       || tier.manifest.familyId !== catalog.familyId
       || tier.artifactId !== tier.manifest.artifactId
       || tier.engine !== catalog.engine
-      || tier.precision !== definition.tiers[tierName].precision
+      || tier.precision !== tierDefinition.precision
       || tier.manifest.platform !== catalog.platform
     ) {
       throw new Error(
         `Model catalog ${catalog.platform}/${catalog.familyId}/${tierName} crosses a platform, engine, or tier routing boundary (including family routing)`,
       );
+    }
+    if (tierName === "high" && !UNQUANTIZED_PRECISIONS.has(tier.precision)) {
+      throw new Error(`Model catalog ${catalog.platform}/${catalog.familyId}/high must be unquantized`);
     }
   }
 }
@@ -648,6 +853,7 @@ function assertCatalogArtifactIdentity(catalog: RuntimeModelCatalog): void {
   const artifactIdentities = new Map<string, string>();
   const artifactForIdentity = new Map<string, string>();
   for (const tier of Object.values(catalog.tiers)) {
+    if (!tier) continue;
     const identity = manifestArtifactIdentity(tier.manifest);
     const priorIdentity = artifactIdentities.get(tier.artifactId);
     if (priorIdentity && priorIdentity !== identity) {
@@ -677,9 +883,12 @@ function manifestArtifactIdentity(manifest: ModelSpec): string {
 
 function assertPlatformCatalogIsolation(catalog: RuntimePlatformModelCatalog): void {
   const storageOwners = new Map<string, ModelFamilyId>();
-  for (const familyId of MODEL_FAMILY_IDS) {
+  for (const [rawFamilyId, family] of Object.entries(catalog.families)) {
+    if (!family) continue;
+    const familyId = rawFamilyId as ModelFamilyId;
     const seenArtifacts = new Set<string>();
-    for (const tier of Object.values(catalog.families[familyId].tiers)) {
+    for (const tier of Object.values(family.tiers)) {
+      if (!tier) continue;
       if (seenArtifacts.has(tier.artifactId)) continue;
       seenArtifacts.add(tier.artifactId);
       const priorFamily = storageOwners.get(tier.manifest.storageDirectory);
@@ -702,6 +911,7 @@ function assertManifestMatchesCatalog(
   const expectedBackends: Record<ModelEngine, string> = {
     "mlx-whisper": "MLX Whisper",
     "mlx-audio": "MLX Audio",
+    "fluid-audio": "FluidAudio CoreML / ANE",
     "faster-whisper": "faster-whisper/CTranslate2",
     crispasr: "CrispASR CUDA",
   };
@@ -759,7 +969,7 @@ function buildResolution(
   memory: AcceleratorMemorySnapshot,
   headroomBytes: number | null,
 ): ModelPerformanceResolution {
-  const tier = input.catalog.tiers[effectiveTier];
+  const tier = requiredTier(input.catalog, effectiveTier);
   return {
     preference: input.preference,
     effectiveTier,
@@ -796,30 +1006,56 @@ function buildResolution(
  * Tolerating them is safe because the loaders address model files by manifest
  * name; nothing reads these, and their bytes are never counted or hashed.
  */
-export function isInertDirectoryMetadata(name: string, expectedNames: ReadonlySet<string>): boolean {
+export function isInertDirectoryMetadata(relativePath: string, expectedNames: ReadonlySet<string>): boolean {
+  const segments = relativePath.split("/");
+  const name = segments.at(-1);
+  if (!name) return false;
   if (name === ".DS_Store" || name === ".localized") return true;
-  return name.startsWith("._") && expectedNames.has(name.slice(2));
+  if (!name.startsWith("._")) return false;
+  const sibling = [...segments.slice(0, -1), name.slice(2)].join("/");
+  return expectedNames.has(sibling);
 }
 
 /**
  * Every manifest file is present and nothing else is, except inert OS metadata.
- * Throws through to the caller's own catch on an unreadable directory, so an
- * IO failure is never mistaken for a clean negative.
+ * CoreML bundles are nested trees, so this walks only manifest-declared
+ * directories, rejects all links, and never follows an unexpected subtree.
  */
 async function entrySetMatchesManifest(
   modelDirectory: string,
-  entries: readonly string[],
   expectedNames: ReadonlySet<string>,
 ): Promise<boolean> {
   const present = new Set<string>();
-  for (const entry of entries) {
-    if (expectedNames.has(entry)) {
-      present.add(entry);
-      continue;
+  const queue: Array<{ directory: string; prefix: string }> = [{ directory: modelDirectory, prefix: "" }];
+  const maximumEntries = Math.max(10_000, expectedNames.size * 8);
+  let visited = 0;
+
+  while (queue.length > 0) {
+    const next = queue.pop();
+    if (!next) break;
+    const entries = await readdir(next.directory, { withFileTypes: true });
+    for (const entry of entries) {
+      visited += 1;
+      if (visited > maximumEntries) return false;
+      const relativePath = next.prefix ? `${next.prefix}/${entry.name}` : entry.name;
+      const entryPath = path.join(next.directory, entry.name);
+      const metadata = await lstat(entryPath);
+      if (metadata.isSymbolicLink()) return false;
+      if (metadata.isDirectory()) {
+        // The directory itself need not be declared, but it must be an ancestor
+        // of at least one declared file. This rejects injected trees early.
+        if (![...expectedNames].some((expected) => expected.startsWith(`${relativePath}/`))) {
+          return false;
+        }
+        queue.push({ directory: entryPath, prefix: relativePath });
+        continue;
+      }
+      if (metadata.isFile() && expectedNames.has(relativePath)) {
+        present.add(relativePath);
+        continue;
+      }
+      if (!metadata.isFile() || !isInertDirectoryMetadata(relativePath, expectedNames)) return false;
     }
-    if (!isInertDirectoryMetadata(entry, expectedNames)) return false;
-    const metadata = await lstat(path.join(modelDirectory, entry));
-    if (!metadata.isFile() || metadata.isSymbolicLink()) return false;
   }
   return present.size === expectedNames.size;
 }
@@ -867,8 +1103,7 @@ export async function verifyModelDirectory(
         expectedFiles: expectedEntries.length,
       };
     }
-    const entries = await readdir(modelDirectory);
-    exactEntries = await entrySetMatchesManifest(modelDirectory, entries, expectedNames);
+    exactEntries = await entrySetMatchesManifest(modelDirectory, expectedNames);
   } catch (error) {
     // Only a genuinely absent artifact is "missing". Existing but unreadable
     // data must be repaired explicitly instead of silently becoming Download.
@@ -939,7 +1174,7 @@ export async function modelArtifactIsPresent(
     if (!directory.isDirectory() || directory.isSymbolicLink()) return false;
     for (const [filename, expected] of Object.entries(model.files)) {
       const metadata = await lstat(path.join(modelDirectory, filename));
-      if (!metadata.isFile() || metadata.size !== expected.bytes) return false;
+      if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.size !== expected.bytes) return false;
     }
     return true;
   } catch {
@@ -992,9 +1227,8 @@ export async function modelArtifactIsVerifiedNow(
     // other than the curated install wrote here, whatever the digests say.
     // `isInertDirectoryMetadata` is the one narrow exception, because otherwise
     // a Finder visit to the models folder permanently blocks every model switch.
-    const entries = await readdir(modelDirectory);
     const expectedNames = new Set(expectedEntries.map(([filename]) => filename));
-    if (!await entrySetMatchesManifest(modelDirectory, entries, expectedNames)) return false;
+    if (!await entrySetMatchesManifest(modelDirectory, expectedNames)) return false;
 
     for (const [filename, expected] of expectedEntries) {
       const filePath = path.join(modelDirectory, filename);
@@ -1039,8 +1273,8 @@ export async function verifyRuntimeModelCatalog(
   verifier: (root: string, model: ModelSpec) => Promise<ModelVerification> = verifyModelDirectory,
 ): Promise<ModelCatalogVerifications> {
   const verificationByManifestIdentity = new Map<string, Promise<ModelVerification>>();
-  const entries = await Promise.all(MODEL_TIER_PRIORITY.map(async (tierName) => {
-    const tier = catalog.tiers[tierName];
+  const entries = await Promise.all(supportedTiers(catalog).map(async (tierName) => {
+    const tier = requiredTier(catalog, tierName);
     const artifactKey = manifestArtifactIdentity(tier.manifest);
     let verification = verificationByManifestIdentity.get(artifactKey);
     if (!verification) {
@@ -1069,13 +1303,14 @@ export async function verifyRuntimePlatformModelCatalog(
   const verificationByManifestIdentity = new Map<string, Promise<ModelVerification>>();
   const results: RuntimeModelArtifactVerification[] = [];
 
-  for (const familyId of MODEL_FAMILY_IDS) {
-    const family = catalog.families[familyId];
+  for (const [rawFamilyId, family] of Object.entries(catalog.families)) {
+    if (!family) continue;
+    const familyId = rawFamilyId as ModelFamilyId;
     assertCatalogRouting(family);
     assertCatalogArtifactIdentity(family);
     const seenArtifacts = new Set<string>();
-    for (const tierName of MODEL_TIER_PRIORITY) {
-      const tier = family.tiers[tierName];
+    for (const tierName of supportedTiers(family)) {
+      const tier = requiredTier(family, tierName);
       if (seenArtifacts.has(tier.artifactId)) continue;
       seenArtifacts.add(tier.artifactId);
 

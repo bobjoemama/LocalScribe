@@ -1,7 +1,6 @@
 import path from "node:path";
 import { lstat, readdir } from "node:fs/promises";
 import {
-  MODEL_FAMILY_IDS,
   type ModelCatalog,
   type ModelFamilyId,
 } from "../shared/contracts";
@@ -35,15 +34,21 @@ export async function buildModelCatalogSnapshot(input: {
     platform: catalog.platform,
     activeModelFamilyId: settings.activeModelFamilyId,
     modelLibraryFamilyIds: settings.modelLibraryFamilyIds,
-    families: MODEL_FAMILY_IDS.map((familyId) => {
-      const family = catalog.families[familyId];
+    recommendedDefaultFamilyId: catalog.recommendedDefaultFamilyId,
+    families: Object.entries(catalog.families).flatMap(([familyId, family]) => {
+      if (!family) return [];
+      const typedFamilyId = familyId as ModelFamilyId;
       const artifacts = new Map<string, RuntimeModelTierSpec>();
-      for (const tier of Object.values(family.tiers)) artifacts.set(tier.artifactId, tier);
+      for (const tier of Object.values(family.tiers)) {
+        if (tier) artifacts.set(tier.artifactId, tier);
+      }
       return {
-        familyId,
+        familyId: typedFamilyId,
         displayName: family.displayName,
-        active: familyId === settings.activeModelFamilyId,
-        inLibrary: settings.modelLibraryFamilyIds.includes(familyId),
+        capabilities: family.capabilities,
+        recommendedDefault: typedFamilyId === catalog.recommendedDefaultFamilyId,
+        active: typedFamilyId === settings.activeModelFamilyId,
+        inLibrary: settings.modelLibraryFamilyIds.includes(typedFamilyId),
         artifacts: [...artifacts.values()].map((tier) => ({
           artifactId: tier.artifactId,
           displayName: tier.manifest.displayName,
@@ -54,7 +59,7 @@ export async function buildModelCatalogSnapshot(input: {
           license: tier.manifest.license,
           expectedDownloadBytes: tier.expectedDownloadBytes,
         })),
-        profiles: Object.values(family.tiers).map((tier) => ({
+        profiles: Object.values(family.tiers).filter((tier): tier is RuntimeModelTierSpec => tier !== undefined).map((tier) => ({
           profileId: tier.profileId,
           tier: tier.tier,
           artifactId: tier.artifactId,
@@ -85,7 +90,9 @@ async function listUnmanagedModelEntries(
   if (await inspectModelRootDirectory(modelRoot) !== "safe") return [];
   const curated = new Set<string>();
   for (const family of Object.values(catalog.families)) {
+    if (!family) continue;
     for (const tier of Object.values(family.tiers)) {
+      if (!tier) continue;
       curated.add(tier.manifest.storageDirectory);
     }
   }

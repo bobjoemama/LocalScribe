@@ -184,8 +184,12 @@ describe("fields a manifest may not invent", () => {
     })).toThrow();
   });
 
-  it("rejects a file name that is a path rather than a name", () => {
-    for (const filename of ["../escape.npz", "sub/dir.npz", "/absolute.npz", ".", ""]) {
+  it("allows normalized nested CoreML paths but rejects paths that can escape or alias", () => {
+    expect(modelSpecSchema.parse({
+      ...BASE,
+      files: { "bundle.mlmodelc/weights/weight.bin": { bytes: 1, sha256: "b".repeat(64) } },
+    }).files).toHaveProperty("bundle.mlmodelc/weights/weight.bin");
+    for (const filename of ["../escape.npz", "sub/../dir.npz", "sub//dir.npz", "sub\\dir.npz", "/absolute.npz", ".", ""]) {
       expect(
         () => modelSpecSchema.parse({ ...BASE, files: { [filename]: { bytes: 1, sha256: "b".repeat(64) } } }),
         `file name ${JSON.stringify(filename)} was accepted`,

@@ -19,7 +19,7 @@ afterEach(async () => {
 });
 
 describe("main-process model catalog snapshot", () => {
-  it("reports all curated Mac artifacts, including families outside the library", async () => {
+  it("reports all supported Mac artifacts and exposes the platform recommendation", async () => {
     const modelRoot = await mkdtemp(path.join(os.tmpdir(), "localscribe-model-snapshot-"));
     temporaryRoots.push(modelRoot);
     const catalog = loadRuntimePlatformModelCatalog(
@@ -38,8 +38,19 @@ describe("main-process model catalog snapshot", () => {
     });
 
     expect(() => modelCatalogSchema.parse(snapshot)).not.toThrow();
-    expect(snapshot.verifications).toHaveLength(12);
+    expect(snapshot.recommendedDefaultFamilyId).toBe("parakeet-unified-en-0-6b");
+    expect(snapshot.verifications).toHaveLength(14);
     expect(snapshot.verifications).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        familyId: "parakeet-unified-en-0-6b",
+        artifactId: "parakeet-unified-en-0-6b-coreml-fp16",
+        verificationStatus: "missing",
+      }),
+      expect.objectContaining({
+        familyId: "parakeet-unified-en-0-6b",
+        artifactId: "parakeet-unified-en-0-6b-coreml-int8",
+        verificationStatus: "missing",
+      }),
       expect.objectContaining({
         familyId: "whisper-large-v3",
         artifactId: "whisper-large-v3-mlx-fp16",
@@ -63,6 +74,8 @@ describe("main-process model catalog snapshot", () => {
     ]));
     expect(snapshot.families.find((family) => family.familyId === "whisper-large-v2"))
       .toMatchObject({ active: false, inLibrary: false });
+    expect(snapshot.families.find((family) => family.familyId === "parakeet-unified-en-0-6b"))
+      .toMatchObject({ recommendedDefault: true, capabilities: { modes: ["after-stop", "live"] } });
     expect(snapshot.unmanagedEntries).toEqual([]);
   });
 
@@ -120,6 +133,8 @@ describe("main-process model catalog snapshot", () => {
     ]);
     expect(snapshot.families.find((family) => family.familyId === "whisper-large-v2"))
       .toMatchObject({ active: true, inLibrary: true });
+    expect(snapshot.families.find((family) => family.familyId === "parakeet-unified-en-0-6b"))
+      .toBeUndefined();
   });
 
   it("keeps the model root under app-owned userData", () => {
