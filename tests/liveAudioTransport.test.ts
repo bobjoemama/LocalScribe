@@ -32,12 +32,13 @@ describe("Live PCM framing", () => {
     const sampleCount = frames.reduce((sum, frame) => sum + frame.sampleCount, 0);
 
     // 200 samples at 8 kHz become just under 400 samples at 16 kHz; the last
-    // source sample intentionally has no right neighbour for interpolation.
-    expect(sampleCount).toBe(398);
+    // tail is padded to preserve the fixed 20 ms wire-frame contract.
+    expect(sampleCount).toBe(640);
     expect(frames).toHaveLength(2);
     expect(frames[0]).toMatchObject({ sampleCount: LIVE_AUDIO_FRAME_SAMPLES });
     expect(frames[0]?.pcm.byteLength).toBe(LIVE_AUDIO_FRAME_SAMPLES * 2);
-    expect(frames[1]?.pcm.byteLength).toBe((398 - LIVE_AUDIO_FRAME_SAMPLES) * 2);
+    expect(frames[1]?.sampleCount).toBe(LIVE_AUDIO_FRAME_SAMPLES);
+    expect(frames[1]?.pcm.byteLength).toBe(LIVE_AUDIO_FRAME_SAMPLES * 2);
   });
 });
 
@@ -70,9 +71,18 @@ describe("Live transport backpressure and cancellation", () => {
     await sink.abort?.(new Error("cancelled"));
 
     expect(beginLiveAudio).toHaveBeenCalledOnce();
-    expect(pushLiveAudio).toHaveBeenCalledOnce();
+    expect(pushLiveAudio).toHaveBeenCalledWith(expect.objectContaining({
+      sessionId: "00000000-0000-4000-8000-000000000001",
+      sequence: 0,
+    }));
     expect(finishLiveAudio).toHaveBeenCalledOnce();
-    expect(cancelLiveAudio).toHaveBeenCalledWith("cancelled");
+    expect(finishLiveAudio).toHaveBeenCalledWith({
+      sessionId: "00000000-0000-4000-8000-000000000001",
+    });
+    expect(cancelLiveAudio).toHaveBeenCalledWith({
+      sessionId: "00000000-0000-4000-8000-000000000001",
+      reason: "cancelled",
+    });
   });
 
   it("fails instead of silently dropping frames when an adapter falls behind", async () => {

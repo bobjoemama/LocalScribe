@@ -29,8 +29,12 @@ import {
   appSettingsSchema,
   appSettingsPatchSchema,
   appProfileSchema,
+  cancelLiveAudioSchema,
   dictionaryEntrySchema,
+  finishLiveAudioSchema,
   IPC,
+  liveAudioFrameSchema,
+  liveAudioSessionSchema,
   MAX_HISTORY_ITEMS,
   modelFamilyLibraryRequestSchema,
   modelInstallRequestSchema,
@@ -42,6 +46,7 @@ import {
   snippetSchema,
   transcribeAudioSchema,
   type Diagnostics,
+  type AsrMode,
   type ModelCatalog,
   type ModelFamilyId,
   type ModelPerformanceTier,
@@ -92,11 +97,13 @@ import {
   resolveModelPerformance,
   verifyModelDirectory,
   verifyRuntimeModelCatalog,
+  assertModelSelectionSupported,
   type ModelPerformanceResolution,
   type RuntimeModelCatalog,
   type RuntimePlatformModelCatalog,
   type RuntimeModelTierSpec,
 } from "./main/modelSpec";
+import type { LiveAudioSink } from "./shared/liveAudioTransport";
 import {
   buildModelCatalogSnapshot,
   modelRootForUserData,
@@ -227,6 +234,12 @@ let modelResolution: ModelPerformanceResolution | null = null;
 let previousAutoTier: ModelPerformanceTier | undefined;
 let activeDictationTier: ModelPerformanceTier | undefined;
 let activeSessionId: string | null = null;
+let activeLiveSession: {
+  sessionId: string;
+  sink: LiveAudioSink;
+  resolution: ModelPerformanceResolution;
+  startedAt: number;
+} | null = null;
 let activeSessionModelResolution: {
   sessionId: string;
   promise: Promise<ModelPerformanceResolution>;
@@ -578,11 +591,15 @@ function manifestForWorkerSelection(selection: WorkerModelSelection): ModelSpec 
   return null;
 }
 
-function workerSelection(tier: RuntimeModelTierSpec): WorkerModelSelection {
+function workerSelection(
+  tier: RuntimeModelTierSpec,
+  asrMode: AsrMode = "after-stop",
+): WorkerModelSelection {
   return {
     modelId: tier.manifest.modelId,
     tier: tier.tier,
     computeType: workerComputeType(tier),
+    asrMode,
   };
 }
 
@@ -1049,6 +1066,7 @@ function setSession(next: SessionSnapshot): SessionSnapshot {
     activeDictationTier = undefined;
     activeSessionId = null;
     activeSessionModelResolution = null;
+    activeLiveSession = null;
   }
   if (session.state !== "idle") pillMode = "collapsed";
   resizePill();
@@ -1065,6 +1083,9 @@ function setSession(next: SessionSnapshot): SessionSnapshot {
 }
 
 function failSession(error: unknown): SessionSnapshot {
+  const live = activeLiveSession;
+  activeLiveSession = null;
+  if (live) void worker.cancelLiveSession(live.sessionId).catch(() => undefined);
   insertion.cancelSession();
   return setSession({ state: "error", message: normalizeDictationErrorMessage(error) });
 }
@@ -1164,6 +1185,94 @@ function assertActiveSession(sessionId: string): void {
   if (activeSessionId !== sessionId) {
     throw new Error("Dictation was cancelled");
   }
+}
+
+/** The sole final-result path for both After I stop and Live dictation. */
+async function completeDictationFinal(input: {
+  sessionId: string;
+  durationMs: number;
+  settings: ReturnType<LocalDatabase["getSettings"]>;
+  resolution: ModelPerformanceResolution;
+  result: { text: string; language: string | null };
+}): Promise<ReturnType<LocalDatabase["saveTranscription"]>> {
+  const { sessionId, durationMs, settings, resolution, result } = input;
+  const concreteModel = resolution.tier.manifest;
+  const dictionary = database.listDictionary();
+  const targetAppId = await insertion.targetAppId();
+  assertActiveSession(sessionId);
+  const profile = database.findProfile(targetAppId);
+  const cleanup = {
+    removeFillers: profile?.removeFillers ?? settings.removeFillers,
+    spokenCommands: profile?.spokenCommands ?? settings.spokenCommands,
+    smartPunctuation: profile?.smartPunctuation ?? settings.smartPunctuation,
+  };
+  const transformed = transformDictation(result.text, {
+    fillerMode: cleanup.removeFillers ? "conservative" : "off",
+    punctuationCommands: cleanup.spokenCommands,
+    paragraphCommands: cleanup.spokenCommands,
+    scratchCommands: cleanup.spokenCommands,
+    capitalizeSentences: cleanup.smartPunctuation,
+    terminalPunctuation: cleanup.smartPunctuation ? "ensure" : "preserve",
+    normalizeWhitespace: cleanup.smartPunctuation,
+  });
+  const text = applyLocalTextRules(
+    transformed.text,
+    dictionary,
+    database.listSnippets(),
+    { normalizeSpacing: cleanup.smartPunctuation },
+  );
+  if (!text.trim()) throw new Error("No speech detected");
+  if (settingsWindow?.isFocused() || scratchpadWindow?.isFocused()) {
+    const outcome = await insertion.copyAndPaste(text, false);
+    assertActiveSession(sessionId);
+    diagnostics.record({ ...insertionDiagnosticEvent(outcome, false, false), sessionId });
+    setSession({
+      state: "success",
+      sessionId,
+      message: outcome === "copied" ? "Copied to clipboard" : "Inserted",
+    });
+  } else {
+    const automaticPasteReady = await insertion.automaticPasteReady();
+    const canAutoPaste = settings.autoPaste && automaticPasteReady;
+    setSession({ state: "inserting", sessionId, message: canAutoPaste ? "Inserting" : "Copying" });
+    const outcome = await insertion.copyAndPaste(text, canAutoPaste);
+    assertActiveSession(sessionId);
+    diagnostics.record({
+      ...insertionDiagnosticEvent(outcome, settings.autoPaste, automaticPasteReady),
+      sessionId,
+    });
+    const copiedMessage = settings.autoPaste && !automaticPasteReady && process.platform === "darwin"
+      ? "Copied — allow Accessibility"
+      : "Copied to clipboard";
+    const successMessage = outcome === "pasted"
+      ? "Inserted"
+      : outcome === "pasted-with-copy"
+        ? "Inserted · copied as backup"
+        : copiedMessage;
+    setSession({ state: "success", sessionId, message: successMessage });
+  }
+  const record = settings.keepHistory
+    ? database.saveTranscription({
+        durationMs,
+        text,
+        language: result.language,
+        modelId: concreteModel.modelId,
+        status: "complete",
+        sourceAppId: targetAppId,
+      })
+    : {
+        id: randomUUID(),
+        createdAt: Date.now(),
+        durationMs,
+        text,
+        language: result.language,
+        modelId: concreteModel.modelId,
+        status: "complete" as const,
+        sourceAppId: targetAppId,
+      };
+  const purged = database.purgeExpiredTranscriptions(settings.historyRetentionDays);
+  if (settings.keepHistory || purged > 0) notifyHistoryChanged();
+  return record;
 }
 
 function trustedSurfaceForEvent(event: IpcMainInvokeEvent): RendererSurface {
@@ -1332,7 +1441,10 @@ function registerIpc(): void {
 
   handle(IPC.sessionGet, () => session);
   handle(IPC.sessionToggle, () => (session.state === "listening" ? finishListening() : beginListening("toggle")));
-  handle(IPC.sessionCancel, () => {
+  handle(IPC.sessionCancel, async () => {
+    const live = activeLiveSession;
+    activeLiveSession = null;
+    if (live) await worker.cancelLiveSession(live.sessionId).catch(() => undefined);
     insertion.cancelSession();
     activeSessionId = null;
     /*
@@ -1351,6 +1463,120 @@ function registerIpc(): void {
     return setSession({ state: "idle" });
   });
   handle(IPC.sessionFail, (_event, message: unknown) => failSession(message));
+
+  handle(IPC.sessionBeginLive, async (_event, rawSession: unknown) => {
+    const request = liveAudioSessionSchema.parse(rawSession);
+    if (
+      session.state !== "listening"
+      || session.sessionId !== request.sessionId
+      || activeSessionId !== request.sessionId
+      || activeLiveSession !== null
+    ) {
+      throw new Error("Live dictation was cancelled");
+    }
+    const settings = database.getSettings();
+    if (settings.asrMode !== "live") {
+      throw new Error("Live dictation is not selected in LocalScribe settings.");
+    }
+    // Catalog capability is necessary but not sufficient; `beginLive` below
+    // is the runtime-adapter proof and fails closed when the helper is absent.
+    assertModelSelectionSupported(platformModelCatalog(), {
+      familyId: settings.activeModelFamilyId,
+      asrMode: "live",
+      preference: settings.modelPerformanceMode,
+    });
+    const resolution = await currentModelResolution();
+    assertResolutionFitsMemory(resolution);
+    const sink = await worker.beginLive({
+      session: request,
+      model: workerSelection(resolution.tier, "live"),
+      language: settings.language,
+      // Live Parakeet does not accept ASR prompt context. Dictionary and
+      // snippet expansion still run on its final result in the shared path.
+      context: "",
+    });
+    if (
+      session.state !== "listening"
+      || session.sessionId !== request.sessionId
+      || activeSessionId !== request.sessionId
+    ) {
+      await sink.abort?.(new Error("Live dictation was cancelled"));
+      throw new Error("Live dictation was cancelled");
+    }
+    activeLiveSession = {
+      sessionId: request.sessionId,
+      sink,
+      resolution,
+      startedAt: Date.now(),
+    };
+  });
+
+  handle(IPC.sessionPushLive, async (_event, rawFrame: unknown) => {
+    const frame = liveAudioFrameSchema.parse(rawFrame);
+    const live = activeLiveSession;
+    if (
+      !live
+      || live.sessionId !== frame.sessionId
+      || session.state !== "listening"
+      || session.sessionId !== frame.sessionId
+      || activeSessionId !== frame.sessionId
+    ) {
+      throw new Error("Live dictation was cancelled");
+    }
+    await live.sink.write(frame, new AbortController().signal);
+  });
+
+  handle(IPC.sessionFinishLive, async (_event, rawRequest: unknown) => {
+    const request = finishLiveAudioSchema.parse(rawRequest);
+    const live = activeLiveSession;
+    if (
+      !live
+      || live.sessionId !== request.sessionId
+      || session.state !== "finalizing"
+      || session.sessionId !== request.sessionId
+      || activeSessionId !== request.sessionId
+    ) {
+      throw new Error("Live dictation was cancelled");
+    }
+    try {
+      setSession({ state: "transcribing", sessionId: request.sessionId, message: "Finishing Live dictation" });
+      const result = await worker.finishLiveWithResult(request.sessionId);
+      assertActiveSession(request.sessionId);
+      activeLiveSession = null;
+      const record = await completeDictationFinal({
+        sessionId: request.sessionId,
+        durationMs: Math.max(1, Date.now() - live.startedAt),
+        settings: database.getSettings(),
+        resolution: live.resolution,
+        result,
+      });
+      diagnostics.record({
+        stage: "worker",
+        event: "transcribe",
+        outcome: "ok",
+        sessionId: request.sessionId,
+        durationMs: Math.max(1, Date.now() - live.startedAt),
+        modelFamily: database.getSettings().activeModelFamilyId,
+        modelTier: live.resolution.effectiveTier,
+      });
+      return record;
+    } catch (error) {
+      if (activeSessionId === request.sessionId) failSession(error);
+      throw error;
+    } finally {
+      if (activeLiveSession?.sessionId === request.sessionId) activeLiveSession = null;
+    }
+  });
+
+  handle(IPC.sessionCancelLive, async (_event, rawRequest: unknown) => {
+    const request = cancelLiveAudioSchema.parse(rawRequest);
+    const live = activeLiveSession;
+    if (!live || live.sessionId !== request.sessionId) {
+      throw new Error("Live dictation was cancelled");
+    }
+    activeLiveSession = null;
+    await worker.cancelLiveSession(request.sessionId);
+  });
 
   handle(IPC.sessionTranscribe, async (_event, rawInput: unknown) => {
     /*
@@ -1388,7 +1614,6 @@ function registerIpc(): void {
     try {
       const resolution = await currentModelResolution();
       assertResolutionFitsMemory(resolution);
-      const concreteModel = resolution.tier.manifest;
       const dictionary = database.listDictionary();
       const terms = buildDictionaryAsrContext(dictionary);
       const result = await worker.transcribe({
@@ -1400,92 +1625,13 @@ function registerIpc(): void {
         durationMs: input.durationMs,
       });
       assertActiveSession(input.sessionId);
-      const targetAppId = await insertion.targetAppId();
-      assertActiveSession(input.sessionId);
-      const profile = database.findProfile(targetAppId);
-      const cleanup = {
-        removeFillers: profile?.removeFillers ?? settings.removeFillers,
-        spokenCommands: profile?.spokenCommands ?? settings.spokenCommands,
-        smartPunctuation: profile?.smartPunctuation ?? settings.smartPunctuation,
-      };
-      const transformed = transformDictation(result.text, {
-        fillerMode: cleanup.removeFillers ? "conservative" : "off",
-        punctuationCommands: cleanup.spokenCommands,
-        paragraphCommands: cleanup.spokenCommands,
-        scratchCommands: cleanup.spokenCommands,
-        capitalizeSentences: cleanup.smartPunctuation,
-        terminalPunctuation: cleanup.smartPunctuation ? "ensure" : "preserve",
-        normalizeWhitespace: cleanup.smartPunctuation,
+      const record = await completeDictationFinal({
+        sessionId: input.sessionId,
+        durationMs: input.durationMs,
+        settings,
+        resolution,
+        result,
       });
-      const text = applyLocalTextRules(
-        transformed.text,
-        dictionary,
-        database.listSnippets(),
-        { normalizeSpacing: cleanup.smartPunctuation },
-      );
-      if (!text.trim()) throw new Error("No speech detected");
-      if (settingsWindow?.isFocused() || scratchpadWindow?.isFocused()) {
-        // Do not inject text into LocalScribe's own UI.
-        const outcome = await insertion.copyAndPaste(text, false);
-        assertActiveSession(input.sessionId);
-        diagnostics.record({
-          ...insertionDiagnosticEvent(outcome, false, false),
-          sessionId: input.sessionId,
-        });
-        setSession({
-          state: "success",
-          sessionId: input.sessionId,
-          message: outcome === "copied" ? "Copied to clipboard" : "Inserted",
-        });
-      } else {
-        const automaticPasteReady = await insertion.automaticPasteReady();
-        const canAutoPaste = settings.autoPaste && automaticPasteReady;
-        setSession({
-          state: "inserting",
-          sessionId: input.sessionId,
-          message: canAutoPaste ? "Inserting" : "Copying",
-        });
-        const outcome = await insertion.copyAndPaste(text, canAutoPaste);
-        assertActiveSession(input.sessionId);
-        diagnostics.record({
-          ...insertionDiagnosticEvent(outcome, settings.autoPaste, automaticPasteReady),
-          sessionId: input.sessionId,
-        });
-        const copiedMessage = settings.autoPaste && !automaticPasteReady && process.platform === "darwin"
-          ? "Copied — allow Accessibility"
-          : "Copied to clipboard";
-        const successMessage = outcome === "pasted"
-          ? "Inserted"
-          : outcome === "pasted-with-copy"
-            ? "Inserted · copied as backup"
-            : copiedMessage;
-        setSession({
-          state: "success",
-          sessionId: input.sessionId,
-          message: successMessage,
-        });
-      }
-      const record = settings.keepHistory
-        ? database.saveTranscription({
-            durationMs: input.durationMs,
-            text,
-            language: result.language,
-            modelId: concreteModel.modelId,
-            status: "complete",
-            sourceAppId: targetAppId,
-          })
-        : {
-            id: randomUUID(),
-            createdAt: Date.now(),
-            durationMs: input.durationMs,
-            text,
-            language: result.language,
-            modelId: concreteModel.modelId,
-            status: "complete" as const,
-            sourceAppId: targetAppId,
-          };
-      const purged = database.purgeExpiredTranscriptions(settings.historyRetentionDays);
-      if (settings.keepHistory || purged > 0) notifyHistoryChanged();
       diagnostics.record({
         stage: "worker",
         event: "transcribe",

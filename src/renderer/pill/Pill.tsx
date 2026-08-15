@@ -2,6 +2,7 @@ import { type CSSProperties, useEffect, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import {
   type AppSettings,
+  type AsrMode,
   type PillMode,
   type RuntimePlatform,
   type SessionSnapshot,
@@ -20,6 +21,7 @@ import {
   type ShortcutDisplayPlatform,
 } from "../../shared/shortcuts";
 import { AudioRecorder, RecorderCancelledError } from "../audioRecorder";
+import { openLiveAudioIpcSink } from "../../shared/liveAudioTransport";
 
 const WAVE_SAMPLE_COUNT = 15;
 const MICROPHONE_PICKER_ID = "pill-microphone-picker";
@@ -144,6 +146,7 @@ export function Pill() {
   const previousState = useRef<SessionSnapshot["state"]>("idle");
   const latestSnapshot = useRef<SessionSnapshot>({ state: "idle" });
   const microphoneIdRef = useRef<string | null>(null);
+  const asrModeRef = useRef<AsrMode>("after-stop");
   const settingsStatusRef = useRef<ShortcutSettingsStatus>("loading");
   const recorderSessionId = useRef<string | null>(null);
 
@@ -157,7 +160,7 @@ export function Pill() {
       const message = error instanceof Error ? error.message : "Microphone recording failed";
       await window.localScribe.session.fail(message);
     };
-    const startListeningRecorder = () => {
+    const startListeningRecorder = async () => {
       const start = listeningRecorderStart(
         latestSnapshot.current,
         settingsStatusRef.current,
@@ -167,7 +170,26 @@ export function Pill() {
       if (!start) return;
       recorderSessionId.current = start.sessionId;
       setWaveform(quietWave());
-      void recorder.current.start(start.microphoneId).catch(handleFailure);
+      try {
+        if (asrModeRef.current === "live") {
+          const sink = await openLiveAudioIpcSink({
+            beginLiveAudio: (session) => window.localScribe.session.beginLive(session),
+            pushLiveAudio: (frame) => window.localScribe.session.pushLive(frame),
+            finishLiveAudio: (request) => window.localScribe.session.finishLive(request).then(() => undefined),
+            cancelLiveAudio: (request) => window.localScribe.session.cancelLive(request),
+          }, {
+            sessionId: start.sessionId,
+            protocolVersion: 1,
+            sampleRateHz: 16_000,
+            channels: 1,
+          });
+          await recorder.current.start(start.microphoneId, { transport: "live", liveSink: sink });
+        } else {
+          await recorder.current.start(start.microphoneId);
+        }
+      } catch (error) {
+        await handleFailure(error);
+      }
     };
     const applySnapshot = (next: SessionSnapshot) => {
       const previous = previousState.current;
@@ -175,7 +197,7 @@ export function Pill() {
       latestSnapshot.current = next;
       setSnapshot(next);
       if (next.state === "listening" && previous !== "listening") {
-        startListeningRecorder();
+        void startListeningRecorder();
       } else if (next.state === "finalizing" && previous === "listening") {
         const sessionId = next.sessionId;
         recorderSessionId.current = null;
@@ -184,20 +206,14 @@ export function Pill() {
           .then(async (audio) => {
             if (!sessionId) throw new Error("Dictation session identity is missing");
             if (!isCurrentFinalization(latestSnapshot.current, sessionId)) return;
-            /*
-             * The current shipped pill uses finalized transcription.  A future
-             * Live adapter owns its own final-result IPC and must never route
-             * provisional audio through this WAV-only channel.
-             */
-            if (audio.transport !== "finalized") {
-              throw new Error("Live dictation finalization is unavailable for this local speech adapter.");
-            }
             try {
-              await window.localScribe.session.transcribe({
-                wav: audio.wav,
-                durationMs: audio.durationMs,
-                sessionId,
-              });
+              if (audio.transport === "finalized") {
+                await window.localScribe.session.transcribe({
+                  wav: audio.wav,
+                  durationMs: audio.durationMs,
+                  sessionId,
+                });
+              }
             } catch {
               // The main process owns transcription failures and has already surfaced the error.
             }
@@ -221,13 +237,14 @@ export function Pill() {
       applySnapshot(next);
     });
     let sawSettingsChange = false;
-    const applySettings = (settings: Pick<AppSettings, "microphoneId" | "holdShortcut">) => {
+    const applySettings = (settings: Pick<AppSettings, "microphoneId" | "holdShortcut" | "asrMode">) => {
       settingsStatusRef.current = "ready";
       microphoneIdRef.current = settings.microphoneId;
+      asrModeRef.current = settings.asrMode;
       setMicrophoneId(settings.microphoneId);
       setHoldShortcut(settings.holdShortcut);
       setShortcutSettingsStatus("ready");
-      startListeningRecorder();
+      void startListeningRecorder();
     };
     const unsubscribeSettings = window.localScribe.settings.onChanged((settings) => {
       sawSettingsChange = true;
@@ -239,7 +256,7 @@ export function Pill() {
       if (!sawSettingsChange) {
         settingsStatusRef.current = "unavailable";
         setShortcutSettingsStatus("unavailable");
-        startListeningRecorder();
+        void startListeningRecorder();
       }
     });
     void window.localScribe.system.getPermissions().then((next) => {

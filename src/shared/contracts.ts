@@ -10,8 +10,11 @@ import {
 import {
   AUDIO_MAX_DURATION_MS,
   AUDIO_MAX_FILE_BYTES,
+  AUDIO_PROTOCOL_VERSION,
+  AUDIO_SAMPLE_RATE_HZ,
   isAudioProtocolWav,
 } from "./audioProtocol";
+import { LIVE_AUDIO_FRAME_SAMPLES } from "./liveAudioTransport";
 import {
   MODEL_PERFORMANCE_TIERS,
   modelPerformanceModeSchema,
@@ -742,6 +745,39 @@ export const transcribeAudioSchema = z.object({
 }).strict();
 export type TranscribeAudioRequest = z.infer<typeof transcribeAudioSchema>;
 
+/** The renderer-to-main Live boundary accepts only canonical 20 ms PCM16. */
+export const liveAudioSessionSchema = z.object({
+  sessionId: z.string().uuid(),
+  protocolVersion: z.literal(AUDIO_PROTOCOL_VERSION),
+  sampleRateHz: z.literal(AUDIO_SAMPLE_RATE_HZ),
+  channels: z.literal(1),
+}).strict();
+export type LiveAudioSession = z.infer<typeof liveAudioSessionSchema>;
+
+export const liveAudioFrameSchema = z.object({
+  sessionId: z.string().uuid(),
+  sequence: z.number().int().nonnegative(),
+  sampleRateHz: z.literal(AUDIO_SAMPLE_RATE_HZ),
+  channels: z.literal(1),
+  sampleCount: z.literal(LIVE_AUDIO_FRAME_SAMPLES),
+  pcm: z.instanceof(ArrayBuffer).refine(
+    (pcm) => pcm.byteLength === LIVE_AUDIO_FRAME_SAMPLES * 2,
+    "Live audio frames must be 20 ms of mono PCM16",
+  ),
+}).strict();
+export type LiveAudioFrame = z.infer<typeof liveAudioFrameSchema>;
+
+export const finishLiveAudioSchema = z.object({
+  sessionId: z.string().uuid(),
+}).strict();
+export type FinishLiveAudioRequest = z.infer<typeof finishLiveAudioSchema>;
+
+export const cancelLiveAudioSchema = z.object({
+  sessionId: z.string().uuid(),
+  reason: z.string().trim().min(1).max(240),
+}).strict();
+export type CancelLiveAudioRequest = z.infer<typeof cancelLiveAudioSchema>;
+
 export const IPC = {
   sessionGet: "session:get",
   sessionChanged: "session:changed",
@@ -749,6 +785,10 @@ export const IPC = {
   sessionCancel: "session:cancel",
   sessionFail: "session:fail",
   sessionTranscribe: "session:transcribe",
+  sessionBeginLive: "session:begin-live",
+  sessionPushLive: "session:push-live",
+  sessionFinishLive: "session:finish-live",
+  sessionCancelLive: "session:cancel-live",
   historyList: "history:list",
   historyChanged: "history:changed",
   historyDelete: "history:delete",
@@ -801,6 +841,10 @@ export interface LocalScribeApi {
     cancel(): Promise<SessionSnapshot>;
     fail(message: string): Promise<SessionSnapshot>;
     transcribe(request: TranscribeAudioRequest): Promise<Transcription>;
+    beginLive(session: LiveAudioSession): Promise<void>;
+    pushLive(frame: LiveAudioFrame): Promise<void>;
+    finishLive(request: FinishLiveAudioRequest): Promise<Transcription>;
+    cancelLive(request: CancelLiveAudioRequest): Promise<void>;
     onChanged(listener: (snapshot: SessionSnapshot) => void): () => void;
   };
   history: {

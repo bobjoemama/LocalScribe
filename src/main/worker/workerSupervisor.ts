@@ -4,6 +4,13 @@ import { existsSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import { AUDIO_MAX_DURATION_MS } from "../../shared/audioProtocol";
+import {
+  LIVE_AUDIO_FRAME_SAMPLES,
+  type LiveAudioSessionDescriptor,
+  type LiveAudioSink,
+  type LivePcmFrame,
+} from "../../shared/liveAudioTransport";
+import type { AsrMode } from "../../shared/contracts";
 import { modelPerformanceTierSchema, type ModelPerformanceTier } from "../../shared/modelPerformance";
 import { validatedWindowsRuntimeEnvironment } from "../nativeHelperEnvironment";
 
@@ -146,6 +153,8 @@ const computeTypeSchema = z.enum([
   "bfloat16",
   "q8_0",
   "q4_k",
+  "coreml-fp16",
+  "coreml-int8",
 ]);
 export type WorkerComputeType = z.infer<typeof computeTypeSchema>;
 
@@ -163,6 +172,22 @@ const modelReadyMessageSchema = z.object({
   modelId: z.string().min(1).max(200),
   computeType: computeTypeSchema,
   loadMs: z.number().nonnegative(),
+}).strict();
+
+const liveStartedMessageSchema = z.object({
+  type: z.literal("live_started"),
+  id: z.string().uuid(),
+}).strict();
+
+const liveCancelledMessageSchema = z.object({
+  type: z.literal("live_cancelled"),
+  id: z.string().uuid(),
+}).strict();
+
+const partialMessageSchema = z.object({
+  type: z.literal("partial"),
+  id: z.string().uuid(),
+  text: z.string().max(100_000),
 }).strict();
 
 const modelInstalledMessageSchema = z.object({
@@ -214,6 +239,9 @@ const workerMessageSchema = z.union([
   helloMessageSchema,
   modelReadyMessageSchema,
   modelInstalledMessageSchema,
+  liveStartedMessageSchema,
+  liveCancelledMessageSchema,
+  partialMessageSchema,
   z.object({
     type: z.literal("health"),
     id: z.string().uuid(),
@@ -252,6 +280,8 @@ export interface WorkerModelSelection {
   modelId: string;
   tier: ModelPerformanceTier;
   computeType: WorkerComputeType;
+  /** Legacy callers imply the original After I stop contract. */
+  asrMode?: AsrMode;
 }
 
 export function workerModelSelectionsMatch(
@@ -260,7 +290,8 @@ export function workerModelSelectionsMatch(
 ): boolean {
   return left?.modelId === right.modelId
     && left.tier === right.tier
-    && left.computeType === right.computeType;
+    && left.computeType === right.computeType
+    && modeFor(left) === modeFor(right);
 }
 
 export interface WorkerTranscription {
@@ -284,6 +315,16 @@ export interface WorkerAcceleratorSnapshot {
 // escaping can expand one character to six bytes, so the supervisor's byte
 // boundary must exceed that valid worker output while remaining bounded.
 const MAX_WORKER_STDOUT_LINE_BYTES = 1024 * 1024;
+/** Runtime worker rejects larger base64-decoded Live audio payloads. */
+export const LIVE_WORKER_MAX_CHUNK_BYTES = 8 * 1024;
+
+interface ActiveLiveSession {
+  readonly sessionId: string;
+  phase: "open" | "finishing" | "cancelled";
+  nextSequence: number;
+  chunks: Buffer[];
+  chunkBytes: number;
+}
 
 export const WORKER_RUNTIME_IDENTITIES = {
   localscribe_worker: {
@@ -324,6 +365,7 @@ export class WorkerSupervisor {
   private rejectHello: ((error: Error) => void) | null = null;
   private stdoutBuffer = Buffer.alloc(0);
   private activeModel: WorkerModelSelection | null = null;
+  private liveSession: ActiveLiveSession | null = null;
   private operationTail: Promise<void> = Promise.resolve();
   private retired = false;
 
@@ -502,6 +544,154 @@ export class WorkerSupervisor {
     });
   }
 
+  /**
+   * Opens one mode-specific Live decoder. The worker owns no renderer session
+   * identity, so the supervisor carries it and rejects stale/late frames
+   * before they can reach the line protocol.
+   */
+  beginLive(input: {
+    session: LiveAudioSessionDescriptor;
+    model: WorkerModelSelection;
+    language: string;
+    context: string;
+  }): Promise<LiveAudioSink> {
+    return this.serialize(async () => {
+      if (modeFor(input.model) !== "live") {
+        throw new Error("Live dictation requires a live model selection");
+      }
+      if (this.liveSession) throw new Error("Live dictation is already active");
+      await this.ensureReadyUnlocked(input.model);
+      const response = await this.request({
+        type: "begin_live",
+        language: input.language,
+        context: input.context,
+      }, 30_000);
+      if (!liveStartedMessageSchema.safeParse(response).success) {
+        this.abort("ASR worker rejected live dictation startup");
+        throw new Error(`Unexpected worker response: ${response.type}`);
+      }
+      const active: ActiveLiveSession = {
+        sessionId: input.session.sessionId,
+        phase: "open",
+        nextSequence: 0,
+        chunks: [],
+        chunkBytes: 0,
+      };
+      this.liveSession = active;
+      return {
+        write: (frame) => this.writeLiveFrame(active, frame),
+        finish: () => this.finishLive(active),
+        abort: () => this.cancelLive(active),
+      };
+    });
+  }
+
+  private writeLiveFrame(active: ActiveLiveSession, frame: LivePcmFrame): Promise<void> {
+    if (this.liveSession !== active || active.phase !== "open") {
+      return Promise.reject(new Error("Live dictation was cancelled"));
+    }
+    if (
+      frame.sequence !== active.nextSequence
+      || frame.sampleRateHz !== 16_000
+      || frame.channels !== 1
+      || frame.sampleCount !== LIVE_AUDIO_FRAME_SAMPLES
+      || frame.pcm.byteLength !== LIVE_AUDIO_FRAME_SAMPLES * 2
+    ) {
+      this.cancelLiveNow(active);
+      return Promise.reject(new Error("Live audio frame violated the local protocol"));
+    }
+    active.nextSequence += 1;
+    const chunk = Buffer.from(frame.pcm);
+    if (active.chunkBytes + chunk.byteLength > LIVE_WORKER_MAX_CHUNK_BYTES) {
+      this.cancelLiveNow(active);
+      return Promise.reject(new Error("Live audio chunk exceeded the local protocol limit"));
+    }
+    active.chunks.push(chunk);
+    active.chunkBytes += chunk.byteLength;
+    // Aggregate only complete PCM frames and cap at the exact Python limit.
+    if (active.chunkBytes + LIVE_AUDIO_FRAME_SAMPLES * 2 > LIVE_WORKER_MAX_CHUNK_BYTES) {
+      return this.serialize(() => this.flushLive(active));
+    }
+    return Promise.resolve();
+  }
+
+  private finishLive(active: ActiveLiveSession): Promise<void> {
+    if (this.liveSession !== active || active.phase !== "open") {
+      return Promise.reject(new Error("Live dictation was cancelled"));
+    }
+    active.phase = "finishing";
+    return this.serialize(async () => {
+      if (this.liveSession !== active) throw new Error("Live dictation was cancelled");
+      await this.flushLive(active);
+      const response = await this.request({ type: "finish_live" }, TRANSCRIBE_TIMEOUT_CEILING_MS);
+      if (response.type !== "final") {
+        this.abort("ASR worker returned an invalid live final response");
+        throw new Error(`Unexpected worker response: ${response.type}`);
+      }
+      this.liveSession = null;
+    });
+  }
+
+  /** Returns the Live final while retaining the sink-compatible finish API above. */
+  finishLiveWithResult(sessionId: string): Promise<WorkerTranscription> {
+    const active = this.liveSession;
+    if (!active || active.sessionId !== sessionId || active.phase !== "open") {
+      return Promise.reject(new Error("Live dictation was cancelled"));
+    }
+    active.phase = "finishing";
+    return this.serialize(async () => {
+      if (this.liveSession !== active) throw new Error("Live dictation was cancelled");
+      await this.flushLive(active);
+      const response = await this.request({ type: "finish_live" }, TRANSCRIBE_TIMEOUT_CEILING_MS);
+      if (response.type !== "final") {
+        this.abort("ASR worker returned an invalid live final response");
+        throw new Error(`Unexpected worker response: ${response.type}`);
+      }
+      this.liveSession = null;
+      return { text: response.text, language: response.language ?? null, inferenceMs: response.inferenceMs };
+    });
+  }
+
+  cancelLiveSession(sessionId: string): Promise<void> {
+    const active = this.liveSession;
+    if (!active || active.sessionId !== sessionId) return Promise.resolve();
+    return this.cancelLive(active);
+  }
+
+  private cancelLive(active: ActiveLiveSession): Promise<void> {
+    this.cancelLiveNow(active);
+    return this.serialize(async () => {
+      const response = await this.request({ type: "cancel_live" }, 5_000);
+      if (!liveCancelledMessageSchema.safeParse(response).success) {
+        this.abort("ASR worker rejected live cancellation");
+        throw new Error(`Unexpected worker response: ${response.type}`);
+      }
+    });
+  }
+
+  private cancelLiveNow(active: ActiveLiveSession): void {
+    if (active.phase === "cancelled") return;
+    active.phase = "cancelled";
+    active.chunks.length = 0;
+    active.chunkBytes = 0;
+    if (this.liveSession === active) this.liveSession = null;
+  }
+
+  private async flushLive(active: ActiveLiveSession): Promise<void> {
+    if (this.liveSession !== active || active.phase === "cancelled") {
+      throw new Error("Live dictation was cancelled");
+    }
+    if (active.chunkBytes === 0) return;
+    const audioBase64 = Buffer.concat(active.chunks, active.chunkBytes).toString("base64");
+    active.chunks.length = 0;
+    active.chunkBytes = 0;
+    const response = await this.request({ type: "append_live", audioBase64 }, 30_000);
+    if (!partialMessageSchema.safeParse(response).success) {
+      this.abort("ASR worker returned an invalid live partial response");
+      throw new Error(`Unexpected worker response: ${response.type}`);
+    }
+  }
+
   deviceInfo(): Promise<WorkerAcceleratorSnapshot> {
     return this.serialize(async () => {
       await this.ensureStarted();
@@ -629,6 +819,7 @@ export class WorkerSupervisor {
           modelId: selection.modelId,
           tier: selection.tier,
           computeType: selection.computeType,
+          asrMode: modeFor(selection),
           modelRoot: this.modelRoot,
           // Normal inference must never fetch weights. Model data is only
           // acquired through the explicit `install_model` operation above.
@@ -1025,6 +1216,7 @@ export class WorkerSupervisor {
     this.rejectHello = null;
     this.stdoutBuffer = Buffer.alloc(0);
     this.activeModel = null;
+    this.liveSession = null;
   }
 }
 
@@ -1032,9 +1224,15 @@ function sameSelection(
   left: WorkerModelSelection | null,
   right: WorkerModelSelection,
 ): boolean {
-  return left?.modelId === right.modelId
+  return left !== null
+    && left.modelId === right.modelId
     && left.tier === right.tier
-    && left.computeType === right.computeType;
+    && left.computeType === right.computeType
+    && modeFor(left) === modeFor(right);
+}
+
+function modeFor(selection: WorkerModelSelection): AsrMode {
+  return selection.asrMode ?? "after-stop";
 }
 
 function delay(milliseconds: number): Promise<void> {

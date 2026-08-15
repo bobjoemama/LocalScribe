@@ -36,6 +36,10 @@ describe("renderer IPC authorization", () => {
 
   it("allows only the pill's dictation and presentation operations", () => {
     expect(rendererSurfaceCanInvoke("pill", IPC.sessionTranscribe)).toBe(true);
+    expect(rendererSurfaceCanInvoke("pill", IPC.sessionBeginLive)).toBe(true);
+    expect(rendererSurfaceCanInvoke("pill", IPC.sessionPushLive)).toBe(true);
+    expect(rendererSurfaceCanInvoke("pill", IPC.sessionFinishLive)).toBe(true);
+    expect(rendererSurfaceCanInvoke("pill", IPC.sessionCancelLive)).toBe(true);
     expect(rendererSurfaceCanInvoke("pill", IPC.windowSetPillMode)).toBe(true);
     expect(rendererSurfaceCanInvoke("pill", IPC.systemGetPermissions)).toBe(true);
     expect(() => assertRendererSurfaceCanInvoke("pill", IPC.systemRemoveModel))
