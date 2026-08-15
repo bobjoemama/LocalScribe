@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 
 import { assertSquirrelArtifacts } from "./squirrel-installer-verifier.mts";
-import extract from "extract-zip";
 import {
   existsSync,
   lstatSync,
@@ -16,6 +15,7 @@ import {
   loadReleaseMetadata,
   releaseLayout,
 } from "./release-metadata.mts";
+import { extractVerifiedZip } from "./safe-zip-extraction.mts";
 
 const releaseLayout_ = releaseLayout(loadReleaseMetadata(), "win32");
 
@@ -47,7 +47,7 @@ if (
   );
 }
 try {
-  await extract(path.resolve(nupkgPath), { dir: temporaryRoot });
+  await extractVerifiedZip(path.resolve(nupkgPath), temporaryRoot);
   const asars = [];
   const visit = (directory) => {
     for (const entry of readdirSync(directory)) {
