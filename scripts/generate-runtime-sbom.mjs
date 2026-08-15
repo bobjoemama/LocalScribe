@@ -30,6 +30,28 @@ function captureVersion(source, pattern, label) {
   return exactVersion(match[1], label);
 }
 
+export function resolveFluidAudioDependency({ packageSwift, packageResolved }) {
+  const packageMatch = packageSwift.match(
+    /\.package\(\s*url:\s*"https:\/\/github\.com\/FluidInference\/FluidAudio\.git",\s*exact:\s*"([0-9]+\.[0-9]+\.[0-9]+)"\s*\)/u,
+  );
+  const version = packageMatch?.[1] ? exactVersion(packageMatch[1], "FluidAudio package") : null;
+  if (!version) throw new Error("FluidAudio helper must pin an exact package version.");
+  const resolved = JSON.parse(packageResolved);
+  const pins = Array.isArray(resolved?.pins) ? resolved.pins : [];
+  const pin = pins.find((candidate) => candidate?.identity === "fluidaudio");
+  if (
+    !pin ||
+    pin.kind !== "remoteSourceControl" ||
+    pin.location !== "https://github.com/FluidInference/FluidAudio.git" ||
+    pin.state?.version !== version ||
+    typeof pin.state?.revision !== "string" ||
+    !/^[a-f0-9]{40}$/u.test(pin.state.revision)
+  ) {
+    throw new Error("FluidAudio helper Package.resolved does not match its exact source pin.");
+  }
+  return { version, revision: pin.state.revision };
+}
+
 function componentReference(component) {
   if (typeof component?.["bom-ref"] === "string" && component["bom-ref"]) {
     return component["bom-ref"];
@@ -166,6 +188,22 @@ const platformName = RELEASE_POLICY.targets[platform].label;
 const crispAsrManifest = platform === "win32"
   ? readJson("resources/native/windows/crispasr-runtime.json")
   : null;
+const fluidAudio = platform === "darwin"
+  ? resolveFluidAudioDependency({
+      packageSwift: readFileSync(
+        path.join(projectRoot, "tools/fluidaudio-parakeet-helper/Package.swift"),
+        "utf8",
+      ),
+      packageResolved: readFileSync(
+        path.join(projectRoot, "tools/fluidaudio-parakeet-helper/Package.resolved"),
+        "utf8",
+      ),
+    })
+  : null;
+const fluidAudioHelperPath = path.join(
+  projectRoot,
+  "resources/native/macos/localscribe-fluidaudio-parakeet",
+);
 if (
   crispAsrManifest !== null &&
   (
@@ -207,6 +245,29 @@ const supplementalComponents = [
     purl: `pkg:npm/electron@${electronLocked}`,
     properties: [{ name: "com.localscribe.runtime-role", value: "desktop-shell" }],
   },
+  ...(fluidAudio === null
+    ? []
+    : [{
+        type: "library",
+        "bom-ref": `fluidaudio@${fluidAudio.version}+${fluidAudio.revision}`,
+        name: "FluidAudio",
+        version: fluidAudio.version,
+        purl: `pkg:github/FluidInference/FluidAudio@${fluidAudio.revision}`,
+        externalReferences: [{
+          type: "vcs",
+          url: `https://github.com/FluidInference/FluidAudio.git@${fluidAudio.revision}`,
+        }],
+        properties: [
+          { name: "com.localscribe.runtime-role", value: "parakeet-coreml-ane-engine" },
+          { name: "com.localscribe.helper-protocol", value: "1" },
+          ...(existsSync(fluidAudioHelperPath)
+            ? [{
+                name: "com.localscribe.helper-sha256",
+                value: createHash("sha256").update(readFileSync(fluidAudioHelperPath)).digest("hex"),
+              }]
+            : []),
+        ],
+      }]),
   {
     type: "platform",
     "bom-ref": `cpython@${macPython}`,

@@ -26,6 +26,8 @@ const MAC_MANIFESTS = [
   "qwen3-asr-0-6b-mlx-bf16.json",
   "qwen3-asr-0-6b-mlx-8bit.json",
   "qwen3-asr-0-6b-mlx-4bit.json",
+  "parakeet-unified-en-0-6b-coreml-fp16.json",
+  "parakeet-unified-en-0-6b-coreml-int8.json",
 ] as const;
 
 const WINDOWS_MANIFESTS = [
@@ -84,7 +86,10 @@ export function resourcePolicyFor(
       workerDirectory: "worker/localscribe_worker",
       runtimeDirectory: "python-runtime",
       runtimeExecutable: "python-runtime/venv/bin/python3",
-      helperFiles: ["native/macos/active-target"],
+      helperFiles: [
+        "native/macos/active-target",
+        "native/macos/localscribe-fluidaudio-parakeet",
+      ],
       manifestFiles: MAC_MANIFESTS.map((filename) => `model-manifest/${filename}`),
       brandingFiles: [],
     };

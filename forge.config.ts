@@ -65,6 +65,9 @@ const MAC_ACTIVE_TARGET_ENTITLEMENTS = path.resolve(
   "resources/entitlements.mac.active-target.plist",
 );
 const MAC_RUNTIME_ENTITLEMENTS = path.resolve("resources/entitlements.mac.runtime.plist");
+const MAC_FLUID_AUDIO_HELPER = path.resolve(
+  "resources/native/macos/localscribe-fluidaudio-parakeet",
+);
 const PUBLIC_RELEASE = process.env.LOCALSCRIBE_RELEASE === "1";
 // Squirrel's 32-bit WriteZipToSetup helper silently leaves its dummy payload
 // in Setup.exe once LocalScribe's CUDA runtime pushes the package near 1 GiB.
@@ -136,6 +139,9 @@ function signingEntitlementsFor(filePath: string): string {
     return MAC_ACTIVE_TARGET_ENTITLEMENTS;
   }
   if (normalizedPath.includes("/python-runtime/")) {
+    return MAC_RUNTIME_ENTITLEMENTS;
+  }
+  if (normalizedPath.endsWith("/native/macos/localscribe-fluidaudio-parakeet")) {
     return MAC_RUNTIME_ENTITLEMENTS;
   }
   /*
@@ -227,7 +233,7 @@ function collectMachOFiles(directory: string): string[] {
 function signProtectedMacResources(): void {
   const runtimeRoot = path.resolve("resources/python-runtime");
   const activeTarget = path.resolve("resources/native/macos/active-target");
-  const binaries = [...collectMachOFiles(runtimeRoot), activeTarget]
+  const binaries = [...collectMachOFiles(runtimeRoot), activeTarget, MAC_FLUID_AUDIO_HELPER]
     .sort((left, right) => right.split(path.sep).length - left.split(path.sep).length);
 
   for (const binary of binaries) {
@@ -249,7 +255,8 @@ function signProtectedMacResources(): void {
 function isPreSignedProtectedMacResource(filePath: string): boolean {
   const normalizedPath = filePath.replaceAll("\\", "/");
   return normalizedPath.includes("/Contents/Resources/python-runtime/") ||
-    normalizedPath.endsWith("/Contents/Resources/native/macos/active-target");
+    normalizedPath.endsWith("/Contents/Resources/native/macos/active-target") ||
+    normalizedPath.endsWith("/Contents/Resources/native/macos/localscribe-fluidaudio-parakeet");
 }
 
 function removeInfoPlistKeyIfPresent(infoPlist: string, keyPath: string): void {

@@ -35,6 +35,8 @@ const MAC_MODEL_MANIFESTS = [
   "qwen3-asr-0-6b-mlx-bf16.json",
   "qwen3-asr-0-6b-mlx-8bit.json",
   "qwen3-asr-0-6b-mlx-4bit.json",
+  "parakeet-unified-en-0-6b-coreml-fp16.json",
+  "parakeet-unified-en-0-6b-coreml-int8.json",
 ] as const;
 const WINDOWS_MODEL_MANIFESTS = [
   "faster-whisper-large-v3.json",
@@ -172,7 +174,10 @@ describe("packaged dependency inventory", () => {
     );
     expect(mac.workerDirectory).toBe("worker/localscribe_worker");
     expect(mac.runtimeDirectory).toBe("python-runtime");
-    expect(mac.helperFiles).toEqual(["native/macos/active-target"]);
+    expect(mac.helperFiles).toEqual([
+      "native/macos/active-target",
+      "native/macos/localscribe-fluidaudio-parakeet",
+    ]);
     expect(mac.brandingFiles).toEqual([]);
 
     expect(windows.manifestFiles).toEqual(
@@ -206,6 +211,7 @@ describe("packaged dependency inventory", () => {
       "worker/localscribe_worker/__main__.py",
       "python-runtime/venv/bin/python3",
       "native/macos/active-target",
+      "native/macos/localscribe-fluidaudio-parakeet",
       ...MAC_MODEL_MANIFESTS.map((filename) => `model-manifest/${filename}`),
     ];
     expect(() => assertPlatformResourceEntries(valid, "darwin", "arm64")).not.toThrow();
@@ -268,6 +274,7 @@ describe("packaged dependency inventory", () => {
       ...MAC_MODEL_MANIFESTS.map((filename) => `model-manifest/${filename}`),
       ...WINDOWS_MODEL_MANIFESTS.map((filename) => `model-manifest/${filename}`),
       "native/macos/active-target",
+      "native/macos/localscribe-fluidaudio-parakeet",
       "native/macos/active-target.swift",
       "native/windows/active-target.exe",
       "python-runtime/venv/bin/python3",
@@ -289,6 +296,7 @@ describe("packaged dependency inventory", () => {
       [...MAC_MODEL_MANIFESTS].sort(),
     );
     expect(existsSync(path.join(resources, "native", "macos", "active-target.swift"))).toBe(false);
+    expect(existsSync(path.join(resources, "native", "macos", "localscribe-fluidaudio-parakeet"))).toBe(true);
     expect(existsSync(path.join(resources, "native", "windows"))).toBe(false);
     expect(existsSync(path.join(resources, "python-runtime", "venv", "lib", "pkg", "tests"))).toBe(false);
     expect(existsSync(path.join(resources, "python-runtime-windows"))).toBe(false);
@@ -304,6 +312,7 @@ describe("packaged dependency inventory", () => {
       ...MAC_MODEL_MANIFESTS.map((filename) => `model-manifest/${filename}`),
       ...WINDOWS_MODEL_MANIFESTS.map((filename) => `model-manifest/${filename}`),
       "native/macos/active-target",
+      "native/macos/localscribe-fluidaudio-parakeet",
       ...WINDOWS_NATIVE_FILES,
       "python-runtime/venv/bin/python3",
       "python-runtime-windows/venv/Scripts/python.exe",

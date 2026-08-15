@@ -88,6 +88,12 @@ const releaseLayout_ = releaseLayout(loadReleaseMetadata(), "darwin");
 const appPath = path.resolve(process.argv[2] ?? releaseLayout_.applicationPath);
 const resourcesPath = path.join(appPath, "Contents", "Resources");
 const activeTarget = path.join(resourcesPath, "native", "macos", "active-target");
+const fluidAudioHelper = path.join(
+  resourcesPath,
+  "native",
+  "macos",
+  "localscribe-fluidaudio-parakeet",
+);
 const runtimeRoot = path.join(resourcesPath, "python-runtime");
 const appEntitlements = entitlements(appPath);
 
@@ -103,6 +109,7 @@ const signedEntitlements = assertMainAppEntitlements({
 });
 
 assertNoEntitlementKeys(activeTarget);
+assertNoEntitlementKeys(fluidAudioHelper);
 const runtimeMachOFiles = collectMachOFiles(runtimeRoot);
 if (runtimeMachOFiles.length === 0) fail("the packaged Python runtime contains no Mach-O files");
 for (const binary of runtimeMachOFiles) assertNoEntitlementKeys(binary);
@@ -160,6 +167,6 @@ console.log(
   `macOS entitlements verified: main app carries exactly ${signedEntitlements.join(", ")};`
   + ` ${verifiedHelpers.length} helper bundles match their declared plists`
   + ` (${verifiedHelpers.join("; ")});`
-  + ` active-target, ${runtimeMachOFiles.length} runtime and ${frameworkMachOFiles.length}`
+  + ` active-target, FluidAudio helper, ${runtimeMachOFiles.length} runtime and ${frameworkMachOFiles.length}`
   + " framework Mach-O files are unprivileged.",
 );

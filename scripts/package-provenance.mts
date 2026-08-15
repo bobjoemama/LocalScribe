@@ -63,7 +63,12 @@ const MAC_RELEASE_INPUTS = [
   "resources/model-manifest/qwen3-asr-0-6b-mlx-4bit.json",
   "resources/model-manifest/qwen3-asr-0-6b-mlx-8bit.json",
   "resources/model-manifest/qwen3-asr-0-6b-mlx-bf16.json",
+  "resources/model-manifest/parakeet-unified-en-0-6b-coreml-fp16.json",
+  "resources/model-manifest/parakeet-unified-en-0-6b-coreml-int8.json",
   "resources/native/macos/active-target.swift",
+  "tools/fluidaudio-parakeet-helper/Package.resolved",
+  "tools/fluidaudio-parakeet-helper/Package.swift",
+  "tools/fluidaudio-parakeet-helper/Sources/localscribe-fluidaudio-parakeet/main.swift",
   /*
    * The macOS gate scripts decide whether an artifact may ship, so a change to
    * one of them has to invalidate the artifact it approved — exactly as the

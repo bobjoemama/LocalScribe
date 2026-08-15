@@ -10,6 +10,8 @@ const root = resolve(process.cwd());
 type CycloneDxComponent = {
   name?: unknown;
   version?: unknown;
+  "bom-ref"?: unknown;
+  properties?: unknown;
 };
 
 type CycloneDxBom = {
@@ -122,6 +124,18 @@ describe("runtime core SBOM generation", () => {
         expectOneExactComponent(bom, "CrispASR", "0.8.24");
       } else {
         expect(namedComponents(bom, "CrispASR")).toHaveLength(0);
+        expectOneExactComponent(bom, "FluidAudio", "0.15.5");
+        const fluidAudio = namedComponents(bom, "FluidAudio")[0];
+        if (!fluidAudio) {
+          throw new Error("runtime SBOM is missing FluidAudio");
+        }
+        expect(fluidAudio["bom-ref"]).toBe(
+          "fluidaudio@0.15.5+19600a485baa4998812e4654b70d2bab8f2c9949",
+        );
+        expect(fluidAudio.properties).toContainEqual({
+          name: "com.localscribe.runtime-role",
+          value: "parakeet-coreml-ane-engine",
+        });
       }
 
       for (const [productionDependency, version] of Object.entries(
