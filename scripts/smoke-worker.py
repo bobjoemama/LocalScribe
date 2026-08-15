@@ -2,13 +2,19 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import os
 import subprocess
 import uuid
+import wave
 from pathlib import Path
 
 MACOS_FAMILY_TIER_MANIFESTS = {
+    "parakeet-unified-en-0-6b": {
+        "high": ("parakeet-unified-en-0-6b-coreml-fp16.json", "coreml-fp16"),
+        "medium": ("parakeet-unified-en-0-6b-coreml-int8.json", "coreml-int8"),
+    },
     "whisper-large-v3": {
         "high": ("whisper-large-v3-mlx.json", "float16"),
         "medium": ("whisper-large-v3-mlx-8bit.json", "int8"),
@@ -64,6 +70,12 @@ def main() -> int:
     )
     parser.add_argument("--tier", choices=("high", "medium", "low"), default="medium")
     parser.add_argument(
+        "--mode",
+        choices=("after-stop", "live"),
+        default="after-stop",
+        help="Exercise final-WAV or true incremental inference. Live is currently Parakeet-only.",
+    )
+    parser.add_argument(
         "--repeat",
         type=int,
         default=1,
@@ -77,6 +89,11 @@ def main() -> int:
     args = parser.parse_args()
     if args.repeat < 1 or args.repeat > 20:
         parser.error("--repeat must be between 1 and 20")
+    family_tiers = MACOS_FAMILY_TIER_MANIFESTS[args.family]
+    if args.tier not in family_tiers:
+        parser.error(f"{args.family} has no {args.tier} profile")
+    if args.mode == "live" and args.family != "parakeet-unified-en-0-6b":
+        parser.error("--mode live requires parakeet-unified-en-0-6b")
     # Preserve the venv launcher path. Resolving its symlink would bypass the
     # venv and make the packaged runtime's site-packages unavailable.
     python_executable = Path(os.path.abspath(args.python))
@@ -85,7 +102,7 @@ def main() -> int:
     worker_directory = Path(args.worker).resolve(strict=True)
     model_root = Path(args.model_root).resolve(strict=True)
     audio_path = Path(args.audio).resolve(strict=True)
-    manifest_filename, compute_type = MACOS_FAMILY_TIER_MANIFESTS[args.family][args.tier]
+    manifest_filename, compute_type = family_tiers[args.tier]
     manifest_path = (
         Path(__file__).resolve().parents[1]
         / "resources"
@@ -147,18 +164,46 @@ def main() -> int:
         "modelId": model_id,
         "computeType": compute_type,
         "modelRoot": str(model_root),
+        "asrMode": args.mode,
         "allowDownload": False,
     })
-    finals = [
-        request({
-            "type": "transcribe",
-            "audioPath": str(audio_path),
-            "allowedRoot": str(audio_path.parent),
-            "language": "English",
-            "context": "LocalScribe",
-        })
-        for _ in range(args.repeat)
-    ]
+    if args.mode == "after-stop":
+        finals = [
+            request({
+                "type": "transcribe",
+                "audioPath": str(audio_path),
+                "allowedRoot": str(audio_path.parent),
+                "language": "English",
+                "context": "" if args.family == "parakeet-unified-en-0-6b" else "LocalScribe",
+            })
+            for _ in range(args.repeat)
+        ]
+        partials: list[dict[str, object]] = []
+    else:
+        with wave.open(str(audio_path), "rb") as wav:
+            if (
+                wav.getnchannels() != 1
+                or wav.getsampwidth() != 2
+                or wav.getframerate() != 16_000
+                or wav.getcomptype() != "NONE"
+            ):
+                raise RuntimeError("live smoke audio must be mono 16 kHz PCM16 WAV")
+            pcm16 = wav.readframes(wav.getnframes())
+        finals = []
+        partials = []
+        for _ in range(args.repeat):
+            request({"type": "begin_live", "language": "English", "context": ""})
+            session_partials = []
+            for offset in range(0, len(pcm16), 8 * 1024):
+                chunk = pcm16[offset : offset + 8 * 1024]
+                if not chunk:
+                    continue
+                session_partials.append(request({
+                    "type": "append_live",
+                    "audioBase64": base64.b64encode(chunk).decode("ascii"),
+                }))
+            partials.extend(session_partials)
+            finals.append(request({"type": "finish_live"}))
     request({"type": "shutdown"})
     process.wait(timeout=5)
     print(json.dumps(
@@ -166,8 +211,11 @@ def main() -> int:
             "hello": hello,
             "installed": installed,
             "ready": ready,
+            "mode": args.mode,
             "final": finals[0],
             "finals": finals,
+            "partialCount": len(partials),
+            "lastPartial": partials[-1] if partials else None,
         },
         ensure_ascii=False,
     ))

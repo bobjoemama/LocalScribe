@@ -6,6 +6,7 @@ smoke_model_root=""
 smoke_audio=""
 smoke_family="whisper-large-v3"
 smoke_tier="medium"
+smoke_mode="after-stop"
 smoke_repeat="1"
 smoke_requested="0"
 while (($#)); do
@@ -14,6 +15,7 @@ while (($#)); do
     --smoke-audio) smoke_requested="1"; smoke_audio="${2:?missing value for --smoke-audio}"; shift 2 ;;
     --smoke-family) smoke_requested="1"; smoke_family="${2:?missing value for --smoke-family}"; shift 2 ;;
     --smoke-tier) smoke_requested="1"; smoke_tier="${2:?missing value for --smoke-tier}"; shift 2 ;;
+    --smoke-mode) smoke_requested="1"; smoke_mode="${2:?missing value for --smoke-mode}"; shift 2 ;;
     --smoke-repeat) smoke_requested="1"; smoke_repeat="${2:?missing value for --smoke-repeat}"; shift 2 ;;
     *) echo "Unknown macOS verification argument: $1" >&2; exit 2 ;;
   esac
@@ -60,6 +62,7 @@ if [[ -n "$smoke_model_root" ]]; then
     --audio "$smoke_audio" \
     --family "$smoke_family" \
     --tier "$smoke_tier" \
+    --mode "$smoke_mode" \
     --repeat "$smoke_repeat"
 fi
 

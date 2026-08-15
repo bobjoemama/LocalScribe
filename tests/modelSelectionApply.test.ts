@@ -12,23 +12,39 @@ function between(start: string, end: string): string {
 }
 
 describe("atomic model selection architecture", () => {
-  it("orders unload, unbiased probe, resolution, verification, load, and persistence", () => {
+  it("proves the exact target before unload, then probes, loads, and persists it", () => {
     const body = between("async function applyModelSelection(", "function registerIpc(): void");
-    const unload = body.indexOf("await worker.shutdown();");
-    const probe = body.indexOf("await probeUnloadedAccelerator();", unload);
-    const resolve = body.indexOf("targetResolution = resolveSelection", probe);
+    const resolve = body.indexOf("targetResolution = resolveModelPerformance");
     const memory = body.indexOf("assertResolutionFitsMemory(targetResolution);", resolve);
     // Only the artifact being loaded gates the Apply; the other tiers of the
     // family cannot change the outcome and hashing them cost gigabytes of reads.
     const verify = body.indexOf("await verifyModelDirectory(modelRoot, targetResolution.tier.manifest)", memory);
     expect(body).not.toContain("verifyRuntimeModelCatalog");
-    const load = body.indexOf("await worker.ensureReady(workerSelection(targetResolution.tier));", verify);
+    const unload = body.indexOf("await worker.shutdown();", verify);
+    const probe = body.indexOf("await probeUnloadedAccelerator();", unload);
+    const load = body.indexOf("await worker.ensureReady(workerSelection(targetResolution.tier, request.asrMode));", probe);
     const persist = body.indexOf("const latestSettings = database.getSettings();", load);
     const notify = body.indexOf("notifySettingsChanged(settings);", persist);
 
-    const positions = [unload, probe, resolve, memory, verify, load, persist, notify];
+    const positions = [resolve, memory, verify, unload, probe, load, persist, notify];
     expect(positions.every((position) => position >= 0)).toBe(true);
     expect(positions).toEqual([...positions].sort((a, b) => a - b));
+  });
+
+  it("does not unload the warm model when target preflight fails", () => {
+    const body = between("async function applyModelSelection(", "function registerIpc(): void");
+    const verification = body.indexOf("await verifyModelDirectory(modelRoot, targetResolution.tier.manifest)");
+    const transition = body.indexOf("runtimeTransitionStarted = true;", verification);
+    const unload = body.indexOf("await worker.shutdown();", transition);
+    const catchStart = body.indexOf("} catch (error) {", unload);
+    const catchEnd = body.indexOf("throw new Error(`Could not apply", catchStart);
+    const rollback = body.slice(catchStart, catchEnd);
+
+    expect(verification).toBeGreaterThanOrEqual(0);
+    expect(transition).toBeGreaterThan(verification);
+    expect(unload).toBeGreaterThan(transition);
+    expect(rollback).toContain("if (runtimeTransitionStarted)");
+    expect(rollback).toContain("The previous model was never unloaded");
   });
 
   it("keeps only an exact warm same-selection Apply idempotent and lets a cold selection load", () => {
@@ -57,6 +73,7 @@ describe("atomic model selection architecture", () => {
     expect(saveEnd).toBeGreaterThan(latestMerge);
     expect(body.slice(latestRead, saveEnd)).not.toContain("await ");
     expect(body.slice(latestRead, saveEnd)).toContain("activeModelFamilyId: request.familyId");
+    expect(body.slice(latestRead, saveEnd)).toContain("asrMode: request.asrMode");
     expect(body.slice(latestRead, saveEnd)).toContain("modelPerformanceMode: request.performanceMode");
   });
 
@@ -134,8 +151,8 @@ describe("atomic model selection architecture", () => {
     const ipc = between("function registerIpc(): void", "function createTray(): Tray");
     const install = between("handle(IPC.systemInstallModel", "handle(IPC.systemRemoveModel");
     expect(install).toContain("replacesLoadedArtifact");
-    expect(install).toContain("workerModelSelectionsMatch(warmSelection, workerSelection(modelResolution.tier))");
-    expect(install).toContain("worker.installModel(workerSelection(tier), {");
+    expect(install).toContain("workerSelection(modelResolution.tier, currentSettings.asrMode)");
+    expect(install).toContain("install: () => worker.installModel(workerSelection(");
     expect(install).toContain("replacesLoadedArtifact,");
     // The install request budget scales with the artifact, so the size has to
     // reach the supervisor with the request. See tests/workerSupervisor.test.ts.

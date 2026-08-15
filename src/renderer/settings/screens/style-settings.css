@@ -275,7 +275,8 @@
 .ls-close-button { display: grid; place-items: center; flex: 0 0 auto; width: 29px; height: 29px; border-radius: 8px; background: #f3f1ed; color: #6f6a64 !important; }
 .ls-close-button:hover { background: #e9e6e1; color: #1e1d1b !important; }
 .ls-close-button svg { width: 15px; }
-.ls-settings-scroll { min-width: 0; min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; padding: 22px 24px 38px; }
+/* Keep the final expandable/control target fully above the sticky footer. */
+.ls-settings-scroll { min-width: 0; min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; padding: 22px 24px 64px; }
 .ls-settings-group + .ls-settings-group { margin-top: 24px; }
 .ls-settings-group > h2 { margin: 0 0 8px 2px; color: #7d7770; font-size: 10px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
 .ls-settings-group > div { overflow: hidden; border: 1px solid #e6e2dc; border-radius: 11px; background: #fff; }
