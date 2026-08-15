@@ -5,6 +5,7 @@ import {
   type ModelPerformanceMode,
   type ModelPerformanceTier,
 } from "../../../shared/contracts";
+import { useState } from "react";
 import { modelPerformanceTierLabel } from "../../../shared/modelPerformance";
 
 /*
@@ -19,6 +20,85 @@ export const MODEL_MODE_CHOICES = [
 ] as const satisfies readonly { id: ModelPerformanceMode; label: string }[];
 
 const TIER_ORDER: readonly ModelPerformanceTier[] = ["high", "medium", "low"];
+
+type CatalogFamily = ModelCatalog["families"][number];
+
+/**
+ * The current IPC catalog deliberately has no UI-only marketing/capability
+ * fields yet. Keep this compatibility layer local to the renderer so the
+ * model workers remain the authority for what can actually run. New catalog
+ * families automatically get a conservative, usable presentation until the
+ * shared capability descriptor lands.
+ */
+export type RecognitionExperience = "after-stop" | "live";
+export interface ModelFamilyPresentation {
+  experience: RecognitionExperience;
+  experiences: readonly RecognitionExperience[];
+  recommendation: "recommended" | "accurate" | "balanced" | "legacy" | "live";
+  summary: string;
+  languageLabel: string;
+  latencyLabel: string;
+}
+
+export function modelFamilyPresentation(family: CatalogFamily): ModelFamilyPresentation {
+  const identity = `${family.familyId} ${family.displayName} ${catalogFamilyBackendLabel(family)}`.toLowerCase();
+  if (identity.includes("moonshine") || identity.includes("streaming") || identity.includes("nemotron")) {
+    return {
+      experience: "live",
+      experiences: ["live"],
+      recommendation: "live",
+      summary: "Recognizes while you speak, then finalizes before insertion.",
+      languageLabel: identity.includes("english") ? "English" : "Language support shown after install",
+      latencyLabel: "Live preview",
+    };
+  }
+  if (identity.includes("parakeet")) {
+    return {
+      experience: "after-stop",
+      experiences: identity.includes("unified") ? ["after-stop", "live"] : ["after-stop"],
+      recommendation: "recommended",
+      summary: identity.includes("unified")
+        ? "One fast local model for either final-only dictation or a live private preview."
+        : "Fast, accurate local dictation tuned for Apple silicon.",
+      languageLabel: identity.includes("v3") ? "25 European languages" : "English",
+      latencyLabel: "Fast after stop",
+    };
+  }
+  if (identity.includes("qwen")) {
+    return {
+      experience: "after-stop",
+      experiences: ["after-stop"],
+      recommendation: "accurate",
+      summary: "Strong multilingual recognition with a little more model weight.",
+      languageLabel: "Multilingual",
+      latencyLabel: "Balanced after stop",
+    };
+  }
+  if (identity.includes("whisper") && identity.includes("v2")) {
+    return {
+      experience: "after-stop",
+      experiences: ["after-stop"],
+      recommendation: "legacy",
+      summary: "Older Whisper generation retained for compatibility.",
+      languageLabel: "Multilingual",
+      latencyLabel: "After stop",
+    };
+  }
+  return {
+    experience: "after-stop",
+    experiences: ["after-stop"],
+    recommendation: "balanced",
+    summary: "Reliable local transcription after you finish speaking.",
+    languageLabel: "Multilingual",
+    latencyLabel: "After stop",
+  };
+}
+
+export function supportedModeChoices(family: CatalogFamily | undefined): readonly typeof MODEL_MODE_CHOICES[number][] {
+  if (!family) return MODEL_MODE_CHOICES;
+  const profileTiers = new Set(family.profiles.map((profile) => profile.tier));
+  return MODEL_MODE_CHOICES.filter((choice) => choice.id === "auto" || profileTiers.has(choice.id));
+}
 
 export type ModelModeChoice = ModelPerformanceMode;
 export type ConcreteModelTier = ModelPerformanceTier;
@@ -93,6 +173,13 @@ export interface ModelPerformanceSettingsProps {
   action: ModelActionState;
   feedback: { message: string; isError: boolean } | null;
   applying: boolean;
+  /**
+   * Optional until the shared streaming-mode setting reaches this branch.
+   * When supplied, the renderer becomes fully controlled by main; until then
+   * the picker only filters the catalog and cannot claim it changed inference.
+   */
+  recognitionExperience?: RecognitionExperience;
+  onRecognitionExperienceChange?(experience: RecognitionExperience): void;
   onModeChange(mode: ModelModeChoice): void;
   onFamilyChange(familyId: ModelFamilyId): void;
   onApply(): void;
@@ -389,6 +476,8 @@ export function ModelPerformanceSettings({
   action,
   feedback,
   applying,
+  recognitionExperience,
+  onRecognitionExperienceChange,
   onModeChange,
   onFamilyChange,
   onApply,
@@ -410,6 +499,15 @@ export function ModelPerformanceSettings({
   const pendingFamily = catalog?.families.find((family) => family.familyId === pendingSelection.familyId);
   const currentModeLabel = modeLabel(currentSelection.performanceMode);
   const pendingModeLabel = modeLabel(pendingSelection.performanceMode);
+  const initialBrowsingFamily = pendingFamily ?? currentFamily ?? catalog?.families[0];
+  const [uncontrolledBrowsingExperience, setUncontrolledBrowsingExperience] = useState<RecognitionExperience>(() => (
+    initialBrowsingFamily ? modelFamilyPresentation(initialBrowsingFamily).experience : "after-stop"
+  ));
+  const browsingExperience = recognitionExperience ?? uncontrolledBrowsingExperience;
+  const chooseExperience = (experience: RecognitionExperience) => {
+    if (onRecognitionExperienceChange) onRecognitionExperienceChange(experience);
+    else setUncontrolledBrowsingExperience(experience);
+  };
   const selectionChanged = currentSelection.familyId !== pendingSelection.familyId
     || currentSelection.performanceMode !== pendingSelection.performanceMode;
   const applyEligibility = modelApplyEligibility({
@@ -425,10 +523,17 @@ export function ModelPerformanceSettings({
     action,
     applying,
   });
+  const availableModeChoices = supportedModeChoices(pendingFamily);
+  const liveFamiliesAvailable = catalog?.families.some(
+    (family) => modelFamilyPresentation(family).experiences.includes("live"),
+  ) ?? false;
+  const visibleFamilies = catalog?.families.filter(
+    (family) => modelFamilyPresentation(family).experiences.includes(browsingExperience),
+  ) ?? [];
 
   return (
     <div className="ls-model-performance">
-      <section className="ls-model-apply-card" aria-labelledby="model-apply-heading">
+      <section className="ls-model-apply-card" aria-labelledby="model-apply-heading" aria-live="polite">
         <div>
           <span>{selectionChanged ? "Pending model change" : "Current model selection"}</span>
           <h2 id="model-apply-heading">
@@ -466,6 +571,41 @@ export function ModelPerformanceSettings({
         </div>
       </section>
 
+      <section className="ls-model-experience-picker" aria-labelledby="model-experience-heading">
+        <div>
+          <span>Dictation experience</span>
+          <h2 id="model-experience-heading">Choose when LocalScribe recognizes your speech</h2>
+          <p>Both keep audio on this Mac. A live model may show a private preview, but text is still inserted only after you stop.</p>
+        </div>
+        <div className="ls-model-experience-options" role="group" aria-label="Dictation experience">
+          <button
+            type="button"
+            className={browsingExperience === "after-stop" ? "is-selected" : ""}
+            aria-pressed={browsingExperience === "after-stop"}
+            disabled={applying || action !== null}
+            onClick={() => chooseExperience("after-stop")}
+          >
+            <strong>After I stop</strong>
+            <span>Best final accuracy</span>
+          </button>
+          <button
+            type="button"
+            className={browsingExperience === "live" ? "is-selected" : ""}
+            aria-pressed={browsingExperience === "live"}
+            disabled={applying || action !== null || !liveFamiliesAvailable}
+            onClick={() => chooseExperience("live")}
+          >
+            <strong>Live</strong>
+            <span>{liveFamiliesAvailable ? "Recognize while speaking" : "Streaming model not installed yet"}</span>
+          </button>
+        </div>
+        {!liveFamiliesAvailable && (
+          <p className="ls-model-experience-unavailable" role="status">
+            Live recognition will appear here only when a verified local streaming model is included in your catalog. It is unavailable in this build, so LocalScribe will not silently substitute another model.
+          </p>
+        )}
+      </section>
+
       <section className="ls-model-auto-card" aria-labelledby="model-auto-heading">
         <div>
           <span>Performance within the selected family</span>
@@ -482,7 +622,7 @@ export function ModelPerformanceSettings({
         <legend>Performance mode</legend>
         <p>Choose Auto or one concrete quality and memory profile for the active speech-model family.</p>
         <div>
-          {MODEL_MODE_CHOICES.map((choice) => (
+          {availableModeChoices.map((choice) => (
             <label key={choice.id} className={mode === choice.id ? "is-selected" : ""}>
               <input
                 type="radio"
@@ -542,8 +682,8 @@ export function ModelPerformanceSettings({
       <section className="ls-model-catalog" aria-labelledby="model-catalog-heading">
         <div className="ls-model-catalog-heading">
           <div>
-            <h2 id="model-catalog-heading">Curated local speech-model catalog</h2>
-            <p>Fixed local runtime; model packages are pinned data files that LocalScribe verifies. Custom paths, URLs, and loaders are not accepted.</p>
+            <h2 id="model-catalog-heading">{browsingExperience === "live" ? "Live local models" : "After-stop local models"}</h2>
+            <p>Choose a model first, then a profile. The technical installation details are available when you need them.</p>
           </div>
         </div>
 
@@ -556,7 +696,7 @@ export function ModelPerformanceSettings({
         ) : (
           <>
             <div className="ls-model-family-list">
-              {catalog.families.map((family) => (
+              {visibleFamilies.map((family) => (
                 <ModelFamilyCard
                   key={family.familyId}
                   family={family}
@@ -577,6 +717,11 @@ export function ModelPerformanceSettings({
                 />
               ))}
             </div>
+            {visibleFamilies.length === 0 && (
+              <div className="ls-model-empty" role="status">
+                No {browsingExperience === "live" ? "live" : "after-stop"} model is available in this catalog yet.
+              </div>
+            )}
             {catalog.unmanagedEntries.length > 0 && (
               <section className="ls-model-unmanaged" aria-labelledby="model-unmanaged-heading">
                 <div>
@@ -601,9 +746,13 @@ export function ModelPerformanceSettings({
         )}
 
         {catalog && (
-          <p className="ls-model-compatibility-note">
-            Additional model families appear here only after their complete High, Medium, and Low profiles have pinned manifests and package validation for this local runtime.
-          </p>
+          <details className="ls-model-advanced-details">
+            <summary>Model library and technical details</summary>
+            <p>Model packages are pinned local data files that LocalScribe verifies. Custom paths, URLs, and loaders are not accepted.</p>
+            <p className="ls-model-compatibility-note">
+              Additional model families appear only after their supported profiles have pinned manifests and package validation for this local runtime.
+            </p>
+          </details>
         )}
       </section>
     </div>
@@ -717,6 +866,7 @@ function ModelFamilyCard({
   selectionDisabled: boolean;
 }) {
   const tiers = catalogTierViews(family, runtimeTierStatuses);
+  const presentation = modelFamilyPresentation(family);
   const sharedArtifactIds = new Set(
     tiers.filter((tier) => tiers.filter((candidate) => candidate.artifactId === tier.artifactId).length > 1)
       .map((tier) => tier.artifactId),
@@ -734,6 +884,10 @@ function ModelFamilyCard({
       <header className="ls-model-family-heading">
         <div>
           <div className="ls-model-family-badges">
+            {presentation.recommendation === "recommended" && <span className="ls-model-family-badge is-recommended">Recommended</span>}
+            {presentation.recommendation === "accurate" && <span className="ls-model-family-badge">Accuracy-focused</span>}
+            {presentation.recommendation === "legacy" && <span className="ls-model-family-badge">Legacy</span>}
+            {presentation.recommendation === "live" && <span className="ls-model-family-badge is-live">Live</span>}
             {isDefault && <span className="ls-model-family-badge">Built-in default</span>}
             {isCurrent && <span className="ls-model-family-badge is-active">Currently active</span>}
             {isPending && !isCurrent && <span className="ls-model-family-badge is-pending">Selected to apply</span>}
@@ -741,7 +895,7 @@ function ModelFamilyCard({
             {!family.inLibrary && <span className="ls-model-family-badge">Available to add</span>}
           </div>
           <h3>{family.displayName}</h3>
-          <p>Catalog backend: {catalogFamilyBackendLabel(family)}</p>
+          <p>{presentation.summary}</p>
         </div>
         {!family.inLibrary ? (
           <button type="button" className="ls-small-button ls-model-primary-action" disabled={selectionDisabled} onClick={() => onAddFamily(family.familyId)}>
@@ -762,6 +916,17 @@ function ModelFamilyCard({
       {!family.inLibrary && (
         <p className="ls-model-family-note">This curated family is available but is not part of your local library yet. Add it before selecting it or managing its model data.</p>
       )}
+      {presentation.experiences.length > 1 && (
+        <p className="ls-model-family-note ls-model-family-note--shared-runtime">
+          One downloaded model supports both After I stop and Live. Changing dictation experience does not download a second copy.
+        </p>
+      )}
+
+      <dl className="ls-model-family-glance">
+        <div><dt>Recognition</dt><dd>{presentation.latencyLabel}</dd></div>
+        <div><dt>Languages</dt><dd>{presentation.languageLabel}</dd></div>
+        <div><dt>Runtime</dt><dd>{catalogFamilyBackendLabel(family)}</dd></div>
+      </dl>
 
       <div className="ls-model-tier-list">
         {tiers.map((tier) => (
@@ -848,11 +1013,9 @@ function ModelTierRow({
         {selected && <span>Selected</span>}
       </div>
       <dl className="ls-model-tier-facts">
-        <div><dt>Backend</dt><dd>{tier.backend}</dd></div>
         <div><dt>Precision</dt><dd>{tier.precision}</dd></div>
         <div><dt>Artifact</dt><dd>{formatModelBytes(tier.downloadBytes)}</dd></div>
         <div><dt>Memory</dt><dd>{formatMemoryRange(tier.acceleratorMemory)}</dd></div>
-        <div><dt>License</dt><dd>{tier.license}</dd></div>
       </dl>
       <div className="ls-model-tier-footer">
         <p>{tier.qualityNote}{runEligibilityUnknown && activeFamily ? " Run eligibility is unknown until accelerator memory can be read." : ""}</p>
@@ -873,6 +1036,14 @@ function ModelTierRow({
           />
         )}
       </div>
+      <details className="ls-model-tier-details">
+        <summary>Technical details</summary>
+        <dl>
+          <div><dt>Runtime</dt><dd>{tier.backend}</dd></div>
+          <div><dt>License</dt><dd>{tier.license}</dd></div>
+          <div><dt>Package</dt><dd>{tier.artifactId}</dd></div>
+        </dl>
+      </details>
     </article>
   );
 }
