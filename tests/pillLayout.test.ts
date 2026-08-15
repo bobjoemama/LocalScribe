@@ -60,6 +60,7 @@ const MEASURED_STATUS_COPY_WIDTHS: Readonly<Record<string, number>> = {
   Listening: 47,
   Finishing: 46,
   "Finishing recording": 97,
+  "Finishing Live dictation": 117,
   Transcribing: 64,
   "Transcribing locally": 99,
   Inserting: 46,

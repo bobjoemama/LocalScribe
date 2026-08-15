@@ -100,6 +100,20 @@ const qwen06Artifacts = qwen06ArtifactIds.map((artifactId, index) => ({
     ? [1_882_037_824, 1_006_809_760, 631_026_336][index]!
     : [1_569_438_434, 1_010_773_761, 712_781_279][index]!,
 }));
+const parakeetArtifactIds = [
+  "parakeet-unified-en-0-6b-coreml-fp16",
+  "parakeet-unified-en-0-6b-coreml-int8",
+] as const;
+const parakeetArtifacts = parakeetArtifactIds.map((artifactId, index) => ({
+  artifactId,
+  displayName: "Parakeet Unified EN 0.6B · CoreML / ANE",
+  backend: "FluidAudio CoreML / ANE",
+  modelId: "FluidInference/parakeet-unified-en-0.6b-coreml",
+  storageDirectory: artifactId,
+  revision: "4252711f6f060f9a2f91e5f081a806d7f45eebd8",
+  license: "CC-BY-4.0",
+  expectedDownloadBytes: [2_383_019_889, 1_204_996_845][index]!,
+}));
 
 let persistedSettings: AppSettings = appSettingsSchema.parse(usesCustomSettings
   ? {
@@ -181,20 +195,48 @@ const afterStopCapabilities: ModelCapabilities = {
   keywordBoost: false,
   supportedLanguages: ["auto", "en"],
 };
+const parakeetCapabilities: ModelCapabilities = {
+  modes: ["after-stop", "live"],
+  partialResults: true,
+  timestamps: false,
+  languageDetection: false,
+  promptContext: false,
+  keywordBoost: false,
+  supportedLanguages: ["en"],
+};
 
 const catalog: ModelCatalog = {
   platform: isWindows ? "win32-x64-cuda" : "darwin-arm64",
   activeModelFamilyId: "whisper-large-v3",
-  recommendedDefaultFamilyId: "whisper-large-v3",
+  recommendedDefaultFamilyId: isWindows ? "whisper-large-v3" : "parakeet-unified-en-0-6b",
   modelLibraryFamilyIds: harnessParams.has("apply")
     ? ["whisper-large-v3", "qwen3-asr-1-7b"]
     : ["whisper-large-v3"],
   families: [
+    ...(!isWindows ? [{
+      familyId: "parakeet-unified-en-0-6b" as const,
+      displayName: "Parakeet Unified EN 0.6B",
+      capabilities: parakeetCapabilities,
+      recommendedDefault: true,
+      active: false,
+      inLibrary: false,
+      artifacts: parakeetArtifacts,
+      profiles: (["high", "medium"] as const).map((tier, index) => ({
+        profileId: `parakeet-unified-en-0-6b-${tier}`,
+        tier,
+        artifactId: parakeetArtifactIds[index]!,
+        engine: "fluid-audio" as const,
+        precision: (["coreml-fp16", "coreml-int8"] as const)[index]!,
+        expectedMemoryMinBytes: [0.8, 0.6][index]! * GIBIBYTE,
+        expectedMemoryMaxBytes: [1.3, 1.1][index]! * GIBIBYTE,
+        memoryBasis: "estimated" as const,
+      })),
+    }] : []),
     {
       familyId: "whisper-large-v3",
       displayName: "Whisper large-v3",
       capabilities: afterStopCapabilities,
-      recommendedDefault: true,
+      recommendedDefault: isWindows,
       active: true,
       inLibrary: true,
       artifacts: activeArtifacts,
@@ -289,6 +331,17 @@ const catalog: ModelCatalog = {
     },
   ],
   verifications: [
+    ...(!isWindows ? parakeetArtifacts.map((artifact) => ({
+      familyId: "parakeet-unified-en-0-6b" as const,
+      artifactId: artifact.artifactId,
+      present: false,
+      verified: false,
+      verificationStatus: "missing" as const,
+      sizeBytes: 0,
+      expectedBytes: artifact.expectedDownloadBytes,
+      verifiedFiles: 0,
+      expectedFiles: 18,
+    })) : []),
     ...activeArtifacts.map((artifact) => ({
       familyId: "whisper-large-v3" as const,
       artifactId: artifact.artifactId,
@@ -472,6 +525,7 @@ window.localScribe = {
       if (harnessApplyResult === "fail") throw new Error("Harness model load failed");
       persistedSettings = appSettingsSchema.parse({
         ...persistedSettings,
+        asrMode: request.asrMode,
         activeModelFamilyId: request.familyId,
         modelPerformanceMode: request.performanceMode,
       });

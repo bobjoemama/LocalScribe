@@ -374,9 +374,9 @@ function acceleratorDiagnostics(): Diagnostics["accelerator"] {
   if (!acceleratorSnapshot) return unavailableAccelerator();
   return {
     kind: acceleratorSnapshot.kind,
-    displayName: acceleratorSnapshot.kind === "apple-unified"
-      ? `${acceleratorSnapshot.displayName} · MLX`
-      : `${acceleratorSnapshot.displayName} · CUDA`,
+    // This is hardware identity only. The selected engine (MLX, CoreML/ANE,
+    // CTranslate2, or CrispASR) is reported separately from its catalog tier.
+    displayName: acceleratorSnapshot.displayName,
     totalMemoryBytes: acceleratorSnapshot.totalMemoryBytes,
     freeMemoryBytes: acceleratorSnapshot.freeMemoryBytes,
     memoryBasis: acceleratorSnapshot.memoryBasis,
@@ -475,7 +475,7 @@ async function refreshAutoResolutionAtRecordingBoundary(): Promise<ModelPerforma
     && cached.preference === "auto"
     && cached.tier.familyId === settings.activeModelFamilyId
     && cached.fitsMemoryBudget
-    && workerModelSelectionsMatch(warmSelection, workerSelection(cached.tier));
+    && workerModelSelectionsMatch(warmSelection, workerSelection(cached.tier, settings.asrMode));
   try {
     const liveSnapshot = await worker.deviceInfo();
     acceleratorSnapshot = liveSnapshot;
@@ -660,6 +660,7 @@ function resolutionReasonMessage(resolution: ModelPerformanceResolution): string
 
 async function collectDiagnosticsForResolution(
   resolution: ModelPerformanceResolution,
+  asrMode: AsrMode = database.getSettings().asrMode,
 ): Promise<Diagnostics> {
   const modelRoot = path.join(app.getPath("userData"), "models");
   const catalog = modelCatalog(resolution.tier.familyId);
@@ -687,7 +688,7 @@ async function collectDiagnosticsForResolution(
       installed: verification.verified,
       loaded: workerModelSelectionsMatch(
         worker.loadedSelection(),
-        workerSelection(resolution.tier),
+        workerSelection(resolution.tier, asrMode),
       ),
       ...verification,
       revision: model.revision,
@@ -1302,15 +1303,17 @@ async function applyModelSelection(
 ): Promise<ModelSelectionApplyResult> {
   return runExclusiveModelOperation(async () => {
     assertModelSwitchAllowed();
-    const targetCatalog = platformModelCatalog().families[request.familyId];
-    if (!targetCatalog) {
-      throw new Error("This LocalScribe build does not package that model family for this platform.");
-    }
+    const targetCatalog = assertModelSelectionSupported(platformModelCatalog(), {
+      familyId: request.familyId,
+      asrMode: request.asrMode,
+      preference: request.performanceMode,
+    });
     assertFamilyInLibrary(request.familyId);
 
     const previousSettings = database.getSettings();
     const samePersistedSelection = (
       previousSettings.activeModelFamilyId === request.familyId
+      && previousSettings.asrMode === request.asrMode
       && previousSettings.modelPerformanceMode === request.performanceMode
     );
     const currentResolutionForSelection = samePersistedSelection
@@ -1322,7 +1325,7 @@ async function applyModelSelection(
       && currentResolutionForSelection.fitsMemoryBudget
       && workerModelSelectionsMatch(
         currentWarmSelection,
-        workerSelection(currentResolutionForSelection.tier),
+        workerSelection(currentResolutionForSelection.tier, request.asrMode),
       )
     ) {
       // Apply is a no-op only when the exact resolved runtime is already warm.
@@ -1344,17 +1347,42 @@ async function applyModelSelection(
     const candidateSettings = appSettingsSchema.parse({
       ...previousSettings,
       activeModelFamilyId: request.familyId,
+      asrMode: request.asrMode,
       modelPerformanceMode: request.performanceMode,
     });
     let targetResolution: ModelPerformanceResolution;
+    let runtimeTransitionStarted = false;
 
     try {
-      // A fresh worker is the load/unload boundary. Probe only after the old
-      // runtime is gone so its allocation cannot make Auto select downward.
-      await worker.shutdown();
-      await probeUnloadedAccelerator();
-      previousAutoTier = undefined;
-      targetResolution = resolveSelection(request.familyId, request.performanceMode);
+      /*
+       * Resolve and verify the exact replacement while the working model is
+       * still resident. The memory projection adds back only the curated
+       * minimum allocation of that warm model, so it cannot overstate the
+       * budget. This closes the destructive gap where Apply used to kill a
+       * usable runtime and only then discover that the selected artifact was
+       * missing or corrupt.
+       */
+      if (!acceleratorSnapshot) {
+        if (currentWarmSelection) acceleratorSnapshot = await worker.deviceInfo();
+        else await probeUnloadedAccelerator();
+      }
+      const warmResolutionMatches = currentWarmSelection !== null
+        && workerModelSelectionsMatch(
+          currentWarmSelection,
+          workerSelection(previousResolution.tier, previousSettings.asrMode),
+        );
+      const projectedMemory = warmResolutionMatches && acceleratorSnapshot
+        ? memorySnapshotWithoutWarmModel(acceleratorSnapshot, previousResolution)
+        : memorySnapshot();
+      targetResolution = resolveModelPerformance({
+        preference: request.performanceMode,
+        catalog: targetCatalog,
+        memory: projectedMemory,
+        previousTier: previousSettings.activeModelFamilyId === request.familyId
+          && previousSettings.modelPerformanceMode === "auto"
+          ? previousAutoTier
+          : undefined,
+      });
       assertResolutionFitsMemory(targetResolution);
 
       const modelRoot = modelRootForUserData(app.getPath("userData"));
@@ -1369,13 +1397,27 @@ async function applyModelSelection(
         );
       }
 
+      // From here onward the rollback path owns the worker lifecycle. Errors
+      // above this line are pure preflight failures and must leave an existing
+      // warm model entirely untouched.
+      runtimeTransitionStarted = true;
+      await worker.shutdown();
+      await probeUnloadedAccelerator();
+      const postUnloadFit = resolveModelPerformance({
+        preference: targetResolution.effectiveTier,
+        catalog: targetCatalog,
+        memory: memorySnapshot(),
+      });
+      assertResolutionFitsMemory(postUnloadFit);
+      previousAutoTier = undefined;
+
       // Eager loading proves the exact engine, model, quantization, and current
       // memory state before either routing field becomes durable.
-      await worker.ensureReady(workerSelection(targetResolution.tier));
+      await worker.ensureReady(workerSelection(targetResolution.tier, request.asrMode));
 
       const [catalog, diagnostics] = await Promise.all([
         collectModelCatalogForSettings(candidateSettings),
-        collectDiagnosticsForResolution(targetResolution),
+        collectDiagnosticsForResolution(targetResolution, request.asrMode),
       ]);
       // Loading and catalog verification can take minutes. Merge the two model
       // routing fields into the latest row immediately before the synchronous
@@ -1386,6 +1428,7 @@ async function applyModelSelection(
       const settings = database.saveSettings(appSettingsSchema.parse({
         ...latestSettings,
         activeModelFamilyId: request.familyId,
+        asrMode: request.asrMode,
         modelPerformanceMode: request.performanceMode,
       }));
       modelResolution = targetResolution;
@@ -1400,14 +1443,16 @@ async function applyModelSelection(
       // warm selection is restored best-effort without altering its settings.
       let restoreError: unknown = null;
       let restoreSkippedForShutdown = false;
-      try {
-        await worker.shutdown();
-        if (previousWarmSelection) {
-          if (quitting) restoreSkippedForShutdown = true;
-          else await worker.ensureReady(previousWarmSelection);
+      if (runtimeTransitionStarted) {
+        try {
+          await worker.shutdown();
+          if (previousWarmSelection) {
+            if (quitting) restoreSkippedForShutdown = true;
+            else await worker.ensureReady(previousWarmSelection);
+          }
+        } catch (rollbackError) {
+          restoreError = rollbackError;
         }
-      } catch (rollbackError) {
-        restoreError = rollbackError;
       }
       acceleratorSnapshot = previousAcceleratorSnapshot;
       previousAutoTier = previousAutoTierSnapshot;
@@ -1417,6 +1462,8 @@ async function applyModelSelection(
         ? " The previous model settings were kept, but its warm runtime could not be restored; the next dictation will retry loading it."
         : restoreSkippedForShutdown
           ? " The previous model settings were kept; its runtime was not restarted because LocalScribe is shutting down."
+        : previousWarmSelection && !runtimeTransitionStarted
+          ? " The previous model was never unloaded and its settings remain active."
         : previousWarmSelection
           ? " The previous model was restored and its settings remain active."
           : " The previous settings remain active; no model was warm before Apply.";
@@ -1612,12 +1659,15 @@ function registerIpc(): void {
       message: "Transcribing locally",
     });
     try {
+      if (settings.asrMode !== "after-stop") {
+        throw new Error("Live dictation must use the local Live audio session.");
+      }
       const resolution = await currentModelResolution();
       assertResolutionFitsMemory(resolution);
       const dictionary = database.listDictionary();
       const terms = buildDictionaryAsrContext(dictionary);
       const result = await worker.transcribe({
-        model: workerSelection(resolution.tier),
+        model: workerSelection(resolution.tier, settings.asrMode),
         audioPath,
         allowedRoot: cacheRoot,
         language: settings.language,
@@ -1910,12 +1960,16 @@ function registerIpc(): void {
       const tier = runtimeModelTier(catalog, request.tier);
       const modelRoot = modelRootForUserData(app.getPath("userData"));
       const warmSelection = worker.loadedSelection();
+      const currentSettings = database.getSettings();
       const replacesLoadedArtifact = request.replaceExisting
         && warmSelection !== null
         && modelResolution !== null
         && modelResolution.tier.familyId === request.familyId
         && modelResolution.tier.artifactId === tier.artifactId
-        && workerModelSelectionsMatch(warmSelection, workerSelection(modelResolution.tier));
+        && workerModelSelectionsMatch(
+          warmSelection,
+          workerSelection(modelResolution.tier, currentSettings.asrMode),
+        );
       // Installation is a disk/network data operation, not model activation.
       // It remains available when accelerator telemetry is missing or the
       // requested tier cannot currently fit in memory. The worker stages and
@@ -1924,7 +1978,12 @@ function registerIpc(): void {
         modelRoot,
         model: tier.manifest,
         replaceExisting: request.replaceExisting,
-        install: () => worker.installModel(workerSelection(tier), {
+        install: () => worker.installModel(workerSelection(
+          tier,
+          request.familyId === currentSettings.activeModelFamilyId
+            ? currentSettings.asrMode
+            : "after-stop",
+        ), {
           replacesLoadedArtifact,
           // The request budget is derived from the artifact's own size; see
           // installTimeoutMs. A flat cap made the largest tiers uninstallable

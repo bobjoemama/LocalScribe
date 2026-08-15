@@ -38,7 +38,9 @@ const temporaryDirectories: string[] = [];
  * scheme must update this deliberately — and must rebuild every artifact whose
  * embedded expectation was computed under the old scheme.
  */
-const GOLDEN_ROOT = "92cdd0b8a137e3d1fa59bd18933d7488a729cf65d6f18fb5a781b7f023dded4b";
+// Deliberately regenerated when the signed FluidAudio helper joined the
+// required macOS resource inventory; the hashing algorithm itself is unchanged.
+const GOLDEN_ROOT = "2339c0eaf5cbb8b8a0cda049a0833c10d4d215f74ee08bbed1f457ed65c73a48";
 
 function fixture(): string {
   const resourcesPath = mkdtempSync(path.join(tmpdir(), "localscribe-root-"));

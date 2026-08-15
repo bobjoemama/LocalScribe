@@ -739,7 +739,7 @@ function assertTab(result, size) {
       for (const expected of [
         "NVIDIA GeForce RTX 3060 Laptop GPU",
         "NVIDIA VRAM",
-        "Catalog backend: faster-whisper/CTranslate2",
+        "Runtimefaster-whisper/CTranslate2",
         "FP16",
         "INT8 weights + FP16 compute",
         "INT8",
@@ -761,6 +761,16 @@ function assertTab(result, size) {
         && result.modelControls.actions.every((control) => control.visible),
         `Model & Performance: a macOS install control cannot be scrolled into view: ${layoutEvidence}`,
       );
+      for (const expected of [
+        "Parakeet Unified EN 0.6B",
+        "FluidAudio CoreML / ANE",
+        "One downloaded model supports both After I stop and Live",
+      ]) {
+        assert(
+          result.modelControls.copy.includes(expected),
+          `Model & Performance: macOS copy is missing "${expected}": ${layoutEvidence}`,
+        );
+      }
     }
   }
 }
@@ -775,20 +785,24 @@ function assertModelSelection(size) {
   assert(evidence.beforeApply.summary.includes("Currently using"), `Model Apply: current summary missing: ${serialized}`);
   assert(evidence.beforeApply.summary.includes("After applying"), `Model Apply: pending summary missing: ${serialized}`);
   assert(evidence.afterApply.applyCalls.length === 1, `Model Apply: expected exactly one combined call: ${serialized}`);
+  const applyRequest = evidence.afterApply.applyCalls[0];
   assert(
-    JSON.stringify(evidence.afterApply.applyCalls[0])
-      === JSON.stringify({ familyId: "qwen3-asr-1-7b", performanceMode: "low" }),
-    `Model Apply: request did not combine family and mode: ${serialized}`,
+    applyRequest?.familyId === "qwen3-asr-1-7b"
+      && applyRequest.performanceMode === "low"
+      && applyRequest.asrMode === "after-stop",
+    `Model Apply: request did not combine family, experience, and mode: ${serialized}`,
   );
   assert(evidence.afterApply.patchCalls.length === 0, `Model Apply: Apply used generic settings patch: ${serialized}`);
   if (evidence.expectedResult === "success") {
     assert(evidence.afterApply.persisted.modelPerformanceMode === "low", `Model Apply: acknowledged mode did not persist: ${serialized}`);
     assert(evidence.afterApply.persisted.activeModelFamilyId === "qwen3-asr-1-7b", `Model Apply: acknowledged family did not persist: ${serialized}`);
+    assert(evidence.afterApply.persisted.asrMode === "after-stop", `Model Apply: acknowledged experience did not persist: ${serialized}`);
     assert(evidence.afterApply.applyDisabled, `Model Apply: unchanged acknowledged selection remained enabled: ${serialized}`);
     assert(evidence.afterApply.summary.includes("Current model selection"), `Model Apply: success did not converge current and pending: ${serialized}`);
   } else {
     assert(evidence.afterApply.persisted.modelPerformanceMode === "auto", `Model Apply: failed mode mutated persisted settings: ${serialized}`);
     assert(evidence.afterApply.persisted.activeModelFamilyId === "whisper-large-v3", `Model Apply: failed family mutated persisted settings: ${serialized}`);
+    assert(evidence.afterApply.persisted.asrMode === "after-stop", `Model Apply: failed experience mutated persisted settings: ${serialized}`);
     assert(evidence.afterApply.checked.join("") === "low", `Model Apply: failed selection was not preserved: ${serialized}`);
     assert(!evidence.afterApply.applyDisabled, `Model Apply: failed pending selection cannot be retried: ${serialized}`);
     assert(evidence.afterApply.feedback.includes("prior model selection remains active"), `Model Apply: failure copy is misleading: ${serialized}`);

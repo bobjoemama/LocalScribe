@@ -5,7 +5,10 @@ import Foundation
 
 private let protocolVersion = 1
 private let runtimeVersion = "0.15.5"
-private let maximumFrameBytes = 32 * 1024 * 1024
+// Commands and responses are JSON metadata only; PCM follows in a separately
+// length-bounded raw payload. Keep framing aligned with the Python adapter so
+// a compromised peer cannot make the helper allocate a 32 MiB JSON frame.
+private let maximumFrameBytes = 256 * 1024
 private let maximumPcmBytes = 20_971_520
 private let expectedModelDirectoryNames: [ParakeetPrecision: String] = [
     .fp16: "parakeet-unified-en-0-6b-coreml-fp16",

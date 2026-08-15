@@ -21,6 +21,7 @@ const MESSAGES = [
   "Listening",
   "Finishing",
   "Finishing recording",
+  "Finishing Live dictation",
   "Transcribing",
   "Transcribing locally",
   "Inserting",
