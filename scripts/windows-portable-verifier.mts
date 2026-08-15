@@ -1,6 +1,5 @@
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import extract from "extract-zip";
 import {
   closeSync,
   existsSync,
@@ -19,6 +18,7 @@ import {
   loadReleaseMetadata,
   releaseLayout,
 } from "./release-metadata.mts";
+import { extractVerifiedZip } from "./safe-zip-extraction.mts";
 
 const HASH_BUFFER_BYTES = 1024 * 1024;
 
@@ -139,7 +139,7 @@ export async function assertWindowsPortableArtifact(options: {
 
   const temporaryRoot = mkdtempSync(path.join(tmpdir(), "localscribe-windows-portable-"));
   try {
-    await extract(zipPath, { dir: temporaryRoot });
+    await extractVerifiedZip(zipPath, temporaryRoot);
     const extractedExecutable = path.join(
       temporaryRoot,
       releaseLayout_.applicationName,

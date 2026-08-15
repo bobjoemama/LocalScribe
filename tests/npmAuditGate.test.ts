@@ -1,45 +1,44 @@
 import { describe, expect, it } from "vitest";
 import {
   EXPECTED_BUILD_TOOL_ADVISORIES,
+  EXPECTED_BUILD_TOOL_VULNERABILITIES,
   EXPECTED_BUILD_TOOL_VULNERABILITY_NODES,
   evaluateFullNpmAudit,
 } from "../scripts/audit-npm-all.mjs";
 
 /*
- * Every reviewed advisory is an `image-size` advisory, and npm attaches the
- * advisory objects to the package they are about; the ancestors that merely
- * inherit the vulnerability carry a string reference instead. Building the
- * synthetic report from the exported inventories rather than a hand-copied
- * literal means a future re-review that edits the inventory cannot leave this
- * test asserting against a residual that no longer exists.
+ * npm attaches advisory objects to their direct package. Ancestors inherit the
+ * vulnerability through string package references. The synthetic report comes
+ * from the exported exact inventory so a re-review cannot edit one side while
+ * leaving this test asserting a stale residual.
  */
-const ADVISORY_HOST = "image-size";
 const ADVISORY_URLS: readonly string[] = Object.keys(EXPECTED_BUILD_TOOL_ADVISORIES).sort();
+const MULTI_ADVISORY_HOST = "image-size";
 
-function advisoryObjects(): Record<string, unknown>[] {
-  return ADVISORY_URLS.map((url, index) => {
-    const reviewed = EXPECTED_BUILD_TOOL_ADVISORIES[url];
-    if (!reviewed) throw new Error(`no reviewed advisory recorded for ${url}`);
-    return {
-      source: 1_000_000 + index,
-      ...reviewed,
-      title: `reviewed advisory ${index}`,
-      url,
-    };
-  });
+function advisoryObject(url: string, index = 0): Record<string, unknown> {
+  const reviewed = EXPECTED_BUILD_TOOL_ADVISORIES[url];
+  if (!reviewed) throw new Error(`no reviewed advisory recorded for ${url}`);
+  return {
+    source: 1_000_000 + index,
+    ...reviewed,
+    title: `reviewed advisory ${index}`,
+    url,
+  };
 }
 
 function reportWithKnownResidual(): Record<string, unknown> {
-  const entries = Object.entries(EXPECTED_BUILD_TOOL_VULNERABILITY_NODES);
+  const entries = Object.entries(EXPECTED_BUILD_TOOL_VULNERABILITIES);
   return {
     auditReportVersion: 2,
-    vulnerabilities: Object.fromEntries(entries.map(([name, nodes]) => [
+    vulnerabilities: Object.fromEntries(entries.map(([name, expected]) => [
       name,
       {
         name,
         severity: "high",
-        nodes: [...nodes],
-        via: name === ADVISORY_HOST ? advisoryObjects() : [ADVISORY_HOST],
+        nodes: [...expected.nodes],
+        via: expected.via.map((via, index) => (
+          via.startsWith("https://github.com/advisories/") ? advisoryObject(via, index) : via
+        )),
       },
     ])),
     metadata: {
@@ -62,7 +61,8 @@ describe("full npm audit exact-residual gate", () => {
    */
   it("has a nonempty reviewed residual to check", () => {
     expect(ADVISORY_URLS.length).toBeGreaterThan(0);
-    expect(Object.keys(EXPECTED_BUILD_TOOL_VULNERABILITY_NODES)).toContain(ADVISORY_HOST);
+    expect(Object.keys(EXPECTED_BUILD_TOOL_VULNERABILITY_NODES)).toContain(MULTI_ADVISORY_HOST);
+    expect(Object.keys(EXPECTED_BUILD_TOOL_VULNERABILITY_NODES)).toContain("extract-zip");
   });
 
   it("recognizes the exact reviewed build-tool residual without calling it clean", () => {
@@ -76,8 +76,8 @@ describe("full npm audit exact-residual gate", () => {
     const report = reportWithKnownResidual() as {
       vulnerabilities: Record<string, { via: unknown[] }>;
     };
-    report.vulnerabilities[ADVISORY_HOST]!.via.push({
-      ...advisoryObjects()[0],
+    report.vulnerabilities[MULTI_ADVISORY_HOST]!.via.push({
+      ...advisoryObject(ADVISORY_URLS[0]!),
       url: "https://github.com/advisories/GHSA-unreviewed",
     });
 
@@ -96,11 +96,11 @@ describe("full npm audit exact-residual gate", () => {
     const report = reportWithKnownResidual() as {
       vulnerabilities: Record<string, { via: Record<string, unknown>[] }>;
     };
-    const via = report.vulnerabilities[ADVISORY_HOST]!.via;
+    const via = report.vulnerabilities[MULTI_ADVISORY_HOST]!.via;
     via[via.length - 1] = { ...via[0]! };
 
     expect(() => evaluateFullNpmAudit(report)).toThrow(
-      "did not contain exactly the reviewed advisories",
+      "dependency path changed for reviewed build tool image-size",
     );
   });
 
@@ -119,8 +119,8 @@ describe("full npm audit exact-residual gate", () => {
       configurable: true,
       enumerable: false, // an enumerable addition would leak into unrelated iteration
       value: {
-        name: ADVISORY_HOST,
-        dependency: ADVISORY_HOST,
+        name: MULTI_ADVISORY_HOST,
+        dependency: MULTI_ADVISORY_HOST,
         severity: "high",
         range: "<=2.0.2",
       },
@@ -129,8 +129,8 @@ describe("full npm audit exact-residual gate", () => {
       const report = reportWithKnownResidual() as {
         vulnerabilities: Record<string, { via: Record<string, unknown>[] }>;
       };
-      report.vulnerabilities[ADVISORY_HOST]!.via = [
-        { ...advisoryObjects()[0], url: INHERITED_URL },
+      report.vulnerabilities[MULTI_ADVISORY_HOST]!.via = [
+        { ...advisoryObject(ADVISORY_URLS[0]!), url: INHERITED_URL },
       ];
 
       expect(() => evaluateFullNpmAudit(report)).toThrow(
@@ -150,7 +150,7 @@ describe("full npm audit exact-residual gate", () => {
       name: "new-build-tool",
       severity: "high",
       nodes: ["node_modules/new-build-tool"],
-      via: [ADVISORY_HOST],
+      via: [MULTI_ADVISORY_HOST],
     };
     expect(() => evaluateFullNpmAudit(changedPackage)).toThrow(
       "outside the exact reviewed build-tool residual",
@@ -159,9 +159,19 @@ describe("full npm audit exact-residual gate", () => {
     const changedPath = reportWithKnownResidual() as {
       vulnerabilities: Record<string, { nodes: string[] }>;
     };
-    changedPath.vulnerabilities[ADVISORY_HOST]!.nodes = ["node_modules/other/image-size"];
+    changedPath.vulnerabilities[MULTI_ADVISORY_HOST]!.nodes = ["node_modules/other/image-size"];
     expect(() => evaluateFullNpmAudit(changedPath)).toThrow(
-      `entry changed for reviewed build tool ${ADVISORY_HOST}`,
+      `entry changed for reviewed build tool ${MULTI_ADVISORY_HOST}`,
+    );
+  });
+
+  it("rejects a new affected Forge ancestor instead of broadly allowing the tree", () => {
+    const report = reportWithKnownResidual() as {
+      vulnerabilities: Record<string, { via: unknown[] }>;
+    };
+    report.vulnerabilities["@electron-forge/cli"]!.via.push("new-forge-ancestor");
+    expect(() => evaluateFullNpmAudit(report)).toThrow(
+      "dependency path changed for reviewed build tool @electron-forge/cli",
     );
   });
 
