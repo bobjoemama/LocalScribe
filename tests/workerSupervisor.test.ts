@@ -181,6 +181,24 @@ class FakeWorkerProcess extends EventEmitter {
               inferenceMs: 3,
             });
             break;
+          case "begin_live":
+            this.respond({ type: "live_started", id: request.id });
+            break;
+          case "append_live":
+            this.respond({ type: "partial", id: request.id, text: "partial" });
+            break;
+          case "finish_live":
+            this.respond({
+              type: "final",
+              id: request.id,
+              text: "live final",
+              language: "en",
+              inferenceMs: 4,
+            });
+            break;
+          case "cancel_live":
+            this.respond({ type: "live_cancelled", id: request.id });
+            break;
           case "device_info":
             this.respond({
               type: "device_info",
@@ -273,6 +291,73 @@ afterEach(() => {
 });
 
 describe("WorkerSupervisor model lifecycle", () => {
+  it("uses the exact bounded Live worker protocol and rejects sequence gaps", async () => {
+    const worker = supervisor();
+    const sink = await worker.beginLive({
+      session: {
+        sessionId: "00000000-0000-4000-8000-000000000001",
+        protocolVersion: 1,
+        sampleRateHz: 16_000,
+        channels: 1,
+      },
+      model: { ...medium, asrMode: "live" },
+      language: "en",
+      context: "",
+    });
+    await sink.write({
+      sequence: 0,
+      sampleRateHz: 16_000,
+      channels: 1,
+      sampleCount: 320,
+      pcm: new ArrayBuffer(640),
+    }, new AbortController().signal);
+    await expect(sink.write({
+      sequence: 2,
+      sampleRateHz: 16_000,
+      channels: 1,
+      sampleCount: 320,
+      pcm: new ArrayBuffer(640),
+    }, new AbortController().signal)).rejects.toThrow(/violated/u);
+
+    expect(requests.find((request) => request.type === "load_model")).toMatchObject({
+      asrMode: "live",
+    });
+    expect(requests.find((request) => request.type === "begin_live")).toMatchObject({
+      language: "en",
+      context: "",
+    });
+    await worker.shutdown();
+  });
+
+  it("aggregates Live PCM under the Python line-protocol limit and finalizes exactly once", async () => {
+    const worker = supervisor();
+    const sessionId = "00000000-0000-4000-8000-000000000002";
+    const sink = await worker.beginLive({
+      session: { sessionId, protocolVersion: 1, sampleRateHz: 16_000, channels: 1 },
+      model: { ...medium, asrMode: "live" },
+      language: "en",
+      context: "",
+    });
+    for (let sequence = 0; sequence < 13; sequence += 1) {
+      await sink.write({
+        sequence,
+        sampleRateHz: 16_000,
+        channels: 1,
+        sampleCount: 320,
+        pcm: new ArrayBuffer(640),
+      }, new AbortController().signal);
+    }
+    await expect(worker.finishLiveWithResult(sessionId)).resolves.toMatchObject({ text: "live final" });
+    await expect(worker.finishLiveWithResult(sessionId)).rejects.toThrow(/cancelled/u);
+    const appends = requests.filter((request) => request.type === "append_live");
+    expect(appends).toHaveLength(2);
+    for (const append of appends) {
+      expect(Buffer.from(String(append.audioBase64), "base64").byteLength).toBeLessThanOrEqual(8 * 1024);
+    }
+    expect(requests.filter((request) => request.type === "finish_live")).toHaveLength(1);
+    await worker.shutdown();
+  });
+
   it("keeps handshake versions fail-closed against the exact worker dependency pins", () => {
     const macProject = readFileSync("worker/pyproject.toml", "utf8");
     const windowsProject = readFileSync(

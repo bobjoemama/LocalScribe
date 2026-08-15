@@ -16,7 +16,7 @@ export interface LivePcmFrame {
   readonly sequence: number;
   readonly sampleRateHz: typeof AUDIO_SAMPLE_RATE_HZ;
   readonly channels: 1;
-  readonly sampleCount: number;
+  readonly sampleCount: 320;
   readonly pcm: ArrayBuffer;
 }
 
@@ -51,9 +51,9 @@ export interface LiveAsrAdapter {
  */
 export interface LiveAudioIpcBridge {
   beginLiveAudio(session: LiveAudioSessionDescriptor): Promise<void>;
-  pushLiveAudio(frame: LivePcmFrame): Promise<void>;
-  finishLiveAudio(): Promise<void>;
-  cancelLiveAudio(reason: string): Promise<void>;
+  pushLiveAudio(frame: LivePcmFrame & { readonly sessionId: string }): Promise<void>;
+  finishLiveAudio(session: { readonly sessionId: string }): Promise<void>;
+  cancelLiveAudio(session: { readonly sessionId: string; readonly reason: string }): Promise<void>;
 }
 
 export async function openLiveAudioIpcSink(
@@ -64,13 +64,13 @@ export async function openLiveAudioIpcSink(
   return {
     write: (frame, signal) => {
       if (signal.aborted) return;
-      return bridge.pushLiveAudio(frame);
+      return bridge.pushLiveAudio({ ...frame, sessionId: session.sessionId });
     },
     finish: (signal) => {
       if (signal.aborted) return;
-      return bridge.finishLiveAudio();
+      return bridge.finishLiveAudio({ sessionId: session.sessionId });
     },
-    abort: (reason) => bridge.cancelLiveAudio(reason.message),
+    abort: (reason) => bridge.cancelLiveAudio({ sessionId: session.sessionId, reason: reason.message }),
   };
 }
 
@@ -243,10 +243,10 @@ export class LivePcmFrameEncoder {
       }
     }
     if (flush && this.frameOffset > 0) {
-      frames.push({
-        pcm: this.frame.buffer.slice(0, this.frameOffset * AUDIO_BYTES_PER_FRAME),
-        sampleCount: this.frameOffset,
-      });
+      // The wire contract is fixed-size 20 ms frames. Pad the final tail with
+      // silence instead of weakening validation at every downstream boundary.
+      this.frame.fill(0, this.frameOffset);
+      frames.push({ pcm: this.frame.buffer.slice(0), sampleCount: this.frame.length });
       this.frameOffset = 0;
     }
     return frames;
@@ -295,9 +295,8 @@ class StreamingLinearResampler {
   }
 }
 
-function isCanonicalFrame(pcm: ArrayBuffer, sampleCount: number): boolean {
+function isCanonicalFrame(pcm: ArrayBuffer, sampleCount: number): sampleCount is 320 {
   return Number.isInteger(sampleCount)
-    && sampleCount > 0
-    && sampleCount <= LIVE_AUDIO_FRAME_SAMPLES
+    && sampleCount === LIVE_AUDIO_FRAME_SAMPLES
     && pcm.byteLength === sampleCount * AUDIO_BYTES_PER_FRAME;
 }

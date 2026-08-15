@@ -7,7 +7,11 @@ import {
   appProfileSchema,
   diagnosticsSchema,
   dictionaryEntrySchema,
+  cancelLiveAudioSchema,
+  finishLiveAudioSchema,
   IPC,
+  liveAudioFrameSchema,
+  liveAudioSessionSchema,
   launchAtLoginStatusSchema,
   modelInstallRequestSchema,
   modelCatalogSchema,
@@ -42,6 +46,22 @@ const api: LocalScribeApi = {
     transcribe: async (request) => {
       transcribeAudioSchema.parse(request);
       return transcriptionSchema.parse(await ipcRenderer.invoke(IPC.sessionTranscribe, request));
+    },
+    beginLive: async (session) => {
+      const input = liveAudioSessionSchema.parse(session);
+      await ipcRenderer.invoke(IPC.sessionBeginLive, input);
+    },
+    pushLive: async (frame) => {
+      const input = liveAudioFrameSchema.parse(frame);
+      await ipcRenderer.invoke(IPC.sessionPushLive, input);
+    },
+    finishLive: async (request) => {
+      const input = finishLiveAudioSchema.parse(request);
+      return transcriptionSchema.parse(await ipcRenderer.invoke(IPC.sessionFinishLive, input));
+    },
+    cancelLive: async (request) => {
+      const input = cancelLiveAudioSchema.parse(request);
+      await ipcRenderer.invoke(IPC.sessionCancelLive, input);
     },
     onChanged: (listener) => {
       const wrapped = (_event: Electron.IpcRendererEvent, value: unknown) =>
