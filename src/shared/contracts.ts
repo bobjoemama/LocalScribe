@@ -118,14 +118,54 @@ export function historyRetentionLabel(days: HistoryRetentionDays): string {
 
 /** Curated local ASR families shipped with this application. */
 export const MODEL_FAMILY_IDS = [
+  "parakeet-unified-en-0-6b",
   "whisper-large-v3",
   "qwen3-asr-0-6b",
   "qwen3-asr-1-7b",
   "whisper-large-v2",
-] as const;
+ ] as const;
+/**
+ * Backward-safe global default. The runtime catalog exposes a platform-aware
+ * recommendation; macOS can recommend Parakeet without making a fresh Windows
+ * database select an unsupported family.
+ */
 export const DEFAULT_MODEL_FAMILY_ID = "whisper-large-v3" as const;
 export const modelFamilyIdSchema = z.enum(MODEL_FAMILY_IDS);
 export type ModelFamilyId = z.infer<typeof modelFamilyIdSchema>;
+
+/** How an ASR family consumes a dictation session. */
+export const ASR_MODES = ["after-stop", "live"] as const;
+export const asrModeSchema = z.enum(ASR_MODES);
+export type AsrMode = z.infer<typeof asrModeSchema>;
+
+/**
+ * Renderer-safe, allowlisted ASR capabilities. A missing `true` is never
+ * support: callers must reject a requested capability unless it is declared.
+ */
+export const modelCapabilitiesSchema = z.object({
+  modes: z.array(asrModeSchema).min(1).max(ASR_MODES.length).refine(
+    (modes) => new Set(modes).size === modes.length,
+    "Each ASR mode can appear only once.",
+  ),
+  partialResults: z.boolean(),
+  timestamps: z.boolean(),
+  languageDetection: z.boolean(),
+  promptContext: z.boolean(),
+  keywordBoost: z.boolean(),
+  supportedLanguages: z.array(z.string().trim().min(1).max(80)).min(1).max(100).refine(
+    (languages) => new Set(languages).size === languages.length,
+    "Each supported language can appear only once.",
+  ),
+}).strict().superRefine((capabilities, context) => {
+  if (capabilities.partialResults && !capabilities.modes.includes("live")) {
+    context.addIssue({
+      code: "custom",
+      path: ["partialResults"],
+      message: "Partial results require the live ASR mode.",
+    });
+  }
+});
+export type ModelCapabilities = z.infer<typeof modelCapabilitiesSchema>;
 
 const modelLibraryFamilyIdsSchema = z.array(modelFamilyIdSchema)
   .min(1)
@@ -140,6 +180,7 @@ const appSettingsFieldsSchema = z.object({
   keepHistory: z.boolean(),
   language: z.string().min(1).max(80),
   microphoneId: z.string().max(500).nullable(),
+  asrMode: asrModeSchema,
   modelPerformanceMode: modelPerformanceModeSchema,
   activeModelFamilyId: modelFamilyIdSchema,
   modelLibraryFamilyIds: modelLibraryFamilyIdsSchema,
@@ -318,7 +359,7 @@ export const diagnosticsSchema = z.object({
       installed: z.boolean(),
       present: z.boolean(),
       verified: z.boolean(),
-    })).length(MODEL_PERFORMANCE_TIERS.length),
+    })).min(1).max(MODEL_PERFORMANCE_TIERS.length),
   }),
   dataPath: z.string(),
 });
@@ -339,7 +380,7 @@ const modelCatalogProfileSchema = z.object({
   profileId: z.string().regex(/^[a-z0-9][a-z0-9-]*$/),
   tier: modelPerformanceTierSchema,
   artifactId: z.string().regex(/^[a-z0-9][a-z0-9-]*$/),
-  engine: z.enum(["mlx-whisper", "mlx-audio", "faster-whisper", "crispasr"]),
+  engine: z.enum(["mlx-whisper", "mlx-audio", "fluid-audio", "faster-whisper", "crispasr"]),
   precision: z.string().min(1).max(40),
   expectedMemoryMinBytes: z.number().int().positive(),
   expectedMemoryMaxBytes: z.number().int().positive(),
@@ -397,10 +438,14 @@ const unmanagedModelEntrySchema = z.object({
 const modelCatalogFamilySchema = z.object({
   familyId: modelFamilyIdSchema,
   displayName: z.string().min(1).max(200),
+  capabilities: modelCapabilitiesSchema,
+  /** Exactly one available family is the platform's fresh-install recommendation. */
+  recommendedDefault: z.boolean(),
   active: z.boolean(),
   inLibrary: z.boolean(),
   artifacts: z.array(modelCatalogArtifactSchema).min(1),
-  profiles: z.array(modelCatalogProfileSchema).length(MODEL_PERFORMANCE_TIERS.length),
+  /** A family exposes only profiles backed by a complete curated artifact. */
+  profiles: z.array(modelCatalogProfileSchema).min(1).max(MODEL_PERFORMANCE_TIERS.length),
 }).strict();
 
 /** A static curated platform catalog; it deliberately contains no hardware probe result. */
@@ -408,7 +453,10 @@ export const modelCatalogSchema = z.object({
   platform: z.enum(["darwin-arm64", "win32-x64-cuda"]),
   activeModelFamilyId: modelFamilyIdSchema,
   modelLibraryFamilyIds: modelLibraryFamilyIdsSchema,
-  families: z.array(modelCatalogFamilySchema).length(MODEL_FAMILY_IDS.length),
+  /** Independent of persisted user settings; used for platform-aware first run. */
+  recommendedDefaultFamilyId: modelFamilyIdSchema,
+  /** Unsupported families are absent instead of being represented by fake profiles. */
+  families: z.array(modelCatalogFamilySchema).min(1).max(MODEL_FAMILY_IDS.length),
   /**
    * Current cryptographic disk status for every distinct curated artifact.
    * Profiles join through artifactId, so Windows' shared model data appears
@@ -426,6 +474,7 @@ export const modelCatalogSchema = z.object({
     });
   }
   const seenFamilies = new Set<string>();
+  let recommendedDefaultCount = 0;
   const expectedArtifacts = new Map<string, number>();
   for (const [index, family] of catalog.families.entries()) {
     if (seenFamilies.has(family.familyId)) {
@@ -434,6 +483,14 @@ export const modelCatalogSchema = z.object({
     seenFamilies.add(family.familyId);
     if (family.active !== (family.familyId === catalog.activeModelFamilyId)) {
       context.addIssue({ code: "custom", path: ["families", index, "active"], message: "Family active flag is inconsistent." });
+    }
+    if (family.recommendedDefault) recommendedDefaultCount += 1;
+    if (family.recommendedDefault !== (family.familyId === catalog.recommendedDefaultFamilyId)) {
+      context.addIssue({
+        code: "custom",
+        path: ["families", index, "recommendedDefault"],
+        message: "Family recommendation flag is inconsistent.",
+      });
     }
     if (family.inLibrary !== catalog.modelLibraryFamilyIds.includes(family.familyId)) {
       context.addIssue({ code: "custom", path: ["families", index, "inLibrary"], message: "Family library flag is inconsistent." });
@@ -480,6 +537,29 @@ export const modelCatalogSchema = z.object({
         });
       }
     }
+  }
+  if (!seenFamilies.has(catalog.activeModelFamilyId)) {
+    context.addIssue({
+      code: "custom",
+      path: ["activeModelFamilyId"],
+      message: "The active model family is unavailable on this platform.",
+    });
+  }
+  for (const [index, familyId] of catalog.modelLibraryFamilyIds.entries()) {
+    if (!seenFamilies.has(familyId)) {
+      context.addIssue({
+        code: "custom",
+        path: ["modelLibraryFamilyIds", index],
+        message: "The model library contains a family unavailable on this platform.",
+      });
+    }
+  }
+  if (recommendedDefaultCount !== 1 || !seenFamilies.has(catalog.recommendedDefaultFamilyId)) {
+    context.addIssue({
+      code: "custom",
+      path: ["recommendedDefaultFamilyId"],
+      message: "Exactly one available family must be the platform recommendation.",
+    });
   }
   const seenVerifications = new Set<string>();
   for (const [index, verification] of catalog.verifications.entries()) {
@@ -538,6 +618,8 @@ export type ModelFamilyLibraryRequest = z.infer<typeof modelFamilyLibraryRequest
 
 export const modelSelectionApplyRequestSchema = z.object({
   familyId: modelFamilyIdSchema,
+  /** Older renderers remain compatible; main still validates catalog support. */
+  asrMode: asrModeSchema.default("after-stop"),
   performanceMode: modelPerformanceModeSchema,
 }).strict();
 export type ModelSelectionApplyRequest = z.infer<typeof modelSelectionApplyRequestSchema>;
@@ -588,6 +670,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   keepHistory: true,
   language: "auto",
   microphoneId: null,
+  asrMode: "after-stop",
   modelPerformanceMode: "auto",
   activeModelFamilyId: DEFAULT_MODEL_FAMILY_ID,
   modelLibraryFamilyIds: [DEFAULT_MODEL_FAMILY_ID],

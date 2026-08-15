@@ -86,6 +86,7 @@ import { normalizeDictationErrorMessage } from "./shared/dictationErrors";
 import {
   loadRuntimePlatformModelCatalog,
   modelArtifactIsVerifiedNow,
+  runtimeModelTier,
   type ModelSpec,
   resolveModelPerformance,
   verifyModelDirectory,
@@ -265,7 +266,9 @@ function platformModelCatalog(): RuntimePlatformModelCatalog {
 function modelCatalog(
   familyId: ModelFamilyId = database.getSettings().activeModelFamilyId,
 ): RuntimeModelCatalog {
-  return platformModelCatalog().families[familyId];
+  const catalog = platformModelCatalog().families[familyId];
+  if (!catalog) throw new Error(`Model family ${familyId} is unavailable on this platform`);
+  return catalog;
 }
 
 function runtimeModelManifestDirectory(): string {
@@ -560,7 +563,9 @@ async function currentModelResolution(): Promise<ModelPerformanceResolution> {
  */
 function manifestForWorkerSelection(selection: WorkerModelSelection): ModelSpec | null {
   for (const family of Object.values(platformModelCatalog().families)) {
+    if (!family) continue;
     for (const candidate of Object.values(family.tiers)) {
+      if (!candidate) continue;
       if (
         candidate.manifest.modelId === selection.modelId
         && candidate.tier === selection.tier
@@ -596,6 +601,9 @@ function workerComputeType(tier: RuntimeModelTierSpec): WorkerComputeType {
     case "float16":
     case "int8_float16":
     case "int8":
+      return tier.precision;
+    case "coreml-fp16":
+    case "coreml-int8":
       return tier.precision;
   }
 }
@@ -640,6 +648,9 @@ async function collectDiagnosticsForResolution(
   const verifications = await verifyRuntimeModelCatalog(modelRoot, catalog);
   const model = resolution.tier.manifest;
   const verification = verifications[resolution.effectiveTier];
+  if (!verification) {
+    throw new Error(`No verification was produced for the selected ${resolution.effectiveTier} profile`);
+  }
   return {
     platform: process.platform,
     architecture: process.arch,
@@ -672,8 +683,12 @@ async function collectDiagnosticsForResolution(
       resolutionReason: resolutionReasonMessage(resolution),
       reservedHeadroomBytes: resolution.reservedHeadroomBytes,
       requiredFreeMemoryBytes: resolution.requiredMemoryBytes,
-      options: Object.values(catalog.tiers).map((tier) => {
+      options: Object.values(catalog.tiers).flatMap((tier) => {
+        if (!tier) return [];
         const tierVerification = verifications[tier.tier];
+        if (!tierVerification) {
+          throw new Error(`No verification was produced for the ${tier.tier} profile`);
+        }
         return {
           tier: tier.tier,
           modelKey: tier.modelKey,
@@ -1745,7 +1760,7 @@ function registerIpc(): void {
       assertModelSwitchAllowed();
       assertFamilyInLibrary(request.familyId);
       const catalog = modelCatalog(request.familyId);
-      const tier = catalog.tiers[request.tier];
+      const tier = runtimeModelTier(catalog, request.tier);
       const modelRoot = modelRootForUserData(app.getPath("userData"));
       const warmSelection = worker.loadedSelection();
       const replacesLoadedArtifact = request.replaceExisting
@@ -1779,7 +1794,7 @@ function registerIpc(): void {
     return runExclusiveModelOperation(async () => {
       assertModelSwitchAllowed();
       assertFamilyInLibrary(request.familyId);
-      const tier = modelCatalog(request.familyId).tiers[request.tier];
+      const tier = runtimeModelTier(modelCatalog(request.familyId), request.tier);
       const activeResolution = await currentModelResolution();
       if (
         activeResolution.tier.familyId === request.familyId

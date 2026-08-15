@@ -49,6 +49,7 @@ describe("IPC contracts", () => {
 
   it("keeps active model selection inside a unique curated local library", () => {
     expect(MODEL_FAMILY_IDS).toEqual([
+      "parakeet-unified-en-0-6b",
       "whisper-large-v3",
       "qwen3-asr-0-6b",
       "qwen3-asr-1-7b",
@@ -89,6 +90,7 @@ describe("IPC contracts", () => {
       performanceMode: "medium",
     })).toEqual({
       familyId: "qwen3-asr-0-6b",
+      asrMode: "after-stop",
       performanceMode: "medium",
     });
     expect(() => modelSelectionApplyRequestSchema.parse({
@@ -242,10 +244,13 @@ describe("IPC contracts", () => {
       platform: "win32-x64-cuda" as const,
       activeModelFamilyId: "whisper-large-v3" as const,
       modelLibraryFamilyIds: ["whisper-large-v3" as const],
+      recommendedDefaultFamilyId: "whisper-large-v3" as const,
       families: [
         {
           familyId: "whisper-large-v3" as const,
           displayName: "Whisper large-v3",
+          capabilities: { modes: ["after-stop"], partialResults: false, timestamps: false, languageDetection: false, promptContext: false, keywordBoost: false, supportedLanguages: ["auto"] },
+          recommendedDefault: true,
           active: true,
           inLibrary: true,
           artifacts: [artifact("whisper-large-v3-ctranslate2", "Systran/faster-whisper-large-v3")],
@@ -254,6 +259,8 @@ describe("IPC contracts", () => {
         {
           familyId: "qwen3-asr-0-6b" as const,
           displayName: "Qwen3-ASR 0.6B",
+          capabilities: { modes: ["after-stop"], partialResults: false, timestamps: false, languageDetection: false, promptContext: false, keywordBoost: false, supportedLanguages: ["auto"] },
+          recommendedDefault: false,
           active: false,
           inLibrary: false,
           artifacts: (["f16", "q8-0", "q4-k"] as const).map((quant) => ({
@@ -282,6 +289,8 @@ describe("IPC contracts", () => {
         {
           familyId: "qwen3-asr-1-7b" as const,
           displayName: "Qwen3-ASR 1.7B",
+          capabilities: { modes: ["after-stop"], partialResults: false, timestamps: false, languageDetection: false, promptContext: false, keywordBoost: false, supportedLanguages: ["auto"] },
+          recommendedDefault: false,
           active: false,
           inLibrary: false,
           artifacts: (["f16", "q8-0", "q4-k"] as const).map((quant) => ({
@@ -310,6 +319,8 @@ describe("IPC contracts", () => {
         {
           familyId: "whisper-large-v2" as const,
           displayName: "Whisper large-v2",
+          capabilities: { modes: ["after-stop"], partialResults: false, timestamps: false, languageDetection: false, promptContext: false, keywordBoost: false, supportedLanguages: ["auto"] },
+          recommendedDefault: false,
           active: false,
           inLibrary: false,
           artifacts: [artifact("whisper-large-v2-ctranslate2", "Systran/faster-whisper-large-v2")],

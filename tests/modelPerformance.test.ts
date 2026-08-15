@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   loadRuntimeModelCatalog,
   resolveModelPerformance,
+  runtimeModelTier,
 } from "../src/main/modelSpec";
 import {
   acceleratorMemorySnapshotSchema,
@@ -73,7 +74,7 @@ describe("automatic model performance resolution", () => {
     // working memory plus 20% of total memory (3.2 GiB) headroom.
     expect(high.reservedHeadroomBytes).toBe(Math.ceil(3.2 * GIBIBYTE));
     expect(high.requiredMemoryBytes).toBe(
-      catalog.tiers.high.acceleratorMemory.maximumBytes + Math.ceil(3.2 * GIBIBYTE),
+      runtimeModelTier(catalog, "high").acceleratorMemory.maximumBytes + Math.ceil(3.2 * GIBIBYTE),
     );
 
     expect(resolveModelPerformance({
@@ -249,7 +250,7 @@ describe("automatic model performance resolution", () => {
       tiers: {
         ...catalog.tiers,
         low: {
-          ...catalog.tiers.low,
+          ...runtimeModelTier(catalog, "low"),
           engine: "faster-whisper" as const,
         },
       },
@@ -265,10 +266,9 @@ describe("automatic model performance resolution", () => {
     const crossedEngine = {
       ...catalog,
       engine: "faster-whisper" as const,
-      tiers: Object.fromEntries(Object.entries(catalog.tiers).map(([tier, spec]) => [
-        tier,
-        { ...spec, engine: "faster-whisper" as const },
-      ])) as typeof catalog.tiers,
+      tiers: Object.fromEntries(Object.entries(catalog.tiers).flatMap(([tier, spec]) => (
+        spec ? [[tier, { ...spec, engine: "faster-whisper" as const }]] : []
+      ))) as typeof catalog.tiers,
     };
     expect(() => resolveModelPerformance({
       preference: "medium",
@@ -281,7 +281,7 @@ describe("automatic model performance resolution", () => {
       tiers: {
         ...catalog.tiers,
         high: {
-          ...catalog.tiers.high,
+          ...runtimeModelTier(catalog, "high"),
           precision: "8-bit" as const,
         },
       },
@@ -327,11 +327,11 @@ describe("automatic model performance resolution", () => {
     const windowsCatalog = loadRuntimeModelCatalog(manifestDirectory, "win32", "x64");
     const reportedFreeVram = 6_285_164_544;
     const mediumRequired = (
-      windowsCatalog.tiers.medium.acceleratorMemory.maximumBytes
+      runtimeModelTier(windowsCatalog, "medium").acceleratorMemory.maximumBytes
       + 2 * GIBIBYTE
     );
     const lowRequired = (
-      windowsCatalog.tiers.low.acceleratorMemory.maximumBytes
+      runtimeModelTier(windowsCatalog, "low").acceleratorMemory.maximumBytes
       + 2 * GIBIBYTE
     );
 

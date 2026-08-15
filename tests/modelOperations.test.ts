@@ -10,15 +10,19 @@ import {
 } from "../src/main/modelOperations";
 import {
   loadRuntimeModelCatalog,
+  runtimeModelTier,
   verifyModelDirectory,
   type ModelVerification,
 } from "../src/main/modelSpec";
 
-const model = loadRuntimeModelCatalog(
-  path.resolve("resources/model-manifest"),
-  "darwin",
-  "arm64",
-).tiers.medium.manifest;
+const model = runtimeModelTier(
+  loadRuntimeModelCatalog(
+    path.resolve("resources/model-manifest"),
+    "darwin",
+    "arm64",
+  ),
+  "medium",
+).manifest;
 
 function state(
   verificationStatus: "missing" | "invalid" | "verified",
