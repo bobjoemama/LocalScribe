@@ -5,6 +5,8 @@ project_root="$(cd "$(dirname "$0")/.." && pwd)"
 runtime_root="$project_root/resources/python-runtime"
 venv_root="$runtime_root/venv"
 worker_root="$project_root/worker"
+fluid_audio_helper_root="$project_root/tools/fluidaudio-parakeet-helper"
+fluid_audio_helper_output="$project_root/resources/native/macos/localscribe-fluidaudio-parakeet"
 python_version="3.12.13"
 uv_version="$(tr -d '[:space:]' < "$project_root/.uv-version")"
 if [[ ! "$uv_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
@@ -18,6 +20,14 @@ if [[ "$(uname -s)" != "Darwin" || "$(uname -m)" != "arm64" ]]; then
 fi
 if ! command -v uv >/dev/null 2>&1; then
   echo "uv is required to build the pinned worker runtime." >&2
+  exit 1
+fi
+if ! command -v swift >/dev/null 2>&1; then
+  echo "swift is required to build the pinned FluidAudio helper." >&2
+  exit 1
+fi
+if [[ ! -f "$fluid_audio_helper_root/Package.swift" || ! -f "$fluid_audio_helper_root/Package.resolved" ]]; then
+  echo "Pinned FluidAudio helper sources are missing." >&2
   exit 1
 fi
 uv_bin="$(command -v uv)"
@@ -93,6 +103,28 @@ find "$runtime_root" -type f \( \
   -name .lock \
 \) -delete
 find "$venv_root/bin" -type f ! -name 'python*' -delete
+
+# Keep the Swift package outside resources: `extraResource` copies native
+# resources recursively, so putting source, Package.resolved, or `.build`
+# there would ship an auditable but unnecessary source/build tree. Only this
+# arm64 executable is promoted into Resources/native/macos and later signed
+# alongside the Python runtime by Forge.
+swift build --package-path "$fluid_audio_helper_root" -c release
+fluid_audio_helper_build_dir="$(swift build --package-path "$fluid_audio_helper_root" -c release --show-bin-path)"
+fluid_audio_helper_binary="$fluid_audio_helper_build_dir/localscribe-fluidaudio-parakeet"
+if [[ ! -f "$fluid_audio_helper_binary" || ! -x "$fluid_audio_helper_binary" ]]; then
+  echo "FluidAudio helper build did not produce an executable." >&2
+  exit 1
+fi
+helper_architecture="$(lipo -archs "$fluid_audio_helper_binary")"
+if [[ "$helper_architecture" != "arm64" ]]; then
+  echo "FluidAudio helper must be arm64, got: $helper_architecture" >&2
+  exit 1
+fi
+helper_temp="$fluid_audio_helper_output.tmp.$$"
+cp "$fluid_audio_helper_binary" "$helper_temp"
+chmod 755 "$helper_temp"
+mv -f "$helper_temp" "$fluid_audio_helper_output"
 
 "$venv_root/bin/python3" -B -c \
   'import mlx, mlx_whisper, localscribe_worker; print("Bundled macOS worker runtime is ready")'

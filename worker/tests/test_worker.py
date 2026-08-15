@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import io
 import json
+import shutil
 import tempfile
 import unittest
 import uuid
@@ -11,11 +13,13 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
-import localscribe_worker.worker as worker_module
 import numpy as np
+
+import localscribe_worker.worker as worker_module
 from localscribe_worker.worker import (
     MAX_REQUEST_BYTES,
     TIER_SPECS,
+    FluidAudioParakeetRuntime,
     HardwareInfo,
     MLXAudioRuntime,
     MLXWhisperRuntime,
@@ -37,6 +41,7 @@ def tier_spec(tier: str, *, family: str = "v3") -> TierSpec:
     family_fragment = {
         "qwen": "Qwen3-ASR-1.7B",
         "qwen06": "Qwen3-ASR-0.6B",
+        "parakeet": "parakeet-unified-en-0.6b-coreml",
     }.get(family, f"whisper-large-{family}-mlx")
     matches = [
         spec
@@ -54,6 +59,7 @@ def load_request(
     *,
     allow_download: bool = False,
     family: str = "v3",
+    asr_mode: str = "after-stop",
     **overrides: Any,
 ) -> dict[str, Any]:
     spec = tier_spec(tier, family=family)
@@ -63,6 +69,7 @@ def load_request(
         "computeType": spec.compute_type,
         "modelRoot": str(model_root),
         "allowDownload": allow_download,
+        "asrMode": asr_mode,
     }
     fields.update(overrides)
     return request("load_model", **fields)
@@ -138,6 +145,41 @@ def write_tiny_model(path: Path, manifest: ModelManifest) -> None:
     path.mkdir(parents=True, exist_ok=True)
     (path / "config.json").write_bytes(b'{"model_type":"whisper"}')
     (path / "weights.npz").write_bytes(b"tiny-test-weights")
+
+
+def nested_manifest() -> ModelManifest:
+    files = {
+        "metadata.json": b'{"format":"coreml"}',
+        "encoder.mlmodelc/model.mil": b"coreml-model",
+        "encoder.mlmodelc/weights/weight.bin": b"coreml-weights",
+    }
+    return ModelManifest(
+        tier="medium",
+        backend="FluidAudio CoreML / ANE",
+        display_name="Test Parakeet",
+        model_id="FluidInference/parakeet-unified-en-0.6b-coreml",
+        family_id="parakeet-unified-en-0-6b",
+        artifact_id="parakeet-test-int8",
+        storage_directory="parakeet-unified-en-0-6b-coreml-int8",
+        revision="b" * 40,
+        license="CC-BY-4.0",
+        files={
+            name: ModelFile(bytes=len(contents), sha256=hashlib.sha256(contents).hexdigest())
+            for name, contents in files.items()
+        },
+    )
+
+
+def write_nested_model(path: Path, manifest: ModelManifest) -> None:
+    contents = {
+        "metadata.json": b'{"format":"coreml"}',
+        "encoder.mlmodelc/model.mil": b"coreml-model",
+        "encoder.mlmodelc/weights/weight.bin": b"coreml-weights",
+    }
+    for filename, data in contents.items():
+        target = path / filename
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data)
 
 
 class FakeRuntime:
@@ -222,6 +264,93 @@ class WorkerProtocolTests(unittest.TestCase):
             ):
                 exit_code = run_worker(**kwargs)
         return parse_output(output), errors.getvalue(), exit_code
+
+    def test_parakeet_live_session_is_mode_bound_and_resets_after_finish(self) -> None:
+        class FakeLiveRuntime(FluidAudioParakeetRuntime):
+            def __init__(self) -> None:
+                self._mode = "live"
+                self.events: list[tuple[str, Any]] = []
+                self.closed = False
+
+            def begin_live(self, *, language: str | None, context: str) -> None:
+                self.events.append(("begin", (language, context)))
+
+            def append_live(self, pcm16: bytes) -> str:
+                self.events.append(("append", pcm16))
+                return "local partial"
+
+            def finish_live(self) -> TranscriptionResult:
+                self.events.append(("finish", None))
+                return TranscriptionResult("local final", "en")
+
+            def cancel_live(self) -> None:
+                self.events.append(("cancel", None))
+
+            def close(self) -> None:
+                self.closed = True
+
+        manifest = nested_manifest()
+        spec = TierSpec(
+            tier=manifest.tier,
+            manifest_filename="parakeet-unified-en-0-6b-coreml-int8.json",
+            model_id=manifest.model_id,
+            family_id=manifest.family_id,
+            artifact_id=manifest.artifact_id,
+            revision=manifest.revision,
+            storage_directory=manifest.storage_directory,
+            compute_type="coreml-int8",
+        )
+        selection = (spec.model_id, spec.tier, spec.compute_type)
+        runtime = FakeLiveRuntime()
+        with (
+            tempfile.TemporaryDirectory() as temporary,
+            patch.dict(worker_module.TIER_SPECS, {selection: spec}),
+            patch.dict(worker_module.MODEL_MANIFESTS, {selection: manifest}),
+        ):
+            model_root = Path(temporary)
+            pcm16 = b"\x00\x00" * 160
+            load = request(
+                "load_model",
+                tier=spec.tier,
+                modelId=spec.model_id,
+                computeType=spec.compute_type,
+                modelRoot=str(model_root),
+                allowDownload=False,
+                asrMode="live",
+            )
+            messages, errors, exit_code = self.run_protocol(
+                encode_requests(
+                    load,
+                    request("begin_live", language="en", context=""),
+                    request("append_live", audioBase64=base64.b64encode(pcm16).decode("ascii")),
+                    request("finish_live"),
+                    request("shutdown"),
+                ),
+                installer=lambda root, _manifest, _allow: root / manifest.storage_directory,
+                factory=lambda _path, _spec: runtime,
+            )
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(errors, "")
+        self.assertEqual([message["type"] for message in messages], [
+            "hello", "model_ready", "live_started", "partial", "final", "shutdown",
+        ])
+        self.assertEqual(messages[3]["text"], "local partial")
+        self.assertEqual(messages[4]["text"], "local final")
+        self.assertEqual(runtime.events, [
+            ("begin", ("en", "")),
+            ("append", pcm16),
+            ("finish", None),
+        ])
+        self.assertTrue(runtime.closed)
+
+    def test_live_mode_is_rejected_for_non_streaming_models(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            messages, _errors, exit_code = self.run_protocol(
+                encode_requests(load_request("low", Path(temporary), asr_mode="live"))
+            )
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(messages[1]["code"], "invalid_asr_mode")
 
     def test_hello_health_device_info_and_shutdown_without_loading(self) -> None:
         health = request("health")
@@ -1317,6 +1446,57 @@ class ModelInstallationTests(unittest.TestCase):
             (model / "unexpected.bin").write_bytes(b"x")
             self.assertFalse(worker_module._valid_model_directory(model, manifest))
 
+    def test_nested_coreml_bundle_requires_exact_regular_file_tree(self) -> None:
+        manifest = nested_manifest()
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            model = root / manifest.storage_directory
+            write_nested_model(model, manifest)
+            self.assertTrue(worker_module._valid_model_directory(model, manifest))
+
+            # An undeclared nested file is not inert Finder metadata and must
+            # prevent CoreML from loading the otherwise verified artifact.
+            extra = model / "encoder.mlmodelc" / "weights" / "payload.bin"
+            extra.write_bytes(b"payload")
+            self.assertFalse(worker_module._valid_model_directory(model, manifest))
+            extra.unlink()
+
+            # A symlinked bundle ancestor could redirect a later CoreML load
+            # outside the digest-verified tree, so it is rejected before any
+            # manifest file is read.
+            target = root / "external-bundle"
+            (target / "weights").mkdir(parents=True)
+            (target / "model.mil").write_bytes(b"coreml-model")
+            (target / "weights" / "weight.bin").write_bytes(b"coreml-weights")
+            bundle = model / "encoder.mlmodelc"
+            shutil.rmtree(bundle)
+            bundle.symlink_to(target, target_is_directory=True)
+            self.assertFalse(worker_module._valid_model_directory(model, manifest))
+
+    def test_nested_coreml_install_downloads_only_manifested_bundle_files(self) -> None:
+        manifest = nested_manifest()
+        observed: dict[str, Any] = {}
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+
+            def downloader(**kwargs: Any) -> None:
+                observed.update(kwargs)
+                write_nested_model(Path(kwargs["local_dir"]), manifest)
+                (Path(kwargs["local_dir"]) / ".cache" / "huggingface").mkdir(parents=True)
+
+            installed = ensure_model(
+                root,
+                manifest,
+                True,
+                snapshot_downloader=downloader,
+            )
+
+            self.assertEqual(installed, root.resolve() / manifest.storage_directory)
+            self.assertTrue(worker_module._valid_model_directory(installed, manifest))
+            self.assertEqual(observed["allow_patterns"], sorted(manifest.files))
+            self.assertEqual(observed["repo_id"], manifest.model_id)
+            self.assertEqual(observed["revision"], manifest.revision)
+
     def test_finder_metadata_does_not_invalidate_a_byte_perfect_model(self) -> None:
         """A .DS_Store must not cost the user a multi-gigabyte re-download.
 
@@ -1420,7 +1600,7 @@ class ModelInstallationTests(unittest.TestCase):
         self.assertEqual(manifest.revision, "c" * 40)
 
     def test_packaged_catalog_has_exact_curated_manifests_and_files(self) -> None:
-        self.assertEqual(len(TIER_SPECS), 12)
+        self.assertEqual(len(TIER_SPECS), 14)
         self.assertEqual(
             {spec.manifest_filename for spec in TIER_SPECS.values()},
             {
@@ -1436,6 +1616,8 @@ class ModelInstallationTests(unittest.TestCase):
                 "qwen3-asr-0-6b-mlx-bf16.json",
                 "qwen3-asr-0-6b-mlx-8bit.json",
                 "qwen3-asr-0-6b-mlx-4bit.json",
+                "parakeet-unified-en-0-6b-coreml-fp16.json",
+                "parakeet-unified-en-0-6b-coreml-int8.json",
             },
         )
         for family in ("v3", "v2"):
@@ -1454,6 +1636,13 @@ class ModelInstallationTests(unittest.TestCase):
                 ],
                 ["bfloat16", "int8", "int4"],
             )
+        self.assertEqual(
+            [
+                tier_spec(tier, family="parakeet").compute_type
+                for tier in ("high", "medium")
+            ],
+            ["coreml-fp16", "coreml-int8"],
+        )
         for selection, manifest in worker_module.MODEL_MANIFESTS.items():
             spec = TIER_SPECS[selection]
             self.assertEqual(selection, (spec.model_id, spec.tier, spec.compute_type))
@@ -1464,6 +1653,14 @@ class ModelInstallationTests(unittest.TestCase):
             if manifest.family_id in {"qwen3-asr-1-7b", "qwen3-asr-0-6b"}:
                 self.assertIn("model.safetensors", manifest.files)
                 self.assertIn("config.json", manifest.files)
+            elif manifest.family_id == "parakeet-unified-en-0-6b":
+                self.assertIn("metadata.json", manifest.files)
+                self.assertIn("vocab.json", manifest.files)
+                self.assertTrue(
+                    any(name.endswith("/weights/weight.bin") for name in manifest.files)
+                )
+                self.assertTrue(any("streaming_70_7_7" in name for name in manifest.files))
+                self.assertFalse(any("streaming_70_13_13" in name for name in manifest.files))
             else:
                 self.assertEqual(set(manifest.files), {"config.json", "weights.npz"})
             for model_file in manifest.files.values():
@@ -1472,6 +1669,84 @@ class ModelInstallationTests(unittest.TestCase):
 
 
 class RuntimeAndHardwareTests(unittest.TestCase):
+    def test_fluid_audio_helper_uses_strict_framed_local_protocol(self) -> None:
+        def frame(payload: dict[str, Any]) -> bytes:
+            encoded = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+            return worker_module.struct.pack(">I", len(encoded)) + encoded
+
+        class FakeProcess:
+            def __init__(self) -> None:
+                self.stdin = io.BytesIO()
+                self.stdout = io.BytesIO(
+                    frame(
+                        {
+                            "type": "hello",
+                            "protocol": 1,
+                            "runtime": "FluidAudio CoreML / ANE",
+                            "runtimeVersion": "0.15.5",
+                            "modes": ["after-stop", "live"],
+                            "precisions": ["coreml-fp16", "coreml-int8"],
+                        }
+                    )
+                    + frame({"type": "loaded"})
+                    + frame({"type": "transcription", "text": "Local Parakeet."})
+                )
+                self.terminated = False
+
+            def poll(self) -> None:
+                return None
+
+            def wait(self, timeout: float | None = None) -> int:
+                return 0
+
+            def terminate(self) -> None:
+                self.terminated = True
+
+            def kill(self) -> None:
+                self.terminated = True
+
+        process = FakeProcess()
+        spec = TierSpec(
+            tier="medium",
+            manifest_filename="parakeet-unified-en-0-6b-coreml-int8.json",
+            model_id="FluidInference/parakeet-unified-en-0.6b-coreml",
+            family_id="parakeet-unified-en-0-6b",
+            artifact_id="parakeet-unified-en-0-6b-coreml-int8",
+            revision="a" * 40,
+            storage_directory="parakeet-unified-en-0-6b-coreml-int8",
+            compute_type="coreml-int8",
+        )
+        with (
+            patch.object(worker_module, "_fluid_audio_helper_path", return_value=Path("/signed/helper")),
+            patch.object(worker_module.subprocess, "Popen", return_value=process),
+        ):
+            runtime = FluidAudioParakeetRuntime.load(
+                Path("/models/parakeet-unified-en-0-6b-coreml-int8"), spec
+            )
+            self.assertEqual(
+                runtime.transcribe(b"\x00\x00", language="en", context=""),
+                TranscriptionResult("Local Parakeet.", "en"),
+            )
+
+        wire = process.stdin.getvalue()
+        first_length = worker_module.struct.unpack(">I", wire[:4])[0]
+        first = json.loads(wire[4 : 4 + first_length])
+        self.assertEqual(
+            first,
+            {
+                "type": "load",
+                "modelPath": "/models/parakeet-unified-en-0-6b-coreml-int8",
+                "precision": "coreml-int8",
+                "mode": "after-stop",
+            },
+        )
+        offset = 4 + first_length
+        second_length = worker_module.struct.unpack(">I", wire[offset : offset + 4])[0]
+        second = json.loads(wire[offset + 4 : offset + 4 + second_length])
+        self.assertEqual(second, {"type": "transcribe", "pcmBytes": 2})
+        self.assertEqual(wire[offset + 4 + second_length :], b"\x00\x00")
+        runtime.close()
+
     def test_qwen06_runtime_dispatches_only_to_mlx_audio(self) -> None:
         spec = tier_spec("low", family="qwen06")
         with (
@@ -1483,6 +1758,22 @@ class RuntimeAndHardwareTests(unittest.TestCase):
                 "qwen06",
             )
         qwen_load.assert_called_once_with(Path("/qwen06"), spec)
+        whisper_load.assert_not_called()
+
+    def test_parakeet_dispatches_only_to_the_fluid_audio_helper(self) -> None:
+        spec = tier_spec("medium", family="parakeet")
+        with (
+            patch.object(
+                FluidAudioParakeetRuntime,
+                "load",
+                return_value="parakeet",
+            ) as parakeet_load,
+            patch.object(MLXAudioRuntime, "load", return_value="qwen") as qwen_load,
+            patch.object(MLXWhisperRuntime, "load", return_value="whisper") as whisper_load,
+        ):
+            self.assertEqual(worker_module._load_runtime(Path("/parakeet"), spec), "parakeet")
+        parakeet_load.assert_called_once_with(Path("/parakeet"), spec)
+        qwen_load.assert_not_called()
         whisper_load.assert_not_called()
 
     def test_runtime_passes_pcm_array_and_prompt_to_mlx_audio(self) -> None:

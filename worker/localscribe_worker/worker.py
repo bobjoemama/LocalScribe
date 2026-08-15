@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import contextlib
 import gc
 import hashlib
@@ -9,15 +10,16 @@ import platform
 import re
 import shutil
 import stat
+import struct
 import subprocess
 import sys
 import time
 import uuid
 import wave
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from importlib.metadata import version as package_version
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, BinaryIO, Protocol, TextIO
 
 PROTOCOL_VERSION = 1
@@ -45,6 +47,15 @@ MAX_CONTEXT_CHARS = 4_000
 MAX_LANGUAGE_CHARS = 80
 MAX_PATH_CHARS = 2_048
 MAX_RESULT_CHARS = 100_000
+MAX_HELPER_FRAME_BYTES = 256 * 1024
+# Live audio travels over the existing line-delimited worker protocol. Keeping
+# chunks at 8 KiB means strict base64 remains comfortably below the 16 KiB
+# request ceiling while still representing 256 ms of 16 kHz PCM16.
+MAX_LIVE_AUDIO_BYTES = 8 * 1024
+FLUID_AUDIO_HELPER_PROTOCOL_VERSION = 1
+FLUID_AUDIO_HELPER_RUNTIME = "FluidAudio CoreML / ANE"
+FLUID_AUDIO_HELPER_VERSION = "0.15.5"
+FLUID_AUDIO_HELPER_FILENAME = "localscribe-fluidaudio-parakeet"
 MODEL_TRANSACTION_PREFIX = ".localscribe-model-install-"
 MODEL_TRANSACTION_MARKER = "transaction.json"
 MODEL_TRANSACTION_OWNER = "com.localscribe.model-install"
@@ -91,6 +102,15 @@ LANGUAGE_NAME_TO_CODE = {
 }
 SUPPORTED_LANGUAGE_CODES = frozenset(LANGUAGE_NAME_TO_CODE.values())
 
+# A manifest file name is a portable, canonical POSIX relative path. CoreML
+# models are directory bundles (``Encoder.mlmodelc/weights/weight.bin``), so
+# flat-name-only manifests are insufficient. Keep the grammar deliberately
+# narrower than a generic filesystem path: no empty segments, dot segments,
+# backslashes, or platform-specific absolute paths can reach the installer.
+MANIFEST_RELATIVE_PATH = re.compile(
+    r"(?:[A-Za-z0-9][A-Za-z0-9._-]*/)*(?:\.gitattributes|[A-Za-z0-9][A-Za-z0-9._-]*)$"
+)
+
 
 @dataclass(frozen=True)
 class TierSpec:
@@ -102,6 +122,7 @@ class TierSpec:
     revision: str
     storage_directory: str
     compute_type: str
+    asr_mode: str = "after-stop"
 
 
 CatalogSelection = tuple[str, str, str]
@@ -129,6 +150,18 @@ CURATED_PROFILE_POLICIES = (
     ("qwen3-asr-0-6b-mlx-bf16.json", "high", "bfloat16", "MLX Audio"),
     ("qwen3-asr-0-6b-mlx-8bit.json", "medium", "int8", "MLX Audio"),
     ("qwen3-asr-0-6b-mlx-4bit.json", "low", "int4", "MLX Audio"),
+    (
+        "parakeet-unified-en-0-6b-coreml-fp16.json",
+        "high",
+        "coreml-fp16",
+        "FluidAudio CoreML / ANE",
+    ),
+    (
+        "parakeet-unified-en-0-6b-coreml-int8.json",
+        "medium",
+        "coreml-int8",
+        "FluidAudio CoreML / ANE",
+    ),
 )
 MANIFEST_FILENAMES = frozenset(
     filename for filename, _tier, _compute_type, _backend in CURATED_PROFILE_POLICIES
@@ -144,6 +177,7 @@ MODEL_REQUEST_FIELDS = frozenset(
         "allowDownload",
     }
 )
+LOAD_MODEL_REQUEST_FIELDS = MODEL_REQUEST_FIELDS | frozenset({"asrMode"})
 
 
 @dataclass(frozen=True)
@@ -295,11 +329,7 @@ def _parse_manifest(path: Path, tier: str, expected_backend: str) -> ModelManife
     for filename, file_raw in files.items():
         if (
             not isinstance(filename, str)
-            or re.fullmatch(
-                r"(?:\.gitattributes|[A-Za-z0-9][A-Za-z0-9._-]*)",
-                filename,
-            )
-            is None
+            or MANIFEST_RELATIVE_PATH.fullmatch(filename) is None
             or not isinstance(file_raw, dict)
             or frozenset(file_raw) != frozenset({"bytes", "sha256"})
             or not isinstance(file_raw.get("bytes"), int)
@@ -497,6 +527,83 @@ def _is_inert_directory_metadata(name: str, expected: frozenset[str]) -> bool:
     return name.startswith("._") and name[2:] in expected
 
 
+def _manifest_file_path(root: Path, filename: str) -> Path:
+    """Materialize a previously validated canonical POSIX manifest path."""
+    # Parsing does not accept ``.`` / ``..`` / empty segments / backslashes.
+    # Keep this defensive check near every filesystem boundary nevertheless:
+    # callers must never turn an unvalidated path into an on-disk location.
+    if MANIFEST_RELATIVE_PATH.fullmatch(filename) is None:
+        raise WorkerError("unsafe_model_path", "model manifest path is invalid")
+    relative = PurePosixPath(filename)
+    if relative.is_absolute() or any(part in {"", ".", ".."} for part in relative.parts):
+        raise WorkerError("unsafe_model_path", "model manifest path is invalid")
+    return root.joinpath(*relative.parts)
+
+
+def _is_inert_model_metadata(
+    relative: PurePosixPath,
+    expected_names: frozenset[str],
+) -> bool:
+    """Allow only Finder/AppleDouble metadata adjacent to declared files."""
+    name = relative.name
+    if name in (".DS_Store", ".localized"):
+        return True
+    if not name.startswith("._"):
+        return False
+    sibling = relative.parent / name[2:]
+    return sibling.as_posix() in expected_names
+
+
+def _exact_model_file_set(
+    model_directory: Path,
+    manifest: ModelManifest,
+    *,
+    ignored_root_directories: frozenset[str] = frozenset(),
+) -> bool:
+    """Require exactly the manifest's regular files, recursively and safely."""
+    expected_names = frozenset(manifest.files)
+    observed_names: set[str] = set()
+    try:
+        root_metadata = model_directory.lstat()
+        if model_directory.is_symlink() or not stat.S_ISDIR(root_metadata.st_mode):
+            return False
+        for current_root, directory_names, file_names in os.walk(
+            model_directory,
+            topdown=True,
+            followlinks=False,
+        ):
+            current = Path(current_root)
+            relative_parent = current.relative_to(model_directory)
+            for directory_name in tuple(directory_names):
+                candidate = current / directory_name
+                metadata = candidate.lstat()
+                if candidate.is_symlink() or not stat.S_ISDIR(metadata.st_mode):
+                    return False
+                relative = (relative_parent / directory_name).as_posix()
+                if relative_parent == Path(".") and relative in ignored_root_directories:
+                    directory_names.remove(directory_name)
+                    continue
+                # A directory must be an ancestor of one declared file. This
+                # rejects `.DS_Store`/`.cache` directories and arbitrary empty
+                # trees rather than merely ignoring them during os.walk.
+                if not any(name.startswith(f"{relative}/") for name in expected_names):
+                    return False
+            for file_name in file_names:
+                candidate = current / file_name
+                metadata = candidate.lstat()
+                if candidate.is_symlink() or not stat.S_ISREG(metadata.st_mode):
+                    return False
+                relative = (relative_parent / file_name).as_posix()
+                if relative in expected_names:
+                    observed_names.add(relative)
+                    continue
+                if not _is_inert_model_metadata(PurePosixPath(relative), expected_names):
+                    return False
+        return observed_names == expected_names
+    except (OSError, ValueError):
+        return False
+
+
 def _valid_model_directory(
     model_directory: Path,
     manifest: ModelManifest,
@@ -513,20 +620,10 @@ def _valid_model_directory(
     artifact may be loaded.
     """
     try:
-        directory_metadata = model_directory.lstat()
-        if model_directory.is_symlink() or not stat.S_ISDIR(directory_metadata.st_mode):
+        if not _exact_model_file_set(model_directory, manifest):
             return False
-        expected_names = frozenset(manifest.files)
-        for entry in model_directory.iterdir():
-            if entry.name in expected_names:
-                continue
-            if not _is_inert_directory_metadata(entry.name, expected_names):
-                return False
-            entry_metadata = entry.lstat()
-            if entry.is_symlink() or not stat.S_ISREG(entry_metadata.st_mode):
-                return False
         for filename, expected in manifest.files.items():
-            candidate = model_directory / filename
+            candidate = _manifest_file_path(model_directory, filename)
             metadata = candidate.lstat()
             if candidate.is_symlink() or not stat.S_ISREG(metadata.st_mode):
                 return False
@@ -555,28 +652,25 @@ def _remove_verified_huggingface_metadata(
         directory_metadata = model_directory.lstat()
         if model_directory.is_symlink() or not stat.S_ISDIR(directory_metadata.st_mode):
             return False
-        expected_names = frozenset(manifest.files)
-        entries = {entry.name: entry for entry in model_directory.iterdir()}
-        surplus = frozenset(entries) - expected_names - frozenset((".cache",))
-        for name in surplus:
-            if not _is_inert_directory_metadata(name, expected_names):
-                return False
-            surplus_metadata = entries[name].lstat()
-            if entries[name].is_symlink() or not stat.S_ISREG(surplus_metadata.st_mode):
-                return False
-        if ".cache" not in entries or not expected_names <= frozenset(entries):
+        metadata_directory = model_directory / ".cache"
+        if not metadata_directory.exists():
             return False
-        metadata_directory = entries[".cache"]
         metadata = metadata_directory.lstat()
         if metadata_directory.is_symlink() or not stat.S_ISDIR(metadata.st_mode):
             return False
+        if not _exact_model_file_set(
+            model_directory,
+            manifest,
+            ignored_root_directories=frozenset({".cache"}),
+        ):
+            return False
         for filename, expected in manifest.files.items():
-            candidate = entries[filename]
-            file_metadata = candidate.lstat()
-            if candidate.is_symlink() or not stat.S_ISREG(file_metadata.st_mode):
-                return False
+            candidate = _manifest_file_path(model_directory, filename)
+            candidate_metadata = candidate.lstat()
             if (
-                file_metadata.st_size != expected.bytes
+                candidate.is_symlink()
+                or not stat.S_ISREG(candidate_metadata.st_mode)
+                or candidate_metadata.st_size != expected.bytes
                 or _sha256(candidate) != expected.sha256
             ):
                 return False
@@ -1322,7 +1416,297 @@ class MLXAudioRuntime:
             pass
 
 
+def _fluid_audio_helper_path() -> Path:
+    """Resolve only the signed helper bundled with this app/source tree.
+
+    The renderer never supplies this path. In a packaged app the worker lives
+    under ``Contents/Resources/worker``; in development, it lives below the
+    checkout root. Both candidates are fixed relative to this module and must
+    be regular executable files, never symlinks.
+    """
+    for parent in Path(__file__).resolve().parents:
+        for relative in (
+            Path("native") / "macos" / FLUID_AUDIO_HELPER_FILENAME,
+            Path("resources") / "native" / "macos" / FLUID_AUDIO_HELPER_FILENAME,
+        ):
+            candidate = parent / relative
+            try:
+                metadata = candidate.lstat()
+            except OSError:
+                continue
+            if (
+                not candidate.is_symlink()
+                and stat.S_ISREG(metadata.st_mode)
+                and bool(metadata.st_mode & stat.S_IXUSR)
+            ):
+                return candidate
+    raise WorkerError(
+        "runtime_unavailable",
+        "The bundled Parakeet CoreML runtime is unavailable",
+    )
+
+
+class FluidAudioParakeetRuntime:
+    """A strict local adapter around the signed FluidAudio Swift helper.
+
+    FluidAudio itself is intentionally never allowed to download: Python owns
+    the revision-pinned, digest-verified atomic install. This class sends only
+    a verified local directory to the helper and keeps exactly one helper/model
+    pair warm until a model switch or worker shutdown.
+    """
+
+    def __init__(
+        self,
+        *,
+        process: subprocess.Popen[bytes],
+        mode: str,
+    ) -> None:
+        self._process: subprocess.Popen[bytes] | None = process
+        self._mode = mode
+        self._live_active = False
+
+    @staticmethod
+    def _frame_payload(payload: dict[str, Any]) -> bytes:
+        try:
+            encoded = json.dumps(
+                payload,
+                ensure_ascii=True,
+                separators=(",", ":"),
+                sort_keys=True,
+            ).encode("utf-8")
+        except (TypeError, ValueError) as error:
+            raise WorkerError("runtime_protocol_error", "Parakeet request is invalid") from error
+        if not encoded or len(encoded) > MAX_HELPER_FRAME_BYTES:
+            raise WorkerError("runtime_protocol_error", "Parakeet request is too large")
+        return struct.pack(">I", len(encoded)) + encoded
+
+    @staticmethod
+    def _read_exact(stream: BinaryIO, count: int) -> bytes:
+        result = bytearray()
+        while len(result) < count:
+            chunk = stream.read(count - len(result))
+            if not chunk:
+                raise WorkerError("runtime_protocol_error", "Parakeet runtime closed unexpectedly")
+            result.extend(chunk)
+        return bytes(result)
+
+    @classmethod
+    def _read_frame(cls, stream: BinaryIO) -> dict[str, Any]:
+        header = cls._read_exact(stream, 4)
+        (size,) = struct.unpack(">I", header)
+        if size == 0 or size > MAX_HELPER_FRAME_BYTES:
+            raise WorkerError("runtime_protocol_error", "Parakeet runtime sent an invalid frame")
+        try:
+            decoded = json.loads(
+                cls._read_exact(stream, size).decode("utf-8"),
+                object_pairs_hook=_reject_duplicate_keys,
+            )
+        except (UnicodeDecodeError, json.JSONDecodeError, WorkerError) as error:
+            raise WorkerError("runtime_protocol_error", "Parakeet runtime sent invalid JSON") from error
+        if not isinstance(decoded, dict):
+            raise WorkerError("runtime_protocol_error", "Parakeet runtime sent an invalid response")
+        return decoded
+
+    def _send(self, request: dict[str, Any], pcm16: bytes | None = None) -> dict[str, Any]:
+        process = self._process
+        if process is None or process.poll() is not None or process.stdin is None or process.stdout is None:
+            raise WorkerError("runtime_protocol_error", "Parakeet runtime is not running")
+        if pcm16 is not None and (
+            not pcm16 or len(pcm16) > MAX_AUDIO_BYTES or len(pcm16) % 2 != 0
+        ):
+            raise WorkerError("invalid_audio_file", "audio payload is invalid")
+        try:
+            process.stdin.write(self._frame_payload(request))
+            if pcm16 is not None:
+                process.stdin.write(pcm16)
+            process.stdin.flush()
+        except (BrokenPipeError, OSError) as error:
+            raise WorkerError("runtime_protocol_error", "Parakeet runtime stopped") from error
+        response = self._read_frame(process.stdout)
+        if response.get("type") == "error":
+            # Helper errors are deliberately code-only. Do not reflect native
+            # paths or dependency messages through Electron's IPC boundary.
+            code = response.get("code")
+            if not isinstance(code, str) or code not in {
+                "invalid_request",
+                "request_too_large",
+                "invalid_model_path",
+                "model_not_loaded",
+                "runtime_failure",
+            }:
+                raise WorkerError("runtime_protocol_error", "Parakeet runtime rejected a request")
+            raise WorkerError("parakeet_runtime_failed", "Parakeet CoreML inference failed")
+        return response
+
+    @staticmethod
+    def _require_exact_response(response: dict[str, Any], expected: str) -> None:
+        if frozenset(response) != frozenset({"type"}) or response.get("type") != expected:
+            raise WorkerError("runtime_protocol_error", "Parakeet runtime sent an invalid response")
+
+    @classmethod
+    def load(cls, model_directory: Path, spec: TierSpec) -> FluidAudioParakeetRuntime:
+        if (
+            not model_directory.is_absolute()
+            or spec.family_id != "parakeet-unified-en-0-6b"
+            or spec.compute_type not in {"coreml-fp16", "coreml-int8"}
+            or spec.asr_mode not in {"after-stop", "live"}
+        ):
+            raise WorkerError("model_load_failed", "local Parakeet model selection is invalid")
+        expected_directory = {
+            "coreml-fp16": "parakeet-unified-en-0-6b-coreml-fp16",
+            "coreml-int8": "parakeet-unified-en-0-6b-coreml-int8",
+        }[spec.compute_type]
+        if model_directory.name != expected_directory:
+            raise WorkerError("model_load_failed", "local Parakeet model path is invalid")
+
+        helper = _fluid_audio_helper_path()
+        try:
+            process = subprocess.Popen(
+                [str(helper)],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                close_fds=True,
+            )
+        except OSError as error:
+            raise WorkerError("runtime_unavailable", "Parakeet CoreML runtime could not start") from error
+        runtime = cls(process=process, mode=spec.asr_mode)
+        try:
+            hello = runtime._read_frame(process.stdout) if process.stdout is not None else {}
+            if hello != {
+                "type": "hello",
+                "protocol": FLUID_AUDIO_HELPER_PROTOCOL_VERSION,
+                "runtime": FLUID_AUDIO_HELPER_RUNTIME,
+                "runtimeVersion": FLUID_AUDIO_HELPER_VERSION,
+                "modes": ["after-stop", "live"],
+                "precisions": ["coreml-fp16", "coreml-int8"],
+            }:
+                raise WorkerError("runtime_protocol_error", "Parakeet runtime handshake is invalid")
+            runtime._require_exact_response(
+                runtime._send(
+                    {
+                        "type": "load",
+                        "modelPath": str(model_directory),
+                        "precision": spec.compute_type,
+                        "mode": spec.asr_mode,
+                    }
+                ),
+                "loaded",
+            )
+            return runtime
+        except Exception:
+            runtime.close()
+            raise
+
+    @staticmethod
+    def _text_response(response: dict[str, Any], expected: str) -> str:
+        if frozenset(response) != frozenset({"type", "text"}) or response.get("type") != expected:
+            raise WorkerError("runtime_protocol_error", "Parakeet runtime sent an invalid transcription")
+        text = response.get("text")
+        if not isinstance(text, str) or len(text) > MAX_RESULT_CHARS:
+            raise WorkerError("invalid_model_output", "model returned an invalid transcription")
+        return text
+
+    def transcribe(
+        self,
+        pcm16: bytes,
+        *,
+        language: str | None,
+        context: str,
+    ) -> TranscriptionResult:
+        if self._mode != "after-stop":
+            raise WorkerError("invalid_mode", "Parakeet is loaded for live dictation")
+        if language not in {None, "en"}:
+            raise WorkerError("invalid_language", "Parakeet Unified currently supports English only")
+        if context:
+            raise WorkerError("context_not_supported", "Parakeet Unified does not support dictionary prompts")
+        return TranscriptionResult(
+            text=self._text_response(
+                self._send({"type": "transcribe", "pcmBytes": len(pcm16)}, pcm16),
+                "transcription",
+            ),
+            language="en",
+        )
+
+    def begin_live(self, *, language: str | None, context: str) -> None:
+        if self._mode != "live":
+            raise WorkerError("invalid_mode", "The selected model does not support live dictation")
+        if language not in {None, "en"}:
+            raise WorkerError("invalid_language", "Parakeet Unified currently supports English only")
+        if context:
+            raise WorkerError("context_not_supported", "Parakeet Unified does not support dictionary prompts")
+        self._require_exact_response(self._send({"type": "reset"}), "reset")
+        self._live_active = True
+
+    def append_live(self, pcm16: bytes) -> str:
+        if not self._live_active:
+            raise WorkerError("live_session_not_started", "start live dictation first")
+        return self._text_response(
+            self._send({"type": "append", "pcmBytes": len(pcm16)}, pcm16),
+            "partial",
+        )
+
+    def finish_live(self) -> TranscriptionResult:
+        if not self._live_active:
+            raise WorkerError("live_session_not_started", "start live dictation first")
+        try:
+            text = self._text_response(self._send({"type": "finish"}), "transcription")
+            return TranscriptionResult(text=text, language="en")
+        finally:
+            self._live_active = False
+            self._require_exact_response(self._send({"type": "reset"}), "reset")
+
+    def cancel_live(self) -> None:
+        if not self._live_active:
+            return
+        try:
+            self._require_exact_response(self._send({"type": "reset"}), "reset")
+        finally:
+            self._live_active = False
+
+    def release_transient_memory(self) -> None:
+        # FluidAudio keeps only its model graphs warm. Its streaming reset clears
+        # rolling audio and RNNT state, and offline calls allocate no Python MLX
+        # cache in this process.
+        return
+
+    def close(self) -> None:
+        process, self._process = self._process, None
+        self._live_active = False
+        if process is None:
+            return
+        try:
+            if process.poll() is None and process.stdin is not None:
+                process.stdin.write(self._frame_payload({"type": "close"}))
+                process.stdin.flush()
+        except (BrokenPipeError, OSError):
+            pass
+        finally:
+            if process.stdin is not None:
+                try:
+                    process.stdin.close()
+                except OSError:
+                    pass
+        try:
+            process.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            process.terminate()
+            try:
+                process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=2)
+        finally:
+            if process.stdout is not None:
+                try:
+                    process.stdout.close()
+                except OSError:
+                    pass
+
+
 def _load_runtime(model_directory: Path, spec: TierSpec) -> InferenceRuntime:
+    if spec.family_id == "parakeet-unified-en-0-6b":
+        return FluidAudioParakeetRuntime.load(model_directory, spec)
     if spec.family_id in {"qwen3-asr-1-7b", "qwen3-asr-0-6b"}:
         return MLXAudioRuntime.load(model_directory, spec)
     if spec.family_id in {"whisper-large-v3", "whisper-large-v2"}:
@@ -1366,7 +1750,10 @@ def _parse_model_request(
     machine_name: str,
 ) -> tuple[TierSpec, ModelManifest, bool, Path]:
     """Validate the fixed catalog selection shared by model operations."""
-    _strict_fields(message, MODEL_REQUEST_FIELDS)
+    _strict_fields(
+        message,
+        LOAD_MODEL_REQUEST_FIELDS if operation == "load_model" else MODEL_REQUEST_FIELDS,
+    )
     if platform_name != "darwin" or machine_name != "arm64":
         raise WorkerError(
             "apple_silicon_only",
@@ -1382,6 +1769,15 @@ def _parse_model_request(
             "model_not_allowed",
             "modelId, tier, and computeType must match the model catalog",
         )
+    if operation == "load_model":
+        asr_mode = _string_field(message, "asrMode", max_chars=16)
+        allowed_modes = {"after-stop", "live"} if spec.family_id == "parakeet-unified-en-0-6b" else {"after-stop"}
+        if asr_mode not in allowed_modes:
+            raise WorkerError(
+                "invalid_asr_mode",
+                "the selected model does not support that dictation mode",
+            )
+        spec = replace(spec, asr_mode=asr_mode)
     allow_download = message.get("allowDownload")
     if not isinstance(allow_download, bool):
         raise WorkerError(
@@ -1413,6 +1809,23 @@ def _approved_installed_model_path(
     return local_model
 
 
+def _live_runtime(runtime: InferenceRuntime | None) -> FluidAudioParakeetRuntime:
+    if not isinstance(runtime, FluidAudioParakeetRuntime) or runtime._mode != "live":
+        raise WorkerError("invalid_mode", "The selected model does not support live dictation")
+    return runtime
+
+
+def _live_pcm16(message: dict[str, Any]) -> bytes:
+    encoded = _string_field(message, "audioBase64", max_chars=16_000)
+    try:
+        pcm16 = base64.b64decode(encoded, validate=True)
+    except (ValueError, UnicodeEncodeError) as error:
+        raise WorkerError("invalid_audio_file", "live audio payload is invalid") from error
+    if not pcm16 or len(pcm16) > MAX_LIVE_AUDIO_BYTES or len(pcm16) % 2 != 0:
+        raise WorkerError("invalid_audio_file", "live audio payload is invalid")
+    return pcm16
+
+
 def run_worker(
     *,
     input_stream: BinaryIO,
@@ -1427,6 +1840,7 @@ def run_worker(
     runtime: InferenceRuntime | None = None
     active_spec: TierSpec | None = None
     active_model_root: Path | None = None
+    live_started_at: float | None = None
     platform_name = platform_name or sys.platform
     machine_name = machine_name or platform.machine()
     _send(
@@ -1522,6 +1936,7 @@ def run_worker(
                     runtime = None
                     active_spec = None
                     active_model_root = None
+                    live_started_at = None
                     started = time.perf_counter()
                     local_model = model_installer(
                         model_root,
@@ -1630,6 +2045,60 @@ def run_worker(
                             "hardware": hardware.protocol_payload(),
                         },
                     )
+                elif message_type == "begin_live":
+                    _strict_fields(
+                        message,
+                        frozenset({"type", "id", "language", "context"}),
+                    )
+                    live_runtime = _live_runtime(runtime)
+                    if live_started_at is not None:
+                        raise WorkerError("live_session_active", "live dictation is already active")
+                    context = message.get("context")
+                    if not isinstance(context, str) or len(context) > MAX_CONTEXT_CHARS:
+                        raise WorkerError("invalid_context", "context must be at most 4000 characters")
+                    language = _normalize_language(message.get("language"))
+                    live_runtime.begin_live(language=language, context=context)
+                    live_started_at = time.perf_counter()
+                    _send(output_stream, {"type": "live_started", "id": request_id})
+                elif message_type == "append_live":
+                    _strict_fields(message, frozenset({"type", "id", "audioBase64"}))
+                    live_runtime = _live_runtime(runtime)
+                    if live_started_at is None:
+                        raise WorkerError("live_session_not_started", "start live dictation first")
+                    try:
+                        text = live_runtime.append_live(_live_pcm16(message))
+                    except Exception:
+                        # A native processing failure may leave the decoder
+                        # state ambiguous. Reset it before reporting failure so
+                        # the next session never inherits prior audio.
+                        live_runtime.cancel_live()
+                        live_started_at = None
+                        raise
+                    _send(output_stream, {"type": "partial", "id": request_id, "text": text})
+                elif message_type == "finish_live":
+                    _strict_fields(message, frozenset({"type", "id"}))
+                    live_runtime = _live_runtime(runtime)
+                    if live_started_at is None:
+                        raise WorkerError("live_session_not_started", "start live dictation first")
+                    started = live_started_at
+                    live_started_at = None
+                    result = live_runtime.finish_live()
+                    _send(
+                        output_stream,
+                        {
+                            "type": "final",
+                            "id": request_id,
+                            "text": result.text,
+                            "language": result.language,
+                            "inferenceMs": round((time.perf_counter() - started) * 1000),
+                        },
+                    )
+                elif message_type == "cancel_live":
+                    _strict_fields(message, frozenset({"type", "id"}))
+                    live_runtime = _live_runtime(runtime)
+                    live_runtime.cancel_live()
+                    live_started_at = None
+                    _send(output_stream, {"type": "live_cancelled", "id": request_id})
                 elif message_type == "transcribe":
                     _strict_fields(
                         message,
@@ -1646,6 +2115,8 @@ def run_worker(
                     )
                     if runtime is None:
                         raise WorkerError("model_not_loaded", "ASR model is not loaded")
+                    if isinstance(runtime, FluidAudioParakeetRuntime) and runtime._mode == "live":
+                        raise WorkerError("invalid_mode", "Parakeet is loaded for live dictation")
                     audio_path_raw = _string_field(
                         message,
                         "audioPath",
