@@ -184,8 +184,20 @@ export function Pill() {
           .then(async (audio) => {
             if (!sessionId) throw new Error("Dictation session identity is missing");
             if (!isCurrentFinalization(latestSnapshot.current, sessionId)) return;
+            /*
+             * The current shipped pill uses finalized transcription.  A future
+             * Live adapter owns its own final-result IPC and must never route
+             * provisional audio through this WAV-only channel.
+             */
+            if (audio.transport !== "finalized") {
+              throw new Error("Live dictation finalization is unavailable for this local speech adapter.");
+            }
             try {
-              await window.localScribe.session.transcribe({ ...audio, sessionId });
+              await window.localScribe.session.transcribe({
+                wav: audio.wav,
+                durationMs: audio.durationMs,
+                sessionId,
+              });
             } catch {
               // The main process owns transcription failures and has already surfaced the error.
             }

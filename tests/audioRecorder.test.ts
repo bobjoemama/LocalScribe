@@ -4,6 +4,7 @@ import {
   RecorderCancelledError,
   audioDurationLimitLabel,
   audioLevelFromRms,
+  hasLiveUsableSpeechEnergy,
   hasUsableSpeechEnergy,
   isUnavailableInputDeviceError,
 } from "../src/renderer/audioRecorder";
@@ -88,6 +89,13 @@ describe("speech energy gate", () => {
     }
     expect(hasUsableSpeechEnergy(samples, 16_000)).toBe(true);
   });
+
+  it("uses bounded live energy accounting without retaining the entire recording", () => {
+    expect(hasLiveUsableSpeechEnergy(16_000, 960, 16_000)).toBe(true);
+    expect(hasLiveUsableSpeechEnergy(16_000, 479, 16_000)).toBe(false);
+    expect(hasLiveUsableSpeechEnergy(48_000, 2_879, 48_000)).toBe(false);
+    expect(hasLiveUsableSpeechEnergy(48_000, 2_880, 48_000)).toBe(true);
+  });
 });
 
 describe("AudioRecorder capture bounds", () => {
@@ -146,6 +154,8 @@ describe("AudioRecorder capture bounds", () => {
     harness.port.onmessage?.({ data: samples } as MessageEvent<Float32Array>);
 
     const captured = await recorder.stop();
+    expect(captured.transport).toBe("finalized");
+    if (captured.transport !== "finalized") throw new Error("Expected finalized audio");
     expect(captured.durationMs).toBe(200);
     expect(captured.wav.byteLength).toBe(44 + samples.length * 2);
     expect(isAudioProtocolWav(captured.wav)).toBe(true);
@@ -386,5 +396,67 @@ describe("AudioRecorder cancellation", () => {
     now = 400;
     ports[1]!.onmessage?.({ data: samples } as MessageEvent<Float32Array>);
     await expect(recorder.stop()).resolves.toMatchObject({ durationMs: 200 });
+  });
+});
+
+describe("AudioRecorder live transport", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("refuses to call a recording Live when no local adapter sink exists", async () => {
+    const getUserMedia = vi.fn();
+    vi.stubGlobal("navigator", { mediaDevices: { getUserMedia } });
+    const recorder = new AudioRecorder();
+
+    await expect(recorder.start(null, { transport: "live" })).rejects.toThrow(
+      "no local Live adapter is installed",
+    );
+    expect(getUserMedia).not.toHaveBeenCalled();
+  });
+
+  it("emits bounded 16 kHz PCM frames and never retains a duplicate Live recording", async () => {
+    let now = 0;
+    vi.stubGlobal("performance", { now: () => now });
+    const harness = installAudioHarness(16_000);
+    const frames: Array<{ sampleCount: number; bytes: number }> = [];
+    const sink = {
+      write: vi.fn((frame: { sampleCount: number; pcm: ArrayBuffer }) => {
+        frames.push({ sampleCount: frame.sampleCount, bytes: frame.pcm.byteLength });
+      }),
+      finish: vi.fn(),
+    };
+    const recorder = new AudioRecorder();
+    await recorder.start(null, { transport: "live", liveSink: sink });
+
+    const samples = new Float32Array(1_600);
+    for (let index = 0; index < samples.length; index += 1) {
+      samples[index] = Math.sin(index / 7) * 0.025;
+    }
+    now = 200;
+    harness.port.onmessage?.({ data: samples } as MessageEvent<Float32Array>);
+
+    const captured = await recorder.stop();
+    expect(captured).toEqual({ transport: "live", durationMs: 200 });
+    expect(frames).toEqual(Array.from({ length: 5 }, () => ({ sampleCount: 320, bytes: 640 })));
+    expect(sink.finish).toHaveBeenCalledOnce();
+    expect(recorder as unknown as { chunks: Float32Array[] }).toMatchObject({ chunks: [] });
+  });
+
+  it("stops capture when a Live adapter rejects a frame", async () => {
+    let now = 0;
+    vi.stubGlobal("performance", { now: () => now });
+    const harness = installAudioHarness(16_000);
+    const sink = {
+      write: vi.fn().mockRejectedValue(new Error("native streaming helper stopped")),
+      finish: vi.fn(),
+      abort: vi.fn(),
+    };
+    const recorder = new AudioRecorder();
+    await recorder.start(null, { transport: "live", liveSink: sink });
+    now = 200;
+    harness.port.onmessage?.({ data: new Float32Array(1_600).fill(0.025) } as MessageEvent<Float32Array>);
+
+    await vi.waitFor(() => expect(harness.stopTrack).toHaveBeenCalledOnce());
+    await expect(recorder.stop()).rejects.toThrow("native streaming helper stopped");
+    expect(sink.abort).toHaveBeenCalledOnce();
   });
 });
