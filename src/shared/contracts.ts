@@ -218,6 +218,7 @@ export type AppSettings = z.infer<typeof appSettingsSchema>;
  * unloaded the old runtime and proved the target can be loaded.
  */
 export const appSettingsPatchSchema = appSettingsFieldsSchema.omit({
+  asrMode: true,
   modelPerformanceMode: true,
   activeModelFamilyId: true,
   modelLibraryFamilyIds: true,
