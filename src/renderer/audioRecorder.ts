@@ -4,10 +4,35 @@ import {
   AUDIO_MAX_FILE_BYTES,
   AUDIO_SAMPLE_RATE_HZ,
 } from "../shared/audioProtocol";
+import {
+  LivePcmFrameEncoder,
+  LivePcmTransport,
+  type LiveAudioSink,
+} from "../shared/liveAudioTransport";
 
-export interface CapturedAudio {
+export interface FinalizedCapturedAudio {
+  readonly transport: "finalized";
   wav: ArrayBuffer;
   durationMs: number;
+}
+
+export interface LiveCapturedAudio {
+  readonly transport: "live";
+  readonly durationMs: number;
+}
+
+export type CapturedAudio = FinalizedCapturedAudio | LiveCapturedAudio;
+
+/**
+ * `live` requires an already-created main-process adapter sink.  The renderer
+ * must never enable the mode from settings alone: without a sink the recorder
+ * fails before opening the microphone, rather than silently falling back to
+ * delayed transcription while calling itself Live.
+ */
+export interface AudioRecorderStartOptions {
+  readonly transport?: "finalized" | "live";
+  readonly liveSink?: LiveAudioSink;
+  readonly maxLivePendingFrames?: number;
 }
 
 export class RecorderCancelledError extends Error {
@@ -43,6 +68,7 @@ export class AudioRecorder {
   private maxCapturedSamples = 0;
   private maxCapturedBytes = 0;
   private captureLimitError: Error | null = null;
+  private liveActiveSamples = 0;
   private startedAt = 0;
   private startPromise: Promise<void> | null = null;
   private stopPromise: Promise<CapturedAudio> | null = null;
@@ -51,12 +77,15 @@ export class AudioRecorder {
   private smoothedLevel = 0;
   private lastLevelEmitAt = 0;
   private levelListener: (level: number) => void = () => undefined;
+  private transport: "finalized" | "live" = "finalized";
+  private liveTransport: LivePcmTransport | null = null;
+  private liveEncoder: LivePcmFrameEncoder | null = null;
 
   setLevelListener(listener: (level: number) => void): void {
     this.levelListener = listener;
   }
 
-  async start(deviceId: string | null): Promise<void> {
+  async start(deviceId: string | null, options: AudioRecorderStartOptions = {}): Promise<void> {
     const generation = ++this.generation;
     const pendingCancel = this.cancelPromise;
     if (pendingCancel) await pendingCancel;
@@ -71,7 +100,7 @@ export class AudioRecorder {
     }
     if (generation !== this.generation) throw new RecorderCancelledError();
     if (this.context) return;
-    const startPromise = this.startInternal(deviceId, generation);
+    const startPromise = this.startInternal(deviceId, generation, options);
     this.startPromise = startPromise;
     try {
       await startPromise;
@@ -83,16 +112,24 @@ export class AudioRecorder {
     }
   }
 
-  private async startInternal(deviceId: string | null, generation: number): Promise<void> {
+  private async startInternal(
+    deviceId: string | null,
+    generation: number,
+    options: AudioRecorderStartOptions,
+  ): Promise<void> {
     this.chunks = [];
     this.resetCaptureLimit();
+    this.configureTransport(options);
     const stream = await this.openInputStream(deviceId, generation);
     if (generation !== this.generation) {
       for (const track of stream.getTracks()) track.stop();
       throw new RecorderCancelledError();
     }
     this.stream = stream;
-    const context = new AudioContext({ latencyHint: "interactive" });
+    // Request the protocol rate so the usual macOS path needs no resampling.
+    // `context.sampleRate` remains authoritative: some hardware cannot honour
+    // the request and Live frames are canonicalized by LivePcmFrameEncoder.
+    const context = new AudioContext({ latencyHint: "interactive", sampleRate: AUDIO_SAMPLE_RATE_HZ });
     this.context = context;
     await context.audioWorklet.addModule(pcmWorkletUrl);
     if (generation !== this.generation) {
@@ -106,6 +143,9 @@ export class AudioRecorder {
       channelCount: 1,
     });
     this.setCaptureLimit(context.sampleRate);
+    this.liveEncoder = this.transport === "live"
+      ? new LivePcmFrameEncoder(context.sampleRate)
+      : null;
     this.node.port.onmessage = (event: MessageEvent<Float32Array>) => {
       const chunk = event.data;
       if (this.captureLimitError) return;
@@ -116,12 +156,17 @@ export class AudioRecorder {
         this.stopCaptureAtLimit();
         return;
       }
-      this.chunks.push(chunk);
+      if (this.transport === "finalized") this.chunks.push(chunk);
       this.capturedSamples += chunk.length;
       this.capturedBytes += chunk.byteLength;
+      if (!this.offerLiveFrames(chunk)) {
+        this.stopCaptureAtLimit();
+        return;
+      }
       let energy = 0;
       for (const sample of chunk) energy += sample * sample;
       const rms = Math.sqrt(energy / Math.max(1, chunk.length));
+      if (rms >= 0.006) this.liveActiveSamples += chunk.length;
       const measured = audioLevelFromRms(rms);
       this.smoothedLevel = measured > this.smoothedLevel
         ? measured
@@ -175,18 +220,38 @@ export class AudioRecorder {
 
     const captureLimitError = this.captureLimitError;
     if (captureLimitError) {
+      await this.cancelLiveTransport();
       this.resetAfterStop();
       throw captureLimitError;
     }
     if (durationMs > AUDIO_MAX_DURATION_MS) {
+      await this.cancelLiveTransport();
       this.resetAfterStop();
       throw createCaptureLimitError("long");
     }
-    const merged = merge(this.chunks);
-    if (merged.length < Math.round(inputRate * 0.1)) {
+    const liveError = await this.finishLiveTransport();
+    if (liveError) {
+      await this.cancelLiveTransport();
+      this.resetAfterStop();
+      throw liveError;
+    }
+    if (this.capturedSamples < Math.round(inputRate * 0.1)) {
       this.resetAfterStop();
       throw new Error("No usable audio was captured; hold the dictation key a little longer");
     }
+    if (this.transport === "live" && !hasLiveUsableSpeechEnergy(
+      this.capturedSamples,
+      this.liveActiveSamples,
+      inputRate,
+    )) {
+      this.resetAfterStop();
+      throw new Error("No speech detected; try again a little closer to the microphone");
+    }
+    if (this.transport === "live") {
+      this.resetAfterStop();
+      return { transport: "live", durationMs };
+    }
+    const merged = merge(this.chunks);
     if (!hasUsableSpeechEnergy(merged, inputRate)) {
       this.resetAfterStop();
       throw new Error("No speech detected; try again a little closer to the microphone");
@@ -198,7 +263,7 @@ export class AudioRecorder {
       throw createCaptureLimitError("large");
     }
     this.resetAfterStop();
-    return { wav, durationMs };
+    return { transport: "finalized", wav, durationMs };
   }
 
   cancel(): Promise<void> {
@@ -244,6 +309,7 @@ export class AudioRecorder {
     this.source = null;
     this.node = null;
     this.chunks = [];
+    await this.cancelLiveTransport();
     this.resetCaptureLimit();
     this.smoothedLevel = 0;
     this.lastLevelEmitAt = 0;
@@ -282,6 +348,9 @@ export class AudioRecorder {
     this.node = null;
     this.chunks = [];
     this.startPromise = null;
+    this.liveTransport = null;
+    this.liveEncoder = null;
+    this.transport = "finalized";
     this.resetCaptureLimit();
   }
 
@@ -291,6 +360,61 @@ export class AudioRecorder {
     this.maxCapturedSamples = 0;
     this.maxCapturedBytes = 0;
     this.captureLimitError = null;
+    this.liveActiveSamples = 0;
+  }
+
+  private configureTransport(options: AudioRecorderStartOptions): void {
+    const transport = options.transport ?? "finalized";
+    if (transport === "live" && !options.liveSink) {
+      throw new Error("Live dictation is unavailable because no local Live adapter is installed.");
+    }
+    this.transport = transport;
+    this.liveTransport = transport === "live" && options.liveSink
+      ? new LivePcmTransport(options.liveSink, {
+        maxPendingFrames: options.maxLivePendingFrames,
+        onFailure: (error) => {
+          this.captureLimitError = error;
+          this.stopCaptureAtLimit();
+        },
+      })
+      : null;
+  }
+
+  private offerLiveFrames(chunk: Float32Array): boolean {
+    const transport = this.liveTransport;
+    const encoder = this.liveEncoder;
+    if (!transport || !encoder) return true;
+    for (const frame of encoder.push(chunk)) {
+      if (!transport.offer(frame.pcm, frame.sampleCount)) {
+        this.captureLimitError = transport.failed ?? new Error("Live dictation could not keep up with microphone audio");
+        return false;
+      }
+    }
+    return true;
+  }
+
+  private async finishLiveTransport(): Promise<Error | null> {
+    const transport = this.liveTransport;
+    const encoder = this.liveEncoder;
+    if (!transport || !encoder) return null;
+    try {
+      for (const frame of encoder.finish()) {
+        if (!transport.offer(frame.pcm, frame.sampleCount)) {
+          throw transport.failed ?? new Error("Live dictation could not keep up with microphone audio");
+        }
+      }
+      await transport.finish();
+      return null;
+    } catch (error) {
+      return error instanceof Error ? error : new Error("Live speech processing failed");
+    }
+  }
+
+  private async cancelLiveTransport(): Promise<void> {
+    const transport = this.liveTransport;
+    this.liveTransport = null;
+    this.liveEncoder = null;
+    if (transport) await transport.cancel();
   }
 }
 
@@ -337,6 +461,31 @@ export function hasUsableSpeechEnergy(samples: Float32Array, sampleRate: number)
     if (rms >= 0.006 && ++activeFrames >= requiredActiveFrames) return true;
   }
   return false;
+}
+
+/**
+ * Live capture does not retain a duplicate Float32 recording just to rerun the
+ * final energy gate.  This equivalent conservative accounting tracks samples
+ * from chunks whose RMS is above the same threshold; it still requires at
+ * least three 20 ms speech frames and 3% of the utterance.
+ */
+export function hasLiveUsableSpeechEnergy(
+  totalSamples: number,
+  activeSamples: number,
+  sampleRate: number,
+): boolean {
+  if (
+    !Number.isFinite(totalSamples)
+    || totalSamples <= 0
+    || activeSamples <= 0
+    || !Number.isFinite(sampleRate)
+    || sampleRate <= 0
+  ) return false;
+  const requiredActiveSamples = Math.max(
+    Math.round(sampleRate * 0.06),
+    Math.ceil(totalSamples * 0.03),
+  );
+  return activeSamples >= requiredActiveSamples;
 }
 
 function merge(chunks: Float32Array[]): Float32Array {
