@@ -2170,14 +2170,23 @@ function registerIpc(): void {
               // installTimeoutMs. A flat cap made the largest tiers uninstallable
               // on any link slower than about 21 Mbit/s.
               artifactBytes,
-              onProgress: (progress) => {
+              onProgress: ({ phase, completedBytes, totalBytes }) => {
                 // The manifest total is main-owned. A worker that claims another
                 // total is violating the pinned-artifact protocol, not reporting
                 // a legitimate alternative download size.
-                if (progress.totalBytes !== artifactBytes) {
+                if (totalBytes !== artifactBytes) {
                   throw new Error("ASR worker reported progress for an unexpected model artifact size");
                 }
-                notifyModelInstallProgress({ ...progressBase, ...progress });
+                // Do not leak the worker protocol's `{ type, id }` envelope to
+                // the strict renderer contract. The current serialized install
+                // operation is the only source allowed to attach its catalog
+                // identity to measured byte counters.
+                notifyModelInstallProgress({
+                  ...progressBase,
+                  phase,
+                  completedBytes,
+                  totalBytes,
+                });
               },
             });
           },

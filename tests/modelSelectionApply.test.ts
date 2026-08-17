@@ -203,6 +203,8 @@ describe("atomic model selection architecture", () => {
     // reach the supervisor with the request. See tests/workerSupervisor.test.ts.
     expect(install).toContain("const artifactBytes = Object.values(tier.manifest.files)");
     expect(install).toContain("artifactBytes,");
+    expect(install).toContain("onProgress: ({ phase, completedBytes, totalBytes }) => {");
+    expect(install).toContain("Do not leak the worker protocol's `{ type, id }` envelope");
 
     const remove = between("handle(IPC.systemRemoveModel", "\n  });\n}");
     expect(remove).toContain("Apply another model or performance tier before removing it");
