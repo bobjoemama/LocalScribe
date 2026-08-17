@@ -256,6 +256,7 @@ bash scripts/verify-local-macos.sh \
   --smoke-audio /absolute/path/to/fixture.wav \
   --smoke-family qwen3-asr-0-6b \
   --smoke-tier medium \
+  --smoke-mode after-stop \
   --smoke-repeat 3
 ```
 

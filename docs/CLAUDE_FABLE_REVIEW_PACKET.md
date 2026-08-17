@@ -116,7 +116,7 @@ rather than reused from a same-version uv wheel cache.
 
 ## Model harness contract
 
-Whisper large-v3 is the default family. Qwen3-ASR 0.6B, Qwen3-ASR 1.7B, and
+Parakeet Unified EN 0.6B is the default Mac family. Whisper large-v3, Qwen3-ASR 0.6B, Qwen3-ASR 1.7B, and
 Whisper large-v2 are the curated-addable families. “Add model” means make an
 already reviewed family from the packaged catalog available in the local
 library; it does not select, load, or apply that family. It is intentionally not
@@ -583,7 +583,7 @@ npm run verify:local:macos
 npm run verify:local:macos -- \
   --smoke-model-root "$HOME/Library/Application Support/LocalScribe/models" \
   --smoke-audio /absolute/path/to/fixture.wav \
-  --smoke-family qwen3-asr-0-6b --smoke-tier medium --smoke-repeat 2
+  --smoke-family qwen3-asr-0-6b --smoke-tier medium --smoke-mode after-stop --smoke-repeat 2
 ```
 
 Do not run packaged Python without `-B` /
