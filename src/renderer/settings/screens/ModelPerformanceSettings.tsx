@@ -1208,7 +1208,19 @@ export function modelActionProgressPresentation(
     return { label: "Removing local model data…", percent: null, completedBytes: null, totalBytes: null };
   }
   if (phase === "verifying") {
-    return { label: "Download complete. Verifying local model files…", percent: 100, completedBytes: null, totalBytes: null };
+    const completedBytes = action.progress?.completedBytes;
+    const totalBytes = action.progress?.totalBytes;
+    if (completedBytes === undefined || totalBytes === undefined || totalBytes <= 0) {
+      return { label: "Verifying local model files…", percent: null, completedBytes: null, totalBytes: null };
+    }
+    const boundedCompleted = Math.min(Math.max(0, completedBytes), totalBytes);
+    const percent = Math.floor((boundedCompleted / totalBytes) * 100);
+    return {
+      label: `Verifying ${formatModelBytes(boundedCompleted)} of ${formatModelBytes(totalBytes)} (${percent}%)`,
+      percent,
+      completedBytes: boundedCompleted,
+      totalBytes,
+    };
   }
   if (phase === "complete") {
     return { label: "Download verified.", percent: 100, completedBytes: null, totalBytes: null };
