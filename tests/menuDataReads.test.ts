@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { sliceBetween, sliceFollowing } from "./support/order";
+import { expectPrecedes, sliceBetween, sliceFollowing } from "./support/order";
 
 /*
  * The macOS application menu is rebuilt from `setSession`, which runs on every
@@ -164,5 +164,32 @@ describe("what building the menu is allowed to do", () => {
     const enabled = sliceFollowing(menu, '"Copy Last Transcript"', "click:", "the menu");
 
     expect(enabled).not.toContain("latest()");
+  });
+});
+
+describe("refreshing My Voice after a library mutation", () => {
+  const main = readFileSync("src/main.ts", "utf8");
+
+  it.each([
+    ["dictionary save", "handle(IPC.dictionarySave", "handle(IPC.dictionaryDelete", "database.saveDictionary", "refreshVoiceMenuAfterLibraryMutation"],
+    ["dictionary delete", "handle(IPC.dictionaryDelete", "handle(IPC.snippetsList", "database.deleteDictionary", "refreshVoiceMenuAfterLibraryMutation"],
+    ["snippet save", "handle(IPC.snippetsSave", "handle(IPC.snippetsDelete", "database.saveSnippet", "refreshVoiceMenuAfterLibraryMutation"],
+    ["snippet delete", "handle(IPC.snippetsDelete", "handle(IPC.profilesList", "database.deleteSnippet", "refreshVoiceMenuAfterLibraryMutation"],
+  ])("rebuilds the native menu immediately after %s", (_name, start, end, mutation, refresh) => {
+    const handler = sliceBetween(main, start, end, "src/main.ts");
+
+    expectPrecedes(handler, mutation, refresh, start);
+  });
+
+  it("treats a native-menu refresh as best effort after the durable mutation", () => {
+    const refresh = sliceBetween(
+      main,
+      "function refreshVoiceMenuAfterLibraryMutation(): void {",
+      "/** Broadcast only validated, persisted settings",
+      "src/main.ts",
+    );
+
+    expect(refresh).toContain("installApplicationMenu()");
+    expect(refresh).toContain("catch (error)");
   });
 });

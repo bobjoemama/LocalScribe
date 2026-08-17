@@ -60,6 +60,7 @@ import { transcribeAudioAdmission } from "./shared/dictationSession";
 import { discardAudio, prepareTranscription } from "./main/session/transcribePrelude";
 import { createFinalizeWatchdog } from "./main/session/finalizeWatchdog";
 import { createNoticeTimer } from "./main/session/noticeTimer";
+import { persistCompletedDictationHistory } from "./main/session/historyPersistence";
 import { normalizeDiagnosticCode } from "./shared/diagnosticsLog";
 import {
   DiagnosticsRecorder,
@@ -1093,8 +1094,24 @@ function failSession(error: unknown): SessionSnapshot {
 
 
 function notifyHistoryChanged(): void {
-  if (settingsWindow && !settingsWindow.isDestroyed()) {
+  if (!settingsWindow || settingsWindow.isDestroyed()) return;
+  try {
     settingsWindow.webContents.send(IPC.historyChanged);
+  } catch (error) {
+    // The durable write already happened. A renderer closing between this
+    // predicate and send must not turn a completed dictation into a failure.
+    console.warn("LocalScribe could not refresh history after saving", error);
+  }
+}
+
+/** Rebuild the macOS My Voice counts after a successful Dictionary/Snippet mutation. */
+function refreshVoiceMenuAfterLibraryMutation(): void {
+  try {
+    installApplicationMenu();
+  } catch (error) {
+    // The mutation is durable; a later session transition will retry the menu
+    // rebuild, so a transient native-menu error must not reject the IPC call.
+    console.warn("LocalScribe could not refresh its My Voice menu", error);
   }
 }
 
@@ -1223,15 +1240,12 @@ async function completeDictationFinal(input: {
     { normalizeSpacing: cleanup.smartPunctuation },
   );
   if (!text.trim()) throw new Error("No speech detected");
+  let successMessage: string;
   if (settingsWindow?.isFocused() || scratchpadWindow?.isFocused()) {
     const outcome = await insertion.copyAndPaste(text, false);
     assertActiveSession(sessionId);
     diagnostics.record({ ...insertionDiagnosticEvent(outcome, false, false), sessionId });
-    setSession({
-      state: "success",
-      sessionId,
-      message: outcome === "copied" ? "Copied to clipboard" : "Inserted",
-    });
+    successMessage = outcome === "copied" ? "Copied to clipboard" : "Inserted";
   } else {
     const automaticPasteReady = await insertion.automaticPasteReady();
     const canAutoPaste = settings.autoPaste && automaticPasteReady;
@@ -1245,35 +1259,50 @@ async function completeDictationFinal(input: {
     const copiedMessage = settings.autoPaste && !automaticPasteReady && process.platform === "darwin"
       ? "Copied — allow Accessibility"
       : "Copied to clipboard";
-    const successMessage = outcome === "pasted"
+    successMessage = outcome === "pasted"
       ? "Inserted"
       : outcome === "pasted-with-copy"
         ? "Inserted · copied as backup"
         : copiedMessage;
-    setSession({ state: "success", sessionId, message: successMessage });
   }
-  const record = settings.keepHistory
-    ? database.saveTranscription({
-        durationMs,
-        text,
-        language: result.language,
-        modelId: concreteModel.modelId,
-        status: "complete",
-        sourceAppId: targetAppId,
-      })
-    : {
-        id: randomUUID(),
-        createdAt: Date.now(),
-        durationMs,
-        text,
-        language: result.language,
-        modelId: concreteModel.modelId,
-        status: "complete" as const,
-        sourceAppId: targetAppId,
-      };
-  const purged = database.purgeExpiredTranscriptions(settings.historyRetentionDays);
-  if (settings.keepHistory || purged > 0) notifyHistoryChanged();
-  return record;
+  // Insertion/copy is the completion boundary. History follows it as a
+  // best-effort local convenience, never as a reason to reclassify an already
+  // delivered dictation as a transcription failure.
+  setSession({ state: "success", sessionId, message: successMessage });
+  const history = persistCompletedDictationHistory(settings.keepHistory, {
+    transientRecord: () => ({
+      id: randomUUID(),
+      createdAt: Date.now(),
+      durationMs,
+      text,
+      language: result.language,
+      modelId: concreteModel.modelId,
+      status: "complete" as const,
+      sourceAppId: targetAppId,
+    }),
+    save: () => database.saveTranscription({
+      durationMs,
+      text,
+      language: result.language,
+      modelId: concreteModel.modelId,
+      status: "complete",
+      sourceAppId: targetAppId,
+    }),
+    purgeExpired: () => database.purgeExpiredTranscriptions(settings.historyRetentionDays),
+    notifyChanged: notifyHistoryChanged,
+    recordFailure: (event, error) => diagnostics.record({
+      stage: "lifecycle",
+      event,
+      outcome: "failed",
+      sessionId,
+      durationMs,
+      detail: normalizeDiagnosticCode(error),
+    }),
+  });
+  if (history.warning) {
+    setSession({ state: "success", sessionId, message: history.warning });
+  }
+  return history.record;
 }
 
 function trustedSurfaceForEvent(event: IpcMainInvokeEvent): RendererSurface {
@@ -1774,14 +1803,26 @@ function registerIpc(): void {
   });
 
   handle(IPC.dictionaryList, () => database.listDictionary());
-  handle(IPC.dictionarySave, (_event, input: unknown) =>
-    database.saveDictionary(dictionaryInputSchema.parse(input)),
-  );
-  handle(IPC.dictionaryDelete, (_event, id: unknown) => database.deleteDictionary(uuidSchema.parse(id)));
+  handle(IPC.dictionarySave, (_event, input: unknown) => {
+    const entry = database.saveDictionary(dictionaryInputSchema.parse(input));
+    refreshVoiceMenuAfterLibraryMutation();
+    return entry;
+  });
+  handle(IPC.dictionaryDelete, (_event, id: unknown) => {
+    database.deleteDictionary(uuidSchema.parse(id));
+    refreshVoiceMenuAfterLibraryMutation();
+  });
 
   handle(IPC.snippetsList, () => database.listSnippets());
-  handle(IPC.snippetsSave, (_event, input: unknown) => database.saveSnippet(snippetInputSchema.parse(input)));
-  handle(IPC.snippetsDelete, (_event, id: unknown) => database.deleteSnippet(uuidSchema.parse(id)));
+  handle(IPC.snippetsSave, (_event, input: unknown) => {
+    const snippet = database.saveSnippet(snippetInputSchema.parse(input));
+    refreshVoiceMenuAfterLibraryMutation();
+    return snippet;
+  });
+  handle(IPC.snippetsDelete, (_event, id: unknown) => {
+    database.deleteSnippet(uuidSchema.parse(id));
+    refreshVoiceMenuAfterLibraryMutation();
+  });
 
   handle(IPC.profilesList, () => database.listProfiles());
   handle(IPC.profilesSave, (_event, input: unknown) =>
