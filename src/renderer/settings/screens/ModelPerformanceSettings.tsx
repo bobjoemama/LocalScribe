@@ -7,6 +7,7 @@ import {
 } from "../../../shared/contracts";
 import { useState } from "react";
 import { modelPerformanceTierLabel } from "../../../shared/modelPerformance";
+import { dictationLanguagePresentation } from "../dictationLanguages";
 
 /*
  * Tier labels come from the shared source so main-composed status copy and
@@ -50,6 +51,23 @@ export function modelFamilyPresentation(family: CatalogFamily): ModelFamilyPrese
         ? "English"
         : family.capabilities.supportedLanguages[0]!
       : `${family.capabilities.supportedLanguages.length} languages`;
+  /*
+   * Keep this recognizable at the decision point. Parakeet is the NVIDIA
+   * family people look for when they want a fast, polished result after they
+   * release the shortcut — it must not read like the separate live-preview
+   * choice. `experiences` still comes from the catalog, which remains the
+   * runtime authority for modes that may actually be selected.
+   */
+  if (identity.includes("parakeet")) {
+    return {
+      experience: "after-stop",
+      experiences,
+      recommendation: family.recommendedDefault ? "recommended" : "balanced",
+      summary: "Fast final dictation after you stop speaking. Recommended for a polished local result.",
+      languageLabel,
+      latencyLabel: "Fast final dictation",
+    };
+  }
   if (experiences.length === 1 && experiences[0] === "live") {
     return {
       experience: "live",
@@ -57,7 +75,7 @@ export function modelFamilyPresentation(family: CatalogFamily): ModelFamilyPrese
       recommendation: "live",
       summary: "Recognizes while you speak, then finalizes before insertion.",
       languageLabel,
-      latencyLabel: "Live preview",
+      latencyLabel: "Live recognition",
     };
   }
   if (experiences.includes("live")) {
@@ -114,11 +132,23 @@ export interface ModelSelectionDraft {
   performanceMode: ModelPerformanceMode;
 }
 export type ModelVerificationState = "missing" | "invalid" | "verified" | "unknown";
-export type ModelActionState = {
+/**
+ * Progress is reported from the runtime's real downloader. Missing byte counts
+ * deliberately render as an indeterminate operation rather than a fabricated
+ * percentage.
+ */
+export interface ModelActionProgress {
+  phase: "preparing" | "downloading" | "verifying" | "complete" | "failed";
+  completedBytes?: number;
+  totalBytes?: number;
+}
+export interface ModelTierActionState {
   action: "installing" | "repairing" | "removing";
   familyId: ModelFamilyId;
   tier: ConcreteModelTier;
-} | {
+  progress?: ModelActionProgress;
+}
+export type ModelActionState = ModelTierActionState | {
   action: "adding";
   familyId: ModelFamilyId;
 } | null;
@@ -180,6 +210,9 @@ export interface ModelPerformanceSettingsProps {
   action: ModelActionState;
   feedback: { message: string; isError: boolean } | null;
   applying: boolean;
+  /** The currently staged General-language value, used to prevent an invalid model switch. */
+  selectedLanguage?: string;
+  languageHasUnsavedChange?: boolean;
   /**
    * Optional until the shared streaming-mode setting reaches this branch.
    * When supplied, the renderer becomes fully controlled by main; until then
@@ -220,6 +253,8 @@ export function modelApplyEligibility({
   memoryRequirement,
   action,
   applying,
+  selectedLanguage,
+  languageHasUnsavedChange,
 }: Pick<ModelPerformanceSettingsProps,
   | "currentSelection"
   | "currentModelLoaded"
@@ -232,6 +267,8 @@ export function modelApplyEligibility({
   | "memoryRequirement"
   | "action"
   | "applying"
+  | "selectedLanguage"
+  | "languageHasUnsavedChange"
 >): ModelApplyEligibility {
   const unavailable = (
     reason: string,
@@ -256,6 +293,18 @@ export function modelApplyEligibility({
   if (!family) return unavailable("The selected model is not available on this platform.");
   if (!family.capabilities.modes.includes(pendingSelection.asrMode)) {
     return unavailable("The selected model does not support this dictation experience.");
+  }
+  if (selectedLanguage) {
+    const language = dictationLanguagePresentation(selectedLanguage, family.capabilities);
+    const compatible = language.options.some((option) => (
+      option.value === selectedLanguage && option.disabled !== true
+    ));
+    if (!compatible) {
+      return unavailable(`Choose a language supported by ${family.displayName} in General Settings before applying.`);
+    }
+    if (languageHasUnsavedChange) {
+      return unavailable("Save the language change in General Settings before applying this model.");
+    }
   }
   if (!family.inLibrary) return unavailable(`Add ${family.displayName} to your library first.`);
   if (!hardware || hardware.totalMemoryBytes === null || hardware.availableMemoryBytes === null) {
@@ -488,6 +537,8 @@ export function ModelPerformanceSettings({
   action,
   feedback,
   applying,
+  selectedLanguage,
+  languageHasUnsavedChange,
   recognitionExperience,
   onRecognitionExperienceChange,
   onModeChange,
@@ -535,6 +586,8 @@ export function ModelPerformanceSettings({
     memoryRequirement,
     action,
     applying,
+    selectedLanguage,
+    languageHasUnsavedChange,
   });
   const availableModeChoices = supportedModeChoices(pendingFamily);
   const liveFamiliesAvailable = catalog?.families.some(
@@ -543,12 +596,31 @@ export function ModelPerformanceSettings({
   const visibleFamilies = catalog?.families.filter(
     (family) => modelFamilyPresentation(family).experiences.includes(browsingExperience),
   ) ?? [];
+  const parakeetFamily = catalog?.families.find((family) => (
+    `${family.familyId} ${family.displayName}`.toLowerCase().includes("parakeet")
+  ));
+  const applyState = applying
+    ? "Applying model change"
+    : selectionChanged
+      ? "Pending model change"
+      : currentModelLoaded
+        ? "Applied and ready"
+        : "Selected model is not loaded";
+  const applyStatus = applying
+    ? "LocalScribe is safely unloading the previous runtime and loading this selection."
+    : selectionChanged
+      ? "Nothing changes until you apply this pending selection."
+      : currentModelLoaded
+        ? "This selection is loaded and ready for dictation."
+        : "This selection is saved but its local runtime needs to be loaded.";
 
   return (
     <div className="ls-model-performance">
-      <section className="ls-model-apply-card" aria-labelledby="model-apply-heading" aria-live="polite">
+      <section className="ls-model-apply-card" aria-labelledby="model-apply-heading" aria-busy={applying || undefined}>
         <div>
-          <span>{selectionChanged ? "Pending model change" : "Current model selection"}</span>
+          <span className={applying ? "ls-model-apply-state is-busy" : "ls-model-apply-state"} role="status" aria-live="polite">
+            {applyState}
+          </span>
           <h2 id="model-apply-heading">
             {pendingFamily?.displayName ?? pendingSelection.familyId} · {pendingSelection.asrMode === "live" ? "Live" : "After I stop"} · {pendingModeLabel}
           </h2>
@@ -562,7 +634,7 @@ export function ModelPerformanceSettings({
               <dd>{pendingFamily?.displayName ?? pendingSelection.familyId} · {pendingSelection.asrMode === "live" ? "Live" : "After I stop"} · {pendingModeLabel}</dd>
             </div>
           </dl>
-          <p>{applyEligibility.reason}</p>
+          <p id="model-apply-status">{applyStatus} {applyEligibility.reason}</p>
         </div>
         <div className="ls-model-apply-actions">
           <button type="button" className="ls-secondary-button" disabled={applying || action !== null} onClick={onRefresh}>
@@ -573,10 +645,12 @@ export function ModelPerformanceSettings({
             className="ls-primary-button ls-model-apply-button"
             disabled={!applyEligibility.enabled}
             aria-disabled={!applyEligibility.enabled}
+            aria-describedby="model-apply-status"
+            title={applyEligibility.enabled ? "Apply this staged model selection" : applyEligibility.reason}
             onClick={onApply}
           >
             {applying
-              ? "Applying…"
+              ? "Applying model…"
               : !selectionChanged && !currentModelLoaded
                 ? "Load current model"
                 : "Apply model"}
@@ -588,7 +662,7 @@ export function ModelPerformanceSettings({
         <div>
           <span>Dictation experience</span>
           <h2 id="model-experience-heading">Choose when LocalScribe recognizes your speech</h2>
-          <p>Both keep audio on this Mac. A live model may show a private preview, but text is still inserted only after you stop.</p>
+          <p>Both keep audio on this Mac. Live recognition streams while you speak, but LocalScribe inserts final text only after you stop.</p>
         </div>
         <div className="ls-model-experience-options" role="group" aria-label="Dictation experience">
           <button
@@ -599,7 +673,7 @@ export function ModelPerformanceSettings({
             onClick={() => chooseExperience("after-stop")}
           >
             <strong>After I stop</strong>
-            <span>Best final accuracy</span>
+            <span>Fast, polished final dictation</span>
           </button>
           <button
             type="button"
@@ -609,9 +683,14 @@ export function ModelPerformanceSettings({
             onClick={() => chooseExperience("live")}
           >
             <strong>Live</strong>
-            <span>{liveFamiliesAvailable ? "Recognize while speaking" : "Streaming model not installed yet"}</span>
+            <span>{liveFamiliesAvailable ? "Separate streaming recognition while you speak" : "No streaming model in this catalog"}</span>
           </button>
         </div>
+        {browsingExperience === "after-stop" && parakeetFamily && (
+          <p className="ls-model-experience-recommendation" role="status">
+            <strong>Looking for Parakeet?</strong> {parakeetFamily.displayName} is available below for fast final dictation after you stop — it is not the Live preview choice.
+          </p>
+        )}
         {!liveFamiliesAvailable && (
           <p className="ls-model-experience-unavailable" role="status">
             Live recognition will appear here only when a verified local streaming model is included in your catalog. It is unavailable in this build, so LocalScribe will not silently substitute another model.
@@ -695,8 +774,10 @@ export function ModelPerformanceSettings({
       <section className="ls-model-catalog" aria-labelledby="model-catalog-heading">
         <div className="ls-model-catalog-heading">
           <div>
-            <h2 id="model-catalog-heading">{browsingExperience === "live" ? "Live local models" : "After-stop local models"}</h2>
-            <p>Choose a model first, then a profile. The technical installation details are available when you need them.</p>
+            <h2 id="model-catalog-heading">{browsingExperience === "live" ? "Live models" : "After I stop models"}</h2>
+            <p>{browsingExperience === "live"
+              ? "Live preview is a separate streaming experience. Choose a model first, then a profile."
+              : "These models produce the finished text after you stop speaking. Choose a model first, then a profile."}</p>
           </div>
         </div>
 
@@ -898,6 +979,7 @@ function ModelFamilyCard({
         <div>
           <div className="ls-model-family-badges">
             {presentation.recommendation === "recommended" && <span className="ls-model-family-badge is-recommended">Recommended</span>}
+            {family.familyId.toLowerCase().includes("parakeet") && <span className="ls-model-family-badge is-final">Fast final dictation</span>}
             {presentation.recommendation === "accurate" && <span className="ls-model-family-badge">Accuracy-focused</span>}
             {presentation.recommendation === "legacy" && <span className="ls-model-family-badge">Legacy</span>}
             {presentation.recommendation === "live" && <span className="ls-model-family-badge is-live">Live</span>}
@@ -1003,7 +1085,7 @@ function ModelTierRow({
     && action.action !== "adding"
     && action.familyId === tier.familyId
     && action.tier === tier.tier
-    ? action.action
+    ? action
     : null;
   /*
    * Every other control on this screen goes inert while an Apply runs; these
@@ -1016,7 +1098,7 @@ function ModelTierRow({
   const sharedWith = sharedArtifact ? "Shared artifact" : null;
 
   return (
-    <article className={selected ? "ls-model-tier-row is-selected" : "ls-model-tier-row"}>
+    <article className={selected ? "ls-model-tier-row is-selected" : "ls-model-tier-row"} aria-busy={activeAction !== null || undefined}>
       <div className="ls-model-tier-heading">
         <span className="ls-model-tier-label">{tierLabel}</span>
         <span className={`ls-model-state is-${status.tone}`}>{status.label}</span>
@@ -1070,7 +1152,7 @@ function ModelArtifactControl({
   onRemove,
 }: {
   tier: ModelTierView;
-  activeAction: "installing" | "repairing" | "removing" | null;
+  activeAction: ModelTierActionState | null;
   anyAction: boolean;
   onInstall(familyId: ModelFamilyId, tier: ConcreteModelTier): void;
   onRepair(familyId: ModelFamilyId, tier: ConcreteModelTier): void;
@@ -1091,19 +1173,90 @@ function ModelArtifactControl({
       onClick={() => request(operation)}
       aria-label={`${label} ${tierLabel} profile for ${tier.familyId}`}
     >
-      {activeAction === actionStateFor(operation) ? progressLabelFor(operation) : label}
+      {activeAction?.action === actionStateFor(operation) ? progressLabelFor(operation) : label}
     </button>
   );
 
   // Keep the confirmed operation visible until it finishes even if a
   // diagnostics or catalog refresh updates the disk status first.
-  if (activeAction === "installing") return operationButton("install", "Download");
-  if (activeAction === "repairing") return operationButton("repair", "Repair", "ls-model-repair-button");
-  if (activeAction === "removing") return operationButton("remove", "Remove", "ls-model-remove-button");
+  if (activeAction?.action === "installing") return <>
+    {operationButton("install", "Download")}
+    <ModelOperationProgress action={activeAction} expectedBytes={tier.downloadBytes} />
+  </>;
+  if (activeAction?.action === "repairing") return <>
+    {operationButton("repair", "Repair", "ls-model-repair-button")}
+    <ModelOperationProgress action={activeAction} expectedBytes={tier.downloadBytes} />
+  </>;
+  if (activeAction?.action === "removing") return <>
+    {operationButton("remove", "Remove", "ls-model-remove-button")}
+    <ModelOperationProgress action={activeAction} expectedBytes={tier.downloadBytes} />
+  </>;
   if (tier.verificationStatus === "verified") return operationButton("remove", "Remove", "ls-model-remove-button");
   if (tier.verificationStatus === "invalid") return operationButton("repair", "Repair", "ls-model-repair-button");
   if (tier.verificationStatus === "missing") return operationButton("install", "Download");
   return operationButton("install", "Check / download");
+}
+
+export function modelActionProgressPresentation(
+  action: ModelTierActionState,
+  expectedBytes: number,
+): { label: string; percent: number | null; completedBytes: number | null; totalBytes: number | null } {
+  const phase = action.progress?.phase ?? "preparing";
+  if (action.action === "removing") {
+    return { label: "Removing local model data…", percent: null, completedBytes: null, totalBytes: null };
+  }
+  if (phase === "verifying") {
+    return { label: "Download complete. Verifying local model files…", percent: 100, completedBytes: null, totalBytes: null };
+  }
+  if (phase === "complete") {
+    return { label: "Download verified.", percent: 100, completedBytes: null, totalBytes: null };
+  }
+  if (phase === "failed") {
+    return { label: "Download did not finish. See the message above and try again.", percent: null, completedBytes: null, totalBytes: null };
+  }
+  if (phase === "preparing") {
+    return {
+      label: action.action === "repairing" ? "Preparing repair…" : "Preparing secure download…",
+      percent: null,
+      completedBytes: null,
+      totalBytes: null,
+    };
+  }
+  const completedBytes = Math.max(0, action.progress?.completedBytes ?? 0);
+  const totalBytes = Math.max(0, action.progress?.totalBytes ?? expectedBytes);
+  if (totalBytes <= 0) {
+    return { label: "Downloading model data…", percent: null, completedBytes: null, totalBytes: null };
+  }
+  const boundedCompleted = Math.min(completedBytes, totalBytes);
+  const percent = Math.floor((boundedCompleted / totalBytes) * 100);
+  return {
+    label: `Downloading ${formatModelBytes(boundedCompleted)} of ${formatModelBytes(totalBytes)} (${percent}%)`,
+    percent,
+    completedBytes: boundedCompleted,
+    totalBytes,
+  };
+}
+
+function ModelOperationProgress({ action, expectedBytes }: {
+  action: ModelTierActionState;
+  expectedBytes: number;
+}) {
+  const presentation = modelActionProgressPresentation(action, expectedBytes);
+  return (
+    <div className="ls-model-operation-progress" role="status" aria-live="polite">
+      <span
+        className={presentation.percent === null ? "ls-model-operation-progress__bar is-indeterminate" : "ls-model-operation-progress__bar"}
+        role="progressbar"
+        aria-label={presentation.label}
+        aria-valuemin={presentation.percent === null ? undefined : 0}
+        aria-valuemax={presentation.percent === null ? undefined : 100}
+        aria-valuenow={presentation.percent ?? undefined}
+      >
+        <i style={presentation.percent === null ? undefined : { width: `${presentation.percent}%` }} />
+      </span>
+      <span>{presentation.label}</span>
+    </div>
+  );
 }
 
 function actionStateFor(operation: "install" | "repair" | "remove"): "installing" | "repairing" | "removing" {

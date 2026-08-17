@@ -74,6 +74,19 @@ export function presentDictationError(
       detail: "Try dictating again. LocalScribe has reset the recorder.",
     };
   }
+  /*
+   * Capability rejections are useful to the runtime, but an implementation
+   * token such as `context_not_supported` is neither an explanation nor an
+   * action a person can take. This is deliberately before the generic model
+   * cases because a selected, working model can reject only one optional
+   * feature (for example a dictionary prompt).
+   */
+  if (/context_not_supported|dictionary.*prompt.*not supported|does not support.*dictionary/.test(normalized)) {
+    return {
+      title: "This model cannot use an optional speech hint",
+      detail: "Your Dictionary entries still correct finished text locally. Try again; if this repeats, quit and reopen LocalScribe, then check Settings > Model & Performance.",
+    };
+  }
   if (/model_not_installed|model.*not installed|speech model.*missing/.test(normalized)) {
     return {
       title: "Local model is not installed",

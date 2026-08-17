@@ -33,8 +33,7 @@ import {
 import { ShortcutRecorder, type ShortcutValidationOutcome } from "../components/ShortcutRecorder";
 import { decideSettingsDismissal } from "../dismissal";
 import {
-  DICTATION_LANGUAGE_DETAIL,
-  dictationLanguageOptionsFor,
+  dictationLanguagePresentation,
 } from "../dictationLanguages";
 import {
   ModelPerformanceSettings,
@@ -1294,7 +1293,12 @@ export function SettingsModal({ onClose, registerDismissalGate }: {
       + `LocalScribe will use its fixed local runtime to download and verify ${expectedSize} of curated model data.`,
     )) return;
     modelLibraryActionInFlight.current = true;
-    setModelAction({ action: replaceExisting ? "repairing" : "installing", familyId, tier });
+    setModelAction({
+      action: replaceExisting ? "repairing" : "installing",
+      familyId,
+      tier,
+      progress: { phase: "preparing" },
+    });
     setModelFeedback({
       message: `${replaceExisting ? "Repairing" : "Downloading"} ${scope.progressTarget} and verifying ${expectedSize}…`,
       isError: false,
@@ -1466,6 +1470,13 @@ export function SettingsModal({ onClose, registerDismissalGate }: {
     performanceMode: settings.modelPerformanceMode,
   } : null;
   const displayedModelSelection = pendingModelSelection ?? currentModelSelection;
+  const displayedModelFamily = modelCatalog?.families.find((family) => (
+    family.familyId === displayedModelSelection?.familyId
+  ));
+  const languagePresentation = dictationLanguagePresentation(
+    settings?.language ?? "auto",
+    displayedModelFamily?.capabilities,
+  );
 
   return (
     <div
@@ -1544,8 +1555,16 @@ export function SettingsModal({ onClose, registerDismissalGate }: {
                     )}
                     {microphones.map((device, index) => <option value={device.deviceId} key={device.deviceId}>{device.label || `Microphone ${index + 1}`}</option>)}
                   </SettingsSelect>
-                  <SettingsSelect label="Dictation language" detail={DICTATION_LANGUAGE_DETAIL} value={settings.language} onChange={(value) => update("language", value)}>
-                    {dictationLanguageOptionsFor(settings.language).map((language) => <option value={language.value} key={language.value}>{language.label}</option>)}
+                  <SettingsSelect
+                    label="Dictation language"
+                    detail={languagePresentation.detail}
+                    value={settings.language}
+                    disabled={!languagePresentation.enabled}
+                    onChange={(value) => update("language", value)}
+                  >
+                    {languagePresentation.options.map((language) => (
+                      <option value={language.value} key={language.value} disabled={language.disabled}>{language.label}</option>
+                    ))}
                   </SettingsSelect>
                   <SettingsReadOnly label="App language" detail="The LocalScribe interface is currently available in English." value="English" />
                 </SettingsGroup>
@@ -1639,6 +1658,8 @@ export function SettingsModal({ onClose, registerDismissalGate }: {
                 action={modelAction}
                 feedback={modelFeedback}
                 applying={modelApplying}
+                selectedLanguage={settings.language}
+                languageHasUnsavedChange={Object.prototype.hasOwnProperty.call(dirtySettings.current, "language")}
                 recognitionExperience={displayedModelSelection!.asrMode}
                 onRecognitionExperienceChange={(asrMode) => {
                   const currentFamily = modelCatalog?.families.find((candidate) => (
@@ -1816,11 +1837,11 @@ function ModelRequiredToggle({ label, detail }: { label: string; detail: string 
   );
 }
 
-function SettingsSelect({ label, detail, value, onChange, children }: { label: string; detail: string; value: string; onChange(value: string): void; children: ReactNode }) {
+function SettingsSelect({ label, detail, value, disabled = false, onChange, children }: { label: string; detail: string; value: string; disabled?: boolean; onChange(value: string): void; children: ReactNode }) {
   return (
     <label className="ls-settings-row">
       <span><strong>{label}</strong><small>{detail}</small></span>
-      <select value={value} onChange={(event) => onChange(event.target.value)}>{children}</select>
+      <select value={value} disabled={disabled} onChange={(event) => onChange(event.target.value)}>{children}</select>
     </label>
   );
 }

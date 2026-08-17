@@ -63,6 +63,15 @@ describe("dictation error presentation", () => {
     }
   });
 
+  it("turns unsupported dictionary context into plain recovery copy without claiming dictionary corrections are lost", () => {
+    expect(presentDictationError(
+      "context_not_supported: Parakeet Unified does not support dictionary prompts",
+    )).toEqual({
+      title: "This model cannot use an optional speech hint",
+      detail: "Your Dictionary entries still correct finished text locally. Try again; if this repeats, quit and reopen LocalScribe, then check Settings > Model & Performance.",
+    });
+  });
+
   it("keeps safe unknown errors useful but does not expose local paths", () => {
     expect(presentDictationError("The selected audio format is unsupported").detail)
       .toBe("The selected audio format is unsupported");
