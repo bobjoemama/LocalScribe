@@ -20,6 +20,7 @@ import {
   type LaunchAtLoginStatus,
   type ModelCatalog,
   type ModelFamilyId,
+  type ModelInstallProgress,
   type ModelPerformanceTier,
   type PermissionSnapshot,
 } from "../../../shared/contracts";
@@ -961,6 +962,13 @@ export function SettingsModal({ onClose, registerDismissalGate }: {
     };
   }, []);
 
+  // The worker reports measured bytes as it downloads and verifies. Keep only
+  // the update for the operation this view started: a delayed terminal event
+  // for an older profile must never repaint a newer action's progress bar.
+  useEffect(() => window.localScribe.system.onModelInstallProgress((progress) => {
+    setModelAction((current) => modelActionWithInstallProgress(current, progress));
+  }), []);
+
   /*
    * Returns whether the dialog actually closed, so `SettingsApp` can leave the
    * hub where it is when a navigation request is refused. A refusal is
@@ -1420,14 +1428,12 @@ export function SettingsModal({ onClose, registerDismissalGate }: {
       setModelCatalogError(null);
       setDiagnostics(result.diagnostics);
       setPendingModelSelection(null);
-      const family = result.catalog.families.find((candidate) => (
-        candidate.familyId === result.settings.activeModelFamilyId
-      ));
       setModelFeedback({
-        message: result.diagnostics.model.loaded
-          ? `${family?.displayName ?? result.settings.activeModelFamilyId} · ${tierLabel(result.settings.modelPerformanceMode)} is loaded and ready.`
-          : `${family?.displayName ?? result.settings.activeModelFamilyId} was selected, but its runtime is not loaded. Refresh status and try again.`,
-        isError: !result.diagnostics.model.loaded,
+        // The preload schema accepts this result only after main loaded the
+        // exact artifact and committed settings. Do not infer success from a
+        // stale diagnostics snapshot or merely from a requested selection.
+        message: appliedModelSelectionMessage(result.catalog, result.appliedSelection),
+        isError: result.applied !== true,
       });
     } catch (error) {
       setModelFeedback({
@@ -1948,6 +1954,53 @@ export function modelArtifactScopePresentation(
     successTarget: profile,
     sharedAcrossTiers,
   };
+}
+
+/**
+ * Applies only the exact install/repair event that is still in flight. IPC is
+ * asynchronous, so terminal progress for a finished profile is intentionally
+ * ignored instead of overwriting a newer action's state.
+ */
+export function modelActionWithInstallProgress(
+  action: ModelActionState,
+  progress: ModelInstallProgress,
+): ModelActionState {
+  if (
+    !action
+    || (action.action !== "installing" && action.action !== "repairing")
+    || action.familyId !== progress.familyId
+    || action.tier !== progress.tier
+  ) {
+    return action;
+  }
+  return {
+    ...action,
+    progress: {
+      phase: progress.phase,
+      completedBytes: progress.completedBytes,
+      totalBytes: progress.totalBytes,
+      message: progress.message,
+    },
+  };
+}
+
+/**
+ * `appliedSelection` names the concrete loaded artifact, which may differ
+ * from an Auto preference. It is the only truthful source for this success
+ * acknowledgement; `settings` and diagnostics can be stale during refresh.
+ */
+export function appliedModelSelectionMessage(
+  catalog: ModelCatalog,
+  selection: {
+    readonly familyId: ModelFamilyId;
+    readonly artifactId: string;
+    readonly tier: ModelPerformanceTier;
+    readonly asrMode: "after-stop" | "live";
+  },
+): string {
+  const family = catalog.families.find((candidate) => candidate.familyId === selection.familyId);
+  const mode = selection.asrMode === "live" ? "Live recognition" : "After I stop";
+  return `${family?.displayName ?? selection.familyId} · ${tierLabel(selection.tier)} · ${mode} is applied, loaded, and ready.`;
 }
 
 export function modelActionFailureMessage(

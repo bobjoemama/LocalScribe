@@ -1,9 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import type { SessionSnapshot } from "../src/shared/contracts";
 import {
+  acceptsLivePartial,
   holdShortcutPresentation,
   isCurrentFinalization,
   listSelectableMicrophones,
+  livePartialText,
   listeningRecorderStart,
   selectedMicrophoneIsUnavailable,
   trySelectMicrophone,
@@ -13,6 +15,34 @@ const FIRST_SESSION_ID = "11111111-1111-4111-8111-111111111111";
 const SECOND_SESSION_ID = "22222222-2222-4222-8222-222222222222";
 
 describe("pill recorder lifecycle", () => {
+  it("renders only the newest live partial for the current listening session", () => {
+    const listening: SessionSnapshot = {
+      state: "listening",
+      sessionId: FIRST_SESSION_ID,
+      activation: "toggle",
+    };
+    const current = { sessionId: FIRST_SESSION_ID, sequence: 4, text: "the revised phrase" };
+
+    expect(acceptsLivePartial(listening, current, {
+      sessionId: FIRST_SESSION_ID,
+      sequence: 5,
+      text: "the final revised phrase",
+    })).toBe(true);
+    expect(acceptsLivePartial(listening, current, {
+      sessionId: FIRST_SESSION_ID,
+      sequence: 4,
+      text: "stale revision",
+    })).toBe(false);
+    expect(acceptsLivePartial(listening, current, {
+      sessionId: SECOND_SESSION_ID,
+      sequence: 6,
+      text: "wrong session",
+    })).toBe(false);
+    expect(livePartialText({ state: "finalizing", sessionId: FIRST_SESSION_ID }, current)).toBeNull();
+    expect(livePartialText({ state: "listening", sessionId: SECOND_SESSION_ID }, current)).toBeNull();
+    expect(livePartialText(listening, current)).toBe("the revised phrase");
+  });
+
   it("accepts finalization work only while the same session is still finalizing", () => {
     const finalizing: SessionSnapshot = {
       state: "finalizing",

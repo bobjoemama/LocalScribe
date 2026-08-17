@@ -962,7 +962,12 @@ function positionPill(window: BrowserWindow): void {
 
 function resizePill(): void {
   if (!pillWindow || pillWindow.isDestroyed()) return;
-  const { width, height } = pillSizeFor(session.state, pillMode, session.activation);
+  const { width, height } = pillSizeFor(
+    session.state,
+    pillMode,
+    session.activation,
+    database.getSettings().asrMode,
+  );
   const [currentWidth, currentHeight] = pillWindow.getSize();
   if (currentWidth !== width || currentHeight !== height) pillWindow.setSize(width, height, false);
   positionPill(pillWindow);
