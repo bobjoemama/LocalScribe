@@ -798,7 +798,11 @@ function assertModelSelection(size) {
     assert(evidence.afterApply.persisted.activeModelFamilyId === "qwen3-asr-1-7b", `Model Apply: acknowledged family did not persist: ${serialized}`);
     assert(evidence.afterApply.persisted.asrMode === "after-stop", `Model Apply: acknowledged experience did not persist: ${serialized}`);
     assert(evidence.afterApply.applyDisabled, `Model Apply: unchanged acknowledged selection remained enabled: ${serialized}`);
-    assert(evidence.afterApply.summary.includes("Current model selection"), `Model Apply: success did not converge current and pending: ${serialized}`);
+    assert(evidence.afterApply.summary.includes("Applied and ready"), `Model Apply: success did not converge current and pending: ${serialized}`);
+    assert(
+      evidence.afterApply.feedback.includes("is applied, loaded, and ready"),
+      `Model Apply: exact loaded-artifact acknowledgement is missing: ${serialized}`,
+    );
   } else {
     assert(evidence.afterApply.persisted.modelPerformanceMode === "auto", `Model Apply: failed mode mutated persisted settings: ${serialized}`);
     assert(evidence.afterApply.persisted.activeModelFamilyId === "whisper-large-v3", `Model Apply: failed family mutated persisted settings: ${serialized}`);
