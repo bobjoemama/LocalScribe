@@ -79,6 +79,7 @@ const MAC_RELEASE_INPUTS = [
   "scripts/build-worker-runtime.sh",
   "scripts/generate-runtime-sbom.mjs",
   "scripts/macos-entitlement-policy.mts",
+  "scripts/smoke-worker.py",
   "scripts/smoke-packaged-macos.sh",
   "scripts/verify-local-macos.sh",
   "scripts/verify-macos-artifacts.mjs",

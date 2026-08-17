@@ -143,8 +143,14 @@ The macOS gate runs the worker unit tests through
 ## What source provenance binds on macOS
 
 `MAC_RELEASE_INPUTS` covers the macOS gate scripts as well as the app's own
-inputs: `verify-local-macos.sh`, `smoke-packaged-macos.sh`, the bundle,
-entitlement, and artifact verifiers, and the SBOM generator. The Windows list
+inputs: `verify-local-macos.sh`, `smoke-packaged-macos.sh`,
+`smoke-worker.py`, the bundle, entitlement, and artifact verifiers, and the
+SBOM generator. `smoke-worker.py` resolves its interpreter, worker, manifests,
+and FluidAudio helper only from the fresh candidate app bundle; its real-model
+path is offline and read-only unless the caller explicitly opts into download.
+It rejects a pending LocalScribe install transaction rather than recovering it,
+so the local-only gate never repairs or mutates a user's cache.
+The Windows list
 already bound its own gate scripts; the macOS list bound only the worker-runtime
 builder, so a weakened checker could re-approve a signed app that still reported
 the same source provenance. `verify-local-source.mjs`, `verify-packaged-main.mjs`,

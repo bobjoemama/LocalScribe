@@ -147,6 +147,7 @@ describe("package source provenance", () => {
     const gateScripts = [
       "scripts/generate-runtime-sbom.mjs",
       "scripts/macos-entitlement-policy.mts",
+      "scripts/smoke-worker.py",
       "scripts/smoke-packaged-macos.sh",
       "scripts/verify-local-macos.sh",
       "scripts/verify-local-source.mjs",

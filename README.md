@@ -83,12 +83,12 @@ started.
 
 | Mode | macOS | Windows | Best for |
 | --- | --- | --- | --- |
-| Auto | Selects an MLX tier from available memory | Selects a CUDA tier from available VRAM | Most users |
-| High | Selected family’s MLX FP16/BF16 model | CTranslate2 `float16` or Qwen F16 | Highest fidelity |
-| Medium | Selected family’s MLX 8-bit model | CTranslate2 `int8_float16` or Qwen Q8_0 | Balanced memory and quality |
-| Low | Selected family’s MLX 4-bit model | CTranslate2 `int8` or Qwen Q4_K | Lowest memory use |
+| Auto | Selects a supported tier from available memory | Selects a CUDA tier from available VRAM | Most users |
+| High | Parakeet CoreML FP16 or selected family’s MLX FP16/BF16 model | CTranslate2 `float16` or Qwen F16 | Highest fidelity |
+| Medium | Parakeet CoreML INT8 or selected family’s MLX 8-bit model | CTranslate2 `int8_float16` or Qwen Q8_0 | Balanced memory and quality |
+| Low | Selected MLX family’s 4-bit model; not offered for Parakeet | CTranslate2 `int8` or Qwen Q4_K | Lowest memory use |
 
-Whisper large-v3 is the default family. Qwen3-ASR 0.6B, Qwen3-ASR 1.7B, and
+Parakeet Unified EN 0.6B is the default Mac family. Whisper large-v3, Qwen3-ASR 0.6B, Qwen3-ASR 1.7B, and
 the older Whisper large-v2 can be added from the local model library. Qwen3-ASR
 0.6B is the smaller lower-latency candidate, not a claim of measured superiority.
 On macOS, Whisper uses MLX Whisper and Qwen uses MLX Audio. On NVIDIA Windows,
@@ -148,13 +148,19 @@ npm run verify:local:macos
 ```
 
 To include an exact installed-model load and repeated inference in the macOS
-gate, supply both an existing model root and a 16 kHz mono PCM16 fixture:
+gate, supply both an existing model root and a 16 kHz mono PCM16 fixture. The
+smoke starts the packaged app's own Python runtime, worker, manifests, and
+native helper; it does not use the source-tree worker or helper. It is local and
+read-only against the model root unless `--smoke-allow-download` is explicitly
+provided. A pending LocalScribe install transaction is rejected rather than
+recovered, so the local-only path never repairs or mutates the user cache.
 
 ```bash
 npm run verify:local:macos -- \
   --smoke-model-root "$HOME/Library/Application Support/LocalScribe/models" \
   --smoke-audio /absolute/path/to/fixture.wav \
-  --smoke-family qwen3-asr-0-6b --smoke-tier medium --smoke-repeat 2
+  --smoke-family parakeet-unified-en-0-6b --smoke-tier medium \
+  --smoke-mode both --smoke-repeat 2
 ```
 
 The DMG, Mac ZIP, SBOMs, and checksum manifest are written under `out/`.
