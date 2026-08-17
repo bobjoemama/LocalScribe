@@ -55,6 +55,19 @@ export const sessionSnapshotSchema = z.object({
 }).strict();
 export type SessionSnapshot = z.infer<typeof sessionSnapshotSchema>;
 
+/**
+ * A provisional Live transcript snapshot. It replaces the previous preview
+ * rather than appending to it: streaming decoders may revise earlier words.
+ * It never grants an insertion capability; only the existing final result can
+ * be written to the focused application.
+ */
+export const livePartialTranscriptSchema = z.object({
+  sessionId: z.string().uuid(),
+  sequence: z.number().int().nonnegative().max(100_000_000),
+  text: z.string().max(100_000),
+}).strict();
+export type LivePartialTranscript = z.infer<typeof livePartialTranscriptSchema>;
+
 export const transcriptionSchema = z.object({
   id: z.string().uuid(),
   createdAt: z.number().int().positive(),
@@ -629,10 +642,40 @@ export const modelSelectionApplyRequestSchema = z.object({
 export type ModelSelectionApplyRequest = z.infer<typeof modelSelectionApplyRequestSchema>;
 
 export const modelSelectionApplyResultSchema = z.object({
+  /** Main sets this only after the exact artifact was loaded and settings committed. */
+  applied: z.literal(true),
+  appliedSelection: z.object({
+    familyId: modelFamilyIdSchema,
+    artifactId: z.string().regex(/^[a-z0-9][a-z0-9-]*$/),
+    tier: modelPerformanceTierSchema,
+    asrMode: asrModeSchema,
+  }).strict(),
   settings: appSettingsSchema,
   catalog: modelCatalogSchema,
   diagnostics: diagnosticsSchema,
-}).strict();
+}).strict().superRefine((result, context) => {
+  if (
+    result.settings.activeModelFamilyId !== result.appliedSelection.familyId
+    || result.settings.asrMode !== result.appliedSelection.asrMode
+  ) {
+    context.addIssue({
+      code: "custom",
+      path: ["appliedSelection"],
+      message: "Applied model confirmation must match the committed routing settings.",
+    });
+  }
+  if (
+    !result.diagnostics.model.loaded
+    || result.diagnostics.model.familyId !== result.appliedSelection.familyId
+    || result.diagnostics.model.artifactId !== result.appliedSelection.artifactId
+  ) {
+    context.addIssue({
+      code: "custom",
+      path: ["diagnostics", "model"],
+      message: "Applied model confirmation requires the exact artifact to be loaded.",
+    });
+  }
+});
 export type ModelSelectionApplyResult = z.infer<typeof modelSelectionApplyResultSchema>;
 
 export const modelInstallRequestSchema = z.object({
@@ -642,6 +685,68 @@ export const modelInstallRequestSchema = z.object({
   tier: modelPerformanceTierSchema,
 }).strict();
 export type ModelInstallRequest = z.infer<typeof modelInstallRequestSchema>;
+
+/**
+ * A renderer-safe status update for the one explicitly requested model
+ * install/repair operation. Percentages are derived only from bytes observed
+ * by the worker against the immutable manifest total; main never guesses
+ * transfer progress from elapsed time.
+ */
+export const MODEL_INSTALL_PROGRESS_PHASES = [
+  "downloading",
+  "verifying",
+  "complete",
+  "failed",
+] as const;
+export const modelInstallProgressPhaseSchema = z.enum(MODEL_INSTALL_PROGRESS_PHASES);
+export type ModelInstallProgressPhase = z.infer<typeof modelInstallProgressPhaseSchema>;
+
+export const modelInstallProgressSchema = z.object({
+  familyId: modelFamilyIdSchema,
+  tier: modelPerformanceTierSchema,
+  artifactId: z.string().regex(/^[a-z0-9][a-z0-9-]*$/),
+  phase: modelInstallProgressPhaseSchema,
+  completedBytes: z.number().int().nonnegative().optional(),
+  totalBytes: z.number().int().positive().optional(),
+  message: z.string().trim().min(1).max(240).optional(),
+}).strict().superRefine((progress, context) => {
+  const hasCompleted = progress.completedBytes !== undefined;
+  const hasTotal = progress.totalBytes !== undefined;
+  if (hasCompleted !== hasTotal) {
+    context.addIssue({
+      code: "custom",
+      message: "Install progress byte counts must be present together.",
+    });
+    return;
+  }
+  if (hasCompleted && hasTotal && progress.completedBytes! > progress.totalBytes!) {
+    context.addIssue({
+      code: "custom",
+      path: ["completedBytes"],
+      message: "Install progress cannot exceed the verified artifact total.",
+    });
+  }
+  if (progress.phase === "downloading" && (!hasCompleted || !hasTotal)) {
+    context.addIssue({
+      code: "custom",
+      message: "Download progress must report measured completed and total bytes.",
+    });
+  }
+  if (progress.phase === "complete" && (!hasCompleted || !hasTotal || progress.completedBytes !== progress.totalBytes)) {
+    context.addIssue({
+      code: "custom",
+      message: "Completed model installation must report the full verified artifact size.",
+    });
+  }
+  if (progress.phase === "failed" && !progress.message) {
+    context.addIssue({
+      code: "custom",
+      path: ["message"],
+      message: "Failed model installation must include a safe user-facing message.",
+    });
+  }
+});
+export type ModelInstallProgress = z.infer<typeof modelInstallProgressSchema>;
 
 export const modelRemoveRequestSchema = z.object({
   confirmed: z.literal(true),
@@ -781,6 +886,7 @@ export type CancelLiveAudioRequest = z.infer<typeof cancelLiveAudioSchema>;
 export const IPC = {
   sessionGet: "session:get",
   sessionChanged: "session:changed",
+  sessionLivePartial: "session:live-partial",
   sessionToggle: "session:toggle",
   sessionCancel: "session:cancel",
   sessionFail: "session:fail",
@@ -831,6 +937,7 @@ export const IPC = {
   systemAddModelFamily: "system:add-model-family",
   systemApplyModelSelection: "system:apply-model-selection",
   systemInstallModel: "system:install-model",
+  systemModelInstallProgress: "system:model-install-progress",
   systemRemoveModel: "system:remove-model",
 } as const;
 
@@ -846,6 +953,7 @@ export interface LocalScribeApi {
     finishLive(request: FinishLiveAudioRequest): Promise<Transcription>;
     cancelLive(request: CancelLiveAudioRequest): Promise<void>;
     onChanged(listener: (snapshot: SessionSnapshot) => void): () => void;
+    onLivePartial(listener: (partial: LivePartialTranscript) => void): () => void;
   };
   history: {
     list(limit?: number): Promise<Transcription[]>;
@@ -925,6 +1033,7 @@ export interface LocalScribeApi {
     addModelFamily(request: ModelFamilyLibraryRequest): Promise<ModelCatalog>;
     applyModelSelection(request: ModelSelectionApplyRequest): Promise<ModelSelectionApplyResult>;
     installModel(request: ModelInstallRequest): Promise<Diagnostics>;
+    onModelInstallProgress(listener: (progress: ModelInstallProgress) => void): () => void;
     removeModel(request: ModelRemoveRequest): Promise<Diagnostics>;
   };
 }

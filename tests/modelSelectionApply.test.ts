@@ -59,6 +59,25 @@ describe("atomic model selection architecture", () => {
     expect(body).toContain("modelResolution = previousResolution;");
   });
 
+  it("returns an explicit confirmation only for the exact loaded artifact", () => {
+    const body = between("async function applyModelSelection(", "function registerIpc(): void");
+    expect(body).toContain("applied: true,");
+    expect(body).toContain("appliedSelection:");
+    expect(body).toContain("artifactId: targetResolution.tier.artifactId");
+    expect(body).toContain("artifactId: currentResolutionForSelection.tier.artifactId");
+    expect(body).toContain("tier: targetResolution.effectiveTier");
+  });
+
+  it("rejects an incompatible saved language before the target can unload", () => {
+    const body = between("async function applyModelSelection(", "function registerIpc(): void");
+    const languageGate = body.indexOf("assertModelLanguageSupported(\n      previousSettings.language");
+    const unload = body.indexOf("await worker.shutdown();");
+
+    expect(languageGate).toBeGreaterThanOrEqual(0);
+    expect(unload).toBeGreaterThan(languageGate);
+    expect(body).toContain("targetCatalog.capabilities");
+  });
+
   it("merges routing into the latest settings row without an asynchronous lost-update window", () => {
     const body = between("async function applyModelSelection(", "function registerIpc(): void");
     const latestRead = body.indexOf("const latestSettings = database.getSettings();");
@@ -147,16 +166,43 @@ describe("atomic model selection architecture", () => {
     expect(cancel).toContain('setSession({ state: "idle" })');
   });
 
+  it("invalidates Live state before queued worker cleanup so cancel never waits on append", () => {
+    const cancelLive = between("handle(IPC.sessionCancelLive", "handle(IPC.sessionTranscribe");
+    expect(cancelLive).toContain("activeLiveSession = null;");
+    expect(cancelLive).toContain("scheduleLiveWorkerCancellation(request.sessionId);");
+    expect(cancelLive).toContain('return setSession({ state: "idle" });');
+    expect(cancelLive).not.toContain("await worker.cancelLiveSession");
+    const helper = between("function scheduleLiveWorkerCancellation(", "/** Deliver a validated install/repair event");
+    expect(helper).toContain("void worker.cancelLiveSession(sessionId)");
+  });
+
+  it("delivers Live partials only for the active listening session", () => {
+    const partial = between("function notifyLivePartial(", "function completeDictationFinal(");
+    expect(partial).toContain("live.sessionId !== partial.sessionId");
+    expect(partial).toContain('session.state !== "listening"');
+    expect(partial).toContain("session.sessionId !== partial.sessionId");
+    expect(partial).toContain("activeSessionId !== partial.sessionId");
+    expect(partial).toContain("pillWindow.webContents.send(IPC.sessionLivePartial, partial)");
+  });
+
+  it("uses model capabilities to suppress unsupported recognizer context", () => {
+    const transcription = between("handle(IPC.sessionTranscribe", "handle(IPC.historyList");
+    expect(transcription).toContain("dictionaryAsrContextForCapabilities(");
+    expect(transcription).toContain("modelCatalog(resolution.tier.familyId).capabilities");
+  });
+
   it("keeps model-library storage operations from silently changing the active runtime", () => {
     const ipc = between("function registerIpc(): void", "function createTray(): Tray");
     const install = between("handle(IPC.systemInstallModel", "handle(IPC.systemRemoveModel");
     expect(install).toContain("replacesLoadedArtifact");
     expect(install).toContain("workerSelection(modelResolution.tier, currentSettings.asrMode)");
-    expect(install).toContain("install: () => worker.installModel(workerSelection(");
+    expect(install).toContain("install: () => {");
+    expect(install).toContain("return worker.installModel(workerSelection(");
     expect(install).toContain("replacesLoadedArtifact,");
     // The install request budget scales with the artifact, so the size has to
     // reach the supervisor with the request. See tests/workerSupervisor.test.ts.
-    expect(install).toContain("artifactBytes: Object.values(tier.manifest.files)");
+    expect(install).toContain("const artifactBytes = Object.values(tier.manifest.files)");
+    expect(install).toContain("artifactBytes,");
 
     const remove = between("handle(IPC.systemRemoveModel", "\n  });\n}");
     expect(remove).toContain("Apply another model or performance tier before removing it");

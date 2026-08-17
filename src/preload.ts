@@ -13,7 +13,9 @@ import {
   liveAudioFrameSchema,
   liveAudioSessionSchema,
   launchAtLoginStatusSchema,
+  livePartialTranscriptSchema,
   modelInstallRequestSchema,
+  modelInstallProgressSchema,
   modelCatalogSchema,
   modelFamilyLibraryRequestSchema,
   modelSelectionApplyRequestSchema,
@@ -68,6 +70,12 @@ const api: LocalScribeApi = {
         listener(sessionSnapshotSchema.parse(value));
       ipcRenderer.on(IPC.sessionChanged, wrapped);
       return () => ipcRenderer.removeListener(IPC.sessionChanged, wrapped);
+    },
+    onLivePartial: (listener) => {
+      const wrapped = (_event: Electron.IpcRendererEvent, value: unknown) =>
+        listener(livePartialTranscriptSchema.parse(value));
+      ipcRenderer.on(IPC.sessionLivePartial, wrapped);
+      return () => ipcRenderer.removeListener(IPC.sessionLivePartial, wrapped);
     },
   },
   history: {
@@ -178,6 +186,12 @@ const api: LocalScribeApi = {
     installModel: async (request) => {
       const input = modelInstallRequestSchema.parse(request);
       return diagnosticsSchema.parse(await ipcRenderer.invoke(IPC.systemInstallModel, input));
+    },
+    onModelInstallProgress: (listener) => {
+      const wrapped = (_event: Electron.IpcRendererEvent, value: unknown) =>
+        listener(modelInstallProgressSchema.parse(value));
+      ipcRenderer.on(IPC.systemModelInstallProgress, wrapped);
+      return () => ipcRenderer.removeListener(IPC.systemModelInstallProgress, wrapped);
     },
     removeModel: async (request) => {
       const input = modelRemoveRequestSchema.parse(request);

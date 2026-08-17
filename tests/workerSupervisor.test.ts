@@ -29,6 +29,8 @@ const spawnMock = vi.mocked(spawn);
 const requests: Array<Record<string, unknown>> = [];
 let onWorkerRequest: ((request: Record<string, unknown>) => void) | null = null;
 const temporaryDirectories: string[] = [];
+const deferredWorkerRequests = new Set<string>();
+let workerEmitsInstallProgress = true;
 
 describe("transcribe request budget", () => {
   /*
@@ -144,6 +146,22 @@ class FakeWorkerProcess extends EventEmitter {
       queueMicrotask(() => {
         switch (request.type) {
           case "install_model":
+            if (workerEmitsInstallProgress) {
+              this.respond({
+                type: "model_install_progress",
+                id: request.id,
+                phase: "downloading",
+                completedBytes: 40,
+                totalBytes: 100,
+              });
+              this.respond({
+                type: "model_install_progress",
+                id: request.id,
+                phase: "verifying",
+                completedBytes: 100,
+                totalBytes: 100,
+              });
+            }
             this.respond({
               type: "model_installed",
               id: request.id,
@@ -185,6 +203,7 @@ class FakeWorkerProcess extends EventEmitter {
             this.respond({ type: "live_started", id: request.id });
             break;
           case "append_live":
+            if (deferredWorkerRequests.has("append_live")) break;
             this.respond({ type: "partial", id: request.id, text: "partial" });
             break;
           case "finish_live":
@@ -274,6 +293,8 @@ function supervisor(): WorkerSupervisor {
 beforeEach(() => {
   requests.length = 0;
   failingModelIds.clear();
+  deferredWorkerRequests.clear();
+  workerEmitsInstallProgress = true;
   onWorkerRequest = null;
   spawnMock.mockReset();
   spawnMock.mockImplementation(() => {
@@ -332,11 +353,13 @@ describe("WorkerSupervisor model lifecycle", () => {
   it("aggregates Live PCM under the Python line-protocol limit and finalizes exactly once", async () => {
     const worker = supervisor();
     const sessionId = "00000000-0000-4000-8000-000000000002";
+    const partials: Array<{ sessionId: string; sequence: number; text: string }> = [];
     const sink = await worker.beginLive({
       session: { sessionId, protocolVersion: 1, sampleRateHz: 16_000, channels: 1 },
       model: { ...medium, asrMode: "live" },
       language: "en",
       context: "",
+      onPartial: (partial) => partials.push(partial),
     });
     for (let sequence = 0; sequence < 13; sequence += 1) {
       await sink.write({
@@ -355,6 +378,57 @@ describe("WorkerSupervisor model lifecycle", () => {
       expect(Buffer.from(String(append.audioBase64), "base64").byteLength).toBeLessThanOrEqual(8 * 1024);
     }
     expect(requests.filter((request) => request.type === "finish_live")).toHaveLength(1);
+    expect(partials).toEqual([{ sessionId, sequence: 0, text: "partial" }]);
+    await worker.shutdown();
+  });
+
+  it("cancels locally while an append is queued and discards its late partial", async () => {
+    const worker = supervisor();
+    const sessionId = "00000000-0000-4000-8000-000000000022";
+    const partials: string[] = [];
+    const sink = await worker.beginLive({
+      session: { sessionId, protocolVersion: 1, sampleRateHz: 16_000, channels: 1 },
+      model: { ...medium, asrMode: "live" },
+      language: "en",
+      context: "",
+      onPartial: (partial) => partials.push(partial.text),
+    });
+    deferredWorkerRequests.add("append_live");
+    let appendRequest: Record<string, unknown> | null = null;
+    onWorkerRequest = (request) => {
+      if (request.type === "append_live") appendRequest = request;
+    };
+
+    for (let sequence = 0; sequence < 11; sequence += 1) {
+      await sink.write({
+        sequence,
+        sampleRateHz: 16_000,
+        channels: 1,
+        sampleCount: 320,
+        pcm: new ArrayBuffer(640),
+      }, new AbortController().signal);
+    }
+    const appendWrite = sink.write({
+      sequence: 11,
+      sampleRateHz: 16_000,
+      channels: 1,
+      sampleCount: 320,
+      pcm: new ArrayBuffer(640),
+    }, new AbortController().signal);
+    await vi.waitFor(() => expect(appendRequest).not.toBeNull());
+    const cancellation = worker.cancelLiveSession(sessionId);
+
+    const child = spawnMock.mock.results[0]?.value as FakeWorkerProcess;
+    (child as unknown as { respond(message: unknown): void }).respond({
+      type: "partial",
+      id: appendRequest!.id,
+      text: "must not reach the renderer",
+    });
+    await expect(appendWrite).rejects.toThrow(/cancelled/u);
+    await cancellation;
+
+    expect(partials).toEqual([]);
+    expect(requests.filter((request) => request.type === "cancel_live")).toHaveLength(1);
     await worker.shutdown();
   });
 
@@ -1078,6 +1152,59 @@ describe("WorkerSupervisor model lifecycle", () => {
     }));
     expect(requests.some((request) => request.type === "load_model")).toBe(false);
     expect(spawnMock).toHaveBeenCalledOnce();
+  });
+
+  it("forwards measured install bytes without treating progress as completion", async () => {
+    const worker = supervisor();
+    const progress: Array<{ phase: string; completedBytes: number; totalBytes: number }> = [];
+
+    await worker.installModel(medium, {
+      artifactBytes: 100,
+      onProgress: (event) => progress.push(event),
+    });
+
+    expect(progress).toMatchObject([
+      { phase: "downloading", completedBytes: 40, totalBytes: 100 },
+      { phase: "verifying", completedBytes: 100, totalBytes: 100 },
+    ]);
+    expect(worker.loadedSelection()).toBeNull();
+    expect(requests.filter((request) => request.type === "install_model")).toHaveLength(1);
+  });
+
+  it("never forwards an install-progress event from a different operation", async () => {
+    const worker = supervisor();
+    const progress: Array<{ phase: string; completedBytes: number; totalBytes: number }> = [];
+    onWorkerRequest = (request) => {
+      if (request.type !== "install_model") return;
+      const child = spawnMock.mock.results[0]?.value as FakeWorkerProcess;
+      (child as unknown as { respond(message: unknown): void }).respond({
+        type: "model_install_progress",
+        id: "00000000-0000-4000-8000-000000000099",
+        phase: "downloading",
+        completedBytes: 1,
+        totalBytes: 100,
+      });
+    };
+
+    await expect(worker.installModel(medium, {
+      artifactBytes: 100,
+      onProgress: (event) => progress.push(event),
+    })).rejects.toThrow(/unknown request/u);
+    expect(progress).toEqual([]);
+  });
+
+  it("leaves a runtime with no byte callbacks indeterminate rather than inventing progress", async () => {
+    workerEmitsInstallProgress = false;
+    const worker = supervisor();
+    const progress: Array<{ phase: string; completedBytes: number; totalBytes: number }> = [];
+
+    await worker.installModel(medium, {
+      artifactBytes: 100,
+      onProgress: (event) => progress.push(event),
+    });
+
+    expect(progress).toEqual([]);
+    expect(requests.filter((request) => request.type === "install_model")).toHaveLength(1);
   });
 
   it("preserves an unrelated warm runtime during a serialized installation", async () => {

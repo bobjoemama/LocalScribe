@@ -199,6 +199,28 @@ const modelInstalledMessageSchema = z.object({
   installMs: z.number().nonnegative(),
 }).strict();
 
+/**
+ * Intermediate install events have the request id of their eventual
+ * `model_installed` response. They are deliberately limited to byte counters
+ * observed by the worker's downloader or digest reader, never estimates.
+ */
+const modelInstallProgressMessageSchema = z.object({
+  type: z.literal("model_install_progress"),
+  id: z.string().uuid(),
+  phase: z.enum(["downloading", "verifying"]),
+  completedBytes: z.number().int().nonnegative(),
+  totalBytes: z.number().int().positive(),
+}).strict().superRefine((progress, context) => {
+  if (progress.completedBytes > progress.totalBytes) {
+    context.addIssue({
+      code: "custom",
+      path: ["completedBytes"],
+      message: "Worker install progress exceeds its declared total.",
+    });
+  }
+});
+export type WorkerModelInstallProgress = z.infer<typeof modelInstallProgressMessageSchema>;
+
 const macDeviceInfoMessageSchema = z.object({
   type: z.literal("device_info"),
   id: z.string().uuid(),
@@ -239,6 +261,7 @@ const workerMessageSchema = z.union([
   helloMessageSchema,
   modelReadyMessageSchema,
   modelInstalledMessageSchema,
+  modelInstallProgressMessageSchema,
   liveStartedMessageSchema,
   liveCancelledMessageSchema,
   partialMessageSchema,
@@ -273,7 +296,12 @@ type WorkerMessage = z.infer<typeof workerMessageSchema>;
 interface PendingRequest {
   resolve(message: WorkerMessage): void;
   reject(error: Error): void;
-  timeout: NodeJS.Timeout;
+  timeout: NodeJS.Timeout | null;
+  /** Resets the stall watchdog only after the worker has made real progress. */
+  armTimeout(): void;
+  onInstallProgress?: (progress: WorkerModelInstallProgress) => void;
+  lastInstallProgress?: WorkerModelInstallProgress;
+  installProgressPhaseTransitions: number;
 }
 
 export interface WorkerModelSelection {
@@ -322,8 +350,17 @@ interface ActiveLiveSession {
   readonly sessionId: string;
   phase: "open" | "finishing" | "cancelled";
   nextSequence: number;
+  nextPartialSequence: number;
   chunks: Buffer[];
   chunkBytes: number;
+  onPartial?: (partial: WorkerLivePartial) => void;
+}
+
+/** Ordered replacement snapshots from a single active Live worker session. */
+export interface WorkerLivePartial {
+  sessionId: string;
+  sequence: number;
+  text: string;
 }
 
 export const WORKER_RUNTIME_IDENTITIES = {
@@ -457,10 +494,21 @@ export class WorkerSupervisor {
    * An unrelated warm model stays resident in the same serialized worker. A
    * repair that replaces the warm artifact must explicitly request an unload;
    * after the transaction the prior selection is loaded again.
+   *
+   * There is intentionally no public cancel operation. This isolated worker
+   * owns both the installer and any warm native runtime, so the only reliable
+   * interruption is process termination, which would evict an unrelated warm
+   * model. The worker's atomic staging/recovery protocol makes an interrupted
+   * install safe to retry; exposing a "Cancel" button here would falsely
+   * promise that it could preserve the warm runtime.
    */
   installModel(
     selection: WorkerModelSelection,
-    options: { replacesLoadedArtifact?: boolean; artifactBytes?: number } = {},
+    options: {
+      replacesLoadedArtifact?: boolean;
+      artifactBytes?: number;
+      onProgress?: (progress: WorkerModelInstallProgress) => void;
+    } = {},
   ): Promise<void> {
     return this.serialize(async () => {
       const previousSelection = this.activeModel ? { ...this.activeModel } : null;
@@ -479,6 +527,7 @@ export class WorkerSupervisor {
             allowDownload: true,
           },
           installTimeoutMs(options.artifactBytes ?? INSTALL_MAX_ARTIFACT_BYTES),
+          options.onProgress,
         );
         const installed = modelInstalledMessageSchema.safeParse(response);
         if (!installed.success) {
@@ -554,6 +603,7 @@ export class WorkerSupervisor {
     model: WorkerModelSelection;
     language: string;
     context: string;
+    onPartial?: (partial: WorkerLivePartial) => void;
   }): Promise<LiveAudioSink> {
     return this.serialize(async () => {
       if (modeFor(input.model) !== "live") {
@@ -574,8 +624,10 @@ export class WorkerSupervisor {
         sessionId: input.session.sessionId,
         phase: "open",
         nextSequence: 0,
+        nextPartialSequence: 0,
         chunks: [],
         chunkBytes: 0,
+        onPartial: input.onPartial,
       };
       this.liveSession = active;
       return {
@@ -686,9 +738,34 @@ export class WorkerSupervisor {
     active.chunks.length = 0;
     active.chunkBytes = 0;
     const response = await this.request({ type: "append_live", audioBase64 }, 30_000);
-    if (!partialMessageSchema.safeParse(response).success) {
+    // `cancelLiveSession` invalidates the session before it queues cleanup,
+    // so an append already in flight can still return. Its response must be
+    // rejected rather than treated as success, and it must never become a
+    // preview or final result after local cancellation.
+    if (this.liveSession !== active) {
+      throw new Error("Live dictation was cancelled");
+    }
+    const partial = partialMessageSchema.safeParse(response);
+    if (!partial.success) {
       this.abort("ASR worker returned an invalid live partial response");
       throw new Error(`Unexpected worker response: ${response.type}`);
+    }
+    // Partial transcripts are decoder snapshots, not append-only deltas. They
+    // are emitted only while this exact live session remains open; the partial
+    // returned while flushing during finalization is intentionally discarded
+    // because the final response becomes the authoritative transcript.
+    if (active.phase === "open") {
+      try {
+        active.onPartial?.({
+          sessionId: active.sessionId,
+          sequence: active.nextPartialSequence++,
+          text: partial.data.text,
+        });
+      } catch (error) {
+        // Preview delivery is observational. A renderer handoff must never
+        // discard audio or abort an otherwise healthy local dictation.
+        console.warn("LocalScribe could not deliver a Live transcript preview", error);
+      }
     }
   }
 
@@ -992,24 +1069,39 @@ export class WorkerSupervisor {
     return null;
   }
 
-  private request(payload: Record<string, unknown>, timeoutMs: number): Promise<WorkerMessage> {
+  private request(
+    payload: Record<string, unknown>,
+    timeoutMs: number,
+    onInstallProgress?: (progress: WorkerModelInstallProgress) => void,
+  ): Promise<WorkerMessage> {
     const child = this.process;
     if (!child) return Promise.reject(new Error("ASR worker is not running"));
     const id = randomUUID();
     return new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        if (!this.pending.has(id) || this.process !== child) return;
-        // A timeout leaves the worker's execution state unknowable: it may
-        // still be loading a model, reading an audio file, or downloading
-        // data. Terminate the whole process so no later serialized operation
-        // can accidentally reuse that stale state.
-        this.terminateWorker(
-          child,
-          workerProcessError(`ASR worker request timed out: ${String(payload.type)}`, "worker_timeout"),
-        );
-      }, timeoutMs);
-      timeout.unref();
-      this.pending.set(id, { resolve, reject, timeout });
+      const pending: PendingRequest = {
+        resolve,
+        reject,
+        timeout: null,
+        armTimeout: () => {
+          if (pending.timeout) clearTimeout(pending.timeout);
+          pending.timeout = setTimeout(() => {
+            if (!this.pending.has(id) || this.process !== child) return;
+            // A timeout leaves the worker's execution state unknowable: it may
+            // still be loading a model, reading an audio file, or downloading
+            // data. Terminate the whole process so no later serialized operation
+            // can accidentally reuse that stale state.
+            this.terminateWorker(
+              child,
+              workerProcessError(`ASR worker request timed out: ${String(payload.type)}`, "worker_timeout"),
+            );
+          }, timeoutMs);
+          pending.timeout.unref();
+        },
+        onInstallProgress,
+        installProgressPhaseTransitions: 0,
+      };
+      this.pending.set(id, pending);
+      pending.armTimeout();
       try {
         child.stdin.write(`${JSON.stringify({ ...payload, id })}\n`, (error) => {
           if (!error || this.process !== child) return;
@@ -1109,7 +1201,66 @@ export class WorkerSupervisor {
       );
       return;
     }
-    clearTimeout(pending.timeout);
+
+    if (message.type === "model_install_progress") {
+      const previous = pending.lastInstallProgress;
+      const regressed = previous
+        && (
+          (previous.phase === message.phase
+            && (
+              previous.totalBytes !== message.totalBytes
+              || previous.completedBytes > message.completedBytes
+            ))
+        );
+      if (regressed) {
+        this.terminateWorker(
+          child,
+          new Error("ASR worker emitted non-monotonic model-install progress"),
+        );
+        return;
+      }
+      if (previous && previous.phase !== message.phase) {
+        pending.installProgressPhaseTransitions += 1;
+        /*
+         * A repair legitimately follows this bounded sequence:
+         * verify existing data -> download replacement -> verify staging.
+         * More transitions cannot describe this transaction and would let a
+         * malformed worker keep resetting the stall watchdog without bytes.
+         */
+        if (pending.installProgressPhaseTransitions > 2) {
+          this.terminateWorker(
+            child,
+            new Error("ASR worker emitted an invalid model-install progress phase sequence"),
+          );
+          return;
+        }
+      }
+      pending.lastInstallProgress = message;
+      // A static installer timeout still protects a silent or wedged worker.
+      // Only a byte increase or one of the bounded phase transitions buys more
+      // time, so a compromised worker cannot prevent timeout by endlessly
+      // repeating a counter or flipping phases.
+      if (
+        !previous
+        || previous.phase !== message.phase
+        || previous.completedBytes !== message.completedBytes
+      ) {
+        pending.armTimeout();
+      }
+      try {
+        pending.onInstallProgress?.(message);
+      } catch (error) {
+        this.terminateWorker(
+          child,
+          error instanceof Error
+            ? error
+            : new Error("Model-install progress handler rejected worker output"),
+        );
+      }
+      return;
+    }
+
+    if (pending.timeout) clearTimeout(pending.timeout);
     this.pending.delete(message.id);
     if (message.type === "error") {
       pending.reject(new Error(`${message.code}: ${message.message}`));
@@ -1201,7 +1352,7 @@ export class WorkerSupervisor {
   private handleExit(child: ChildProcessWithoutNullStreams, error: Error): void {
     if (this.process !== child) return;
     for (const request of this.pending.values()) {
-      clearTimeout(request.timeout);
+      if (request.timeout) clearTimeout(request.timeout);
       request.reject(error);
     }
     this.pending.clear();
