@@ -1,4 +1,4 @@
-import type { DictationActivation, PillMode, SessionState } from "./contracts";
+import type { AsrMode, DictationActivation, PillMode, SessionState } from "./contracts";
 import { ERROR_NOTICE_DURATION_MS } from "./dictationErrors";
 
 export interface PillSize {
@@ -48,6 +48,16 @@ export const PILL_LAYOUT = {
     toggle: { width: 100, height: 32 },
   },
   /*
+   * Live recognizers publish a revisable transcript while recording. The
+   * native window cannot resize on each revision without sliding under a
+   * stationary pointer, so reserve one fixed, readable line only for those
+   * Live sessions. Final-only dictation keeps its compact original bounds.
+   */
+  liveListening: {
+    hold: { width: 236, height: 26 },
+    toggle: { width: 280, height: 32 },
+  },
+  /*
    * Wide enough for the longest status the product can show.
    *
    * At 128px the copy area was 56px — about ten characters — so every ordinary
@@ -72,6 +82,7 @@ export const PILL_LAYOUT = {
 } as const satisfies {
   idle: Record<PillMode, PillSize>;
   listening: Record<DictationActivation, PillSize>;
+  liveListening: Record<DictationActivation, PillSize>;
   status: PillSize;
   error: {
     stack: PillSize;
@@ -199,9 +210,13 @@ export function pillSizeFor(
   state: SessionState,
   mode: PillMode = "collapsed",
   activation: DictationActivation | undefined = undefined,
+  asrMode: AsrMode = "after-stop",
 ): PillSize {
   if (state === "idle") return PILL_LAYOUT.idle[mode];
-  if (state === "listening") return PILL_LAYOUT.listening[activation === "hold" ? "hold" : "toggle"];
+  if (state === "listening") {
+    const listening = asrMode === "live" ? PILL_LAYOUT.liveListening : PILL_LAYOUT.listening;
+    return listening[activation === "hold" ? "hold" : "toggle"];
+  }
   if (state === "error") return PILL_LAYOUT.error.stack;
   return PILL_LAYOUT.status;
 }
@@ -218,6 +233,10 @@ export type PillLayoutCssVariable =
   | "--pill-listening-toggle-height"
   | "--pill-listening-hold-width"
   | "--pill-listening-hold-height"
+  | "--pill-live-listening-toggle-width"
+  | "--pill-live-listening-toggle-height"
+  | "--pill-live-listening-hold-width"
+  | "--pill-live-listening-hold-height"
   | "--pill-status-width"
   | "--pill-status-height"
   | "--pill-error-stack-width"
@@ -243,6 +262,10 @@ export const PILL_LAYOUT_CSS_PROPERTIES = {
   "--pill-listening-toggle-height": px(PILL_LAYOUT.listening.toggle.height),
   "--pill-listening-hold-width": px(PILL_LAYOUT.listening.hold.width),
   "--pill-listening-hold-height": px(PILL_LAYOUT.listening.hold.height),
+  "--pill-live-listening-toggle-width": px(PILL_LAYOUT.liveListening.toggle.width),
+  "--pill-live-listening-toggle-height": px(PILL_LAYOUT.liveListening.toggle.height),
+  "--pill-live-listening-hold-width": px(PILL_LAYOUT.liveListening.hold.width),
+  "--pill-live-listening-hold-height": px(PILL_LAYOUT.liveListening.hold.height),
   "--pill-status-width": px(PILL_LAYOUT.status.width),
   "--pill-status-height": px(PILL_LAYOUT.status.height),
   "--pill-error-stack-width": px(PILL_LAYOUT.error.stack.width),

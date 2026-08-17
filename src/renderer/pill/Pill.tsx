@@ -3,6 +3,7 @@ import { flushSync } from "react-dom";
 import {
   type AppSettings,
   type AsrMode,
+  type LivePartialTranscript,
   type PillMode,
   type RuntimePlatform,
   type SessionSnapshot,
@@ -134,6 +135,29 @@ export function isCurrentFinalization(
   return snapshot.state === "finalizing" && snapshot.sessionId === sessionId;
 }
 
+/**
+ * Live decoder updates are replacement snapshots, not append-only tokens.
+ * Reject stale, cancelled, and wrong-session updates before they reach the
+ * pill so an old recognition can never be shown during a later recording.
+ */
+export function acceptsLivePartial(
+  snapshot: SessionSnapshot,
+  current: LivePartialTranscript | null,
+  incoming: LivePartialTranscript,
+): boolean {
+  if (snapshot.state !== "listening" || snapshot.sessionId !== incoming.sessionId) return false;
+  return current?.sessionId !== incoming.sessionId || incoming.sequence > current.sequence;
+}
+
+/** The transcript is visible only for the exact currently-listening session. */
+export function livePartialText(
+  snapshot: SessionSnapshot,
+  partial: LivePartialTranscript | null,
+): string | null {
+  if (snapshot.state !== "listening" || !partial || partial.sessionId !== snapshot.sessionId) return null;
+  return partial.text.trim() || null;
+}
+
 export function Pill() {
   const [snapshot, setSnapshot] = useState<SessionSnapshot>({ state: "idle" });
   const [microphoneId, setMicrophoneId] = useState<string | null>(null);
@@ -142,6 +166,8 @@ export function Pill() {
   const [platform, setPlatform] = useState<RuntimePlatform | undefined>();
   const [platformStatus, setPlatformStatus] = useState<RuntimePlatformStatus>("loading");
   const [waveform, setWaveform] = useState<number[]>(quietWave);
+  const [livePartial, setLivePartial] = useState<LivePartialTranscript | null>(null);
+  const [asrMode, setAsrMode] = useState<AsrMode>("after-stop");
   const recorder = useRef(new AudioRecorder());
   const previousState = useRef<SessionSnapshot["state"]>("idle");
   const latestSnapshot = useRef<SessionSnapshot>({ state: "idle" });
@@ -149,6 +175,7 @@ export function Pill() {
   const asrModeRef = useRef<AsrMode>("after-stop");
   const settingsStatusRef = useRef<ShortcutSettingsStatus>("loading");
   const recorderSessionId = useRef<string | null>(null);
+  const livePartialRef = useRef<LivePartialTranscript | null>(null);
 
   useEffect(() => {
     recorder.current.setLevelListener((level) => {
@@ -195,6 +222,13 @@ export function Pill() {
       const previous = previousState.current;
       previousState.current = next.state;
       latestSnapshot.current = next;
+      // Clear synchronously as the authoritative session changes. A late IPC
+      // message from the previous decoder must not survive cancellation,
+      // finalization, or the start of another recording.
+      if (next.state !== "listening" || livePartialRef.current?.sessionId !== next.sessionId) {
+        livePartialRef.current = null;
+        setLivePartial(null);
+      }
       setSnapshot(next);
       if (next.state === "listening" && previous !== "listening") {
         void startListeningRecorder();
@@ -236,11 +270,17 @@ export function Pill() {
       sawLiveEvent = true;
       applySnapshot(next);
     });
+    const unsubscribeLivePartial = window.localScribe.session.onLivePartial((partial) => {
+      if (!acceptsLivePartial(latestSnapshot.current, livePartialRef.current, partial)) return;
+      livePartialRef.current = partial;
+      setLivePartial(partial);
+    });
     let sawSettingsChange = false;
     const applySettings = (settings: Pick<AppSettings, "microphoneId" | "holdShortcut" | "asrMode">) => {
       settingsStatusRef.current = "ready";
       microphoneIdRef.current = settings.microphoneId;
       asrModeRef.current = settings.asrMode;
+      setAsrMode(settings.asrMode);
       setMicrophoneId(settings.microphoneId);
       setHoldShortcut(settings.holdShortcut);
       setShortcutSettingsStatus("ready");
@@ -270,6 +310,7 @@ export function Pill() {
     });
     return () => {
       unsubscribe();
+      unsubscribeLivePartial();
       unsubscribeSettings();
     };
   }, []);
@@ -291,7 +332,13 @@ export function Pill() {
             platformStatus={platformStatus}
             onSelectMicrophone={selectMicrophone}
           />
-        : <ActivePill snapshot={snapshot} waveform={waveform} platform={platform} />}
+        : <ActivePill
+            snapshot={snapshot}
+            waveform={waveform}
+            platform={platform}
+            livePartial={livePartial}
+            asrMode={asrMode}
+          />}
     </main>
   );
 }
@@ -546,25 +593,35 @@ function ActivePill({
   snapshot,
   waveform,
   platform,
+  livePartial,
+  asrMode,
 }: {
   snapshot: SessionSnapshot;
   waveform: number[];
   platform: RuntimePlatform | undefined;
+  livePartial: LivePartialTranscript | null;
+  asrMode: AsrMode;
 }) {
   if (snapshot.state === "listening") {
+    const transcript = livePartialText(snapshot, livePartial);
+    const ariaLabel = transcript
+      ? `LocalScribe is listening. Current live transcript: ${transcript}`
+      : "LocalScribe is listening";
     if (snapshot.activation === "hold") {
       return (
-        <section className="pill pill--listening pill--hold-listening" aria-label="LocalScribe push-to-talk is listening">
+        <section className={`pill pill--listening pill--hold-listening${asrMode === "live" ? " pill--live-listening" : ""}`} aria-label={ariaLabel}>
           <Wave samples={waveform} />
+          {transcript && <span className="pill__live-partial" title={transcript}>{transcript}</span>}
         </section>
       );
     }
     return (
-      <section className="pill pill--listening" aria-label="LocalScribe is listening">
+      <section className={`pill pill--listening${asrMode === "live" ? " pill--live-listening" : ""}`} aria-label={ariaLabel}>
         <button className="pill__end pill__end--cancel" type="button" onClick={() => void window.localScribe.session.cancel()} aria-label="Cancel dictation">
           <CloseIcon />
         </button>
         <Wave samples={waveform} />
+        {transcript && <span className="pill__live-partial" title={transcript}>{transcript}</span>}
         <button className="pill__end pill__end--finish" type="button" onClick={() => void window.localScribe.session.toggle()} aria-label="Finish dictation">
           <CheckIcon />
         </button>

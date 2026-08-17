@@ -31,6 +31,21 @@ describe("pill layout contract", () => {
     expect(pillSizeFor("transcribing")).toEqual(PILL_LAYOUT.status);
   });
 
+  it("reserves fixed readable space for revisable Live transcript snapshots", () => {
+    // Size is independent of transcript length, so a decoder revision cannot
+    // move the transparent native window under a stationary pointer.
+    expect(PILL_LAYOUT.listening.toggle.width).toBe(100);
+    expect(PILL_LAYOUT.listening.hold.width).toBe(76);
+    expect(pillSizeFor("listening", "collapsed", "toggle", "live"))
+      .toEqual(PILL_LAYOUT.liveListening.toggle);
+    expect(pillSizeFor("listening", "collapsed", "hold", "live"))
+      .toEqual(PILL_LAYOUT.liveListening.hold);
+    expect(PILL_LAYOUT.liveListening.toggle.width).toBe(280);
+    expect(PILL_LAYOUT.liveListening.hold.width).toBe(236);
+    expect(stylesheet).toContain(".pill__live-partial { min-width: 0; flex: 1; overflow: hidden;");
+    expect(stylesheet).toContain("text-overflow: ellipsis");
+  });
+
   it("exposes the shared renderer dimensions as CSS variables", () => {
     expect(PILL_LAYOUT_CSS_PROPERTIES["--pill-idle-collapsed-width"]).toBe("40px");
     expect(PILL_LAYOUT_CSS_PROPERTIES["--pill-error-stack-height"]).toBe("100px");

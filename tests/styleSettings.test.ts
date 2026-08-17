@@ -10,9 +10,11 @@ import {
 import {
   appProfilePresentation,
   automaticPasteSettingsPresentation,
+  appliedModelSelectionMessage,
   cleanupSelectionForSettings,
   GENERATIVE_TEXT_MODEL_REQUIRED_NOTICE,
   modelActionFailureMessage,
+  modelActionWithInstallProgress,
   modelArtifactScopePresentation,
   modelInstallRequest,
   modelPerformanceSaveMessage,
@@ -777,6 +779,47 @@ describe("model and performance presentation", () => {
         accelerator: { freeMemoryBytes: 4 * 1_073_741_824 },
       } as never,
     )).toContain("requires 9.00 GiB free accelerator memory, including 2.00 GiB reserved headroom; LocalScribe currently reports 4.00 GiB available");
+  });
+});
+
+describe("model operation status", () => {
+  it("accepts measured transfer updates only for the in-flight profile", () => {
+    const active = {
+      action: "installing" as const,
+      familyId: "whisper-large-v3" as const,
+      tier: "medium" as const,
+      progress: { phase: "preparing" as const },
+    };
+    const progress = {
+      familyId: "whisper-large-v3" as const,
+      tier: "medium" as const,
+      artifactId: "whisper-large-v3-medium",
+      phase: "verifying" as const,
+      completedBytes: 300,
+      totalBytes: 600,
+    };
+
+    expect(modelActionWithInstallProgress(active, progress)).toMatchObject({
+      action: "installing",
+      progress: { phase: "verifying", completedBytes: 300, totalBytes: 600 },
+    });
+    expect(modelActionWithInstallProgress(active, { ...progress, tier: "high" })).toBe(active);
+    expect(modelActionWithInstallProgress({
+      action: "removing",
+      familyId: "whisper-large-v3",
+      tier: "medium",
+    }, progress)).toMatchObject({ action: "removing" });
+  });
+
+  it("confirms the exact loaded artifact and resolved mode returned by Apply", () => {
+    expect(appliedModelSelectionMessage({
+      families: [{ familyId: "whisper-large-v3", displayName: "Whisper large-v3" }],
+    } as never, {
+      familyId: "whisper-large-v3",
+      artifactId: "whisper-large-v3-medium",
+      tier: "medium",
+      asrMode: "after-stop",
+    })).toBe("Whisper large-v3 · Medium · After I stop is applied, loaded, and ready.");
   });
 });
 
