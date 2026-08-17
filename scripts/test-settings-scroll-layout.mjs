@@ -911,7 +911,7 @@ function assertChangedSettings(size) {
   );
   assert(general?.language?.value === "Italian", `Saved language is not selected: ${evidence}`);
   assert(
-    general?.language?.selectedLabel === "Italian (saved; not offered in this build)",
+    general?.language?.selectedLabel === "Italian (saved; unsupported by selected model)",
     `Older saved language is rendered blank or misleadingly: ${evidence}`,
   );
   const expectedHold = size.platform === "win32" ? "Alt + F13" : "Option + F13";

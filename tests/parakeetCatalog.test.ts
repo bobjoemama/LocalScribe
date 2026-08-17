@@ -24,6 +24,23 @@ function digest(value: string): string {
 }
 
 describe("curated Parakeet Unified catalog", () => {
+  it("reports the actual multilingual Whisper language and prompt capabilities", () => {
+    for (const [platform, arch] of [["darwin", "arm64"], ["win32", "x64"]] as const) {
+      const catalog = loadRuntimePlatformModelCatalog(
+        path.resolve("resources/model-manifest"),
+        platform,
+        arch,
+      );
+      const whisper = catalog.families["whisper-large-v3"];
+      expect(whisper?.capabilities).toMatchObject({
+        modes: ["after-stop"],
+        languageDetection: true,
+        promptContext: true,
+        supportedLanguages: ["auto", "en", "es", "fr", "de", "hi"],
+      });
+    }
+  });
+
   it("recommends an Apple-native, two-mode family on macOS without faking a Low profile", () => {
     const catalog = loadRuntimePlatformModelCatalog(
       path.resolve("resources/model-manifest"),
