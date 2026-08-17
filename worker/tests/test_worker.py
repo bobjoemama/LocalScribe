@@ -30,6 +30,7 @@ from localscribe_worker.worker import (
     ensure_model,
     run_worker,
 )
+from tqdm.contrib.concurrent import thread_map
 
 
 def request(message_type: str, **fields: Any) -> dict[str, Any]:
@@ -837,12 +838,15 @@ class WorkerProtocolTests(unittest.TestCase):
                 path: Path,
                 supplied_manifest: ModelManifest,
                 allow_download: bool,
+                *,
+                progress: worker_module.ModelInstallProgress | None = None,
             ) -> Path:
                 return ensure_model(
                     path,
                     supplied_manifest,
                     allow_download,
                     snapshot_downloader=downloader,
+                    progress=progress,
                 )
 
             def factory(path: Path, supplied_spec: TierSpec) -> FakeRuntime:
@@ -864,22 +868,33 @@ class WorkerProtocolTests(unittest.TestCase):
 
             self.assertEqual(exit_code, 0)
             self.assertEqual(errors, "")
-            ensured.assert_called_once_with(model_root.resolve(), manifest, True)
+            ensured.assert_called_once()
+            self.assertEqual(ensured.call_args.args, (model_root.resolve(), manifest, True))
+            self.assertIsInstance(
+                ensured.call_args.kwargs["progress"],
+                worker_module.ModelInstallProgress,
+            )
             self.assertEqual(len(downloaded), 1)
+            installed_message = next(
+                message for message in messages if message["type"] == "model_installed"
+            )
             self.assertEqual(
-                messages[1],
+                installed_message,
                 {
                     "type": "model_installed",
                     "id": install["id"],
                     "tier": spec.tier,
                     "modelId": spec.model_id,
                     "computeType": spec.compute_type,
-                    "installMs": messages[1]["installMs"],
+                    "installMs": installed_message["installMs"],
                 },
             )
-            self.assertIsInstance(messages[1]["installMs"], int)
-            self.assertGreaterEqual(messages[1]["installMs"], 0)
-            self.assertEqual(messages[2], {"type": "health", "id": health["id"], "ready": False})
+            self.assertIsInstance(installed_message["installMs"], int)
+            self.assertGreaterEqual(installed_message["installMs"], 0)
+            self.assertIn(
+                {"type": "health", "id": health["id"], "ready": False},
+                messages,
+            )
             self.assertEqual(runtime_factory_calls, [])
             self.assertTrue(
                 worker_module._valid_model_directory(
@@ -887,6 +902,94 @@ class WorkerProtocolTests(unittest.TestCase):
                     manifest,
                 )
             )
+
+    def test_install_model_emits_byte_accurate_progress_before_its_terminal_result(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            model_root = Path(temporary) / "models"
+            spec = tier_spec("low")
+            selection = (spec.model_id, spec.tier, spec.compute_type)
+            manifest = tiny_manifest()
+            total_bytes = sum(model_file.bytes for model_file in manifest.files.values())
+
+            def installing(
+                root: Path,
+                supplied_manifest: ModelManifest,
+                allow_download: bool,
+                *,
+                progress: worker_module.ModelInstallProgress | None = None,
+            ) -> Path:
+                self.assertTrue(allow_download)
+                self.assertIs(supplied_manifest, manifest)
+                self.assertIsNotNone(progress)
+                assert progress is not None
+                progress.begin("downloading")
+                progress.advance(manifest.files["config.json"].bytes)
+                write_tiny_model(root / manifest.storage_directory, manifest)
+                progress.begin("verifying")
+                progress.advance(total_bytes)
+                return root / manifest.storage_directory
+
+            with (
+                patch.dict(worker_module.MODEL_MANIFESTS, {selection: manifest}),
+                patch.object(worker_module, "ensure_model", side_effect=installing),
+            ):
+                messages, errors, exit_code = self.run_protocol(
+                    encode_requests(
+                        install_request("low", model_root),
+                        request("shutdown"),
+                    ),
+                )
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(errors, "")
+        self.assertEqual(
+            [message["type"] for message in messages],
+            [
+                "hello",
+                "model_install_progress",
+                "model_install_progress",
+                "model_install_progress",
+                "model_install_progress",
+                "model_installed",
+                "shutdown",
+            ],
+        )
+        self.assertEqual(
+            messages[1:5],
+            [
+                {
+                    "type": "model_install_progress",
+                    "id": messages[1]["id"],
+                    "phase": "downloading",
+                    "completedBytes": 0,
+                    "totalBytes": total_bytes,
+                },
+                {
+                    "type": "model_install_progress",
+                    "id": messages[1]["id"],
+                    "phase": "downloading",
+                    "completedBytes": manifest.files["config.json"].bytes,
+                    "totalBytes": total_bytes,
+                },
+                {
+                    "type": "model_install_progress",
+                    "id": messages[1]["id"],
+                    "phase": "verifying",
+                    "completedBytes": 0,
+                    "totalBytes": total_bytes,
+                },
+                {
+                    "type": "model_install_progress",
+                    "id": messages[1]["id"],
+                    "phase": "verifying",
+                    "completedBytes": total_bytes,
+                    "totalBytes": total_bytes,
+                },
+            ],
+        )
+        self.assertEqual(messages[5]["type"], "model_installed")
 
     def test_install_model_rejects_missing_extra_disallowed_and_mismatched_fields(
         self,
@@ -1286,6 +1389,60 @@ class ModelInstallationTests(unittest.TestCase):
             )
             self.assertFalse(any("staging" in entry.name for entry in model_root.iterdir()))
 
+    def test_install_progress_uses_actual_reconstruction_and_verification_bytes(self) -> None:
+        manifest = tiny_manifest()
+        total_bytes = sum(model_file.bytes for model_file in manifest.files.values())
+        events: list[tuple[str, int, int]] = []
+
+        def downloader(**kwargs: Any) -> None:
+            progress_class = kwargs["tqdm_class"]
+            # Hugging Face passes this class to `tqdm.thread_map` as well as
+            # its byte bars. Exercise the iterator and lock hooks that allow
+            # the parallel downloader to use our silent protocol adapter.
+            self.assertEqual(
+                thread_map(
+                    lambda filename: filename,
+                    ["config.json"],
+                    tqdm_class=progress_class,
+                    max_workers=1,
+                ),
+                ["config.json"],
+            )
+            reconstruction = progress_class(
+                total=0,
+                initial=0,
+                unit="B",
+                desc="Reconstructing (incomplete total...)",
+            )
+            reconstruction.update(manifest.files["config.json"].bytes)
+            reconstruction.update(manifest.files["weights.npz"].bytes)
+            write_tiny_model(Path(kwargs["local_dir"]), manifest)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            installed = ensure_model(
+                Path(temporary),
+                manifest,
+                True,
+                snapshot_downloader=downloader,
+                progress=worker_module.ModelInstallProgress(
+                    manifest,
+                    lambda phase, completed, total: events.append((phase, completed, total)),
+                ),
+            )
+            self.assertTrue(worker_module._valid_model_directory(installed, manifest))
+            self.assertEqual(
+                events,
+                [
+                    ("verifying", 0, total_bytes),
+                    ("downloading", 0, total_bytes),
+                    ("downloading", manifest.files["config.json"].bytes, total_bytes),
+                    ("downloading", total_bytes, total_bytes),
+                    ("verifying", 0, total_bytes),
+                    ("verifying", manifest.files["config.json"].bytes, total_bytes),
+                    ("verifying", total_bytes, total_bytes),
+                ],
+            )
+
     def test_interrupted_download_cleans_only_marker_owned_transaction(self) -> None:
         manifest = tiny_manifest()
         with tempfile.TemporaryDirectory() as temporary:
@@ -1668,7 +1825,9 @@ class ModelInstallationTests(unittest.TestCase):
 
 
 class RuntimeAndHardwareTests(unittest.TestCase):
-    def test_fluid_audio_helper_uses_strict_framed_local_protocol(self) -> None:
+    def test_fluid_audio_helper_ignores_unsupported_context_in_its_strict_local_protocol(
+        self,
+    ) -> None:
         def frame(payload: dict[str, Any]) -> bytes:
             encoded = json.dumps(payload, separators=(",", ":")).encode("utf-8")
             return worker_module.struct.pack(">I", len(encoded)) + encoded
@@ -1723,7 +1882,11 @@ class RuntimeAndHardwareTests(unittest.TestCase):
                 Path("/models/parakeet-unified-en-0-6b-coreml-int8"), spec
             )
             self.assertEqual(
-                runtime.transcribe(b"\x00\x00", language="en", context=""),
+                runtime.transcribe(
+                    b"\x00\x00",
+                    language="en",
+                    context="LocalScribe=LocalScribe",
+                ),
                 TranscriptionResult("Local Parakeet.", "en"),
             )
 

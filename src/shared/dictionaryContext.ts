@@ -1,4 +1,5 @@
 import { ASR_MAX_CONTEXT_CHARS } from "./audioProtocol";
+import type { ModelCapabilities } from "./contracts";
 
 interface DictionaryContextEntry {
   phrase: string;
@@ -47,4 +48,20 @@ export function buildDictionaryAsrContext(
   }
 
   return selected.reverse().join(", ");
+}
+
+/**
+ * Select the recognizer-only representation of Dictionary for a concrete
+ * model capability set. Dictionary replacements themselves are deliberately
+ * applied later, to every final transcription, by `applyLocalTextRules`.
+ *
+ * This keeps a model without prompt support (such as Parakeet Unified) from
+ * receiving a field it cannot consume while preserving the user's local
+ * replacements after recognition.
+ */
+export function dictionaryAsrContextForCapabilities(
+  entries: readonly DictionaryContextEntry[],
+  capabilities: Pick<ModelCapabilities, "promptContext">,
+): string {
+  return capabilities.promptContext ? buildDictionaryAsrContext(entries) : "";
 }

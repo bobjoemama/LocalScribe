@@ -1,7 +1,10 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { ASR_MAX_CONTEXT_CHARS } from "../src/shared/audioProtocol";
-import { buildDictionaryAsrContext } from "../src/shared/dictionaryContext";
+import {
+  buildDictionaryAsrContext,
+  dictionaryAsrContextForCapabilities,
+} from "../src/shared/dictionaryContext";
 
 describe("buildDictionaryAsrContext", () => {
   it("serializes the complete dictionary when it fits, highest priority last", () => {
@@ -34,6 +37,16 @@ describe("buildDictionaryAsrContext", () => {
 
   it("rejects invalid limits", () => {
     expect(() => buildDictionaryAsrContext([], -1)).toThrow(/non-negative safe integer/u);
+  });
+});
+
+describe("dictionaryAsrContextForCapabilities", () => {
+  const entries = [{ phrase: "local scribe", replacement: "LocalScribe", createdAt: 1 }];
+
+  it("supplies a recognizer hint only to models that explicitly support one", () => {
+    expect(dictionaryAsrContextForCapabilities(entries, { promptContext: true }))
+      .toBe("local scribe=LocalScribe");
+    expect(dictionaryAsrContextForCapabilities(entries, { promptContext: false })).toBe("");
   });
 });
 
