@@ -366,6 +366,19 @@ const QWEN_CAPABILITIES: ModelCapabilities = {
   supportedLanguages: ["auto", "en", "es", "fr", "de", "hi"],
 };
 
+/*
+ * Both MLX Whisper and faster-whisper accept explicit language codes and an
+ * initial prompt. Keep this separate from the generic final-only default:
+ * reporting English-only/no-context here would make the settings UI reject
+ * real, supported Whisper requests before they reached either runtime.
+ */
+const WHISPER_CAPABILITIES: ModelCapabilities = {
+  ...AFTER_STOP_CAPABILITIES,
+  languageDetection: true,
+  promptContext: true,
+  supportedLanguages: ["auto", "en", "es", "fr", "de", "hi"],
+};
+
 const PARAKEET_UNIFIED_CAPABILITIES: ModelCapabilities = {
   modes: ["after-stop", "live"],
   partialResults: true,
@@ -405,7 +418,7 @@ const v3Mac: FamilyCatalogDefinition = {
   familyId: "whisper-large-v3",
   displayName: "Whisper large-v3",
   engine: "mlx-whisper",
-  capabilities: AFTER_STOP_CAPABILITIES,
+  capabilities: WHISPER_CAPABILITIES,
   tiers: {
     high: mlxTier("whisper-large-v3", {
       manifestFilename: "whisper-large-v3-mlx.json",
@@ -429,7 +442,7 @@ const v2Mac: FamilyCatalogDefinition = {
   familyId: "whisper-large-v2",
   displayName: "Whisper large-v2",
   engine: "mlx-whisper",
-  capabilities: AFTER_STOP_CAPABILITIES,
+  capabilities: WHISPER_CAPABILITIES,
   tiers: {
     high: mlxTier("whisper-large-v2", {
       manifestFilename: "whisper-large-v2-mlx.json",
@@ -513,7 +526,7 @@ const windowsFamily = (
   familyId,
   displayName,
   engine: "faster-whisper",
-  capabilities: AFTER_STOP_CAPABILITIES,
+  capabilities: WHISPER_CAPABILITIES,
   tiers: {
     high: windowsTier(familyId, "float16", { ...artifact, memory: [4.5, 5.5] }),
     medium: windowsTier(familyId, "int8_float16", { ...artifact, memory: [2.9, 3.5] }),

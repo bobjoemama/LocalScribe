@@ -193,7 +193,7 @@ const afterStopCapabilities: ModelCapabilities = {
   languageDetection: true,
   promptContext: true,
   keywordBoost: false,
-  supportedLanguages: ["auto", "en"],
+  supportedLanguages: ["auto", "en", "es", "fr", "de", "hi"],
 };
 const parakeetCapabilities: ModelCapabilities = {
   modes: ["after-stop", "live"],
@@ -530,7 +530,18 @@ window.localScribe = {
         modelPerformanceMode: request.performanceMode,
       });
       for (const listener of settingsListeners) listener(persistedSettings);
+      const family = catalog.families.find((candidate) => candidate.familyId === request.familyId);
+      const appliedTier = request.performanceMode === "auto" ? "medium" : request.performanceMode;
+      const profile = family?.profiles.find((candidate) => candidate.tier === appliedTier)
+        ?? family?.profiles[0];
       return {
+        applied: true as const,
+        appliedSelection: {
+          familyId: request.familyId,
+          artifactId: profile?.artifactId ?? "whisper-large-v3-medium",
+          tier: profile?.tier ?? "medium",
+          asrMode: request.asrMode,
+        },
         settings: persistedSettings,
         catalog,
         diagnostics: {
@@ -548,6 +559,7 @@ window.localScribe = {
       };
     },
     installModel: async () => diagnostics,
+    onModelInstallProgress: () => () => undefined,
     removeModel: async () => diagnostics,
   },
   windows: {

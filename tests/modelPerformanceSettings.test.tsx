@@ -18,7 +18,7 @@ const afterStopCapabilities: ModelCapabilities = {
   languageDetection: true,
   promptContext: true,
   keywordBoost: false,
-  supportedLanguages: ["auto", "en"],
+  supportedLanguages: ["auto", "en", "es", "fr", "de", "hi"],
 };
 
 function catalog({
