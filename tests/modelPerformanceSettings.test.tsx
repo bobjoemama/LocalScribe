@@ -336,6 +336,15 @@ describe("ModelPerformanceSettings", () => {
       label: "Preparing secure download…",
       percent: null,
     });
+    expect(modelActionProgressPresentation({
+      action: "installing",
+      familyId: "whisper-large-v3",
+      tier: "high",
+      progress: { phase: "verifying", completedBytes: 500_000_000, totalBytes: 2_000_000_000 },
+    }, 2_000_000_000)).toMatchObject({
+      label: "Verifying 0.50 GB of 2.00 GB (25%)",
+      percent: 25,
+    });
 
     const html = renderModelSettings({
       action: {
