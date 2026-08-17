@@ -141,6 +141,8 @@ export interface ModelActionProgress {
   phase: "preparing" | "downloading" | "verifying" | "complete" | "failed";
   completedBytes?: number;
   totalBytes?: number;
+  /** Safe, runtime-supplied failure context (never a raw worker diagnostic). */
+  message?: string;
 }
 export interface ModelTierActionState {
   action: "installing" | "repairing" | "removing";
@@ -1212,7 +1214,12 @@ export function modelActionProgressPresentation(
     return { label: "Download verified.", percent: 100, completedBytes: null, totalBytes: null };
   }
   if (phase === "failed") {
-    return { label: "Download did not finish. See the message above and try again.", percent: null, completedBytes: null, totalBytes: null };
+    return {
+      label: action.progress?.message ?? "Download did not finish. See the message above and try again.",
+      percent: null,
+      completedBytes: null,
+      totalBytes: null,
+    };
   }
   if (phase === "preparing") {
     return {
