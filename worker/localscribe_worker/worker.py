@@ -13,6 +13,7 @@ import stat
 import struct
 import subprocess
 import sys
+import threading
 import time
 import uuid
 import wave
@@ -251,6 +252,126 @@ ModelInstaller = Callable[[Path, ModelManifest, bool], Path]
 RuntimeFactory = Callable[[Path, TierSpec], InferenceRuntime]
 HardwareProbe = Callable[[], HardwareInfo]
 SnapshotDownloader = Callable[..., Any]
+ModelInstallProgressCallback = Callable[[str, int, int], None]
+
+
+class ModelInstallProgress:
+    """Emit bounded, byte-accurate progress for one install transaction.
+
+    The UI receives only bytes actually reconstructed by Hugging Face or read
+    while digest-verifying a manifest file. The denominator is the pinned
+    artifact byte total, never an estimate from the network response.
+    """
+
+    def __init__(
+        self,
+        manifest: ModelManifest,
+        emit: ModelInstallProgressCallback,
+    ) -> None:
+        total = sum(file.bytes for file in manifest.files.values())
+        if total <= 0 or total > 2**53 - 1:
+            raise WorkerError("invalid_model_manifest", "model artifact size is invalid")
+        self._emit = emit
+        self._total = total
+        self._phase = ""
+        self._completed = 0
+
+    def begin(self, phase: str) -> None:
+        if phase not in {"downloading", "verifying"}:
+            raise ValueError("invalid install progress phase")
+        self._phase = phase
+        self._completed = 0
+        self._emit(phase, 0, self._total)
+
+    def advance(self, count: int | float | None) -> None:
+        if self._phase == "" or count is None:
+            return
+        # Hugging Face's progress interface accepts numeric values. Its own
+        # file/reconstruction callbacks are whole bytes; reject an unexpected
+        # value rather than inventing a rounded byte count for the UI.
+        if isinstance(count, bool) or not isinstance(count, int) or count <= 0:
+            return
+        self._completed = min(self._total, self._completed + count)
+        self._emit(self._phase, self._completed, self._total)
+
+
+def _snapshot_download_progress_class(
+    progress: ModelInstallProgress,
+) -> type[Any]:
+    """Adapt Hugging Face's snapshot reconstruction bar to our JSON protocol.
+
+    `snapshot_download` owns several bars: file count, network transfer, and
+    reconstruction. Only reconstruction is the final artifact written to the
+    staging directory, so only its byte updates are safe to represent as model
+    installation progress. This minimal adapter deliberately has no terminal
+    output: stdout is reserved for the worker line protocol.
+    """
+
+    class SnapshotDownloadProgress:
+        _lock = threading.RLock()
+
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            self._iterable = args[0] if args else None
+            self.total = kwargs.get("total")
+            self.n = kwargs.get("initial", 0)
+            self._reconstructing = (
+                kwargs.get("unit") == "B"
+                and str(kwargs.get("desc", "")).startswith("Reconstructing")
+            )
+
+        def __enter__(self) -> SnapshotDownloadProgress:
+            return self
+
+        def __exit__(self, *args: Any) -> None:
+            self.close()
+
+        @classmethod
+        def get_lock(cls) -> Any:
+            return cls._lock
+
+        @classmethod
+        def set_lock(cls, lock: Any) -> None:
+            cls._lock = lock
+
+        def __iter__(self):
+            if self._iterable is None:
+                return
+            for item in self._iterable:
+                self.update(1)
+                yield item
+
+        def close(self) -> None:
+            return
+
+        def refresh(self, *args: Any, **kwargs: Any) -> None:
+            del args, kwargs
+            return
+
+        def update(self, count: int | float | None = 1) -> None:
+            if isinstance(count, int) and not isinstance(count, bool):
+                self.n += count
+            if self._reconstructing:
+                progress.advance(count)
+
+        def update_transfer(self, count: int | float | None = 1) -> None:
+            # Transfer bytes may exceed the pinned artifact total on a retry.
+            # Reconstruction is the exact on-disk artifact measure instead.
+            del count
+            return
+
+        def set_description(self, *args: Any, **kwargs: Any) -> None:
+            del args, kwargs
+            return
+
+        def set_postfix_str(self, *args: Any, **kwargs: Any) -> None:
+            del args, kwargs
+            return
+
+        def set_transfer_postfix_str(self, *args: Any, **kwargs: Any) -> None:
+            del args, kwargs
+            return
+
+    return SnapshotDownloadProgress
 
 
 def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -493,12 +614,22 @@ def _bounded_absolute_directory(raw_path: str, *, create: bool) -> Path:
     return resolved
 
 
-def _sha256(path: Path) -> str:
+def _sha256_with_progress(
+    path: Path,
+    on_chunk: Callable[[int], None] | None = None,
+) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
         for chunk in iter(lambda: handle.read(16 * 1024 * 1024), b""):
             digest.update(chunk)
+            if on_chunk is not None:
+                on_chunk(len(chunk))
     return digest.hexdigest()
+
+
+def _sha256(path: Path) -> str:
+    """Hash a file without progress, preserving the testable primitive API."""
+    return _sha256_with_progress(path)
 
 
 def _is_inert_directory_metadata(name: str, expected: frozenset[str]) -> bool:
@@ -609,6 +740,7 @@ def _valid_model_directory(
     manifest: ModelManifest,
     *,
     verify_digests: bool = True,
+    on_verified_bytes: Callable[[int], None] | None = None,
 ) -> bool:
     """Check an installed artifact against its pinned manifest.
 
@@ -629,7 +761,14 @@ def _valid_model_directory(
                 return False
             if metadata.st_size != expected.bytes:
                 return False
-            if verify_digests and _sha256(candidate) != expected.sha256:
+            if verify_digests and (
+                (
+                    _sha256_with_progress(candidate, on_verified_bytes)
+                    if on_verified_bytes is not None
+                    else _sha256(candidate)
+                )
+                != expected.sha256
+            ):
                 return False
         return True
     except OSError:
@@ -639,6 +778,8 @@ def _valid_model_directory(
 def _remove_verified_huggingface_metadata(
     model_directory: Path,
     manifest: ModelManifest,
+    *,
+    on_verified_bytes: Callable[[int], None] | None = None,
 ) -> bool:
     """Adopt an exact legacy local_dir download without re-downloading weights.
 
@@ -671,12 +812,21 @@ def _remove_verified_huggingface_metadata(
                 candidate.is_symlink()
                 or not stat.S_ISREG(candidate_metadata.st_mode)
                 or candidate_metadata.st_size != expected.bytes
-                or _sha256(candidate) != expected.sha256
+                or (
+                    _sha256_with_progress(candidate, on_verified_bytes)
+                    if on_verified_bytes is not None
+                    else _sha256(candidate)
+                )
+                != expected.sha256
             ):
                 return False
         _safe_rmtree(metadata_directory, model_directory)
         _sync_directory(model_directory)
-        return _valid_model_directory(model_directory, manifest)
+        return _valid_model_directory(
+            model_directory,
+            manifest,
+            on_verified_bytes=on_verified_bytes,
+        )
     except OSError:
         return False
 
@@ -936,22 +1086,35 @@ def ensure_model(
     allow_download: bool,
     *,
     snapshot_downloader: SnapshotDownloader | None = None,
+    progress: ModelInstallProgress | None = None,
 ) -> Path:
     model_root = _bounded_absolute_directory(str(model_root), create=True)
     final_directory = model_root / manifest.storage_directory
+    if progress is not None:
+        progress.begin("verifying")
     _recover_model_transactions(model_root, manifest)
-    if _valid_model_directory(final_directory, manifest):
+    if _valid_model_directory(
+        final_directory,
+        manifest,
+        on_verified_bytes=progress.advance if progress is not None else None,
+    ):
         return final_directory
     if not allow_download:
         raise WorkerError(
             "model_not_installed",
             "install the selected local speech model before dictating",
         )
-    if _remove_verified_huggingface_metadata(final_directory, manifest):
+    if _remove_verified_huggingface_metadata(
+        final_directory,
+        manifest,
+        on_verified_bytes=progress.advance if progress is not None else None,
+    ):
         return final_directory
 
     transaction, staging, backup = _create_model_transaction(model_root, manifest)
     try:
+        if progress is not None:
+            progress.begin("downloading")
         if snapshot_downloader is None:
             with contextlib.redirect_stdout(sys.stderr):
                 from huggingface_hub import snapshot_download
@@ -959,13 +1122,18 @@ def ensure_model(
             snapshot_downloader = snapshot_download
         try:
             with contextlib.redirect_stdout(sys.stderr):
+                download_options: dict[str, Any] = {
+                    "repo_id": manifest.model_id,
+                    "revision": manifest.revision,
+                    "local_dir": staging,
+                    "allow_patterns": sorted(manifest.files),
+                    "max_workers": 4,
+                    "token": False,
+                }
+                if progress is not None:
+                    download_options["tqdm_class"] = _snapshot_download_progress_class(progress)
                 snapshot_downloader(
-                    repo_id=manifest.model_id,
-                    revision=manifest.revision,
-                    local_dir=staging,
-                    allow_patterns=sorted(manifest.files),
-                    max_workers=4,
-                    token=False,
+                    **download_options,
                 )
         except WorkerError:
             raise
@@ -975,7 +1143,13 @@ def ensure_model(
         hub_metadata = staging / ".cache"
         if hub_metadata.exists():
             _safe_rmtree(hub_metadata, staging)
-        if not _valid_model_directory(staging, manifest):
+        if progress is not None:
+            progress.begin("verifying")
+        if not _valid_model_directory(
+            staging,
+            manifest,
+            on_verified_bytes=progress.advance if progress is not None else None,
+        ):
             raise WorkerError(
                 "model_checksum_failed",
                 "downloaded model verification failed",
@@ -1618,8 +1792,13 @@ class FluidAudioParakeetRuntime:
             raise WorkerError("invalid_mode", "Parakeet is loaded for live dictation")
         if language not in {None, "en"}:
             raise WorkerError("invalid_language", "Parakeet Unified currently supports English only")
-        if context:
-            raise WorkerError("context_not_supported", "Parakeet Unified does not support dictionary prompts")
+        # The shared worker protocol includes context for prompt-capable MLX
+        # engines. Parakeet has no recognizer-prompt API: do not turn a stale
+        # client or a pre-capability-gate request into a failed dictation. The
+        # context is intentionally not serialized to the helper, and main
+        # still applies Dictionary's deterministic replacements to the final
+        # transcription for every model family.
+        del context
         return TranscriptionResult(
             text=self._text_response(
                 self._send({"type": "transcribe", "pcmBytes": len(pcm16)}, pcm16),
@@ -1633,8 +1812,9 @@ class FluidAudioParakeetRuntime:
             raise WorkerError("invalid_mode", "The selected model does not support live dictation")
         if language not in {None, "en"}:
             raise WorkerError("invalid_language", "Parakeet Unified currently supports English only")
-        if context:
-            raise WorkerError("context_not_supported", "Parakeet Unified does not support dictionary prompts")
+        # See `transcribe`: mode selection now suppresses unsupported prompts,
+        # but the adapter remains safe for stale clients without forwarding it.
+        del context
         self._require_exact_response(self._send({"type": "reset"}), "reset")
         self._live_active = True
 
@@ -1729,8 +1909,30 @@ def _default_model_installer(
     model_root: Path,
     manifest: ModelManifest,
     allow_download: bool,
+    *,
+    progress: ModelInstallProgress | None = None,
 ) -> Path:
-    return ensure_model(model_root, manifest, allow_download)
+    if progress is None:
+        return ensure_model(model_root, manifest, allow_download)
+    return ensure_model(model_root, manifest, allow_download, progress=progress)
+
+
+def _install_model(
+    installer: ModelInstaller,
+    model_root: Path,
+    manifest: ModelManifest,
+    allow_download: bool,
+    progress: ModelInstallProgress | None = None,
+) -> Path:
+    """Call injected test installers unchanged while production gets progress."""
+    if progress is not None and installer is _default_model_installer:
+        return _default_model_installer(
+            model_root,
+            manifest,
+            allow_download,
+            progress=progress,
+        )
+    return installer(model_root, manifest, allow_download)
 
 
 def _close_runtime(runtime: InferenceRuntime | None) -> None:
@@ -1975,7 +2177,36 @@ def run_worker(
                             "install_model must set allowDownload to true",
                         )
                     started = time.perf_counter()
-                    local_model = model_installer(model_root, manifest, True)
+
+                    def emit_install_progress(
+                        phase: str,
+                        completed_bytes: int,
+                        total_bytes: int,
+                        *,
+                        progress_request_id: str | None = request_id,
+                    ) -> None:
+                        _send(
+                            output_stream,
+                            {
+                                "type": "model_install_progress",
+                                "id": progress_request_id,
+                                "phase": phase,
+                                "completedBytes": completed_bytes,
+                                "totalBytes": total_bytes,
+                            },
+                        )
+
+                    progress = ModelInstallProgress(
+                        manifest,
+                        emit_install_progress,
+                    )
+                    local_model = _install_model(
+                        model_installer,
+                        model_root,
+                        manifest,
+                        True,
+                        progress,
+                    )
                     local_model = _approved_installed_model_path(
                         local_model,
                         model_root,
