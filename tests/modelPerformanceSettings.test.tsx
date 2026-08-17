@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { ModelCapabilities, ModelCatalog } from "../src/shared/contracts";
 import {
   modelApplyEligibility,
+  modelActionProgressPresentation,
   modelFamilyPresentation,
   ModelPerformanceSettings,
   supportedModeChoices,
@@ -250,12 +251,12 @@ describe("ModelPerformanceSettings", () => {
       experience: "after-stop",
       experiences: ["after-stop", "live"],
       recommendation: "recommended",
-      latencyLabel: "Fast after stop",
+      latencyLabel: "Fast final dictation",
     });
     expect(modelFamilyPresentation(live)).toMatchObject({
       experience: "live",
       recommendation: "live",
-      latencyLabel: "Live preview",
+      latencyLabel: "Live recognition",
     });
   });
 
@@ -274,10 +275,79 @@ describe("ModelPerformanceSettings", () => {
     expect(html).toContain("Choose when LocalScribe recognizes your speech");
     expect(html).toContain('<strong>After I stop</strong>');
     expect(html).toContain('<strong>Live</strong>');
-    expect(html).toContain("Streaming model not installed yet");
+    expect(html).toContain("No streaming model in this catalog");
     expect(html).toContain("will not silently substitute another model");
+    expect(html).toContain("Live recognition streams while you speak");
+    expect(html).not.toContain("may show a private preview");
     expect(html).toContain("Model library and technical details");
     expect(html).toContain("Technical details");
+  });
+
+  it("makes Parakeet easy to find for final dictation without treating it as the Live preview choice", () => {
+    const parakeet = {
+      ...catalog().families[0]!,
+      familyId: "parakeet-unified-en-0-6b" as unknown as ModelCatalog["families"][number]["familyId"],
+      displayName: "Parakeet Unified",
+      capabilities: { ...afterStopCapabilities, modes: ["after-stop", "live"] as ("after-stop" | "live")[], partialResults: true },
+      recommendedDefault: true,
+    };
+
+    expect(modelFamilyPresentation(parakeet)).toMatchObject({
+      experience: "after-stop",
+      summary: "Fast final dictation after you stop speaking. Recommended for a polished local result.",
+      latencyLabel: "Fast final dictation",
+    });
+  });
+
+  it("names staged, applying, and confirmed runtime states instead of implying a selection is already live", () => {
+    const pending = renderModelSettings({
+      pendingSelection: { familyId: "whisper-large-v3", asrMode: "after-stop", performanceMode: "medium" },
+      mode: "medium",
+    });
+    expect(pending).toContain("Pending model change");
+    expect(pending).toContain("Nothing changes until you apply this pending selection.");
+    expect(pending).toContain("After applying");
+
+    const applying = renderModelSettings({ applying: true });
+    expect(applying).toContain("Applying model change");
+    expect(applying).toContain("Applying model…");
+
+    const ready = renderModelSettings({ currentModelLoaded: true });
+    expect(ready).toContain("Applied and ready");
+    expect(ready).toContain("This selection is loaded and ready for dictation.");
+  });
+
+  it("renders byte progress only when runtime reports real byte counts", () => {
+    expect(modelActionProgressPresentation({
+      action: "installing",
+      familyId: "whisper-large-v3",
+      tier: "high",
+      progress: { phase: "downloading", completedBytes: 500_000_000, totalBytes: 2_000_000_000 },
+    }, 2_000_000_000)).toMatchObject({
+      label: "Downloading 0.50 GB of 2.00 GB (25%)",
+      percent: 25,
+    });
+    expect(modelActionProgressPresentation({
+      action: "installing",
+      familyId: "whisper-large-v3",
+      tier: "high",
+      progress: { phase: "preparing" },
+    }, 2_000_000_000)).toMatchObject({
+      label: "Preparing secure download…",
+      percent: null,
+    });
+
+    const html = renderModelSettings({
+      action: {
+        action: "installing",
+        familyId: "whisper-large-v3",
+        tier: "high",
+        progress: { phase: "downloading", completedBytes: 500_000_000, totalBytes: 2_000_000_000 },
+      },
+    });
+    expect(html).toContain("Downloading 0.50 GB of 2.00 GB (25%)");
+    expect(html).toContain('role="progressbar"');
+    expect(html).toContain('aria-valuenow="25"');
   });
 
   it("allows an exact verified persisted selection to load when its runtime is cold", () => {

@@ -51,4 +51,11 @@ describe("renderer-safe error presentation", () => {
     expect(rendererSafeErrorMessage(null, "Failed at C:\\Users\\Alice\\private.db"))
       .toBe("The local operation failed. Try again.");
   });
+
+  it("does not surface backend error-code tokens as if they were instructions", () => {
+    expect(rendererSafeErrorMessage(
+      "context_not_supported: Parakeet Unified does not support dictionary prompts",
+      FALLBACK,
+    )).toBe(FALLBACK);
+  });
 });

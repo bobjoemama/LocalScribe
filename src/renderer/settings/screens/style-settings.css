@@ -346,7 +346,8 @@
   box-shadow: inset 0 0 0 1px #dcebe7;
 }
 .ls-model-apply-card > div:first-child { min-width: 0; }
-.ls-model-apply-card > div:first-child > span { color: #367568; font-size: 10px; font-weight: 750; letter-spacing: .09em; text-transform: uppercase; }
+.ls-model-apply-state { display: inline-flex; align-items: center; border-radius: 999px; background: #e4f1ed; padding: 4px 7px; color: #286f63; font-size: 10px; font-weight: 750; letter-spacing: .07em; text-transform: uppercase; }
+.ls-model-apply-state.is-busy { background: #e8edf8; color: #48547b; }
 .ls-model-apply-card h2 { margin: 5px 0 10px; color: #214d45; font-size: 17px; letter-spacing: -.02em; }
 .ls-model-apply-card p { margin: 9px 0 0; color: #607a72; font-size: 11px; line-height: 1.45; }
 .ls-model-selection-summary { display: grid; gap: 5px; margin: 0; }
@@ -390,6 +391,8 @@
 .ls-model-experience-options button:disabled { opacity: .58; }
 .ls-model-experience-options strong { font-size: 12px; }
 .ls-model-experience-options span { font-size: 10px; line-height: 1.35; }
+.ls-model-experience-recommendation { border-left: 2px solid #3d8174; padding-left: 9px; color: #52736b !important; }
+.ls-model-experience-recommendation strong { color: #286f63; }
 .ls-model-experience-unavailable { border-left: 2px solid #d8d2ca; padding-left: 9px; }
 .ls-model-auto-card {
   display: flex;
@@ -556,6 +559,7 @@
 .ls-model-family-badge.is-pending { background: #d8eee7; color: #185e52; }
 .ls-model-family-badge.is-recommended { background: #dcefe8; color: #185e52; }
 .ls-model-family-badge.is-live { background: #e8ebfb; color: #4c548c; }
+.ls-model-family-badge.is-final { background: #e0f1eb; color: #185e52; }
 .ls-model-family-heading h3 { margin: 0 0 3px; color: #2e2b28; font-size: 14px; letter-spacing: -.01em; }
 .ls-model-family-heading p,
 .ls-model-family-note,
@@ -610,6 +614,11 @@
 .ls-model-tier-footer { align-items: flex-start; }
 .ls-model-tier-footer p { max-width: 410px; margin: 0; color: #77716a; font-size: 10px; line-height: 1.45; }
 .ls-model-tier-footer .ls-small-button { flex: 0 0 auto; }
+.ls-model-operation-progress { display: grid; grid-template-columns: 92px minmax(120px, 1fr); align-items: center; gap: 7px; width: min(100%, 270px); margin-left: auto; color: #5e756f; font-size: 10px; line-height: 1.35; }
+.ls-model-operation-progress__bar { display: block; width: 100%; height: 5px; overflow: hidden; border-radius: 999px; background: #dce9e4; }
+.ls-model-operation-progress__bar > i { display: block; height: 100%; min-width: 4px; border-radius: inherit; background: #2c7d6c; transition: width .15s ease-out; }
+.ls-model-operation-progress__bar.is-indeterminate > i { width: 35%; animation: ls-model-progress-indeterminate 1.15s ease-in-out infinite; }
+@keyframes ls-model-progress-indeterminate { 0% { transform: translateX(-130%); } 100% { transform: translateX(310%); } }
 .ls-model-tier-details,
 .ls-model-advanced-details { border-top: 1px solid #eeeae5; padding-top: 8px; color: #77716a; font-size: 10px; line-height: 1.45; }
 .ls-model-tier-details summary,
@@ -727,6 +736,9 @@
     padding: 7px 0;
   }
   .ls-model-tier-facts > div:last-child { border-bottom: 0; }
+  .ls-model-tier-footer { display: grid; grid-template-columns: 1fr; }
+  .ls-model-tier-footer .ls-small-button { justify-self: start; }
+  .ls-model-operation-progress { width: 100%; margin-left: 0; }
   .ls-model-family-glance,
   .ls-model-tier-details > dl { grid-template-columns: 1fr; }
   .ls-model-family-glance > div,
@@ -746,7 +758,9 @@
   .ls-transform-card,
   .ls-shortcut-recorder__button,
   .ls-switch,
-  .ls-switch::after { transition: none; }
+  .ls-switch::after,
+  .ls-model-operation-progress__bar > i { transition: none; }
+  .ls-model-operation-progress__bar.is-indeterminate > i { animation: none; transform: none; }
   /*
    * The cards no longer move on hover — see .ls-transform-card:hover — so the
    * only motion left to still is the colour/shadow transition above.

@@ -38,6 +38,7 @@ import {
 import {
   DICTATION_LANGUAGE_DETAIL,
   DICTATION_LANGUAGE_OPTIONS,
+  dictationLanguagePresentation,
   dictationLanguageOptionsFor,
 } from "../src/renderer/settings/dictationLanguages";
 import {
@@ -371,6 +372,40 @@ describe("dictation language choices", () => {
     expect(dictationLanguageOptionsFor("Italian")[0]).toEqual({
       value: "Italian",
       label: "Italian (saved; not offered in this build)",
+    });
+  });
+
+  it("limits language choices to the selected model capabilities and names Parakeet automatic English honestly", () => {
+    const parakeet = dictationLanguagePresentation("auto", {
+      languageDetection: false,
+      supportedLanguages: ["en"],
+    });
+    expect(parakeet).toMatchObject({
+      enabled: true,
+      detail: "The selected local model supports English only. “Automatic” uses that language; it does not detect language.",
+      options: [
+        { value: "auto", label: "English (automatic)" },
+        { value: "English", label: "English" },
+      ],
+    });
+    expect(parakeet.options.map((option) => option.value)).not.toContain("Spanish");
+
+    const inheritedSpanish = dictationLanguagePresentation("Spanish", {
+      languageDetection: false,
+      supportedLanguages: ["en"],
+    });
+    expect(inheritedSpanish.options[0]).toEqual({
+      value: "Spanish",
+      label: "Spanish (saved; unsupported by selected model)",
+      disabled: true,
+    });
+    expect(inheritedSpanish.detail).toContain("choose a supported language before dictating");
+  });
+
+  it("holds the language selector until model capability status is available", () => {
+    expect(dictationLanguagePresentation("auto", null)).toMatchObject({
+      enabled: false,
+      detail: "Loading language support for the selected local model. Choose a language after model status is ready.",
     });
   });
 });
