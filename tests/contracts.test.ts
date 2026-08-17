@@ -10,6 +10,7 @@ import {
   modelCatalogSchema,
   modelFamilyLibraryRequestSchema,
   modelInstallRequestSchema,
+  modelInstallProgressSchema,
   modelRemoveRequestSchema,
   modelSelectionApplyRequestSchema,
   scratchpadNoteSchema,
@@ -111,6 +112,46 @@ describe("IPC contracts", () => {
       performanceMode: "medium",
       modelId: "untrusted/model",
     })).toThrow();
+  });
+
+  it("accepts only measured, bounded model-install progress", () => {
+    expect(modelInstallProgressSchema.parse({
+      familyId: "parakeet-unified-en-0-6b",
+      tier: "medium",
+      artifactId: "parakeet-unified-en-0-6b-coreml-int8",
+      phase: "downloading",
+      completedBytes: 128,
+      totalBytes: 256,
+    })).toMatchObject({ phase: "downloading", completedBytes: 128, totalBytes: 256 });
+    expect(modelInstallProgressSchema.parse({
+      familyId: "parakeet-unified-en-0-6b",
+      tier: "medium",
+      artifactId: "parakeet-unified-en-0-6b-coreml-int8",
+      phase: "complete",
+      completedBytes: 256,
+      totalBytes: 256,
+      message: "Model downloaded and cryptographically verified.",
+    })).toMatchObject({ phase: "complete" });
+    expect(() => modelInstallProgressSchema.parse({
+      familyId: "parakeet-unified-en-0-6b",
+      tier: "medium",
+      artifactId: "parakeet-unified-en-0-6b-coreml-int8",
+      phase: "downloading",
+    })).toThrow(/measured completed and total bytes/u);
+    expect(() => modelInstallProgressSchema.parse({
+      familyId: "parakeet-unified-en-0-6b",
+      tier: "medium",
+      artifactId: "parakeet-unified-en-0-6b-coreml-int8",
+      phase: "complete",
+      completedBytes: 255,
+      totalBytes: 256,
+    })).toThrow(/full verified artifact size/u);
+    expect(() => modelInstallProgressSchema.parse({
+      familyId: "parakeet-unified-en-0-6b",
+      tier: "medium",
+      artifactId: "parakeet-unified-en-0-6b-coreml-int8",
+      phase: "failed",
+    })).toThrow(/safe user-facing message/u);
   });
 
   it("requires diagnostics to state whether the resolved tier fits memory", () => {

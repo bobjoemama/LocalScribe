@@ -48,11 +48,14 @@ import {
   type Diagnostics,
   type AsrMode,
   type ModelCatalog,
+  type ModelCapabilities,
   type ModelFamilyId,
+  type ModelInstallProgress,
   type ModelPerformanceTier,
   type ModelSelectionApplyResult,
   type NavigationTarget,
   type PillMode,
+  type LivePartialTranscript,
   type SessionSnapshot,
 } from "./shared/contracts";
 import { modelPerformanceTierLabel } from "./shared/modelPerformance";
@@ -85,8 +88,9 @@ import { defaultMacControlMonitorPath, MacControlMonitor } from "./main/hotkeys/
 import { reconcileAccessibilityHotkeys } from "./main/hotkeys/accessibilityReconciler";
 import { InsertionService } from "./main/insertion/insertionService";
 import { insertionDiagnosticEvent } from "./main/insertion/insertionDiagnostics";
-import { buildDictionaryAsrContext } from "./shared/dictionaryContext";
+import { dictionaryAsrContextForCapabilities } from "./shared/dictionaryContext";
 import { applyLocalTextRules } from "./shared/textPipeline";
+import { workerLanguageForModel } from "./shared/modelLanguage";
 import { transformDictation } from "./shared/text";
 import { normalizeDictationErrorMessage } from "./shared/dictationErrors";
 import {
@@ -284,6 +288,21 @@ function modelCatalog(
   const catalog = platformModelCatalog().families[familyId];
   if (!catalog) throw new Error(`Model family ${familyId} is unavailable on this platform`);
   return catalog;
+}
+
+function assertModelLanguageSupported(
+  language: string,
+  capabilities: ModelCapabilities,
+  modelName: string,
+): void {
+  void workerLanguageForModel(language, capabilities, modelName);
+}
+
+function workerLanguageForActiveModel(
+  settings: ReturnType<LocalDatabase["getSettings"]> = database.getSettings(),
+): string {
+  const catalog = modelCatalog(settings.activeModelFamilyId);
+  return workerLanguageForModel(settings.language, catalog.capabilities, catalog.displayName);
 }
 
 function runtimeModelManifestDirectory(): string {
@@ -1087,9 +1106,21 @@ function setSession(next: SessionSnapshot): SessionSnapshot {
 function failSession(error: unknown): SessionSnapshot {
   const live = activeLiveSession;
   activeLiveSession = null;
-  if (live) void worker.cancelLiveSession(live.sessionId).catch(() => undefined);
+  if (live) scheduleLiveWorkerCancellation(live.sessionId);
   insertion.cancelSession();
   return setSession({ state: "error", message: normalizeDictationErrorMessage(error) });
+}
+
+/**
+ * Invalidate the renderer-facing session before waiting on a queued append.
+ * The supervisor clears its own Live token synchronously, so any late partial
+ * or final response is rejected; worker cleanup can then serialize behind the
+ * in-flight request without holding the pill in Listening state.
+ */
+function scheduleLiveWorkerCancellation(sessionId: string): void {
+  void worker.cancelLiveSession(sessionId).catch((error) => {
+    if (!quitting) console.warn("LocalScribe could not finish Live worker cleanup", error);
+  });
 }
 
 
@@ -1115,6 +1146,40 @@ function refreshVoiceMenuAfterLibraryMutation(): void {
   }
 }
 
+/** Deliver a validated install/repair event only to the model-management UI. */
+function notifyModelInstallProgress(progress: ModelInstallProgress): void {
+  if (!settingsWindow || settingsWindow.isDestroyed() || settingsWindow.webContents.isDestroyed()) return;
+  try {
+    settingsWindow.webContents.send(IPC.systemModelInstallProgress, progress);
+  } catch (error) {
+    // Progress delivery is observational. A hidden or torn-down settings
+    // window must not interrupt a verified disk transaction.
+    console.warn("LocalScribe could not deliver model-install progress", error);
+  }
+}
+
+/** Send only ordered, current-session Live snapshots to the pill preview. */
+function notifyLivePartial(partial: LivePartialTranscript): void {
+  const live = activeLiveSession;
+  if (
+    !live
+    || live.sessionId !== partial.sessionId
+    || session.state !== "listening"
+    || session.sessionId !== partial.sessionId
+    || activeSessionId !== partial.sessionId
+    || !pillWindow
+    || pillWindow.isDestroyed()
+    || pillWindow.webContents.isDestroyed()
+  ) return;
+  try {
+    pillWindow.webContents.send(IPC.sessionLivePartial, partial);
+  } catch (error) {
+    // Provisional rendering never owns the dictation transaction. A destroyed
+    // or reloading pill must not affect capture or final insertion.
+    console.warn("LocalScribe could not deliver a Live transcript preview", error);
+  }
+}
+
 /** Broadcast only validated, persisted settings after a successful save. */
 function notifySettingsChanged(settings: ReturnType<LocalDatabase["getSettings"]>): void {
   for (const window of [pillWindow, settingsWindow, scratchpadWindow]) {
@@ -1132,7 +1197,13 @@ function beginListening(activation: "hold" | "toggle" = "toggle"): SessionSnapsh
   if (modelOperationInProgress()) {
     return failSession("Wait for the local model operation to finish before dictating.");
   }
-  const preference = database.getSettings().modelPerformanceMode;
+  const settings = database.getSettings();
+  try {
+    void workerLanguageForActiveModel(settings);
+  } catch (error) {
+    return failSession(error);
+  }
+  const preference = settings.modelPerformanceMode;
   if (preference !== "auto") {
     if (!modelResolution) {
       return failSession("Local model selection is still initializing. Try dictating again in a moment.");
@@ -1340,6 +1411,14 @@ async function applyModelSelection(
     assertFamilyInLibrary(request.familyId);
 
     const previousSettings = database.getSettings();
+    // Do not silently rewrite a saved language when a narrow model is applied.
+    // The renderer keeps the saved choice visible and receives this actionable
+    // preflight error, while the existing applied model stays available.
+    assertModelLanguageSupported(
+      previousSettings.language,
+      targetCatalog.capabilities,
+      targetCatalog.displayName,
+    );
     const samePersistedSelection = (
       previousSettings.activeModelFamilyId === request.familyId
       && previousSettings.asrMode === request.asrMode
@@ -1362,7 +1441,18 @@ async function applyModelSelection(
         collectModelCatalogForSettings(previousSettings),
         collectDiagnosticsForResolution(currentResolutionForSelection),
       ]);
-      return { settings: previousSettings, catalog, diagnostics };
+      return {
+        applied: true,
+        appliedSelection: {
+          familyId: currentResolutionForSelection.tier.familyId,
+          artifactId: currentResolutionForSelection.tier.artifactId,
+          tier: currentResolutionForSelection.effectiveTier,
+          asrMode: request.asrMode,
+        },
+        settings: previousSettings,
+        catalog,
+        diagnostics,
+      };
     }
 
     const previousResolution = currentResolutionForSelection ?? modelResolution
@@ -1465,7 +1555,18 @@ async function applyModelSelection(
         previousAutoTier = targetResolution.effectiveTier;
       }
       notifySettingsChanged(settings);
-      return { settings, catalog, diagnostics };
+      return {
+        applied: true,
+        appliedSelection: {
+          familyId: targetResolution.tier.familyId,
+          artifactId: targetResolution.tier.artifactId,
+          tier: targetResolution.effectiveTier,
+          asrMode: request.asrMode,
+        },
+        settings,
+        catalog,
+        diagnostics,
+      };
     } catch (error) {
       // Target load and durable settings are one transaction from the user's
       // perspective. A failed target is always terminated, and the previous
@@ -1520,7 +1621,7 @@ function registerIpc(): void {
   handle(IPC.sessionCancel, async () => {
     const live = activeLiveSession;
     activeLiveSession = null;
-    if (live) await worker.cancelLiveSession(live.sessionId).catch(() => undefined);
+    if (live) scheduleLiveWorkerCancellation(live.sessionId);
     insertion.cancelSession();
     activeSessionId = null;
     /*
@@ -1554,6 +1655,13 @@ function registerIpc(): void {
     if (settings.asrMode !== "live") {
       throw new Error("Live dictation is not selected in LocalScribe settings.");
     }
+    let workerLanguage: string;
+    try {
+      workerLanguage = workerLanguageForActiveModel(settings);
+    } catch (error) {
+      failSession(error);
+      throw error;
+    }
     // Catalog capability is necessary but not sufficient; `beginLive` below
     // is the runtime-adapter proof and fails closed when the helper is absent.
     assertModelSelectionSupported(platformModelCatalog(), {
@@ -1566,10 +1674,11 @@ function registerIpc(): void {
     const sink = await worker.beginLive({
       session: request,
       model: workerSelection(resolution.tier, "live"),
-      language: settings.language,
+      language: workerLanguage,
       // Live Parakeet does not accept ASR prompt context. Dictionary and
       // snippet expansion still run on its final result in the shared path.
       context: "",
+      onPartial: notifyLivePartial,
     });
     if (
       session.state !== "listening"
@@ -1651,7 +1760,14 @@ function registerIpc(): void {
       throw new Error("Live dictation was cancelled");
     }
     activeLiveSession = null;
-    await worker.cancelLiveSession(request.sessionId);
+    // Do not await this cleanup: it serializes behind an append request that
+    // may still be executing inside the worker. The local session becomes
+    // idle first, blocking late partials/finals and immediately releasing the
+    // recorder UI; the worker receives cancel as soon as the append exits.
+    scheduleLiveWorkerCancellation(request.sessionId);
+    insertion.cancelSession();
+    activeSessionId = null;
+    return setSession({ state: "idle" });
   });
 
   handle(IPC.sessionTranscribe, async (_event, rawInput: unknown) => {
@@ -1691,15 +1807,18 @@ function registerIpc(): void {
       if (settings.asrMode !== "after-stop") {
         throw new Error("Live dictation must use the local Live audio session.");
       }
+      const workerLanguage = workerLanguageForActiveModel(settings);
       const resolution = await currentModelResolution();
       assertResolutionFitsMemory(resolution);
-      const dictionary = database.listDictionary();
-      const terms = buildDictionaryAsrContext(dictionary);
+      const terms = dictionaryAsrContextForCapabilities(
+        database.listDictionary(),
+        modelCatalog(resolution.tier.familyId).capabilities,
+      );
       const result = await worker.transcribe({
         model: workerSelection(resolution.tier, settings.asrMode),
         audioPath,
         allowedRoot: cacheRoot,
-        language: settings.language,
+        language: workerLanguage,
         context: terms,
         durationMs: input.durationMs,
       });
@@ -2002,6 +2121,8 @@ function registerIpc(): void {
       const modelRoot = modelRootForUserData(app.getPath("userData"));
       const warmSelection = worker.loadedSelection();
       const currentSettings = database.getSettings();
+      const artifactBytes = Object.values(tier.manifest.files)
+        .reduce((sum, file) => sum + file.bytes, 0);
       const replacesLoadedArtifact = request.replaceExisting
         && warmSelection !== null
         && modelResolution !== null
@@ -2015,24 +2136,70 @@ function registerIpc(): void {
       // It remains available when accelerator telemetry is missing or the
       // requested tier cannot currently fit in memory. The worker stages and
       // verifies repairs before promotion; do not delete the current artifact.
-      await installVerifiedModelArtifact({
-        modelRoot,
-        model: tier.manifest,
-        replaceExisting: request.replaceExisting,
-        install: () => worker.installModel(workerSelection(
-          tier,
-          request.familyId === currentSettings.activeModelFamilyId
-            ? currentSettings.asrMode
-            : "after-stop",
-        ), {
-          replacesLoadedArtifact,
-          // The request budget is derived from the artifact's own size; see
-          // installTimeoutMs. A flat cap made the largest tiers uninstallable
-          // on any link slower than about 21 Mbit/s.
-          artifactBytes: Object.values(tier.manifest.files)
-            .reduce((sum, file) => sum + file.bytes, 0),
-        }),
-      });
+      const progressBase = {
+        familyId: request.familyId,
+        tier: tier.tier,
+        artifactId: tier.artifactId,
+      } as const;
+      try {
+        await installVerifiedModelArtifact({
+          modelRoot,
+          model: tier.manifest,
+          replaceExisting: request.replaceExisting,
+          install: () => {
+            // This is a truthful initial state, not a progress estimate. The
+            // preflight above has already accepted this exact Download/Repair
+            // intent, so the immutable artifact is now entering the worker
+            // transaction before its first measured byte callback. A runtime
+            // that has no byte callback remains indeterminate at zero; main
+            // must not manufacture an intermediate percentage.
+            notifyModelInstallProgress({
+              ...progressBase,
+              phase: "downloading",
+              completedBytes: 0,
+              totalBytes: artifactBytes,
+            });
+            return worker.installModel(workerSelection(
+              tier,
+              request.familyId === currentSettings.activeModelFamilyId
+                ? currentSettings.asrMode
+                : "after-stop",
+            ), {
+              replacesLoadedArtifact,
+              // The request budget is derived from the artifact's own size; see
+              // installTimeoutMs. A flat cap made the largest tiers uninstallable
+              // on any link slower than about 21 Mbit/s.
+              artifactBytes,
+              onProgress: (progress) => {
+                // The manifest total is main-owned. A worker that claims another
+                // total is violating the pinned-artifact protocol, not reporting
+                // a legitimate alternative download size.
+                if (progress.totalBytes !== artifactBytes) {
+                  throw new Error("ASR worker reported progress for an unexpected model artifact size");
+                }
+                notifyModelInstallProgress({ ...progressBase, ...progress });
+              },
+            });
+          },
+        });
+        // `installVerifiedModelArtifact` performed an independent main-process
+        // SHA-256 verification after the worker's atomic promotion, so this is
+        // the first point at which completion may be reported to the user.
+        notifyModelInstallProgress({
+          ...progressBase,
+          phase: "complete",
+          completedBytes: artifactBytes,
+          totalBytes: artifactBytes,
+          message: "Model downloaded and cryptographically verified.",
+        });
+      } catch (error) {
+        notifyModelInstallProgress({
+          ...progressBase,
+          phase: "failed",
+          message: "The model download or verification did not finish. No new model was applied.",
+        });
+        throw error;
+      }
       return collectDiagnostics();
     });
   });
