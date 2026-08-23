@@ -107,15 +107,6 @@ describe("History Insights interaction and data presentation", () => {
     expect(summary.words).toBe(9);
   });
 
-  it("does not double-count a Windows app when only its install path changes", () => {
-    const summary = summarizeTranscriptions([
-      transcript({ sourceAppId: "C:\\Users\\Alice\\AppData\\Local\\Programs\\Microsoft VS Code\\Code.exe" }),
-      transcript({ sourceAppId: "D:\\Portable\\VS Code\\CODE.EXE" }),
-    ]);
-
-    expect(summary.appCount).toBe(1);
-  });
-
   it("describes the actual history sample instead of a fixture-like fixed total", () => {
     expect(historySampleLabel(12)).toBe("12 saved");
     expect(historySampleLabel(MAX_HISTORY_ITEMS)).toBe(`Latest ${MAX_HISTORY_ITEMS}`);
@@ -144,7 +135,7 @@ describe("History Insights interaction and data presentation", () => {
 
   it("keeps technical and path-bearing history failures out of visible notices", () => {
     expect(historyErrorMessage(
-      new Error("EPERM: failed to export C:\\Users\\Alice\\Documents\\history.json"),
+      new Error("EPERM: failed to export /Users/Alice/Documents/history.json"),
       "History could not be exported.",
     )).toBe("History could not be exported.");
     expect(historyErrorMessage(

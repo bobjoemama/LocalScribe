@@ -114,6 +114,8 @@ describe("model performance settings persistence", () => {
       ...DEFAULT_SETTINGS,
       launchAtLogin: true,
       language: "German",
+      activeModelFamilyId: "whisper-large-v3",
+      modelLibraryFamilyIds: ["whisper-large-v3"],
       holdShortcut: "Control+Alt+F13",
     });
     database.close();
@@ -126,7 +128,7 @@ describe("model performance settings persistence", () => {
     expect(normalized).not.toHaveProperty("removedLegacyField");
     expect(normalized.historyRetentionDays).toBe(DEFAULT_SETTINGS.historyRetentionDays);
     expect(normalized.modelPerformanceMode).toBe(DEFAULT_SETTINGS.modelPerformanceMode);
-    expect(normalized.activeModelFamilyId).toBe(DEFAULT_SETTINGS.activeModelFamilyId);
+    expect(normalized.activeModelFamilyId).toBe("whisper-large-v3");
     persisted.close();
   });
 
@@ -157,7 +159,9 @@ describe("model performance settings persistence", () => {
     const database = new LocalDatabase(databasePath());
     const first = database.getSettings();
     first.modelLibraryFamilyIds.push("whisper-large-v2");
-    expect(database.getSettings().modelLibraryFamilyIds).toEqual(["whisper-large-v3"]);
+    expect(database.getSettings().modelLibraryFamilyIds).toEqual(
+      DEFAULT_SETTINGS.modelLibraryFamilyIds,
+    );
 
     expect(() => database.saveSettings({
       ...DEFAULT_SETTINGS,

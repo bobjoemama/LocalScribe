@@ -141,7 +141,7 @@ describe("packaged loose-resource integrity", () => {
     );
   });
 
-  it("rejects a Windows resource in a Mac package tree", () => {
+  it("rejects a retired non-macOS resource in a Mac package tree", () => {
     const resourcesPath = makeResourceFixture("darwin", "arm64");
     const expected = buildResourceIntegrityExpectation(resourcesPath, "darwin", "arm64");
     writeFixtureFile(
@@ -155,14 +155,14 @@ describe("packaged loose-resource integrity", () => {
   });
 
   it("restores the committed generated placeholder after preparing a package", () => {
-    const resourcesPath = makeResourceFixture("win32", "x64");
+    const resourcesPath = makeResourceFixture("darwin", "arm64");
     const generatedModulePath = path.join(makeTemporaryDirectory(), "generatedResourceIntegrity.ts");
     writeFileSync(generatedModulePath, resourceIntegrityPlaceholderSource);
 
     const prepared = prepareGeneratedResourceIntegrity({
       resourcesPath,
-      platform: "win32",
-      arch: "x64",
+      platform: "darwin",
+      arch: "arm64",
       generatedModulePath,
     });
     const generated = readFileSync(generatedModulePath, "utf8");
@@ -175,14 +175,14 @@ describe("packaged loose-resource integrity", () => {
   });
 
   it("fails closed in packaged mode and is inert during development", () => {
-    const resourcesPath = makeResourceFixture("win32", "x64");
-    const expected = buildResourceIntegrityExpectation(resourcesPath, "win32", "x64");
+    const resourcesPath = makeResourceFixture("darwin", "arm64");
+    const expected = buildResourceIntegrityExpectation(resourcesPath, "darwin", "arm64");
     expect(() =>
       verifyPackagedResourceIntegrity({
         isPackaged: true,
         resourcesPath,
-        platform: "win32",
-        arch: "x64",
+        platform: "darwin",
+        arch: "arm64",
         expected,
       }),
     ).not.toThrow();
@@ -192,17 +192,17 @@ describe("packaged loose-resource integrity", () => {
       verifyPackagedResourceIntegrity({
         isPackaged: true,
         resourcesPath,
-        platform: "win32",
-        arch: "x64",
+        platform: "darwin",
+        arch: "arm64",
         expected,
       }),
-    ).toThrow(/Resource integrity mismatch/);
+    ).toThrow(/unexpected loose resource/);
     expect(() =>
       verifyPackagedResourceIntegrity({
         isPackaged: false,
         resourcesPath,
-        platform: "win32",
-        arch: "x64",
+        platform: "darwin",
+        arch: "arm64",
         expected,
       }),
     ).not.toThrow();

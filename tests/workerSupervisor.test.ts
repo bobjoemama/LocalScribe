@@ -434,10 +434,6 @@ describe("WorkerSupervisor model lifecycle", () => {
 
   it("keeps handshake versions fail-closed against the exact worker dependency pins", () => {
     const macProject = readFileSync("worker/pyproject.toml", "utf8");
-    const windowsProject = readFileSync(
-      "worker/windows_transformers/pyproject.toml",
-      "utf8",
-    );
     const exactPin = (source: string, packageName: string) => {
       const match = source.match(new RegExp(
         `["']${packageName.replace("-", "\\-")}(?:\\[[^\\]]+\\])?==([^;"']+)`,
@@ -451,9 +447,6 @@ describe("WorkerSupervisor model lifecycle", () => {
         `mlx-whisper/${exactPin(macProject, "mlx-whisper")}`,
         `mlx-audio/${exactPin(macProject, "mlx-audio")}`,
       ].join(";"),
-    );
-    expect(WORKER_RUNTIME_IDENTITIES.localscribe_windows_worker.version).toBe(
-      `faster-whisper/${exactPin(windowsProject, "faster-whisper")};crispasr/0.8.24`,
     );
   });
 
@@ -470,7 +463,6 @@ describe("WorkerSupervisor model lifecycle", () => {
     expect(requests.filter((request) => request.type === "load_model")).toHaveLength(1);
     const spawnOptions = spawnMock.mock.calls[0]?.[2];
     expect(spawnOptions?.shell).toBe(false);
-    expect(spawnOptions?.windowsHide).toBe(true);
     expect(spawnOptions?.env).toMatchObject({
       HF_HUB_DISABLE_TELEMETRY: "1",
       HF_HUB_DISABLE_IMPLICIT_TOKEN: "1",
@@ -535,115 +527,6 @@ describe("WorkerSupervisor model lifecycle", () => {
     });
   });
 
-  it("normalizes Windows NVML telemetry from the exact CUDA worker", async () => {
-    spawnMock.mockImplementation(() => {
-      const process = new FakeWorkerProcess();
-      const originalWrite = process.stdin.write;
-      process.stdin.write = (line, callback) => {
-        const request = JSON.parse(line) as Record<string, unknown>;
-        if (request.type !== "device_info") return originalWrite(line, callback);
-        requests.push(request);
-        queueMicrotask(() => {
-          process.stdout.emit("data", Buffer.from(`${JSON.stringify({
-            type: "device_info",
-            id: request.id,
-            acceleratorKind: "nvidia-cuda",
-            deviceName: "NVIDIA GeForce RTX 3060 Laptop GPU",
-            deviceIndex: 0,
-            totalVramBytes: 6 * 1024 ** 3,
-            freeVramBytes: 6_285_164_544,
-            memoryBasis: "nvml-current",
-          })}\n`, "utf8"));
-        });
-        callback?.(null);
-        return true;
-      };
-      queueMicrotask(() => {
-        process.stdout.emit("data", Buffer.from(`${JSON.stringify({
-          type: "hello",
-          protocol: 1,
-          backend: "localscribe-windows-asr",
-          version: "faster-whisper/1.2.1;crispasr/0.8.24",
-        })}\n`, "utf8"));
-      });
-      return process as never;
-    });
-    const worker = new WorkerSupervisor(
-      "/worker/windows_transformers",
-      "/models",
-      "/environment",
-      null,
-      "localscribe_windows_worker",
-    );
-
-    await expect(worker.deviceInfo()).resolves.toEqual({
-      kind: "nvidia-cuda",
-      displayName: "NVIDIA GeForce RTX 3060 Laptop GPU",
-      deviceIndex: 0,
-      totalMemoryBytes: 6 * 1024 ** 3,
-      freeMemoryBytes: 6_285_164_544,
-      memoryBasis: "measured",
-      sourceBasis: "nvml-current",
-    });
-  });
-
-  it.each([
-    ["NVIDIA RTX A2000 Laptop GPU", 4, 3],
-    ["NVIDIA GeForce RTX 4090", 24, 17],
-    ["NVIDIA L40S", 48, 41],
-  ])(
-    "accepts arbitrary NVML device names and capacities without a GPU-name allowlist: %s",
-    async (deviceName, totalGiB, freeGiB) => {
-      spawnMock.mockImplementation(() => {
-        const process = new FakeWorkerProcess();
-        const originalWrite = process.stdin.write;
-        process.stdin.write = (line, callback) => {
-          const request = JSON.parse(line) as Record<string, unknown>;
-          if (request.type !== "device_info") return originalWrite(line, callback);
-          requests.push(request);
-          queueMicrotask(() => {
-            process.stdout.emit("data", Buffer.from(`${JSON.stringify({
-              type: "device_info",
-              id: request.id,
-              acceleratorKind: "nvidia-cuda",
-              deviceName,
-              deviceIndex: 2,
-              totalVramBytes: totalGiB * 1024 ** 3,
-              freeVramBytes: freeGiB * 1024 ** 3,
-              memoryBasis: "nvml-current",
-            })}\n`, "utf8"));
-          });
-          callback?.(null);
-          return true;
-        };
-        queueMicrotask(() => {
-          process.stdout.emit("data", Buffer.from(`${JSON.stringify({
-            type: "hello",
-            protocol: 1,
-            backend: "localscribe-windows-asr",
-            version: "faster-whisper/1.2.1;crispasr/0.8.24",
-          })}\n`, "utf8"));
-        });
-        return process as never;
-      });
-      const worker = new WorkerSupervisor(
-        "/worker/windows_transformers",
-        "/models",
-        "/environment",
-        null,
-        "localscribe_windows_worker",
-      );
-
-      await expect(worker.deviceInfo()).resolves.toMatchObject({
-        kind: "nvidia-cuda",
-        displayName: deviceName,
-        deviceIndex: 2,
-        totalMemoryBytes: totalGiB * 1024 ** 3,
-        freeMemoryBytes: freeGiB * 1024 ** 3,
-      });
-    },
-  );
-
   it.each([
     ["Apple M1", 8, 3],
     ["Apple M4 Max", 48, 31],
@@ -694,142 +577,15 @@ describe("WorkerSupervisor model lifecycle", () => {
     },
   );
 
-  it("rejects Windows telemetry from the macOS worker identity", async () => {
-    spawnMock.mockImplementation(() => {
-      const process = new FakeWorkerProcess();
-      const originalWrite = process.stdin.write;
-      process.stdin.write = (line, callback) => {
-        const request = JSON.parse(line) as Record<string, unknown>;
-        if (request.type !== "device_info") return originalWrite(line, callback);
-        requests.push(request);
-        queueMicrotask(() => {
-          process.stdout.emit("data", Buffer.from(`${JSON.stringify({
-            type: "device_info",
-            id: request.id,
-            acceleratorKind: "nvidia-cuda",
-            deviceName: "NVIDIA spoof",
-            deviceIndex: 0,
-            totalVramBytes: 24 * 1024 ** 3,
-            freeVramBytes: 20 * 1024 ** 3,
-            memoryBasis: "nvml-current",
-          })}\n`, "utf8"));
-        });
-        callback?.(null);
-        return true;
-      };
-      process.start();
-      return process as never;
-    });
-
-    await expect(supervisor().deviceInfo()).rejects.toThrow(
-      "wrong runtime platform",
-    );
-  });
-
-  it("rejects macOS telemetry from the Windows worker identity", async () => {
-    spawnMock.mockImplementation(() => {
-      const process = new FakeWorkerProcess();
-      const originalWrite = process.stdin.write;
-      process.stdin.write = (line, callback) => {
-        const request = JSON.parse(line) as Record<string, unknown>;
-        if (request.type !== "device_info") return originalWrite(line, callback);
-        requests.push(request);
-        queueMicrotask(() => {
-          process.stdout.emit("data", Buffer.from(`${JSON.stringify({
-            type: "device_info",
-            id: request.id,
-            hardware: {
-              platform: "darwin",
-              architecture: "arm64",
-              chip: "Apple spoof",
-              unifiedMemory: {
-                totalBytes: 64 * 1024 ** 3,
-                availableBytes: 50 * 1024 ** 3,
-                availableIsEstimated: true,
-                memoryBasis: "vm_stat_free_inactive_speculative",
-              },
-            },
-          })}\n`, "utf8"));
-        });
-        callback?.(null);
-        return true;
-      };
-      queueMicrotask(() => {
-        process.stdout.emit("data", Buffer.from(`${JSON.stringify({
-          type: "hello",
-          protocol: 1,
-          backend: "localscribe-windows-asr",
-          version: "faster-whisper/1.2.1;crispasr/0.8.24",
-        })}\n`, "utf8"));
-      });
-      return process as never;
-    });
-    const worker = new WorkerSupervisor(
-      "/worker/windows_transformers",
-      "/models",
-      "/environment",
-      null,
-      "localscribe_windows_worker",
-    );
-
-    await expect(worker.deviceInfo()).rejects.toThrow(
-      "wrong runtime platform",
-    );
-  });
-
-  it("terminates a worker that reports internally inconsistent VRAM telemetry", async () => {
-    spawnMock.mockImplementation(() => {
-      const process = new FakeWorkerProcess();
-      const originalWrite = process.stdin.write;
-      process.stdin.write = (line, callback) => {
-        const request = JSON.parse(line) as Record<string, unknown>;
-        if (request.type !== "device_info") return originalWrite(line, callback);
-        requests.push(request);
-        queueMicrotask(() => {
-          process.stdout.emit("data", Buffer.from(`${JSON.stringify({
-            type: "device_info",
-            id: request.id,
-            acceleratorKind: "nvidia-cuda",
-            deviceName: "Invalid GPU",
-            deviceIndex: 0,
-            totalVramBytes: 6 * 1024 ** 3,
-            freeVramBytes: 7 * 1024 ** 3,
-            memoryBasis: "nvml-current",
-          })}\n`, "utf8"));
-        });
-        callback?.(null);
-        return true;
-      };
-      queueMicrotask(() => {
-        process.stdout.emit("data", Buffer.from(`${JSON.stringify({
-          type: "hello",
-          protocol: 1,
-          backend: "localscribe-windows-asr",
-          version: "faster-whisper/1.2.1;crispasr/0.8.24",
-        })}\n`, "utf8"));
-      });
-      return process as never;
-    });
-    const worker = new WorkerSupervisor(
-      "/worker/windows_transformers",
-      "/models",
-      "/environment",
-      null,
-      "localscribe_windows_worker",
-    );
-
-    await expect(worker.deviceInfo()).rejects.toThrow("violated the local protocol");
-  });
-
   it("omits PATH as well as ambient credentials when bundled Python is absolute", async () => {
     vi.stubEnv("HF_TOKEN", "must-not-cross-process-boundary");
     const runtimeRoot = mkdtempSync(path.join(os.tmpdir(), "localscribe-runtime-"));
     temporaryDirectories.push(runtimeRoot);
-    const executable = process.platform === "win32" ? "python.exe" : "python3";
+    const executable = "python3";
     const executableDirectory = path.join(
       runtimeRoot,
       "venv",
-      process.platform === "win32" ? "Scripts" : "bin",
+      "bin",
     );
     mkdirSync(executableDirectory, { recursive: true });
     writeFileSync(path.join(executableDirectory, executable), "");
@@ -875,8 +631,8 @@ describe("WorkerSupervisor model lifecycle", () => {
         process.stdout.emit("data", Buffer.from(`${JSON.stringify({
           type: "hello",
           protocol: 1,
-          backend: "localscribe-windows-asr",
-          version: "faster-whisper/1.2.1;crispasr/0.8.24",
+          backend: "unexpected-local-asr",
+          version: "0.0.0",
         })}\n`, "utf8"));
       });
       return process as never;

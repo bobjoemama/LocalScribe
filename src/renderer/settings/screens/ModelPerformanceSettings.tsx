@@ -184,7 +184,7 @@ export interface ModelTierView {
 }
 
 export interface ModelHardwareView {
-  platform: "darwin" | "win32" | "linux" | "unsupported";
+  platform: "darwin";
   displayName: string;
   totalMemoryBytes: number | null;
   availableMemoryBytes: number | null;
@@ -292,7 +292,7 @@ export function modelApplyEligibility({
   }
 
   const family = catalog.families.find((candidate) => candidate.familyId === pendingSelection.familyId);
-  if (!family) return unavailable("The selected model is not available on this platform.");
+  if (!family) return unavailable("The selected model is not available in this macOS build.");
   if (!family.capabilities.modes.includes(pendingSelection.asrMode)) {
     return unavailable("The selected model does not support this dictation experience.");
   }
@@ -401,25 +401,13 @@ export function modelVerificationPresentation(status: ModelVerificationState): {
   return { label: "Missing", tone: "missing" };
 }
 
-export function platformModelCopy(platform: ModelHardwareView["platform"] | null): {
+export function modelMemoryCopy(): {
   summary: string;
   memoryLabel: string;
 } {
-  if (platform === "darwin") {
-    return {
-      summary: "Auto uses available unified memory to choose the highest profile that fits in the active family.",
-      memoryLabel: "Unified memory",
-    };
-  }
-  if (platform === "win32") {
-    return {
-      summary: "Auto uses available NVIDIA VRAM to choose the highest profile that fits in the active family.",
-      memoryLabel: "NVIDIA VRAM",
-    };
-  }
   return {
-    summary: "Auto uses the accelerator memory reported by LocalScribe to choose the highest supported profile that fits in the active family.",
-    memoryLabel: "Accelerator memory",
+    summary: "Auto uses available unified memory to choose the highest profile that fits in the active family.",
+    memoryLabel: "Unified memory",
   };
 }
 
@@ -431,12 +419,13 @@ export function catalogFamilyBackendLabel(
 
 export function friendlyPrecision(precision: string): string {
   const normalized = precision.toLowerCase();
-  if (normalized === "fp16" || normalized === "float16") return "FP16";
+  if (normalized === "fp16" || normalized === "float16" || normalized === "coreml-fp16") return "FP16";
   if (normalized === "bf16" || normalized === "bfloat16") return "BF16";
   if (normalized === "int8_float16" || normalized === "int8-float16") {
     return "INT8 weights + FP16 compute";
   }
   if (normalized === "int8") return "INT8";
+  if (normalized === "coreml-int8") return "INT8";
   if (normalized === "q8_0") return "Q8_0";
   if (normalized === "q4_k") return "Q4_K";
   if (normalized === "8-bit") return "8-bit";
@@ -479,8 +468,8 @@ export function formatMemoryRange(
 
 /**
  * Joins static curated metadata to runtime verification by immutable artifact
- * identity. This intentionally does not assume that Windows artifacts share
- * just because the platform is Windows.
+ * identity. Profiles share verification only when they reference the same
+ * immutable artifact.
  */
 export function catalogTierViews(
   family: ModelCatalog["families"][number],
@@ -552,8 +541,8 @@ export function ModelPerformanceSettings({
   onAddFamily,
   onRefresh,
 }: ModelPerformanceSettingsProps) {
-  const platform = hardware?.platform ?? platformFromCatalog(catalog);
-  const platformCopy = platformModelCopy(platform);
+  const memoryCopy = modelMemoryCopy();
+  const inlineMemoryLabel = memoryCopy.memoryLabel.toLowerCase();
   const resolvedLabel = resolvedTier
     ? MODEL_MODE_CHOICES.find((choice) => choice.id === resolvedTier)?.label ?? resolvedTier
     : "Run eligibility unavailable";
@@ -708,7 +697,7 @@ export function ModelPerformanceSettings({
               ? <>Auto resolves to <strong>{selectionChanged ? applyEligibility.targetTier ? modeLabel(applyEligibility.targetTier) : "after validation" : autoResolutionLabel}</strong></>
               : <><strong>{requestedLabel}</strong> selected</>}
           </h2>
-          <p>{platformCopy.summary} Changing these controls only stages a choice. LocalScribe unloads the current model and loads the new one only after you press Apply model.</p>
+          <p>{memoryCopy.summary} Changing these controls only stages a choice. LocalScribe unloads the current model and loads the new one only after you press Apply model.</p>
         </div>
       </section>
 
@@ -750,7 +739,7 @@ export function ModelPerformanceSettings({
         <p className="ls-model-resolution-note" role="status">
           <InfoIcon />
           <span>
-            <strong>{requestedLabel}</strong> cannot run with the {platformCopy.memoryLabel} currently available. Dictation stays blocked until enough {platformCopy.memoryLabel} is available or you choose a lower profile.
+            <strong>{requestedLabel}</strong> cannot run with the {inlineMemoryLabel} currently available. Dictation stays blocked until enough {inlineMemoryLabel} is available or you choose a lower profile.
           </span>
         </p>
       )}
@@ -758,7 +747,7 @@ export function ModelPerformanceSettings({
       <MemoryStatus
         hardware={hardware}
         memoryRequirement={memoryRequirement}
-        platformCopy={platformCopy}
+        memoryCopy={memoryCopy}
         eligibilityUnknown={eligibilityUnknown}
         normalizedForWarmModel={currentModelLoaded}
       />
@@ -858,13 +847,13 @@ export function ModelPerformanceSettings({
 function MemoryStatus({
   hardware,
   memoryRequirement,
-  platformCopy,
+  memoryCopy,
   eligibilityUnknown,
   normalizedForWarmModel,
 }: {
   hardware: ModelHardwareView | null;
   memoryRequirement: ModelMemoryRequirementView | null;
-  platformCopy: ReturnType<typeof platformModelCopy>;
+  memoryCopy: ReturnType<typeof modelMemoryCopy>;
   eligibilityUnknown: boolean;
   normalizedForWarmModel: boolean;
 }) {
@@ -878,15 +867,13 @@ function MemoryStatus({
   }
   const requirement = memoryRequirement?.requiredFreeMemoryBytes;
   const headroom = memoryRequirement?.reservedHeadroomBytes;
-  const inlineMemoryLabel = platformCopy.memoryLabel === "NVIDIA VRAM"
-    ? platformCopy.memoryLabel
-    : platformCopy.memoryLabel.toLowerCase();
+  const inlineMemoryLabel = memoryCopy.memoryLabel.toLowerCase();
   return (
     <>
       <section className="ls-model-hardware" aria-label="Detected accelerator memory">
         <span>
           <strong>{hardware.displayName}</strong>
-          <small>{platformCopy.memoryLabel}</small>
+          <small>{memoryCopy.memoryLabel}</small>
         </span>
         <span>
           <strong>{hardware.totalMemoryBytes === null ? "Unavailable" : formatAcceleratorBytes(hardware.totalMemoryBytes)}</strong>
@@ -1296,12 +1283,6 @@ function tierLabelFor(tier: ConcreteModelTier): string {
 
 function modeLabel(mode: ModelPerformanceMode): string {
   return MODEL_MODE_CHOICES.find((choice) => choice.id === mode)?.label ?? mode;
-}
-
-function platformFromCatalog(catalog: ModelCatalog | null): ModelHardwareView["platform"] | null {
-  if (catalog?.platform === "darwin-arm64") return "darwin";
-  if (catalog?.platform === "win32-x64-cuda") return "win32";
-  return null;
 }
 
 function InfoIcon() {

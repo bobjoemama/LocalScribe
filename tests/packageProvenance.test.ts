@@ -120,10 +120,9 @@ afterEach(() => {
 });
 
 describe("package source provenance", () => {
-  it.each([
-    ["darwin", "arm64"],
-    ["win32", "x64"],
-  ] as const)("binds the exact %s model-manifest allowlist into source provenance", (platform, arch) => {
+  it("binds the exact darwin/arm64 model-manifest allowlist into source provenance", () => {
+    const platform = "darwin";
+    const arch = "arm64";
     const provenanceManifests = releaseInputCandidates(platform)
       .filter((entry) => entry.startsWith("resources/model-manifest/"))
       .sort();
@@ -136,8 +135,8 @@ describe("package source provenance", () => {
 
   /*
    * A gate script that can be changed without invalidating the artifact it
-   * approved is not a gate. The Windows list already binds its own gate
-   * scripts; the macOS list bound only the worker-runtime builder, so
+   * approved is not a gate. The macOS list once bound only the worker-runtime
+   * builder, so
    * `verify-local-macos.sh`, the packaged smoke, the bundle/entitlement/
    * artifact verifiers, and the SBOM generator could all be weakened while a
    * previously signed app kept reporting the same source provenance.
@@ -219,13 +218,13 @@ describe("package source provenance", () => {
     ).toThrow(/duplicate canonical path \.vite\/build\/main\.js/);
   });
 
-  it("accepts ordinary Windows archive paths after canonicalization", () => {
+  it("accepts ordinary backslash-separated archive paths after canonicalization", () => {
     expect(normalizeArchiveEntries([
       "\\package.json",
       "\\.vite\\build\\main.js",
       "\\assets\\console.js",
       "\\devices\\COM10.txt",
-    ], "win32")).toEqual(new Set([
+    ], "darwin")).toEqual(new Set([
       "package.json",
       ".vite/build/main.js",
       "assets/console.js",
@@ -233,15 +232,11 @@ describe("package source provenance", () => {
     ]));
   });
 
-  it("rejects case-insensitive aliases only for Windows archives", () => {
+  it("rejects case-insensitive aliases for portable archives", () => {
     const aliases = ["/assets/Main.js", "/assets/main.js"];
-    expect(() => normalizeArchiveEntries(aliases, "win32")).toThrow(
-      /case-insensitive Windows path collision/u,
+    expect(() => normalizeArchiveEntries(aliases, "darwin")).toThrow(
+      /case-insensitive portable-path collision/u,
     );
-    expect(normalizeArchiveEntries(aliases, "darwin")).toEqual(new Set([
-      "assets/Main.js",
-      "assets/main.js",
-    ]));
   });
 
   it.each([
@@ -251,20 +246,10 @@ describe("package source provenance", () => {
     ["/assets/aux.txt", "reserved device with extension"],
     ["/COM1/config.json", "reserved device directory"],
     ["/assets/bad?.js", "forbidden Win32 character"],
-  ])("rejects Windows archive path with %s", (entry, _label) => {
-    expect(() => normalizeArchiveEntries([entry], "win32")).toThrow(
+  ])("rejects non-portable archive path with %s", (entry, _label) => {
+    expect(() => normalizeArchiveEntries([entry], "darwin")).toThrow(
       /not a portable Windows path/u,
     );
-  });
-
-  it("does not apply Windows filename restrictions to a macOS archive", () => {
-    expect(normalizeArchiveEntries([
-      "/assets/trailing.",
-      "/assets/AUX.txt",
-    ], "darwin")).toEqual(new Set([
-      "assets/trailing.",
-      "assets/AUX.txt",
-    ]));
   });
 
   it("changes when a release input changes but ignores the transient integrity module", () => {

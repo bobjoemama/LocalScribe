@@ -71,8 +71,7 @@ const MAC_RELEASE_INPUTS = [
   "tools/fluidaudio-parakeet-helper/Sources/localscribe-fluidaudio-parakeet/main.swift",
   /*
    * The macOS gate scripts decide whether an artifact may ship, so a change to
-   * one of them has to invalidate the artifact it approved — exactly as the
-   * Windows list already does for its own gate. Without these, a signed app
+   * one of them has to invalidate the artifact it approved. Without these, a signed app
    * could be re-approved by a weakened checker while still reporting the same
    * source provenance.
    */
@@ -88,34 +87,6 @@ const MAC_RELEASE_INPUTS = [
   "worker/localscribe_worker",
   "worker/pyproject.toml",
   "worker/uv.lock",
-] as const;
-
-const WINDOWS_RELEASE_INPUTS = [
-  "resources/audio-protocol.json",
-  "resources/branding/LocalScribe.ico",
-  "resources/model-manifest/faster-whisper-large-v2.json",
-  "resources/model-manifest/faster-whisper-large-v3.json",
-  "resources/model-manifest/qwen3-asr-1-7b-crisp-f16.json",
-  "resources/model-manifest/qwen3-asr-1-7b-crisp-q4-k.json",
-  "resources/model-manifest/qwen3-asr-1-7b-crisp-q8-0.json",
-  "resources/model-manifest/qwen3-asr-0-6b-crisp-f16.json",
-  "resources/model-manifest/qwen3-asr-0-6b-crisp-q4-k.json",
-  "resources/model-manifest/qwen3-asr-0-6b-crisp-q8-0.json",
-  "resources/native/windows/active-target.cpp",
-  "resources/native/windows/build.ps1",
-  "resources/native/windows/crispasr-runtime.json",
-  "resources/native/windows/prepare-crispasr-runtime.ps1",
-  "scripts/build-worker-runtime.ps1",
-  "scripts/smoke-packaged-windows.ps1",
-  "scripts/squirrel-installer-verifier.mts",
-  "scripts/verify-local-windows.ps1",
-  "scripts/verify-squirrel-artifacts.mjs",
-  "scripts/verify-windows-portable.mjs",
-  "scripts/windows-artifact-safety.mts",
-  "scripts/windows-portable-verifier.mts",
-  "worker/windows_transformers/localscribe_windows_worker",
-  "worker/windows_transformers/pyproject.toml",
-  "worker/windows_transformers/uv.lock",
 ] as const;
 
 const SKIPPED_SOURCE_NAMES = new Set([
@@ -209,10 +180,10 @@ function collectSourceFiles(projectPath: string, candidate: string, output: stri
   }
 }
 
-export function releaseInputCandidates(platform: PackagedPlatform): readonly string[] {
+export function releaseInputCandidates(_platform: PackagedPlatform): readonly string[] {
   return [
     ...COMMON_RELEASE_INPUTS,
-    ...(platform === "darwin" ? MAC_RELEASE_INPUTS : WINDOWS_RELEASE_INPUTS),
+    ...MAC_RELEASE_INPUTS,
   ];
 }
 
@@ -391,7 +362,7 @@ function windowsArchiveKey(normalizedEntry: string): string {
 
 export function normalizeArchiveEntries(
   entries: readonly string[],
-  platform: PackagedPlatform,
+  _platform: PackagedPlatform,
 ): Set<string> {
   const normalizedEntries = new Set<string>();
   const windowsEntries = new Set<string>();
@@ -402,15 +373,13 @@ export function normalizeArchiveEntries(
         `Packaged archive verification failed: archive contains duplicate canonical path ${normalized}.`,
       );
     }
-    if (platform === "win32") {
-      const windowsKey = windowsArchiveKey(normalized);
-      if (windowsEntries.has(windowsKey)) {
-        throw new Error(
-          `Packaged archive verification failed: archive contains a case-insensitive Windows path collision at ${normalized}.`,
-        );
-      }
-      windowsEntries.add(windowsKey);
+    const windowsKey = windowsArchiveKey(normalized);
+    if (windowsEntries.has(windowsKey)) {
+      throw new Error(
+        `Packaged archive verification failed: archive contains a case-insensitive portable-path collision at ${normalized}.`,
+      );
     }
+    windowsEntries.add(windowsKey);
     normalizedEntries.add(normalized);
   }
   return normalizedEntries;
@@ -460,7 +429,7 @@ function parseProvenance(source: string): PackageProvenance {
   const parsed = JSON.parse(source) as Partial<PackageProvenance>;
   if (
     parsed.schemaVersion !== PROVENANCE_SCHEMA_VERSION ||
-    (parsed.platform !== "darwin" && parsed.platform !== "win32") ||
+    parsed.platform !== "darwin" ||
     typeof parsed.arch !== "string" ||
     typeof parsed.productName !== "string" ||
     typeof parsed.version !== "string" ||

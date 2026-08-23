@@ -16,7 +16,7 @@ export interface TextCleanupOptions {
 export type CleanupPresetName = "balanced" | "message" | "document" | "verbatim";
 
 export interface AppCleanupProfile {
-  /** A macOS bundle identifier, Windows application id, or another stable app identifier. */
+  /** A macOS bundle identifier or another stable application identifier. */
   appId: string;
   preset?: CleanupPresetName;
   overrides?: Partial<TextCleanupOptions>;

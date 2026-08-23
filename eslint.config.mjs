@@ -25,7 +25,6 @@ export default defineConfig(
     "node_modules/**",
     "out/**",
     "resources/python-runtime/**",
-    "resources/python-runtime-windows/**",
     "src/main/generatedResourceIntegrity.ts",
   ]),
   {

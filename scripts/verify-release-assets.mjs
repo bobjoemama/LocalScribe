@@ -14,9 +14,9 @@ const recognized = new Set([
   ...(candidate ? ["--candidate"] : []),
 ]);
 const unknown = arguments_.filter((argument) => !recognized.has(argument));
-if (platform !== "darwin" && platform !== "win32") {
+if (platform !== "darwin") {
   throw new Error(
-    "Usage: verify-release-assets.mjs --platform <darwin|win32> [--candidate] [--require-prerelease]",
+    "Usage: verify-release-assets.mjs --platform darwin [--candidate] [--require-prerelease]",
   );
 }
 if (unknown.length > 0) {

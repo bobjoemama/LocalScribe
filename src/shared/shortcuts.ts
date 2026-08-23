@@ -8,7 +8,7 @@ import { z } from "zod";
 export type HoldShortcut = string;
 export type ToggleShortcut = string;
 export type ShortcutKind = "hold" | "toggle";
-export type ShortcutDisplayPlatform = "darwin" | "win32" | "linux";
+export type ShortcutDisplayPlatform = "darwin";
 
 const MODIFIER_ORDER = [
   "CommandOrControl",
@@ -111,57 +111,38 @@ const COMPACT_KEY_TOKEN_LABELS: Record<string, string> = {
 };
 
 /**
- * Render the saved Electron accelerator using the terms users see on their
- * current operating system. The accelerator itself stays platform-neutral.
+ * LocalScribe ships for macOS, so every saved accelerator is presented with
+ * the terms printed on a Mac keyboard. The accelerator itself remains the
+ * stable value used by Electron and the native shortcut monitor.
  */
 export function shortcutDisplayPlatform(): ShortcutDisplayPlatform {
-  const processPlatform = typeof process !== "undefined" ? process.platform : undefined;
-  if (processPlatform === "darwin" || processPlatform === "win32" || processPlatform === "linux") {
-    return processPlatform;
-  }
-
-  const platform = typeof navigator !== "undefined" ? navigator.platform.toLocaleLowerCase() : "";
-  if (platform.includes("mac")) return "darwin";
-  if (platform.includes("win")) return "win32";
-  return "linux";
+  return "darwin";
 }
 
-function tokenDisplayLabel(token: string, platform: ShortcutDisplayPlatform): string {
+function tokenDisplayLabel(token: string): string {
   switch (token) {
-    case "CommandOrControl": return platform === "darwin" ? "Command" : "Control";
-    case "Command": return platform === "darwin" ? "Command" : platform === "win32" ? "Windows" : "Super";
+    case "CommandOrControl":
+    case "Command":
+    case "Super":
+    case "Meta": return "Command";
     case "Control": return "Control";
-    case "Alt": return platform === "darwin" ? "Option" : "Alt";
+    case "Alt": return "Option";
     case "AltGr": return "AltGr";
     case "Shift": return "Shift";
-    case "Super": return platform === "darwin" ? "Command" : platform === "win32" ? "Windows" : "Super";
-    case "Meta": return platform === "darwin" ? "Command" : platform === "win32" ? "Windows" : "Meta";
     default: return KEY_TOKEN_LABELS[token] ?? token;
   }
 }
 
-function compactTokenDisplayLabel(token: string, platform: ShortcutDisplayPlatform): string {
-  if (platform === "darwin") {
-    switch (token) {
-      case "CommandOrControl":
-      case "Command":
-      case "Super":
-      case "Meta": return "⌘";
-      case "Control": return "⌃";
-      case "Alt": return "⌥";
-      case "Shift": return "⇧";
-      default: return COMPACT_KEY_TOKEN_LABELS[token] ?? token;
-    }
-  }
+function compactTokenDisplayLabel(token: string): string {
   switch (token) {
     case "CommandOrControl":
-    case "Control": return "Ctrl";
     case "Command":
     case "Super":
-    case "Meta": return platform === "win32" ? "Win" : "Super";
-    case "Alt": return "Alt";
+    case "Meta": return "⌘";
+    case "Control": return "⌃";
+    case "Alt": return "⌥";
     case "AltGr": return "AltGr";
-    case "Shift": return "Shift";
+    case "Shift": return "⇧";
     default: return COMPACT_KEY_TOKEN_LABELS[token] ?? token;
   }
 }
@@ -237,18 +218,12 @@ export function isModifierOnlyShortcut(shortcut: string): boolean {
   return parseShortcut(shortcut).key === null;
 }
 
-export function shortcutDisplayLabel(
-  shortcut: string,
-  platform = shortcutDisplayPlatform(),
-): string {
-  return shortcutTokens(shortcut).map((token) => tokenDisplayLabel(token, platform)).join(" + ");
+export function shortcutDisplayLabel(shortcut: string): string {
+  return shortcutTokens(shortcut).map(tokenDisplayLabel).join(" + ");
 }
 
-export function shortcutCompactLabel(
-  shortcut: string,
-  platform = shortcutDisplayPlatform(),
-): string {
-  return shortcutTokens(shortcut).map((token) => compactTokenDisplayLabel(token, platform)).join(" + ");
+export function shortcutCompactLabel(shortcut: string): string {
+  return shortcutTokens(shortcut).map(compactTokenDisplayLabel).join(" + ");
 }
 
 type PhysicalKeyGroup = readonly string[];
@@ -260,17 +235,13 @@ type PhysicalKeyGroup = readonly string[];
  */
 function physicalKeyGroupsForToken(
   token: string,
-  platform: string,
 ): readonly PhysicalKeyGroup[] {
   switch (token) {
     case "Control": return [["control-left", "control-right"]];
     case "Command":
     case "Super":
     case "Meta": return [["meta-left", "meta-right"]];
-    case "CommandOrControl":
-      return platform === "darwin"
-        ? [["meta-left", "meta-right"]]
-        : [["control-left", "control-right"]];
+    case "CommandOrControl": return [["meta-left", "meta-right"]];
     case "Alt": return [["alt-left", "alt-right"]];
     case "AltGr": return [["alt-right"]];
     case "Shift": return [["shift-left", "shift-right"]];
@@ -285,13 +256,10 @@ function physicalKeyGroupsForToken(
 }
 
 /** Physical key groups required by a shortcut on the current platform. */
-export function shortcutPhysicalKeyGroups(
-  shortcut: string,
-  platform: string = shortcutDisplayPlatform(),
-): readonly PhysicalKeyGroup[] {
+export function shortcutPhysicalKeyGroups(shortcut: string): readonly PhysicalKeyGroup[] {
   const seen = new Set<string>();
   return shortcutTokens(shortcut)
-    .flatMap((token) => physicalKeyGroupsForToken(token, platform))
+    .flatMap((token) => physicalKeyGroupsForToken(token))
     .filter((group) => {
       const identity = [...group].sort().join(",");
       if (seen.has(identity)) return false;
@@ -323,17 +291,16 @@ function physicalGroupsCanMatch(
 }
 
 /**
- * True when both accelerators can resolve to the same physical chord on this
- * platform. Groups can overlap without being textually identical: Windows
- * Alt accepts either Alt key while AltGr is specifically right Alt.
+ * True when both accelerators can resolve to the same physical chord on a Mac.
+ * Groups can overlap without being textually identical: Option accepts either
+ * Option key while AltGr is specifically the right Option key.
  */
 export function shortcutsUseSamePhysicalKeys(
   left: string,
   right: string,
-  platform: string = shortcutDisplayPlatform(),
 ): boolean {
-  const leftGroups = shortcutPhysicalKeyGroups(left, platform);
-  const rightGroups = shortcutPhysicalKeyGroups(right, platform);
+  const leftGroups = shortcutPhysicalKeyGroups(left);
+  const rightGroups = shortcutPhysicalKeyGroups(right);
   return leftGroups.length === rightGroups.length
     && physicalGroupsCanMatch(leftGroups, rightGroups);
 }
@@ -342,10 +309,9 @@ export function shortcutsUseSamePhysicalKeys(
 export function toggleUsesHoldKey(
   toggle: string,
   hold: string,
-  platform: string = shortcutDisplayPlatform(),
 ): boolean {
-  const holdGroups = shortcutPhysicalKeyGroups(hold, platform);
-  return shortcutPhysicalKeyGroups(toggle, platform).some((toggleGroup) =>
+  const holdGroups = shortcutPhysicalKeyGroups(hold);
+  return shortcutPhysicalKeyGroups(toggle).some((toggleGroup) =>
     holdGroups.some((holdGroup) => toggleGroup.some((key) => holdGroup.includes(key))),
   );
 }

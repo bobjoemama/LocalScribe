@@ -24,20 +24,4 @@ if (
   );
 }
 
-const squirrelMarker = "electron-squirrel-startup";
-const markerIndex = main.indexOf(squirrelMarker);
-if (markerIndex < 0) {
-  throw new Error("Packaged Electron main is missing its Squirrel lifecycle bootstrap.");
-}
-
-const bootstrapContext = main.slice(
-  Math.max(0, markerIndex - 300),
-  markerIndex + squirrelMarker.length + 120,
-);
-if (!bootstrapContext.includes("getAppPath") || !bootstrapContext.includes("package.json")) {
-  throw new Error(
-    "Packaged Squirrel bootstrap is not anchored to Electron's absolute application path.",
-  );
-}
-
-console.log(`Packaged Electron main bootstrap verified: ${resolvedAsarPath}`);
+console.log(`Packaged Electron main module verified: ${resolvedAsarPath}`);

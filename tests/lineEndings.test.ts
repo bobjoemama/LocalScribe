@@ -6,20 +6,13 @@ const LF_TEXT_FILES = [
   "README.md",
   "eslint.config.mjs",
   "forge.config.ts",
-  "resources/native/windows/active-target.cpp",
   "scripts/audit-npm-all.d.mts",
   "scripts/audit-npm-all.mjs",
   "src/main.ts",
 ] as const;
 
-const CRLF_POWERSHELL_FILES = [
-  "resources/native/windows/build.ps1",
-  "scripts/verify-local-windows.ps1",
-] as const;
-
 const BINARY_FILES = [
   "resources/branding/LocalScribe.icns",
-  "resources/branding/LocalScribe.ico",
   "resources/branding/LocalScribe.iconset/icon_16x16.png",
 ] as const;
 
@@ -62,13 +55,8 @@ describe("repository line-ending policy", () => {
     }
   });
 
-  it("keeps PowerShell on CRLF and preserves binary files byte-for-byte", () => {
-    const paths = [...CRLF_POWERSHELL_FILES, ...BINARY_FILES];
-    const attributes = gitAttributes(paths);
-
-    for (const path of CRLF_POWERSHELL_FILES) {
-      expect(attributes[path], path).toEqual({ text: "set", eol: "crlf" });
-    }
+  it("preserves binary files byte-for-byte", () => {
+    const attributes = gitAttributes(BINARY_FILES);
     for (const path of BINARY_FILES) {
       expect(attributes[path], path).toEqual({
         text: "unset",

@@ -236,7 +236,7 @@ export function formatDiagnosticHeader(identity: DiagnosticBuildIdentity): strin
 export const FORBIDDEN_DIAGNOSTIC_PATTERNS: ReadonlyArray<{ name: string; pattern: RegExp }> = [
   { name: "home directory path", pattern: /\/Users\/[^/\s"]+/u },
   { name: "absolute posix path", pattern: /"[^"]*\/[^"]*\/[^"]*"/u },
-  { name: "windows path", pattern: /[A-Za-z]:\\\\/u },
+  { name: "drive-letter path", pattern: /[A-Za-z]:\\\\/u },
   { name: "url", pattern: /https?:\/\//u },
   { name: "bearer token", pattern: /bearer\s+\S+/iu },
   { name: "long free text", pattern: /"[^"]{65,}"/u },

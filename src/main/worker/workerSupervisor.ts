@@ -12,7 +12,6 @@ import {
 } from "../../shared/liveAudioTransport";
 import type { AsrMode } from "../../shared/contracts";
 import { modelPerformanceTierSchema, type ModelPerformanceTier } from "../../shared/modelPerformance";
-import { validatedWindowsRuntimeEnvironment } from "../nativeHelperEnvironment";
 
 /*
  * Two different numbers get called "realtime", and confusing them produced a
@@ -147,12 +146,9 @@ export function transcribeTimeoutMs(durationMs: number): number {
 
 const computeTypeSchema = z.enum([
   "float16",
-  "int8_float16",
   "int8",
   "int4",
   "bfloat16",
-  "q8_0",
-  "q4_k",
   "coreml-fp16",
   "coreml-int8",
 ]);
@@ -243,20 +239,6 @@ const macDeviceInfoMessageSchema = z.object({
   "Available unified memory cannot exceed total unified memory.",
 );
 
-const windowsDeviceInfoMessageSchema = z.object({
-  type: z.literal("device_info"),
-  id: z.string().uuid(),
-  acceleratorKind: z.literal("nvidia-cuda"),
-  deviceName: z.string().min(1).max(200),
-  deviceIndex: z.number().int().nonnegative().max(255),
-  totalVramBytes: z.number().int().positive(),
-  freeVramBytes: z.number().int().nonnegative(),
-  memoryBasis: z.literal("nvml-current"),
-}).strict().refine(
-  (message) => message.freeVramBytes <= message.totalVramBytes,
-  "Free NVIDIA VRAM cannot exceed total NVIDIA VRAM.",
-);
-
 const workerMessageSchema = z.union([
   helloMessageSchema,
   modelReadyMessageSchema,
@@ -288,7 +270,6 @@ const workerMessageSchema = z.union([
     message: z.string().max(2_000),
   }).strict(),
   macDeviceInfoMessageSchema,
-  windowsDeviceInfoMessageSchema,
 ]);
 
 type WorkerMessage = z.infer<typeof workerMessageSchema>;
@@ -329,14 +310,12 @@ export interface WorkerTranscription {
 }
 
 export interface WorkerAcceleratorSnapshot {
-  kind: "apple-unified" | "nvidia-cuda";
+  kind: "apple-unified";
   displayName: string;
-  /** CUDA/NVML ordinal selected inside the isolated Windows worker. */
-  deviceIndex?: number;
   totalMemoryBytes: number;
   freeMemoryBytes: number;
-  memoryBasis: "measured" | "estimated";
-  sourceBasis: "vm_stat_free_inactive_speculative" | "nvml-current";
+  memoryBasis: "estimated";
+  sourceBasis: "vm_stat_free_inactive_speculative";
 }
 
 // Both workers permit up to 100,000 result characters. JSON control-character
@@ -368,11 +347,6 @@ export const WORKER_RUNTIME_IDENTITIES = {
     backend: "localscribe-mlx-asr",
     version: "mlx-whisper/0.4.3;mlx-audio/0.4.6",
     acceleratorKind: "apple-unified",
-  },
-  localscribe_windows_worker: {
-    backend: "localscribe-windows-asr",
-    version: "faster-whisper/1.2.1;crispasr/0.8.24",
-    acceleratorKind: "nvidia-cuda",
   },
 } as const;
 
@@ -799,25 +773,6 @@ export class WorkerSupervisor {
           sourceBasis: memory.memoryBasis,
         };
       }
-      if (identity?.acceleratorKind === "nvidia-cuda") {
-        const windows = windowsDeviceInfoMessageSchema.safeParse(response);
-        if (!windows.success) {
-          const error = new Error(
-            "ASR worker reported accelerator telemetry for the wrong runtime platform",
-          );
-          this.abort(error.message);
-          throw error;
-        }
-        return {
-          kind: "nvidia-cuda",
-          displayName: windows.data.deviceName,
-          deviceIndex: windows.data.deviceIndex,
-          totalMemoryBytes: windows.data.totalVramBytes,
-          freeMemoryBytes: windows.data.freeVramBytes,
-          memoryBasis: "measured",
-          sourceBasis: windows.data.memoryBasis,
-        };
-      }
       const error = new Error(`ASR worker has no accelerator policy: ${this.workerModule}`);
       this.abort(error.message);
       throw error;
@@ -905,7 +860,7 @@ export class WorkerSupervisor {
         20 * 60_000,
       );
     } catch (error) {
-      // Model-load failures can leave partially initialized CUDA/Metal native
+      // Model-load failures can leave a partially initialized native
       // state even when the worker returned a structured error. Never reuse
       // that process for a later selection.
       this.abort(error instanceof Error ? error.message : "ASR model load failed");
@@ -969,7 +924,6 @@ export class WorkerSupervisor {
         cwd: this.workerDirectory,
         env: this.workerEnvironment(Boolean(bundledPython)),
         shell: false,
-        windowsHide: true,
         stdio: ["pipe", "pipe", "pipe"],
       },
     );
@@ -1009,8 +963,7 @@ export class WorkerSupervisor {
         // Redirects every __pycache__ write out of the signed resource tree and
         // into one app-owned directory, keyed by source path.
         : { PYTHONPYCACHEPREFIX: this.bytecodeCacheDirectory }),
-      // Redirected stdio on Windows can otherwise inherit a legacy ANSI code
-      // page and fail when a transcription contains non-Latin text.
+      // Keep the local worker's text protocol explicitly UTF-8.
       PYTHONUTF8: "1",
       PYTHONIOENCODING: "utf-8:strict",
       HF_HUB_DISABLE_TELEMETRY: "1",
@@ -1022,11 +975,6 @@ export class WorkerSupervisor {
       // Development needs PATH solely to locate `uv`; packaged builds launch
       // an absolute bundled Python and inherit no executable search path.
       environment.PATH = process.env.PATH;
-    }
-    if (process.platform === "win32") {
-      // These are OS runtime locations, not credentials. CPython and native
-      // Windows DLL loading require them even when python.exe is absolute.
-      Object.assign(environment, validatedWindowsRuntimeEnvironment(process.env));
     }
     if (this.temporaryDirectory) {
       // Do not forward ambient TEMP/TMP values into the restricted worker.
@@ -1056,14 +1004,14 @@ export class WorkerSupervisor {
   private findBundledPython(): string | null {
     const root = this.bundledRuntimeDirectory;
     if (!root || !existsSync(root)) return null;
-    const executable = process.platform === "win32" ? "python.exe" : "python3";
-    const bundledVenv = path.join(root, "venv", process.platform === "win32" ? "Scripts" : "bin", executable);
+    const executable = "python3";
+    const bundledVenv = path.join(root, "venv", "bin", executable);
     if (existsSync(bundledVenv)) return bundledVenv;
-    const direct = path.join(root, process.platform === "win32" ? "" : "bin", executable);
+    const direct = path.join(root, "bin", executable);
     if (existsSync(direct)) return direct;
     for (const entry of readdirSync(root, { withFileTypes: true })) {
       if (!entry.isDirectory()) continue;
-      const candidate = path.join(root, entry.name, process.platform === "win32" ? "" : "bin", executable);
+      const candidate = path.join(root, entry.name, "bin", executable);
       if (existsSync(candidate)) return candidate;
     }
     return null;

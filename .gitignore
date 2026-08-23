@@ -10,7 +10,6 @@
 
 # Python environments, caches, and generated bundled runtimes
 /.worker-venv/
-/.worker-venv-windows/
 /worker/.venv/
 /tools/python-audit/.venv/
 /audit-results/
@@ -21,11 +20,8 @@
 *.py[cod]
 /resources/python-runtime/*
 !/resources/python-runtime/.gitkeep
-/resources/python-runtime-windows/*
-!/resources/python-runtime-windows/.gitkeep
 /resources/native/macos/active-target
 /tools/fluidaudio-parakeet-helper/.build/
-/resources/native/windows/active-target.exe
 
 # Downloaded model artifacts never belong in source control or app installers
 /models/
@@ -48,6 +44,5 @@ secrets/
 # Logs and operating-system/editor state
 *.log
 .DS_Store
-Thumbs.db
 .idea/
 .vscode/

@@ -5,7 +5,6 @@ import {
   type AsrMode,
   type LivePartialTranscript,
   type PillMode,
-  type RuntimePlatform,
   type SessionSnapshot,
 } from "../../shared/contracts";
 import { ERROR_NOTICE_DURATION_MS, presentDictationError } from "../../shared/dictationErrors";
@@ -19,7 +18,6 @@ import {
 } from "../../shared/pillLayout";
 import {
   shortcutCompactLabel,
-  type ShortcutDisplayPlatform,
 } from "../../shared/shortcuts";
 import { AudioRecorder, RecorderCancelledError } from "../audioRecorder";
 import { openLiveAudioIpcSink } from "../../shared/liveAudioTransport";
@@ -33,14 +31,11 @@ type ErrorNoticeStyle = CSSProperties & Record<"--pill-error-notice-duration", s
 const pillStageStyle = PILL_LAYOUT_CSS_PROPERTIES as PillStyle;
 
 type ShortcutSettingsStatus = "loading" | "unavailable" | "ready";
-type RuntimePlatformStatus = "loading" | "unavailable" | "ready";
 type MicrophoneListStatus = "idle" | "loading" | "ready" | "unavailable";
 
 export function holdShortcutPresentation(
   holdShortcut: string | null,
   status: ShortcutSettingsStatus,
-  platform?: RuntimePlatform,
-  platformStatus: RuntimePlatformStatus = platform ? "ready" : "loading",
 ): { tooltip: string; dictateAriaLabel: string } {
   if (status !== "ready" || !holdShortcut) {
     const detail = status === "loading"
@@ -52,36 +47,11 @@ export function holdShortcutPresentation(
     };
   }
 
-  if (platformStatus !== "ready") {
-    const detail = platformStatus === "loading"
-      ? "platform details are loading"
-      : "platform details are unavailable";
-    return {
-      tooltip: `Dictate · ${detail}`,
-      dictateAriaLabel: `Start dictating; ${detail}`,
-    };
-  }
-
-  const shortcutPlatform = shortcutDisplayPlatformFor(platform);
-  if (!shortcutPlatform) {
-    return {
-      tooltip: "Dictate · shortcut unavailable on this platform",
-      dictateAriaLabel: "Start dictating; shortcut unavailable on this platform",
-    };
-  }
-  const label = shortcutCompactLabel(holdShortcut, shortcutPlatform);
+  const label = shortcutCompactLabel(holdShortcut);
   return {
     tooltip: `Dictate · hold ${label}`,
     dictateAriaLabel: `Start dictating; hold ${label}`,
   };
-}
-
-function shortcutDisplayPlatformFor(
-  platform: RuntimePlatform | undefined,
-): ShortcutDisplayPlatform | null {
-  return platform === "darwin" || platform === "win32" || platform === "linux"
-    ? platform
-    : null;
 }
 
 export async function listSelectableMicrophones(
@@ -163,8 +133,6 @@ export function Pill() {
   const [microphoneId, setMicrophoneId] = useState<string | null>(null);
   const [holdShortcut, setHoldShortcut] = useState<string | null>(null);
   const [shortcutSettingsStatus, setShortcutSettingsStatus] = useState<ShortcutSettingsStatus>("loading");
-  const [platform, setPlatform] = useState<RuntimePlatform | undefined>();
-  const [platformStatus, setPlatformStatus] = useState<RuntimePlatformStatus>("loading");
   const [waveform, setWaveform] = useState<number[]>(quietWave);
   const [livePartial, setLivePartial] = useState<LivePartialTranscript | null>(null);
   const [asrMode, setAsrMode] = useState<AsrMode>("after-stop");
@@ -299,12 +267,6 @@ export function Pill() {
         void startListeningRecorder();
       }
     });
-    void window.localScribe.system.getPermissions().then((next) => {
-      setPlatform(next.platform);
-      setPlatformStatus("ready");
-    }).catch(() => {
-      setPlatformStatus("unavailable");
-    });
     void window.localScribe.session.get().then((initial) => {
       if (!sawLiveEvent) applySnapshot(initial);
     });
@@ -328,14 +290,11 @@ export function Pill() {
             microphoneId={microphoneId}
             holdShortcut={holdShortcut}
             shortcutSettingsStatus={shortcutSettingsStatus}
-            platform={platform}
-            platformStatus={platformStatus}
             onSelectMicrophone={selectMicrophone}
           />
         : <ActivePill
             snapshot={snapshot}
             waveform={waveform}
-            platform={platform}
             livePartial={livePartial}
             asrMode={asrMode}
           />}
@@ -347,15 +306,11 @@ function IdlePill({
   microphoneId,
   holdShortcut,
   shortcutSettingsStatus,
-  platform,
-  platformStatus,
   onSelectMicrophone,
 }: {
   microphoneId: string | null;
   holdShortcut: string | null;
   shortcutSettingsStatus: ShortcutSettingsStatus;
-  platform: RuntimePlatform | undefined;
-  platformStatus: RuntimePlatformStatus;
   onSelectMicrophone: (microphoneId: string | null) => Promise<void>;
 }) {
   const [visualMode, setVisualMode] = useState<PillMode>("collapsed");
@@ -482,8 +437,6 @@ function IdlePill({
   const shortcutPresentation = holdShortcutPresentation(
     holdShortcut,
     shortcutSettingsStatus,
-    platform,
-    platformStatus,
   );
   const tooltip = hoveredAction === "scratchpad"
     ? "Scratchpad"
@@ -592,13 +545,11 @@ function IdlePill({
 function ActivePill({
   snapshot,
   waveform,
-  platform,
   livePartial,
   asrMode,
 }: {
   snapshot: SessionSnapshot;
   waveform: number[];
-  platform: RuntimePlatform | undefined;
   livePartial: LivePartialTranscript | null;
   asrMode: AsrMode;
 }) {
@@ -630,7 +581,7 @@ function ActivePill({
   }
 
   if (snapshot.state === "error") {
-    return <ErrorNotice message={snapshot.message} platform={platform} />;
+    return <ErrorNotice message={snapshot.message} />;
   }
 
   const canAct = snapshot.state === "success";
@@ -660,8 +611,8 @@ function ActivePill({
   );
 }
 
-function ErrorNotice({ message, platform }: { message?: string; platform: RuntimePlatform | undefined }) {
-  const error = presentDictationError(message, platform);
+function ErrorNotice({ message }: { message?: string }) {
+  const error = presentDictationError(message, "darwin");
   const countdownStyle = pillErrorCountdownCssProperties() as ErrorNoticeStyle;
   return (
     <section className="pill-error-stack" role="alert" aria-label={`${error.title}. ${error.detail}`}>

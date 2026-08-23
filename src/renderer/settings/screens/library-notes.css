@@ -9,7 +9,7 @@
   margin: 0 auto;
   padding: 42px 46px 72px;
   color: #1b1a18;
-  font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, sans-serif;
 }
 
 .ln-page button,
@@ -127,7 +127,7 @@
   max-width: 520px;
   margin: 0;
   color: #25211d;
-  font-family: Iowan Old Style, Palatino Linotype, Georgia, serif;
+  font-family: Iowan Old Style, Georgia, serif;
   font-size: clamp(26px, 3.15vw, 37px);
   font-weight: 500;
   line-height: 1.02;

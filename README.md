@@ -1,161 +1,117 @@
 # LocalScribe
 
-Private, local-first dictation for macOS and Windows. Your microphone audio is
-transcribed on your computer—there is no transcription account, cloud API,
-telemetry service, or listening network port.
+LocalScribe is a local-first dictation app for Apple Silicon Macs: microphone
+audio is transcribed on the Mac without a transcription account, cloud API,
+telemetry service, hidden network fallback, or listening network port.
 
-## Download
+## Current release boundary
 
-### macOS validation builds
+LocalScribe currently produces **macOS arm64 validation builds** for macOS 14
+or newer. A validation DMG or ZIP may be signed with Apple Development or an
+ad-hoc identity and is not proof of Developer ID signing, notarization, or
+public Gatekeeper acceptance. Repository availability and source licensing do
+not change that binary trust boundary.
 
-[**LocalScribe 0.1.0-dev.8 — macOS arm64**](https://github.com/bobjoemama/LocalScribe/releases/tag/v0.1.0-dev.8)
+Use the newest approved asset from the repository's GitHub Releases page. Do
+not replace or overwrite an existing release asset: every build must have a
+new version and tag. Verify the downloaded DMG against the matching
+`SHA256SUMS.txt` before opening it:
 
-- **This repository is private.** The link above resolves only for a GitHub
-  account that has access to it; everyone else gets a 404, not a download page.
-  Without that access, build from source instead — see
-  [Build from source](#build-from-source).
-- Requires an Apple Silicon Mac and macOS 14 or newer.
-- Download `LocalScribe-0.1.0-dev.8-arm64.dmg`. Do not download the
-  source-code ZIP, and do not use `LocalScribe-darwin-arm64-0.1.0-dev.8.zip`
-  expecting a Windows build — that ZIP is the same macOS app.
-- Verify the download against the release's `SHA256SUMS.txt` asset before
-  opening it:
+```sh
+shasum -a 256 LocalScribe-<version>-arm64.dmg
+```
 
-  ```sh
-  shasum -a 256 LocalScribe-0.1.0-dev.8-arm64.dmg
-  # bc19522f99daa31055862f623d9a9e2dfcc57cea3d529e274dab9abb51ff5d71
-  ```
+If macOS refuses to open a validation build, do not disable system-wide
+security protections. Build from source or use an artifact that has passed the
+appropriate Apple signing and notarization gates.
 
-- The release description states whether that exact artifact is a private
-  Apple Development validation build or a notarized public candidate.
-- The model is downloaded separately inside LocalScribe after installation.
+## Install and configure
 
-### Windows (not available yet)
+1. Open the DMG and drag **LocalScribe** into **Applications**.
+2. Open LocalScribe and allow **Microphone** access.
+3. Allow **Accessibility** access if you want automatic insertion into the
+   previously focused text field. Without it, LocalScribe can use copy-only
+   fallback.
+4. Open **Settings -> Model & Performance**.
+5. Select a model family and performance mode. The choice remains pending
+   until **Apply model** is pressed.
+6. Explicitly install the selected model if its exact artifact is not already
+   verified, then press **Apply model** and wait for **ready**.
+7. Dictate with the shortcut displayed by LocalScribe. The persisted shortcut
+   is the source of truth for both behavior and labels.
 
-There is no supported Windows download yet. The Windows backend can build a
-verified portable ZIP on Windows 11 x64, but that artifact still needs the
-remaining real-microphone, hotkey, paste, clean-user, and CUDA model-inference
-acceptance pass before publication. There is currently no supported `.exe`
-installer or automatic updater.
+Selecting or downloading a model does not make it active. Apply verifies the
+exact target before unloading a working model, keeps only one large runtime
+resident, and commits the new selection only after the target loads. A failed
+switch preserves the previous committed selection. Normal dictation never
+downloads a model and never silently substitutes another model.
 
-The `.zip` produced by the Mac build is also a **macOS** file; it is not a
-Windows installer. Follow [Windows status and requirements](docs/WINDOWS.md)
-for the exact validation boundary.
+## Dictation modes
 
-## Install on a Mac
+- **After I stop** records first, then transcribes and inserts one final result.
+- **Live** shows incremental partial text and inserts only the final result.
 
-1. Open the downloads page above and download the `.dmg` from the newest
-   validation release.
-2. Open the DMG.
-3. Drag **LocalScribe** into **Applications**.
-4. Open LocalScribe and allow **Microphone** access.
-5. Allow **Accessibility** access when prompted if you want automatic insertion
-   into text boxes. Common push-to-talk chords and toggle shortcuts work through
-   narrow system APIs without that permission; uncommon PC-only hold keys may
-   still require it.
+Parakeet Unified EN 0.6B is the recommended fresh-install family. It supports
+English after-stop and Live dictation through pinned FluidAudio/Core ML assets:
 
-If macOS refuses to open this validation build, do not disable system-wide
-security protections. Use the local source-build instructions below or wait for
-the notarized release.
+| Performance choice | Parakeet profile | Precision |
+| --- | --- | --- |
+| Auto | Highest installed Parakeet profile that fits | High or Medium |
+| High | Core ML FP16 | Original, unquantized precision |
+| Medium | Core ML INT8 | Quantized |
+| Low | Not offered | Parakeet has no Q4/Low artifact |
 
-## Set up dictation
-
-1. Open **Settings → Model & Performance**.
-2. Choose a model family and **Auto** unless you want to select a memory tier
-   manually. Qwen3-ASR 0.6B is the smaller, lower-latency candidate; its
-   real-device latency still needs comparative benchmarking.
-3. Click the install action for the selected local model if its exact artifact
-   is not already verified.
-4. Review the pending family, tier, engine, and memory estimate, then click
-   **Apply model**. Merely selecting or downloading a model does not change the
-   active runtime.
-5. Wait for LocalScribe to unload the previous model, verify and preload the
-   target, and report it ready. The new family and tier are committed only
-   after that load succeeds.
-6. Open any text box and use the shortcut shown in the LocalScribe pill.
-
-Model weights are not hidden inside the installer. LocalScribe downloads only
-revision-pinned catalog files, checks their size and SHA-256 hash, and activates
-them after verification. It never downloads a model just because dictation was
-started.
-
-## Performance modes
-
-| Mode | macOS | Windows | Best for |
-| --- | --- | --- | --- |
-| Auto | Selects a supported tier from available memory | Selects a CUDA tier from available VRAM | Most users |
-| High | Parakeet CoreML FP16 or selected family’s MLX FP16/BF16 model | CTranslate2 `float16` or Qwen F16 | Highest fidelity |
-| Medium | Parakeet CoreML INT8 or selected family’s MLX 8-bit model | CTranslate2 `int8_float16` or Qwen Q8_0 | Balanced memory and quality |
-| Low | Selected MLX family’s 4-bit model; not offered for Parakeet | CTranslate2 `int8` or Qwen Q4_K | Lowest memory use |
-
-Parakeet Unified EN 0.6B is the default Mac family. Whisper large-v3, Qwen3-ASR 0.6B, Qwen3-ASR 1.7B, and
-the older Whisper large-v2 can be added from the local model library. Qwen3-ASR
-0.6B is the smaller lower-latency candidate, not a claim of measured superiority.
-On macOS, Whisper uses MLX Whisper and Qwen uses MLX Audio. On NVIDIA Windows,
-Whisper uses faster-whisper/CTranslate2 and Qwen uses a pinned CrispASR
-GGML/CUDA runtime.
-Arbitrary model URLs, plugins, and custom model code are intentionally not
-accepted. See the
+Auto stays within the user-selected family. Other curated macOS families may
+offer High, Medium, and Low profiles through pinned MLX artifacts; their
+availability does not change Parakeet's two-profile contract. See the
 [model catalog](docs/MODEL_CATALOG.md).
 
-## What stays local
+## Local data and privacy
 
-- Audio transcription and model inference
-- Dictionary, snippets, notes, settings, and usage history
-- SQLite data:
-  - macOS: `~/Library/Application Support/LocalScribe/localscribe.db`
-  - Windows: `%APPDATA%\LocalScribe\localscribe.db`
-- Sensitive text protected with the operating system keystore
+The following remain on the Mac:
 
-Raw audio is held in memory, written only to a permission-restricted temporary
-WAV for inference, and deleted afterward.
+- audio transcription and model inference;
+- dictionary, snippets, notes, settings, and history;
+- the SQLite database at
+  `~/Library/Application Support/LocalScribe/localscribe.db`;
+- model artifacts under LocalScribe's application-support directory.
 
-Deleting a transcript — one entry, "Clear history", or an automatic retention
-purge — overwrites its bytes inside the database file rather than only unlinking
-the row. The database runs with SQLite's `secure_delete` pragma on, so freed
-pages are zeroed as part of the delete instead of keeping their contents until
-some later write happens to reuse them.
+Sensitive text is protected with the macOS keystore. Raw audio is held in
+memory, written only to a permission-restricted temporary WAV for inference,
+and deleted afterward. Transcript deletion uses SQLite `secure_delete` so
+freed database pages are overwritten rather than waiting for later reuse.
 
-## System requirements
+LocalScribe accepts only revision-pinned catalog artifacts with declared byte
+sizes and SHA-256 hashes. It does not accept arbitrary model URLs, executable
+model plugins, custom loaders, cloud inference, or remote prompts.
 
-| Platform | Supported configuration |
-| --- | --- |
-| macOS | Apple Silicon, macOS 14+, Microphone permission; Accessibility is required for automatic insertion and uncommon PC-only hold keys |
-| Windows | Windows 11 x64, supported NVIDIA GPU and driver, pinned CTranslate2 and CrispASR CUDA runtimes |
+## Build and verify from source
 
-Intel Macs, Linux, Windows ARM, AMD/Intel GPUs, DirectML, and CPU-only Windows
-inference are not packaged.
+Requirements:
 
-## Build from source
+- Apple Silicon Mac;
+- macOS 14 or newer;
+- Xcode command-line tools;
+- the exact Node, npm, `uv`, and Python versions pinned by `.nvmrc`,
+  `package.json`, `.uv-version`, and the committed lockfiles.
 
-### Common verification
-
-Install the exact Node, npm, and `uv` versions declared by
-[`.nvmrc`](.nvmrc), [`packageManager`](package.json), and
-[`.uv-version`](.uv-version), then run:
+Install and run the source gates:
 
 ```sh
 npm ci --strict-allow-scripts
 npm run verify:local
 ```
 
-### Build the Mac installer
-
-Run on an Apple Silicon Mac with Xcode command-line tools:
+Build and verify the macOS candidate:
 
 ```sh
 npm run verify:local:macos
 ```
 
-To include an exact installed-model load and repeated inference in the macOS
-gate, supply both an existing model root and a 16 kHz mono PCM16 fixture. The
-smoke starts the packaged app's own Python runtime, worker, manifests, and
-native helper; it does not use the source-tree worker or helper. It is local and
-read-only against the model root unless `--smoke-allow-download` is explicitly
-provided. A pending LocalScribe install transaction is rejected rather than
-recovered, so the local-only path never repairs or mutates the user cache.
+To include repeated inference with an already installed Parakeet artifact and
+a 16 kHz mono PCM16 fixture:
 
-```bash
+```sh
 npm run verify:local:macos -- \
   --smoke-model-root "$HOME/Library/Application Support/LocalScribe/models" \
   --smoke-audio /absolute/path/to/fixture.wav \
@@ -163,86 +119,41 @@ npm run verify:local:macos -- \
   --smoke-mode both --smoke-repeat 2
 ```
 
-The DMG, Mac ZIP, SBOMs, and checksum manifest are written under `out/`.
-A normal local build uses an Apple Development or ad-hoc signature. Creating a
-notarized public build requires the release credentials documented in
-[the release procedure](docs/RELEASING.md).
+The packaged smoke resolves its Python runtime, worker, manifests, and native
+helper only from the new candidate. Downloads are disabled unless explicitly
+enabled, and the local-only path does not repair or mutate the user model
+cache. Outputs are written under `out/`.
 
-### Build the Windows portable package
-
-Run on Windows 11 x64 with PowerShell and Visual Studio C++ Build Tools:
-
-```powershell
-npm run verify:local:windows
-```
-
-On the NVIDIA system intended for use, also require the CUDA checks:
-
-```powershell
-npm run verify:local:windows -- -RequireCuda
-```
-
-An installed-model smoke is opt-in so the ordinary release gate does not
-require multi-gigabyte weights:
-
-```powershell
-npm run verify:local:windows -- -RequireCuda `
-  -CudaModelRoot "$env:APPDATA\LocalScribe\models" `
-  -CudaFamily qwen3-asr-0-6b -CudaTier medium -CudaRepeat 2
-```
-
-The target gate produces one versioned portable ZIP, proves that it is an exact
-byte-for-byte copy of the staged app, and writes versioned SBOMs plus a
-versioned checksum manifest. Print the exact paths for the current checkout:
-
-```powershell
-node scripts/release-metadata.mjs --platform win32 --format json
-```
-
-Extract the ZIP before launching `LocalScribe.exe`; do not run the executable
-from inside the archive. See the [Windows guide](docs/WINDOWS.md) before
-publishing any Windows artifact.
+Source and packaged gates do not prove physical microphone capture, global
+shortcuts, third-party focus/paste behavior, clean-account permissions,
+notarization, or public binary distribution. Those require separate acceptance
+evidence on the exact artifact.
 
 ## Documentation
 
-| Document | Use it for |
+| Document | Purpose |
 | --- | --- |
-| [Windows guide](docs/WINDOWS.md) | Windows, NVIDIA, CUDA, installation, and test status |
-| [Model catalog](docs/MODEL_CATALOG.md) | Supported model families, modes, revisions, and licenses |
-| [Packaging policy](docs/PACKAGING.md) | Files allowed inside each installer |
-| [Release procedure](docs/RELEASING.md) | Signing, notarization, verification, and publication |
-| [Audio protocol](docs/AUDIO_PROTOCOL.md) | Electron-to-worker audio contract |
-| [Clean-room policy](docs/CLEAN_ROOM.md) | Product independence and provenance |
-| [Delivery plan](docs/DELIVERY_PLAN.md) | Remaining implementation and validation work |
-| [Independent review packet](docs/CLAUDE_FABLE_REVIEW_PACKET.md) | Evidence-gated external code review |
-| [Opus 5 engineering packet](docs/OPUS_5_REVIEW_PACKET.md) | Whole-repository review, refactor, bug fixing, and GUI acceptance |
+| [Model catalog](docs/MODEL_CATALOG.md) | Model families, modes, revisions, precision, and licenses |
+| [Packaging policy](docs/PACKAGING.md) | Files allowed inside a macOS artifact and the package gates |
+| [Release procedure](docs/RELEASING.md) | Local verification, validation builds, and GitHub staging |
+| [Audio protocol](docs/AUDIO_PROTOCOL.md) | Renderer-to-worker audio contract |
+| [Clean-room policy](docs/CLEAN_ROOM.md) | Product independence and dependency provenance |
+| [Delivery plan](docs/DELIVERY_PLAN.md) | Remaining macOS implementation and acceptance work |
 
-## Security and release status
+## Security status
 
 - The Electron renderer is sandboxed with context isolation and no Node
   integration.
-- IPC inputs are validated, and Electron fuses disable unnecessary runtime
-  capabilities.
-- Production JavaScript and locked Python dependency audits are part of local
-  verification.
-- The complete development-tool audit currently stops on
-  [`GHSA-mh99-v99m-4gvg`](https://github.com/advisories/GHSA-mh99-v99m-4gvg),
-  newly reported in Electron Forge's non-shipped packaging tree. The production
-  graph and both Python graphs are clean, and the package inventory confirms
-  that the affected build tools are absent from the app. Publication remains a
-  validation prerelease until a compatible upstream fix is available.
-- Generated runtimes, model weights, installers, signing credentials, and build
-  outputs are not committed.
-- No paid GitHub Actions or hosted CI/CD pipeline is used.
-
-The macOS download above is a private validation build, not proof of notarized
-public-release readiness. A Windows download will not be published until its
-portable artifact passes native Windows and real NVIDIA/CUDA acceptance. A
-Windows installer will remain unavailable until a supported installer,
-signing, update, and uninstall design passes separate clean-machine tests.
+- IPC inputs and renderer permissions are allowlisted.
+- Electron fuses, ASAR provenance, loose-resource integrity, entitlements,
+  signatures, SBOMs, and checksums are verified from the candidate artifact.
+- Generated runtimes, model weights, installers, credentials, and build output
+  are not committed.
+- Local verification does not automatically publish a GitHub Release or update
+  feed.
 
 ## License
 
-LocalScribe’s original source and assets are proprietary; see
-[LICENSE](LICENSE). Third-party components retain their own licenses; see
+Use of LocalScribe's source and assets is governed by [LICENSE](LICENSE).
+Third-party components retain their own licenses; see
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

@@ -458,12 +458,9 @@ describe("safe insertion", () => {
     expect(sameTarget(TARGET_A, TARGET_A)).toBe(true);
   });
 
-  it("requires exactly one platform-valid clipboard sequence advance", () => {
-    expect(clipboardAdvancedExactlyOnce(100, 101, "darwin")).toBe(true);
-    expect(clipboardAdvancedExactlyOnce(100, 102, "darwin")).toBe(false);
-    expect(clipboardAdvancedExactlyOnce(100, 101, "win32")).toBe(true);
-    expect(clipboardAdvancedExactlyOnce(0, 1, "win32")).toBe(false);
-    expect(clipboardAdvancedExactlyOnce(4_294_967_295, 0, "win32")).toBe(false);
+  it("requires exactly one clipboard sequence advance", () => {
+    expect(clipboardAdvancedExactlyOnce(100, 101)).toBe(true);
+    expect(clipboardAdvancedExactlyOnce(100, 102)).toBe(false);
   });
 });
 
@@ -548,27 +545,6 @@ describe("native helper boundary", () => {
     expect(nativeBridgeInternals.parseTarget(JSON.stringify({ ...base, windowFingerprint: null }))).toBeNull();
   });
 
-  it("accepts the Windows helper target contract", async () => {
-    const { nativeBridgeInternals } = await import("../src/main/insertion/nativePlatformBridge");
-    const target = {
-      platform: "win32",
-      processId: 812,
-      applicationId: "C:\\Program Files\\Editor\\editor.exe",
-      windowFingerprint: "c".repeat(64),
-      focusedEditable: true,
-    };
-
-    expect(nativeBridgeInternals.parseTarget(JSON.stringify(target))).toEqual(target);
-    expect(nativeBridgeInternals.parseTarget(JSON.stringify({
-      ...target,
-      focusedEditable: null,
-    }))).toBeNull();
-    expect(nativeBridgeInternals.parseTarget(JSON.stringify({
-      ...target,
-      focusedEditable: undefined,
-    }))).toBeNull();
-  });
-
   it("requires both focused-control and event-posting access", async () => {
     const { nativeBridgeInternals } = await import("../src/main/insertion/nativePlatformBridge");
 
@@ -591,86 +567,20 @@ describe("native helper boundary", () => {
     });
     expect(nativeBridgeInternals.parsePaste(JSON.stringify({ injected: "yes" }))).toEqual({
       status: "failed",
+      reason: "invalid_response",
     });
-    expect(nativeBridgeInternals.parsePaste("not json")).toEqual({ status: "failed" });
-  });
-});
-
-describe("Windows insertion service", () => {
-  it("reports automatic paste ready only after the native helper self-test passes", async () => {
-    const { InsertionService } = await import("../src/main/insertion/insertionService");
-    const unavailable = new InsertionService({
-      clipboard: new FakeClipboard(new FakeBridge([])),
-      platformBridge: new FakeBridge([]),
-      platform: "win32",
+    expect(nativeBridgeInternals.parsePaste(JSON.stringify({
+      injected: false,
+      reason: "target_changed",
+    }))).toEqual({ status: "failed", reason: "target_changed" });
+    expect(nativeBridgeInternals.parsePaste(JSON.stringify({
+      injected: false,
+      reason: "private dictated transcript",
+    }))).toEqual({ status: "failed", reason: "invalid_response" });
+    expect(nativeBridgeInternals.parsePaste("not json")).toEqual({
+      status: "failed",
+      reason: "invalid_response",
     });
-    await expect(unavailable.automaticPasteReady()).resolves.toBe(false);
-
-    const readyBridge = Object.assign(new FakeBridge([]), {
-      ready: vi.fn(async () => true),
-    });
-    const ready = new InsertionService({
-      clipboard: new FakeClipboard(readyBridge),
-      platformBridge: readyBridge,
-      platform: "win32",
-    });
-    await expect(ready.automaticPasteReady()).resolves.toBe(true);
-    expect(readyBridge.ready).toHaveBeenCalledOnce();
-  });
-
-  it("never bypasses the native editable-target guard with a uiohook paste", async () => {
-    const { InsertionService } = await import("../src/main/insertion/insertionService");
-    const windowsTarget: ActiveTarget = {
-      platform: "win32",
-      processId: 812,
-      applicationId: "C:\\Program Files\\Editor\\editor.exe",
-      windowFingerprint: "c".repeat(64),
-      focusedEditable: true,
-    };
-    const bridge = new FakeBridge([windowsTarget, windowsTarget]);
-    const clipboard = new FakeClipboard(bridge);
-    const insertion = new InsertionService({
-      clipboard,
-      platformBridge: bridge,
-      platform: "win32",
-      pasteSettleMs: 0,
-    });
-
-    insertion.beginSession();
-    await expect(insertion.copyAndPaste("dictated", true)).resolves.toBe("copied");
-    expect(inputMocks.keyTap).not.toHaveBeenCalled();
-    expect(clipboard.currentText).toBe("dictated");
-  });
-
-  it("uses the Windows helper paste result and retains a clipboard fallback", async () => {
-    const { InsertionService } = await import("../src/main/insertion/insertionService");
-    const windowsTarget: ActiveTarget = {
-      platform: "win32",
-      processId: 812,
-      applicationId: "C:\\Program Files\\Editor\\editor.exe",
-      windowFingerprint: "d".repeat(64),
-      focusedEditable: true,
-    };
-    const bridge = Object.assign(
-      new FakeBridge([windowsTarget, windowsTarget]),
-      {
-        paste: vi.fn(async (): Promise<PasteInjectionResult> => ({ status: "injected" })),
-      },
-    );
-    const clipboard = new FakeClipboard(bridge);
-    const insertion = new InsertionService({
-      clipboard,
-      platformBridge: bridge,
-      platform: "win32",
-      pasteSettleMs: 0,
-    });
-
-    insertion.beginSession();
-    await expect(insertion.copyAndPaste("dictated", true)).resolves.toBe("pasted-with-copy");
-    expect(bridge.paste).toHaveBeenCalledOnce();
-    expect(bridge.paste).toHaveBeenCalledWith(windowsTarget, 101);
-    expect(clipboard.currentText).toBe("dictated");
-    expect(clipboard.restoreCalls).toHaveLength(0);
   });
 });
 

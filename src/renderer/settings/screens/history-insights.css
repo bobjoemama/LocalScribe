@@ -15,7 +15,7 @@
   padding: 38px 42px 70px;
   color: var(--hi-ink);
   background: var(--hi-surface);
-  font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, sans-serif;
   -webkit-font-smoothing: antialiased;
 }
 

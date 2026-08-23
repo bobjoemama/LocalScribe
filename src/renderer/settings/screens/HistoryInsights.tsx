@@ -6,7 +6,6 @@ import {
 } from "../../../shared/contracts";
 import {
   shortcutCompactLabel,
-  type ShortcutDisplayPlatform,
 } from "../../../shared/shortcuts";
 import {
   activityForRange,
@@ -35,11 +34,10 @@ type ShortcutRuntimeStatus = "loading" | "unavailable" | "ready";
 export function historyShortcutPresentation(
   shortcuts: Pick<AppSettings, "holdShortcut" | "toggleShortcut"> | null,
   status: ShortcutRuntimeStatus,
-  platform?: ShortcutDisplayPlatform,
 ): { ariaLabel: string; holdLabel: string; toggleLabel: string | null } {
-  if (status === "ready" && shortcuts && platform) {
-    const holdLabel = shortcutCompactLabel(shortcuts.holdShortcut, platform);
-    const toggleLabel = shortcutCompactLabel(shortcuts.toggleShortcut, platform);
+  if (status === "ready" && shortcuts) {
+    const holdLabel = shortcutCompactLabel(shortcuts.holdShortcut);
+    const toggleLabel = shortcutCompactLabel(shortcuts.toggleShortcut);
     return {
       ariaLabel: `Hold ${holdLabel} to dictate; ${toggleLabel} toggles dictation`,
       holdLabel: `Hold ${holdLabel}`,
@@ -184,8 +182,6 @@ export function HistoryScreen() {
   const [notice, setNotice] = useState<HistoryNotice | null>(null);
   const [shortcuts, setShortcuts] = useState<Pick<AppSettings, "holdShortcut" | "toggleShortcut"> | null>(null);
   const [shortcutSettingsStatus, setShortcutSettingsStatus] = useState<ShortcutRuntimeStatus>("loading");
-  const [shortcutPlatformStatus, setShortcutPlatformStatus] = useState<ShortcutRuntimeStatus>("loading");
-  const [shortcutPlatform, setShortcutPlatform] = useState<ShortcutDisplayPlatform | undefined>(undefined);
   const [historySavingEnabled, setHistorySavingEnabled] = useState<HistorySavingState>("loading");
 
   useEffect(() => {
@@ -214,16 +210,6 @@ export function HistoryScreen() {
         setHistorySavingEnabled("unavailable");
       }
     });
-    void window.localScribe.system.appInfo().then((info) => {
-      if (active && (info.platform === "darwin" || info.platform === "win32" || info.platform === "linux")) {
-        setShortcutPlatform(info.platform);
-        setShortcutPlatformStatus("ready");
-      } else if (active) {
-        setShortcutPlatformStatus("unavailable");
-      }
-    }).catch(() => {
-      if (active) setShortcutPlatformStatus("unavailable");
-    });
     return () => {
       active = false;
       unsubscribe();
@@ -232,12 +218,7 @@ export function HistoryScreen() {
 
   const shortcutPresentation = historyShortcutPresentation(
     shortcuts,
-    shortcutSettingsStatus === "unavailable" || shortcutPlatformStatus === "unavailable"
-      ? "unavailable"
-      : shortcutSettingsStatus === "ready" && shortcutPlatformStatus === "ready"
-        ? "ready"
-        : "loading",
-    shortcutPlatform,
+    shortcutSettingsStatus,
   );
   const storagePresentation = historyStoragePresentation(historySavingEnabled);
 

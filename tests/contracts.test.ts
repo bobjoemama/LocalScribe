@@ -57,8 +57,8 @@ describe("IPC contracts", () => {
       "whisper-large-v2",
     ]);
     expect(DEFAULT_SETTINGS).toMatchObject({
-      activeModelFamilyId: "whisper-large-v3",
-      modelLibraryFamilyIds: ["whisper-large-v3"],
+      activeModelFamilyId: "parakeet-unified-en-0-6b",
+      modelLibraryFamilyIds: ["parakeet-unified-en-0-6b"],
     });
     expect(() => appSettingsSchema.parse({
       ...DEFAULT_SETTINGS,
@@ -254,34 +254,9 @@ describe("IPC contracts", () => {
   });
 
   it("requires one internally consistent verification for every curated model artifact", () => {
-    const profiles = (
-      familyId: "whisper-large-v3" | "whisper-large-v2",
-      artifactId: string,
-    ) => (["high", "medium", "low"] as const).map((tier) => ({
-      profileId: `${familyId}-${tier}`,
-      tier,
-      artifactId,
-      engine: "faster-whisper" as const,
-      precision: tier === "high" ? "float16" : tier === "medium" ? "int8_float16" : "int8",
-      expectedMemoryMinBytes: 1,
-      expectedMemoryMaxBytes: 2,
-      memoryBasis: "estimated" as const,
-    }));
-    const artifact = (artifactId: string, modelId: string) => ({
-      artifactId,
-      displayName: modelId,
-      backend: "faster-whisper/CTranslate2",
-      modelId,
-      storageDirectory: artifactId,
-      revision: "a".repeat(40),
-      license: "MIT",
-      expectedDownloadBytes: 1,
-    });
-    const verification = (
-      familyId: "whisper-large-v3" | "qwen3-asr-0-6b" | "qwen3-asr-1-7b" | "whisper-large-v2",
-      artifactId: string,
-    ) => ({
-      familyId,
+    const artifactId = "parakeet-unified-en-0-6b-coreml-int8";
+    const verification = {
+      familyId: "parakeet-unified-en-0-6b" as const,
       artifactId,
       present: false,
       verified: false,
@@ -290,134 +265,74 @@ describe("IPC contracts", () => {
       expectedBytes: 1,
       verifiedFiles: 0,
       expectedFiles: 1,
-    });
+    };
     const catalog = {
-      platform: "win32-x64-cuda" as const,
-      activeModelFamilyId: "whisper-large-v3" as const,
-      modelLibraryFamilyIds: ["whisper-large-v3" as const],
-      recommendedDefaultFamilyId: "whisper-large-v3" as const,
-      families: [
-        {
-          familyId: "whisper-large-v3" as const,
-          displayName: "Whisper large-v3",
-          capabilities: { modes: ["after-stop"], partialResults: false, timestamps: false, languageDetection: false, promptContext: false, keywordBoost: false, supportedLanguages: ["auto"] },
-          recommendedDefault: true,
-          active: true,
-          inLibrary: true,
-          artifacts: [artifact("whisper-large-v3-ctranslate2", "Systran/faster-whisper-large-v3")],
-          profiles: profiles("whisper-large-v3", "whisper-large-v3-ctranslate2"),
+      platform: "darwin-arm64" as const,
+      activeModelFamilyId: "parakeet-unified-en-0-6b" as const,
+      modelLibraryFamilyIds: ["parakeet-unified-en-0-6b" as const],
+      recommendedDefaultFamilyId: "parakeet-unified-en-0-6b" as const,
+      families: [{
+        familyId: "parakeet-unified-en-0-6b" as const,
+        displayName: "Parakeet Unified EN 0.6B",
+        capabilities: {
+          modes: ["after-stop", "live"] as const,
+          partialResults: true,
+          timestamps: true,
+          languageDetection: false,
+          promptContext: false,
+          keywordBoost: false,
+          supportedLanguages: ["en"],
         },
-        {
-          familyId: "qwen3-asr-0-6b" as const,
-          displayName: "Qwen3-ASR 0.6B",
-          capabilities: { modes: ["after-stop"], partialResults: false, timestamps: false, languageDetection: false, promptContext: false, keywordBoost: false, supportedLanguages: ["auto"] },
-          recommendedDefault: false,
-          active: false,
-          inLibrary: false,
-          artifacts: (["f16", "q8-0", "q4-k"] as const).map((quant) => ({
-            ...artifact(
-              `qwen3-asr-0-6b-crisp-${quant}`,
-              "cstr/qwen3-asr-0.6b-GGUF",
-            ),
-            backend: "CrispASR CUDA",
-            storageDirectory: `qwen3-asr-0-6b-crisp-${quant}`,
-          })),
-          profiles: (["high", "medium", "low"] as const).map((tier, index) => ({
-            profileId: `qwen3-asr-0-6b-${tier}`,
-            tier,
-            artifactId: [
-              "qwen3-asr-0-6b-crisp-f16",
-              "qwen3-asr-0-6b-crisp-q8-0",
-              "qwen3-asr-0-6b-crisp-q4-k",
-            ][index],
-            engine: "crispasr" as const,
-            precision: ["float16", "q8_0", "q4_k"][index],
-            expectedMemoryMinBytes: 1,
-            expectedMemoryMaxBytes: 2,
-            memoryBasis: "estimated" as const,
-          })),
-        },
-        {
-          familyId: "qwen3-asr-1-7b" as const,
-          displayName: "Qwen3-ASR 1.7B",
-          capabilities: { modes: ["after-stop"], partialResults: false, timestamps: false, languageDetection: false, promptContext: false, keywordBoost: false, supportedLanguages: ["auto"] },
-          recommendedDefault: false,
-          active: false,
-          inLibrary: false,
-          artifacts: (["f16", "q8-0", "q4-k"] as const).map((quant) => ({
-            ...artifact(
-              `qwen3-asr-1-7b-crisp-${quant}`,
-              "cstr/qwen3-asr-1.7b-GGUF",
-            ),
-            backend: "CrispASR CUDA",
-            storageDirectory: `qwen3-asr-1-7b-crisp-${quant}`,
-          })),
-          profiles: (["high", "medium", "low"] as const).map((tier, index) => ({
-            profileId: `qwen3-asr-1-7b-${tier}`,
-            tier,
-            artifactId: [
-              "qwen3-asr-1-7b-crisp-f16",
-              "qwen3-asr-1-7b-crisp-q8-0",
-              "qwen3-asr-1-7b-crisp-q4-k",
-            ][index],
-            engine: "crispasr" as const,
-            precision: ["float16", "q8_0", "q4_k"][index],
-            expectedMemoryMinBytes: 1,
-            expectedMemoryMaxBytes: 2,
-            memoryBasis: "estimated" as const,
-          })),
-        },
-        {
-          familyId: "whisper-large-v2" as const,
-          displayName: "Whisper large-v2",
-          capabilities: { modes: ["after-stop"], partialResults: false, timestamps: false, languageDetection: false, promptContext: false, keywordBoost: false, supportedLanguages: ["auto"] },
-          recommendedDefault: false,
-          active: false,
-          inLibrary: false,
-          artifacts: [artifact("whisper-large-v2-ctranslate2", "Systran/faster-whisper-large-v2")],
-          profiles: profiles("whisper-large-v2", "whisper-large-v2-ctranslate2"),
-        },
-      ],
-      verifications: [
-        verification("whisper-large-v3", "whisper-large-v3-ctranslate2"),
-        verification("qwen3-asr-0-6b", "qwen3-asr-0-6b-crisp-f16"),
-        verification("qwen3-asr-0-6b", "qwen3-asr-0-6b-crisp-q8-0"),
-        verification("qwen3-asr-0-6b", "qwen3-asr-0-6b-crisp-q4-k"),
-        verification("qwen3-asr-1-7b", "qwen3-asr-1-7b-crisp-f16"),
-        verification("qwen3-asr-1-7b", "qwen3-asr-1-7b-crisp-q8-0"),
-        verification("qwen3-asr-1-7b", "qwen3-asr-1-7b-crisp-q4-k"),
-        verification("whisper-large-v2", "whisper-large-v2-ctranslate2"),
-      ],
+        recommendedDefault: true,
+        active: true,
+        inLibrary: true,
+        artifacts: [{
+          artifactId,
+          displayName: "Parakeet Unified EN 0.6B Medium",
+          backend: "FluidAudio/Core ML",
+          modelId: "FluidInference/parakeet-tdt-0.6b-v3-coreml",
+          storageDirectory: artifactId,
+          revision: "a".repeat(40),
+          license: "CC-BY-4.0",
+          expectedDownloadBytes: 1,
+        }],
+        profiles: [{
+          profileId: "parakeet-unified-en-0-6b-medium",
+          tier: "medium" as const,
+          artifactId,
+          engine: "fluid-audio" as const,
+          precision: "int8",
+          expectedMemoryMinBytes: 1,
+          expectedMemoryMaxBytes: 2,
+          memoryBasis: "estimated" as const,
+        }],
+      }],
+      verifications: [verification],
       unmanagedEntries: [],
     };
 
-    expect(modelCatalogSchema.parse(catalog).verifications).toHaveLength(8);
+    expect(modelCatalogSchema.parse(catalog).verifications).toHaveLength(1);
     expect(() => modelCatalogSchema.parse({
       ...catalog,
-      verifications: catalog.verifications.slice(0, 1),
+      verifications: [],
     })).toThrow("Every curated artifact must have one verification result");
     expect(() => modelCatalogSchema.parse({
       ...catalog,
-      verifications: [
-        ...catalog.verifications,
-        catalog.verifications[0],
-      ],
+      verifications: [verification, verification],
     })).toThrow("Duplicate artifact verification");
     expect(() => modelCatalogSchema.parse({
       ...catalog,
-      verifications: [{
-        ...catalog.verifications[0],
-        present: true,
-      }, catalog.verifications[1]],
+      verifications: [{ ...verification, present: true }],
     })).toThrow("presence state is inconsistent");
     expect(() => modelCatalogSchema.parse({
       ...catalog,
       families: [{
         ...catalog.families[0],
-        profiles: catalog.families[0]!.profiles.map((profile, index) => index === 0
-          ? { ...profile, artifactId: "missing-artifact" }
-          : profile),
-      }, catalog.families[1]],
+        profiles: [{
+          ...catalog.families[0]!.profiles[0],
+          artifactId: "missing-artifact",
+        }],
+      }],
     })).toThrow("Profile does not reference a curated family artifact");
   });
 

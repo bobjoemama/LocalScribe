@@ -1,6 +1,5 @@
 import type { ForgeConfig, ForgeMakeResult } from "@electron-forge/shared-types";
 import { MakerDMG } from "@electron-forge/maker-dmg";
-import { MakerSquirrel } from "@electron-forge/maker-squirrel";
 import { MakerZIP } from "@electron-forge/maker-zip";
 import { AutoUnpackNativesPlugin } from "@electron-forge/plugin-auto-unpack-natives";
 import { FusesPlugin } from "@electron-forge/plugin-fuses";
@@ -46,10 +45,6 @@ import {
   prepareGeneratedResourceIntegrity,
   type PreparedResourceIntegrity,
 } from "./src/main/resourceIntegrity";
-import {
-  assertFreshOrdinaryArtifact,
-  clearWindowsMakerOutput,
-} from "./scripts/windows-artifact-safety.mts";
 import { assertExpectedMakeResults } from "./scripts/make-result-safety.mts";
 import {
   loadReleaseMetadata,
@@ -58,10 +53,8 @@ import {
 
 const RELEASE_METADATA = loadReleaseMetadata(path.resolve("."));
 const MAC_RELEASE = releaseLayout(RELEASE_METADATA, "darwin", path.resolve("."));
-const WINDOWS_RELEASE = releaseLayout(RELEASE_METADATA, "win32", path.resolve("."));
 const PRODUCT_NAME = RELEASE_METADATA.productName;
 const MAC_APP_NAME = MAC_RELEASE.applicationName;
-const WINDOWS_EXE_NAME = WINDOWS_RELEASE.applicationName;
 const APP_BUNDLE_ID = RELEASE_METADATA.macBundleId;
 const MAC_ENTITLEMENTS = path.resolve("resources/entitlements.mac.plist");
 const MAC_HELPER_ENTITLEMENTS = path.resolve("resources/entitlements.mac.helper.plist");
@@ -74,13 +67,6 @@ const MAC_FLUID_AUDIO_HELPER = path.resolve(
   "resources/native/macos/localscribe-fluidaudio-parakeet",
 );
 const PUBLIC_RELEASE = process.env.LOCALSCRIBE_RELEASE === "1";
-// Squirrel's 32-bit WriteZipToSetup helper silently leaves its dummy payload
-// in Setup.exe once LocalScribe's CUDA runtime pushes the package near 1 GiB.
-// Portable ZIP is the supported Windows output. This opt-in exists only so
-// the fail-closed regression gate can diagnose a future smaller package or
-// upstream replacement; it is never a supported release path.
-const BUILD_LEGACY_SQUIRREL =
-  process.env.LOCALSCRIBE_BUILD_LEGACY_SQUIRREL === "1";
 
 function requireReleaseEnvironment(name: string): string {
   const value = process.env[name]?.trim();
@@ -109,7 +95,6 @@ const MAC_SIGNING_IDENTITY = resolveSigningIdentity();
 let resourceIntegrityPreparation: PreparedResourceIntegrity | null = null;
 let packageProvenanceExpectation: PackageProvenance | null = null;
 let packageBuildStartedAtMs = 0;
-let makeBuildStartedAtMs = 0;
 let originalFluidAudioHelper: { bytes: Buffer; mode: number } | null = null;
 
 function snapshotTrackedFluidAudioHelper(): void {
@@ -160,12 +145,6 @@ function validatePublicReleaseConfiguration(): void {
       );
     }
     return;
-  }
-  if (process.platform === "win32") {
-    throw new Error(
-      "Public Windows publication is disabled until the portable package has passed " +
-      "physical install/launch/CUDA acceptance and a supported signed installer/update path exists.",
-    );
   }
   throw new Error(`Public LocalScribe releases cannot be built on ${process.platform}.`);
 }
@@ -310,43 +289,26 @@ function removeInfoPlistKeyIfPresent(infoPlist: string, keyPath: string): void {
 }
 
 function platformResources(): string[] {
-  if (process.platform === "darwin") {
-    return [
-      "worker",
-      "resources/model-manifest",
-      "resources/python-runtime",
-      "resources/native",
-    ];
-  }
-  if (process.platform === "win32") {
-    return [
-      "worker",
-      "resources/model-manifest",
-      "resources/python-runtime-windows",
-      "resources/native",
-      "resources/branding",
-    ];
-  }
-  return [];
+  return [
+    "worker",
+    "resources/model-manifest",
+    "resources/python-runtime",
+    "resources/native",
+  ];
 }
 
 function resourcesPathInStaging(
   stagingPath: string,
-  platform: PackagedPlatform,
+  _platform: PackagedPlatform,
 ): string {
-  return platform === "darwin"
-    ? path.join(stagingPath, MAC_APP_NAME, "Contents", "Resources")
-    : path.join(stagingPath, "resources");
+  return path.join(stagingPath, MAC_APP_NAME, "Contents", "Resources");
 }
 
-function packagedResourcesPath(outputPath: string, platform: PackagedPlatform): string {
-  if (platform === "darwin") {
-    const appPath = outputPath.endsWith(".app")
-      ? outputPath
-      : path.join(outputPath, MAC_APP_NAME);
-    return path.join(appPath, "Contents", "Resources");
-  }
-  return path.join(outputPath, "resources");
+function packagedResourcesPath(outputPath: string, _platform: PackagedPlatform): string {
+  const appPath = outputPath.endsWith(".app")
+    ? outputPath
+    : path.join(outputPath, MAC_APP_NAME);
+  return path.join(appPath, "Contents", "Resources");
 }
 
 function assertSourceResources(platform: PackagedPlatform, arch: string): void {
@@ -400,29 +362,11 @@ function notarizeAndStapleDmg(dmgPath: string): void {
   );
 }
 
-function verifyAuthenticode(filePath: string): void {
-  const script = [
-    "$signature = Get-AuthenticodeSignature -LiteralPath $args[0]",
-    "if ($signature.Status -ne 'Valid') {",
-    "  throw \"Invalid Authenticode signature: $($signature.Status)\"",
-    "}",
-  ].join("; ");
-  execFileSync(
-    "powershell",
-    ["-NoProfile", "-NonInteractive", "-Command", script, filePath],
-    { stdio: "inherit" },
-  );
-}
-
 const config: ForgeConfig = {
   packagerConfig: {
     asar: true,
     prune: true,
-    icon: process.platform === "darwin"
-      ? path.resolve("resources/branding/LocalScribe.icns")
-      : process.platform === "win32"
-        ? path.resolve("resources/branding/LocalScribe.ico")
-        : undefined,
+    icon: path.resolve("resources/branding/LocalScribe.icns"),
     // Vite bundles ordinary dependencies, but the main build deliberately keeps
     // native Node modules external. Include only the build, runtime modules, and
     // manifest; afterPrune narrows that manifest to runtime metadata.
@@ -439,7 +383,7 @@ const config: ForgeConfig = {
         void (async () => {
           try {
             await pruneStagedNodeModules(buildPath);
-            if (platform !== "darwin" && platform !== "win32") {
+            if (platform !== "darwin") {
               throw new Error(`Unsupported package platform: ${platform}`);
             }
             if (!packageProvenanceExpectation || packageBuildStartedAtMs <= 0) {
@@ -465,20 +409,18 @@ const config: ForgeConfig = {
     afterCopyExtraResources: [
       (stagingPath, _electronVersion, platform, arch, callback) => {
         try {
-          if (platform !== "darwin" && platform !== "win32") {
+          if (platform !== "darwin") {
             throw new Error(`Unsupported package platform: ${platform}`);
           }
           const resourcesPath = resourcesPathInStaging(stagingPath, platform);
           prunePackagedResources(resourcesPath, platform, arch);
           prunePackagedNativeModules(resourcesPath, platform, arch);
 
-          if (platform === "darwin") {
-            const infoPlist = path.join(stagingPath, MAC_APP_NAME, "Contents", "Info.plist");
-            removeInfoPlistKeyIfPresent(infoPlist, "NSAppTransportSecurity.NSAllowsArbitraryLoads");
-            removeInfoPlistKeyIfPresent(infoPlist, "NSBluetoothAlwaysUsageDescription");
-            removeInfoPlistKeyIfPresent(infoPlist, "NSBluetoothPeripheralUsageDescription");
-            removeInfoPlistKeyIfPresent(infoPlist, "NSCameraUsageDescription");
-          }
+          const infoPlist = path.join(stagingPath, MAC_APP_NAME, "Contents", "Info.plist");
+          removeInfoPlistKeyIfPresent(infoPlist, "NSAppTransportSecurity.NSAllowsArbitraryLoads");
+          removeInfoPlistKeyIfPresent(infoPlist, "NSBluetoothAlwaysUsageDescription");
+          removeInfoPlistKeyIfPresent(infoPlist, "NSBluetoothPeripheralUsageDescription");
+          removeInfoPlistKeyIfPresent(infoPlist, "NSCameraUsageDescription");
 
           assertPackagedAppInventory(resourcesPath, platform, arch);
           if (!resourceIntegrityPreparation) {
@@ -503,14 +445,6 @@ const config: ForgeConfig = {
     appBundleId: APP_BUNDLE_ID,
     appCategoryType: "public.app-category.productivity",
     appCopyright: "Copyright © 2026 Devesh. All rights reserved.",
-    win32metadata: {
-      CompanyName: "Devesh",
-      FileDescription: "Private local-first desktop dictation",
-      ProductName: PRODUCT_NAME,
-      InternalName: PRODUCT_NAME,
-      OriginalFilename: WINDOWS_EXE_NAME,
-      "requested-execution-level": "asInvoker",
-    },
     extendInfo: {
       LSMinimumSystemVersion: RELEASE_METADATA.minimumMacOSVersion,
       NSMicrophoneUsageDescription:
@@ -545,7 +479,6 @@ const config: ForgeConfig = {
   },
   hooks: {
     preMake: async () => {
-      makeBuildStartedAtMs = Date.now();
       // Before anything is written. `prePackage` repeats this because `package`
       // is also a standalone entry point that never runs `preMake`.
       assertNoRunningPackagedApp({
@@ -554,20 +487,6 @@ const config: ForgeConfig = {
         listProcesses: listMacProcesses,
         projectPath: path.resolve("."),
       });
-      if (process.platform !== "win32") return;
-      clearWindowsMakerOutput(
-        path.resolve("."),
-        path.relative(path.resolve("."), WINDOWS_RELEASE.makerDirectory),
-      );
-      clearWindowsMakerOutput(
-        path.resolve("."),
-        path.join(
-          "out",
-          "make",
-          "squirrel.windows",
-          WINDOWS_RELEASE.target.arch,
-        ),
-      );
     },
     prePackage: async (_config, platform, arch) => {
       packageBuildStartedAtMs = Date.now();
@@ -577,25 +496,23 @@ const config: ForgeConfig = {
         listProcesses: listMacProcesses,
         projectPath: path.resolve("."),
       });
-      if (platform === "darwin") {
-        const targetArchitecture =
-          arch === MAC_RELEASE.target.arch ? MAC_RELEASE.target.arch : null;
-        if (!targetArchitecture) throw new Error(`Unsupported macOS helper architecture: ${arch}`);
-        execFileSync("xcrun", [
-          "swiftc",
-          "-O",
-          "-target",
-          `${targetArchitecture}-apple-macos${RELEASE_METADATA.minimumMacOSVersion}`,
-          path.resolve("resources/native/macos/active-target.swift"),
-          "-o",
-          path.resolve("resources/native/macos/active-target"),
-        ], { stdio: "inherit" });
-        snapshotTrackedFluidAudioHelper();
-        signProtectedMacResources();
-      }
-      if (platform !== "darwin" && platform !== "win32") {
+      if (platform !== "darwin") {
         throw new Error(`LocalScribe cannot be packaged for ${platform}.`);
       }
+      const targetArchitecture =
+        arch === MAC_RELEASE.target.arch ? MAC_RELEASE.target.arch : null;
+      if (!targetArchitecture) throw new Error(`Unsupported macOS helper architecture: ${arch}`);
+      execFileSync("xcrun", [
+        "swiftc",
+        "-O",
+        "-target",
+        `${targetArchitecture}-apple-macos${RELEASE_METADATA.minimumMacOSVersion}`,
+        path.resolve("resources/native/macos/active-target.swift"),
+        "-o",
+        path.resolve("resources/native/macos/active-target"),
+      ], { stdio: "inherit" });
+      snapshotTrackedFluidAudioHelper();
+      signProtectedMacResources();
       assertSourceResources(platform, arch);
       packageProvenanceExpectation = buildPackageProvenance({
         projectPath: path.resolve("."),
@@ -613,7 +530,7 @@ const config: ForgeConfig = {
     },
     postPackage: async (_config, result) => {
       try {
-        if (result.platform !== "darwin" && result.platform !== "win32") {
+        if (result.platform !== "darwin") {
           throw new Error(`Unsupported package platform: ${result.platform}`);
         }
         if (!resourceIntegrityPreparation) {
@@ -642,39 +559,32 @@ const config: ForgeConfig = {
             resourceIntegrityPreparation.expectation,
           );
 
-          if (result.platform === "darwin") {
-            const appPath = outputPath.endsWith(".app")
-              ? outputPath
-              : path.join(outputPath, MAC_APP_NAME);
-            execFileSync("codesign", ["--verify", "--deep", "--strict", "--verbose=4", appPath], {
+          const appPath = outputPath.endsWith(".app")
+            ? outputPath
+            : path.join(outputPath, MAC_APP_NAME);
+          execFileSync("codesign", ["--verify", "--deep", "--strict", "--verbose=4", appPath], {
+            stdio: "inherit",
+          });
+          execFileSync(
+            process.execPath,
+            [path.resolve("scripts/verify-macos-entitlements.mjs"), appPath],
+            { stdio: "inherit" },
+          );
+          execFileSync(
+            process.execPath,
+            [
+              path.resolve("scripts/verify-macos-bundle.mjs"),
+              appPath,
+              ...(PUBLIC_RELEASE ? ["--public-release"] : []),
+            ],
+            { stdio: "inherit" },
+          );
+          if (PUBLIC_RELEASE) {
+            execFileSync("xcrun", ["stapler", "staple", appPath], { stdio: "inherit" });
+            execFileSync("xcrun", ["stapler", "validate", appPath], { stdio: "inherit" });
+            execFileSync("spctl", ["--assess", "--type", "execute", "--verbose=4", appPath], {
               stdio: "inherit",
             });
-            execFileSync(
-              process.execPath,
-              [path.resolve("scripts/verify-macos-entitlements.mjs"), appPath],
-              { stdio: "inherit" },
-            );
-            execFileSync(
-              process.execPath,
-              [
-                path.resolve("scripts/verify-macos-bundle.mjs"),
-                appPath,
-                ...(PUBLIC_RELEASE ? ["--public-release"] : []),
-              ],
-              { stdio: "inherit" },
-            );
-            if (PUBLIC_RELEASE) {
-              execFileSync("xcrun", ["stapler", "staple", appPath], { stdio: "inherit" });
-              execFileSync("xcrun", ["stapler", "validate", appPath], { stdio: "inherit" });
-              execFileSync("spctl", ["--assess", "--type", "execute", "--verbose=4", appPath], {
-                stdio: "inherit",
-              });
-            }
-          } else if (PUBLIC_RELEASE) {
-            verifyAuthenticode(path.join(outputPath, WINDOWS_EXE_NAME));
-            verifyAuthenticode(
-              path.join(outputPath, "resources", "native", "windows", "active-target.exe"),
-            );
           }
         }
       } finally {
@@ -721,59 +631,6 @@ const config: ForgeConfig = {
           { stdio: "inherit" },
         );
       }
-
-      const windowsArtifacts = makeResults
-        .filter((result) => result.platform === "win32")
-        .flatMap((result) => result.artifacts);
-      if (windowsArtifacts.length > 0) {
-        const portableZips = windowsArtifacts.filter((artifact) => artifact.endsWith(".zip"));
-        if (portableZips.length !== 1) {
-          throw new Error(
-            `Windows make expected one portable ZIP; received ${portableZips.length}.`,
-          );
-        }
-        assertFreshOrdinaryArtifact(portableZips[0]!, makeBuildStartedAtMs);
-        execFileSync(
-          process.execPath,
-          [
-            path.resolve("scripts/verify-windows-portable.mjs"),
-            WINDOWS_RELEASE.packageDirectory,
-            portableZips[0]!,
-          ],
-          { stdio: "inherit" },
-        );
-
-        const installers = windowsArtifacts.filter((artifact) => /Setup\.exe$/i.test(artifact));
-        const packages = windowsArtifacts.filter((artifact) => artifact.endsWith(".nupkg"));
-        const releases = windowsArtifacts.filter(
-          (artifact) => path.basename(artifact).toUpperCase() === "RELEASES",
-        );
-        if (BUILD_LEGACY_SQUIRREL) {
-          if (installers.length !== 1 || packages.length !== 1 || releases.length !== 1) {
-            throw new Error(
-              "Opt-in legacy Squirrel make expected exactly one Setup.exe, .nupkg, and RELEASES.",
-            );
-          }
-          for (const artifact of [installers[0]!, packages[0]!, releases[0]!]) {
-            assertFreshOrdinaryArtifact(artifact, makeBuildStartedAtMs);
-          }
-          execFileSync(
-            process.execPath,
-            [
-              path.resolve("scripts/verify-squirrel-artifacts.mjs"),
-              installers[0]!,
-              packages[0]!,
-              releases[0]!,
-            ],
-            { stdio: "inherit" },
-          );
-        } else if (installers.length > 0 || packages.length > 0 || releases.length > 0) {
-          throw new Error(
-            "Unsupported Squirrel artifacts appeared in the portable-only Windows build.",
-          );
-        }
-      }
-      makeBuildStartedAtMs = 0;
     },
   },
   rebuildConfig: {},
@@ -791,21 +648,7 @@ const config: ForgeConfig = {
           }
         : {}),
     }, ["darwin"]),
-    new MakerZIP({}, ["darwin", "win32"]),
-    ...(BUILD_LEGACY_SQUIRREL
-      ? [
-          new MakerSquirrel({
-            name: "localscribe",
-            authors: "Devesh",
-            owners: "Devesh",
-            description: "Private local-first desktop dictation",
-            exe: WINDOWS_EXE_NAME,
-            setupExe: `${PRODUCT_NAME}-Setup.exe`,
-            setupIcon: path.resolve("resources/branding/LocalScribe.ico"),
-            noMsi: true,
-          }, ["win32"]),
-        ]
-      : []),
+    new MakerZIP({}, ["darwin"]),
   ],
   plugins: [
     new AutoUnpackNativesPlugin({}),

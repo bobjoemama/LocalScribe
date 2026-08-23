@@ -16,8 +16,8 @@ const recognized = new Set([
   ...(formatIndex >= 0 ? ["--format", format] : []),
 ]);
 const unknown = arguments_.filter((argument) => !recognized.has(argument));
-if (platform !== "darwin" && platform !== "win32") {
-  throw new Error("Usage: release-metadata.mjs --platform <darwin|win32> [--format json|tsv]");
+if (platform !== "darwin") {
+  throw new Error("Usage: release-metadata.mjs --platform darwin [--format json|tsv]");
 }
 if (format !== "json" && format !== "tsv") {
   throw new Error("Release metadata format must be json or tsv.");
@@ -34,7 +34,6 @@ const output = {
   packageManager: metadata.packageManager,
   repository: metadata.repository,
   macBundleId: metadata.macBundleId,
-  windowsAppUserModelId: metadata.windowsAppUserModelId,
   minimumMacOSVersion: metadata.minimumMacOSVersion,
   platform,
   arch: layout.target.arch,

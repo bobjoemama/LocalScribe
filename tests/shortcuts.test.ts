@@ -14,15 +14,12 @@ import {
 
 describe("shortcut helpers", () => {
   it("presents platform-native settings and compact labels", () => {
-    expect(shortcutDisplayLabel("Command+Shift+Space", "darwin")).toBe("Command + Shift + Space");
-    expect(shortcutCompactLabel("Control+Space", "darwin")).toBe("⌃ + Space");
-    expect(shortcutDisplayLabel("Command+Shift+Space", "win32")).toBe("Windows + Shift + Space");
-    expect(shortcutCompactLabel("Control+Space", "win32")).toBe("Ctrl + Space");
-    expect(shortcutDisplayLabel("CommandOrControl+AltGr+Space", "win32"))
-      .toBe("Control + AltGr + Space");
-    expect(shortcutCompactLabel("Super+Space", "win32")).toBe("Win + Space");
-    expect(shortcutDisplayLabel("Meta+Space", "win32")).toBe("Windows + Space");
-    expect(shortcutDisplayLabel("Alt+Space", "linux")).toBe("Alt + Space");
+    expect(shortcutDisplayLabel("Command+Shift+Space")).toBe("Command + Shift + Space");
+    expect(shortcutDisplayLabel("CommandOrControl+AltGr+Space"))
+      .toBe("Command + AltGr + Space");
+    expect(shortcutDisplayLabel("Alt+Space")).toBe("Option + Space");
+    expect(shortcutCompactLabel("Control+Space")).toBe("⌃ + Space");
+    expect(shortcutCompactLabel("Super+Space")).toBe("⌘ + Space");
   });
 
   it("detects when a toggle chord overlaps the hold key", () => {
@@ -54,14 +51,14 @@ describe("shortcut helpers", () => {
     expect(toggle.error.issues[0]?.message).toBe(
       "Toggle dictation needs a non-modifier key so the system can register it.",
     );
-    expect(toggle.error.issues[0]?.message).not.toMatch(/macOS|Windows/i);
+    expect(toggle.error.issues[0]?.message).not.toMatch(/operating system/i);
   });
 
   it("keeps Numpad Enter distinct for holds and rejects it as an Electron toggle", () => {
     expect(holdShortcutSchema.parse("NumpadEnter")).toBe("NumpadEnter");
-    expect(shortcutDisplayLabel("NumpadEnter", "win32")).toBe("Numpad Enter");
-    expect(shortcutCompactLabel("NumpadEnter", "win32")).toBe("Num Enter");
-    expect(shortcutsUseSamePhysicalKeys("NumpadEnter", "Enter", "win32")).toBe(false);
+    expect(shortcutDisplayLabel("NumpadEnter")).toBe("Numpad Enter");
+    expect(shortcutCompactLabel("NumpadEnter")).toBe("Num Enter");
+    expect(shortcutsUseSamePhysicalKeys("NumpadEnter", "Enter")).toBe(false);
 
     const toggle = toggleShortcutSchema.safeParse("NumpadEnter");
     expect(toggle.success).toBe(false);
@@ -74,11 +71,11 @@ describe("shortcut helpers", () => {
   });
 
   it("compares platform-resolved physical key groups rather than accelerator spelling", () => {
-    expect(shortcutsUseSamePhysicalKeys("CommandOrControl", "Command", "darwin")).toBe(true);
-    expect(shortcutsUseSamePhysicalKeys("CommandOrControl", "Control", "win32")).toBe(true);
-    expect(shortcutsUseSamePhysicalKeys("Plus", "Shift+Equal", "darwin")).toBe(true);
-    expect(shortcutsUseSamePhysicalKeys("Alt+F13", "AltGr+F13", "win32")).toBe(true);
-    expect(toggleUsesHoldKey("AltGr+Space", "Alt", "win32")).toBe(true);
-    expect(toggleUsesHoldKey("Command+Space", "Control", "darwin")).toBe(false);
+    expect(shortcutsUseSamePhysicalKeys("CommandOrControl", "Command")).toBe(true);
+    expect(shortcutsUseSamePhysicalKeys("CommandOrControl", "Control")).toBe(false);
+    expect(shortcutsUseSamePhysicalKeys("Plus", "Shift+Equal")).toBe(true);
+    expect(shortcutsUseSamePhysicalKeys("Alt+F13", "AltGr+F13")).toBe(true);
+    expect(toggleUsesHoldKey("AltGr+Space", "Alt")).toBe(true);
+    expect(toggleUsesHoldKey("Command+Space", "Control")).toBe(false);
   });
 });

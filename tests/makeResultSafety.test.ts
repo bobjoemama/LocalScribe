@@ -2,17 +2,12 @@ import { describe, expect, it } from "vitest";
 import { assertExpectedMakeResults } from "../scripts/make-result-safety.mts";
 
 describe("Forge make-result fail-closed gate", () => {
-  it("rejects empty and wrong-target Windows results", () => {
-    expect(() => assertExpectedMakeResults([], "win32")).toThrow(/no results/);
+  it("rejects non-macOS hosts and wrong macOS architectures", () => {
+    expect(() => assertExpectedMakeResults([], "linux")).toThrow(/unsupported/);
     expect(() =>
       assertExpectedMakeResults([
-        { platform: "win32", arch: "x64", artifacts: [] },
-      ], "win32")
-    ).toThrow(/empty artifact/);
-    expect(() =>
-      assertExpectedMakeResults([
-        { platform: "win32", arch: "arm64", artifacts: ["app.zip"] },
-      ], "win32")
+        { platform: "darwin", arch: "x64", artifacts: ["app.zip"] },
+      ], "darwin")
     ).toThrow(/unexpected target/);
   });
 
@@ -26,7 +21,7 @@ describe("Forge make-result fail-closed gate", () => {
     expect(() =>
       assertExpectedMakeResults([
         { platform: "darwin", arch: "arm64", artifacts: ["app.dmg"] },
-        { platform: "win32", arch: "x64", artifacts: ["app.zip"] },
+        { platform: "linux", arch: "x64", artifacts: ["app.zip"] },
       ], "darwin")
     ).toThrow(/unexpected target/);
   });

@@ -11,7 +11,6 @@ import {
   DEFAULT_SETTINGS,
   HISTORY_RETENTION_OPTIONS,
   historyRetentionLabel,
-  type AppInfo,
   type AppProfile,
   type AppSettings,
   type AppSettingsPatch,
@@ -53,31 +52,15 @@ export {
   UNAVAILABLE_IN_THIS_BUILD_NOTICE,
 } from "../../generativeTextAvailability";
 
-export function appProfilePresentation(
-  platform: AppInfo["platform"] | null,
-): {
+export function appProfilePresentation(): {
   detail: string;
   labelPlaceholder: string;
   appIdPlaceholder: string;
 } {
-  if (platform === "darwin") {
-    return {
-      detail: "Override cleanup for a macOS app bundle identifier.",
-      labelPlaceholder: "TextEdit",
-      appIdPlaceholder: "com.apple.TextEdit",
-    };
-  }
-  if (platform === "win32") {
-    return {
-      detail: "Override cleanup for a Windows executable name.",
-      labelPlaceholder: "Notepad",
-      appIdPlaceholder: "notepad.exe",
-    };
-  }
   return {
-    detail: "Override cleanup for an application identifier reported by this platform.",
-    labelPlaceholder: "App name",
-    appIdPlaceholder: "Application identifier",
+    detail: "Override cleanup for a macOS app bundle identifier.",
+    labelPlaceholder: "TextEdit",
+    appIdPlaceholder: "com.apple.TextEdit",
   };
 }
 
@@ -185,26 +168,18 @@ export function automaticPasteSettingsPresentation(
   if (!permissions.automaticPaste.supported) {
     return {
       editable: false,
-      detail: "Automatic paste is not supported on this platform. Completed dictation is copied to the clipboard.",
+      detail: "Automatic paste is unavailable in this build. Completed dictation is copied to the clipboard.",
       value: "Unavailable",
     };
   }
-  if (permissions.platform === "win32" && !permissions.automaticPaste.ready) {
-    return {
-      editable: false,
-      detail: "The local Windows paste helper is unavailable. Completed dictation will be copied until the helper is available.",
-      value: "Copy only",
-    };
-  }
   /*
-   * macOS derives readiness from Accessibility, and this branch was gated on
-   * win32, so a Mac without Accessibility fell through to a switch the user
-   * could turn on above a sentence promising it would paste. Main has always
+   * macOS derives readiness from Accessibility. A Mac without Accessibility
+   * must not render a switch above a sentence promising it will paste. Main
    * taken the copy path in that state and says so on the pill ("Copied — allow
    * Accessibility"); the setting was the one surface still claiming otherwise.
    *
-   * The switch stays editable, unlike the Windows case: Accessibility is a
-   * permission the user can grant from the Privacy tab, and the preference
+   * The switch stays editable: Accessibility is a permission the user can
+   * grant from the Privacy tab, and the preference
    * takes effect the moment they do. Only the promise is corrected.
    */
   if (!permissions.automaticPaste.ready) {
@@ -244,7 +219,7 @@ export function launchAtLoginSettingsPresentation(
     return {
       editable: false,
       value: false,
-      detail: "Launch at login is not supported on this platform.",
+      detail: "Launch at login is unavailable in this macOS build.",
     };
   }
   if (status.effective) {
@@ -306,7 +281,7 @@ export function modelPerformanceSaveMessage(
     return "Auto saved, but no tier fits the current memory budget. Dictation stays blocked until enough memory is available.";
   }
   if (performance.resolvedTier) {
-    return `Auto saved and resolved to ${tierLabel(performance.resolvedTier)} using the current platform memory.`;
+    return `Auto saved and resolved to ${tierLabel(performance.resolvedTier)} using the available unified memory.`;
   }
   return "Auto performance mode saved.";
 }
@@ -431,7 +406,6 @@ export function StyleScreen() {
   const [profileMessage, setProfileMessage] = useState("");
   const [profileMessageIsError, setProfileMessageIsError] = useState(false);
   const [profileBusy, setProfileBusy] = useState(false);
-  const [appPlatform, setAppPlatform] = useState<AppInfo["platform"] | null>(null);
   const cleanupDraft = useRef<AppSettingsPatch>({});
 
   const loadProfiles = useCallback(() => window.localScribe.profiles.list().then(setProfiles), []);
@@ -448,9 +422,6 @@ export function StyleScreen() {
       setProfileMessageIsError(true);
       setProfileMessage(`Could not load app profiles: ${errorDetail(error)}`);
     });
-    void window.localScribe.system.appInfo()
-      .then((info) => setAppPlatform(info.platform))
-      .catch(() => setAppPlatform(null));
     return window.localScribe.settings.onChanged(applySettings);
   }, [loadProfiles]);
 
@@ -459,7 +430,7 @@ export function StyleScreen() {
     [settings],
   );
   const cleanupControls = settingsControlAvailability(settings, settingsLoadError);
-  const profilePresentation = appProfilePresentation(appPlatform);
+  const profilePresentation = appProfilePresentation();
 
   const chooseCleanup = (level: CleanupLevel) => {
     if (!settings) return;
@@ -940,11 +911,6 @@ export function SettingsModal({ onClose, registerDismissalGate }: {
    */
   const modelLibraryActionInFlight = useRef(false);
   const [modelFeedback, setModelFeedback] = useState<{ message: string; isError: boolean } | null>(null);
-  const shortcutPlatform = permissions?.platform === "darwin"
-    || permissions?.platform === "win32"
-    || permissions?.platform === "linux"
-    ? permissions.platform
-    : null;
   const dialogRef = useRef<HTMLElement>(null);
   /*
    * The dialog declares aria-modal="true", which tells assistive technology the
@@ -1375,7 +1341,7 @@ export function SettingsModal({ onClose, registerDismissalGate }: {
   };
 
   const refreshModelStatus = async () => {
-    setModelFeedback({ message: "Rechecking platform memory and local models…", isError: false });
+    setModelFeedback({ message: "Rechecking unified memory and local models…", isError: false });
     const [systemResult, catalogResult] = await Promise.allSettled([refresh(), refreshModelCatalog()]);
     if (systemResult.status === "fulfilled" && catalogResult.status === "fulfilled") {
       setModelFeedback({ message: "Platform memory and curated model status refreshed.", isError: false });
@@ -1538,7 +1504,6 @@ export function SettingsModal({ onClose, registerDismissalGate }: {
                     label="Push-to-talk shortcut"
                     detail="Hold this key while speaking, then release it to transcribe."
                     value={settings.holdShortcut}
-                    platform={shortcutPlatform}
                     onAccept={(shortcut) => commitShortcut("hold", shortcut)}
                   />
                   <ShortcutRecorder
@@ -1546,7 +1511,6 @@ export function SettingsModal({ onClose, registerDismissalGate }: {
                     label="Toggle dictation shortcut"
                     detail="Press once to start listening and once again to stop."
                     value={settings.toggleShortcut}
-                    platform={shortcutPlatform}
                     onAccept={(shortcut) => commitShortcut("toggle", shortcut)}
                   />
                   <SettingsSelect
@@ -1597,19 +1561,6 @@ export function SettingsModal({ onClose, registerDismissalGate }: {
                       onOpen={() => void window.localScribe.system.openPermission("accessibility")}
                     />
                   )}
-                  {permissions && !permissions.accessibility.supported && (
-                    <SettingsReadOnly
-                      label="Input access"
-                      detail={permissions.platform === "win32"
-                        ? permissions.automaticPaste.ready
-                          ? "Windows does not use a separate Accessibility privacy setting for LocalScribe."
-                          : "Windows does not use a separate Accessibility privacy setting, but the local paste helper is unavailable. Completed dictation will be copied."
-                        : "Automatic paste and global push-to-talk are not supported on this platform yet."}
-                      value={permissions.platform === "win32"
-                        ? permissions.automaticPaste.ready ? "No extra permission" : "Copy only"
-                        : "Unavailable"}
-                    />
-                  )}
                 </SettingsGroup>
               </>
             )}
@@ -1648,7 +1599,7 @@ export function SettingsModal({ onClose, registerDismissalGate }: {
                   ? diagnostics.performance.resolutionReason
                   : "Save changes before LocalScribe resolves this performance mode."}
                 hardware={diagnostics ? {
-                  platform: modelRuntimePlatform(permissions?.platform, diagnostics.platform),
+                  platform: "darwin",
                   displayName: diagnostics.accelerator.displayName,
                   totalMemoryBytes: diagnostics.accelerator.totalMemoryBytes,
                   availableMemoryBytes: diagnostics.accelerator.freeMemoryBytes,
@@ -2044,17 +1995,6 @@ function tierLabel(mode: AppSettings["modelPerformanceMode"]): string {
   return mode.charAt(0).toUpperCase() + mode.slice(1);
 }
 
-function modelRuntimePlatform(
-  permissionPlatform: PermissionSnapshot["platform"] | undefined,
-  diagnosticsPlatform: string,
-): PermissionSnapshot["platform"] {
-  if (permissionPlatform) return permissionPlatform;
-  if (diagnosticsPlatform === "darwin" || diagnosticsPlatform === "win32" || diagnosticsPlatform === "linux") {
-    return diagnosticsPlatform;
-  }
-  return "unsupported";
-}
-
 export function resolvedModelEngine(diagnostics: Diagnostics | null): string {
   return diagnostics?.backend ?? "Checking";
 }
@@ -2074,12 +2014,7 @@ export function shortcutHelpText(
   permissions: PermissionSnapshot | null,
   holdShortcut: string,
 ): string {
-  const platform = permissions?.platform === "darwin"
-    || permissions?.platform === "win32"
-    || permissions?.platform === "linux"
-    ? permissions.platform
-    : undefined;
-  const label = shortcutDisplayLabel(holdShortcut, platform);
+  const label = shortcutDisplayLabel(holdShortcut);
   if (!permissions) return `Shortcut changes apply immediately. The current push-to-talk key is ${label}.`;
 
   /*
@@ -2099,27 +2034,15 @@ export function shortcutHelpText(
     // both menus and the recorder below, and pressing it does nothing.
     return withToggle(hold, hold);
   }
-  if (permissions.platform === "darwin") {
-    if (permissions.accessibility.granted) {
-      return withToggle(
-        `The current push-to-talk key is ${label}. Accessibility is granted, but the global keyboard hook is not running. Restart LocalScribe or use the toggle shortcut.`,
-        `The current push-to-talk key is ${label}. Accessibility is granted, but the global keyboard hook is not running.`,
-      );
-    }
+  if (permissions.accessibility.granted) {
     return withToggle(
-      `The current push-to-talk key is ${label}. Grant Accessibility to use it globally; until then, use the toggle shortcut and LocalScribe will copy completed dictation.`,
-      `The current push-to-talk key is ${label}. Grant Accessibility to use it globally.`,
-    );
-  }
-  if (permissions.platform === "win32") {
-    return withToggle(
-      `The current push-to-talk key is ${label}. The Windows global keyboard hook is not running; restart LocalScribe or use the toggle shortcut.`,
-      `The current push-to-talk key is ${label}. The Windows global keyboard hook is not running.`,
+      `The current push-to-talk key is ${label}. Accessibility is granted, but the global keyboard hook is not running. Restart LocalScribe or use the toggle shortcut.`,
+      `The current push-to-talk key is ${label}. Accessibility is granted, but the global keyboard hook is not running.`,
     );
   }
   return withToggle(
-    `The current push-to-talk key is ${label}. Global push-to-talk is unavailable on this platform; the toggle shortcut still works.`,
-    `The current push-to-talk key is ${label}. Global push-to-talk is unavailable on this platform.`,
+    `The current push-to-talk key is ${label}. Grant Accessibility to use it globally; until then, use the toggle shortcut and LocalScribe will copy completed dictation.`,
+    `The current push-to-talk key is ${label}. Grant Accessibility to use it globally.`,
   );
 }
 

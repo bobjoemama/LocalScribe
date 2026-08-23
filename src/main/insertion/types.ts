@@ -1,11 +1,11 @@
 export interface ActiveTarget {
-  platform: "darwin" | "win32";
+  platform: "darwin";
   processId: number;
   applicationId: string;
   windowFingerprint: string | null;
-  /** macOS Accessibility can confirm whether the focused control accepts text. */
+  /** Accessibility can confirm whether the focused control accepts text. */
   focusedEditable?: boolean | null;
-  /** macOS-only opaque identity for the exact focused editable control. */
+  /** Opaque identity for the exact focused editable control. */
   focusedElementFingerprint?: string | null;
 }
 
@@ -44,6 +44,8 @@ export type PasteInjectionResult =
   | {
       /** The input event was not dispatched; the dictated text remains copied. */
       status: "failed";
+      /** Privacy-safe classification; never contains target or clipboard data. */
+      reason?: PasteFailureReason;
     }
   | {
       /** The input event was dispatched to the operating system. */
@@ -64,3 +66,19 @@ export interface PasteInjector {
 }
 
 export type InsertionOutcome = "pasted" | "pasted-with-copy" | "copied";
+
+export type PasteFailureReason =
+  | "permission_denied"
+  | "target_unavailable"
+  | "target_changed"
+  | "clipboard_changed"
+  | "event_unavailable"
+  | "helper_unavailable"
+  | "invalid_request"
+  | "invalid_response";
+
+export type InsertionReasonCode =
+  | "automatic_paste_disabled"
+  | "automatic_paste_unavailable"
+  | "safety_check_declined"
+  | "clipboard_retained";

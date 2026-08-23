@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   scratchpadNoteSchema,
-  type RuntimePlatform,
   type ScratchpadNote,
 } from "../../shared/contracts";
 import {
@@ -33,15 +32,12 @@ export function scratchpadStatusLabel(state: ScratchpadStatus): string {
   return "Saved";
 }
 
-export function shouldShowCustomWindowActions(platform: RuntimePlatform | null): boolean {
-  return platform === "darwin";
+export function shouldShowCustomWindowActions(): boolean {
+  return true;
 }
 
-export function scratchpadWindowControlMode(
-  platform: RuntimePlatform | null,
-): "pending" | "custom" | "native" {
-  if (platform === null) return "pending";
-  return shouldShowCustomWindowActions(platform) ? "custom" : "native";
+export function scratchpadWindowControlMode(): "custom" {
+  return "custom";
 }
 
 export function scratchpadHeaderTitle(
@@ -97,8 +93,7 @@ function ExpandIcon() {
   return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5H5v4M15 5h4v4M9 19H5v-4M15 19h4v-4" /></svg>;
 }
 
-export function ScratchpadWindowControls({ platform }: { platform: RuntimePlatform | null }) {
-  if (!shouldShowCustomWindowActions(platform)) return null;
+export function ScratchpadWindowControls() {
   return (
     <>
       <button className="scratchpad-window__window-action" type="button" onClick={() => void window.localScribe.windows.toggleScratchpadSize()} aria-label="Toggle expanded Scratchpad" title="Toggle expanded Scratchpad">
@@ -120,7 +115,6 @@ export function ScratchpadWindow() {
   const [copyMessage, setCopyMessage] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [deletingIds, setDeletingIds] = useState<ReadonlySet<string>>(() => new Set());
-  const [runtimePlatform, setRuntimePlatform] = useState<RuntimePlatform | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const notesRef = useRef<ScratchpadNote[]>([]);
   const selectedIdRef = useRef<string | null>(null);
@@ -271,17 +265,6 @@ export function ScratchpadWindow() {
     return () => { active = false; };
   }, [addNewNote, replaceNotes, selectNote]);
 
-  useEffect(() => {
-    let active = true;
-    void window.localScribe.system.appInfo().then(
-      (info) => {
-        if (active) setRuntimePlatform(info.platform);
-      },
-      () => undefined,
-    );
-    return () => { active = false; };
-  }, []);
-
   flushPendingSavesRef.current = () => {
     for (const [id, body] of pendingBodiesRef.current) {
       const timer = saveTimersRef.current.get(id);
@@ -323,7 +306,7 @@ export function ScratchpadWindow() {
   const activeBody = activeNote?.body ?? "";
   const activeWordCount = activeNote ? wordCountFor(activeNote) : 0;
   const headerTitle = scratchpadHeaderTitle(activeNote?.title ?? null, status);
-  const windowControlMode = scratchpadWindowControlMode(runtimePlatform);
+  const windowControlMode = scratchpadWindowControlMode();
   const filteredNotes = useMemo(() => notes.filter((note) => scratchpadNoteMatches(note, query)), [notes, query]);
 
   const updateActiveBody = (body: string) => {
@@ -419,7 +402,7 @@ export function ScratchpadWindow() {
           <PlusIcon />
         </button>
         <span className="scratchpad-window__title-spacer" />
-        <ScratchpadWindowControls platform={runtimePlatform} />
+        <ScratchpadWindowControls />
       </header>
 
       <div className="scratchpad-window__workspace">
