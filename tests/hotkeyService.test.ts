@@ -128,11 +128,10 @@ describe("HotkeyService capture and validation", () => {
       null,
       "NumpadEnter",
       "Control+Space",
-      "win32",
     );
 
-    expect(uiohookHoldKeyGroups("NumpadEnter", "win32")).toEqual([[3612]]);
-    expect(uiohookHoldKeyGroups("Enter", "win32")).toEqual([[28]]);
+    expect(uiohookHoldKeyGroups("NumpadEnter")).toEqual([[3612]]);
+    expect(uiohookHoldKeyGroups("Enter")).toEqual([[28]]);
     expect(service.validateShortcut({ kind: "hold", shortcut: "NumpadEnter" }))
       .toEqual({ shortcut: "NumpadEnter", available: true });
     expect(mocks.globalShortcut.register).not.toHaveBeenCalled();
@@ -347,7 +346,6 @@ describe("HotkeyService capture and validation", () => {
       monitor,
       "Control",
       "Control+Space",
-      "darwin",
     );
 
     service.startFallback();
@@ -381,7 +379,6 @@ describe("HotkeyService capture and validation", () => {
       monitor,
       "Command+Control",
       "Control+Space",
-      "darwin",
     );
 
     service.start();
@@ -406,7 +403,7 @@ describe("HotkeyService capture and validation", () => {
       stop: vi.fn(),
     };
     const service = new HotkeyService(
-      vi.fn(), vi.fn(), vi.fn(), monitor, "F21", "Control+Space", "darwin",
+      vi.fn(), vi.fn(), vi.fn(), monitor, "F21", "Control+Space",
     );
 
     service.start();
@@ -436,7 +433,6 @@ describe("HotkeyService capture and validation", () => {
       monitor,
       "Control",
       "Control+Space",
-      "darwin",
     );
     service.startFallback();
     monitorState.listener?.("hold-down");
@@ -477,7 +473,6 @@ describe("HotkeyService capture and validation", () => {
       monitor,
       "Control",
       "Control+Space",
-      "darwin",
     );
     service.start();
 
@@ -516,48 +511,10 @@ describe("HotkeyService capture and validation", () => {
       { supports: vi.fn(() => true), start: vi.fn(() => false), stop: vi.fn() },
       "Control",
       "Control+Space",
-      "darwin",
     );
     unavailableFallback.startFallback();
     expect(unavailableFallback.isGlobalHoldReady()).toBe(false);
     warning.mockRestore();
-  });
-
-  it("keeps Windows Ctrl+Space toggle distinct from a Control push-to-talk hold", () => {
-    const onPress = vi.fn();
-    const onRelease = vi.fn();
-    const onToggle = vi.fn();
-    const service = new HotkeyService(
-      onPress,
-      onRelease,
-      onToggle,
-      null,
-      "Control",
-      "Control+Space",
-      "win32",
-    );
-    service.start();
-    const toggleRegistration = mocks.globalShortcut.register.mock.calls.find(
-      ([shortcut]) => shortcut === "Control+Space",
-    );
-    const toggleCallback = toggleRegistration?.[1] as (() => void) | undefined;
-    expect(toggleCallback).toBeTypeOf("function");
-
-    mocks.listeners.get("keydown")?.({ keycode: 29 });
-    mocks.listeners.get("keydown")?.({ keycode: 57 });
-    toggleCallback?.();
-    vi.advanceTimersByTime(200);
-    expect(onToggle).toHaveBeenCalledOnce();
-    expect(onPress).not.toHaveBeenCalled();
-    mocks.listeners.get("keyup")?.({ keycode: 57 });
-    mocks.listeners.get("keyup")?.({ keycode: 29 });
-
-    vi.advanceTimersByTime(600);
-    mocks.listeners.get("keydown")?.({ keycode: 29 });
-    vi.advanceTimersByTime(160);
-    expect(onPress).toHaveBeenCalledOnce();
-    mocks.listeners.get("keyup")?.({ keycode: 29 });
-    expect(onRelease).toHaveBeenCalledOnce();
   });
 
   it("cancels macOS modifier-only holds when another key or mouse input is used", () => {
@@ -569,7 +526,6 @@ describe("HotkeyService capture and validation", () => {
       null,
       "Command+Control",
       "Control+Space",
-      "darwin",
     );
     service.start();
 
@@ -599,39 +555,6 @@ describe("HotkeyService capture and validation", () => {
     expect(onPress).toHaveBeenCalledOnce();
   });
 
-  it("uses Windows-specific shortcut diagnostics and preserves toggle fallback", () => {
-    const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-    const service = new HotkeyService(
-      vi.fn(),
-      vi.fn(),
-      vi.fn(),
-      null,
-      "Control",
-      "Control+Space",
-      "win32",
-    );
-
-    expect(service.validateShortcut({ kind: "toggle", shortcut: "Control" }))
-      .toMatchObject({ available: false, error: expect.stringContaining("Windows") });
-    expect(service.validateShortcut({ kind: "hold", shortcut: "Shift" }))
-      .toEqual({ shortcut: "Shift", available: true });
-
-    mocks.uIOhook.start.mockImplementationOnce(() => {
-      throw new Error("Windows hook unavailable");
-    });
-    expect(() => service.start()).toThrow("Windows hook unavailable");
-    expect(() => service.startFallback()).not.toThrow();
-    expect(service.validateShortcut({ kind: "hold", shortcut: "Shift" }))
-      .toMatchObject({ available: false, error: expect.stringContaining("hook did not start") });
-    expect(() => service.reconfigure("Shift", "Control+Space"))
-      .toThrow("push-to-talk cannot be changed");
-    expect(() => service.reconfigure("Control", "F13")).not.toThrow();
-    expect(warning).toHaveBeenCalledWith(
-      expect.stringContaining("Windows global keyboard hook could not start"),
-    );
-    warning.mockRestore();
-  });
-
   it("uses macOS physical aliases and supports arbitrary native modifier holds", () => {
     const monitor = {
       supports: vi.fn(() => true),
@@ -645,7 +568,6 @@ describe("HotkeyService capture and validation", () => {
       monitor,
       "CommandOrControl",
       "Control+Space",
-      "darwin",
     );
 
     expect(service.validateShortcut({

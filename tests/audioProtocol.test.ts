@@ -73,7 +73,7 @@ describe("audio protocol", () => {
     })).toThrow();
   });
 
-  it("keeps both packaged worker constants aligned to the manifest", () => {
+  it("keeps the packaged worker constants aligned to the manifest", () => {
     const expected = [
       `AUDIO_PROTOCOL_VERSION = ${AUDIO_PROTOCOL_VERSION}`,
       `MAX_AUDIO_BYTES = ${AUDIO_MAX_FILE_BYTES.toLocaleString("en-US").replaceAll(",", "_")}`,
@@ -83,11 +83,7 @@ describe("audio protocol", () => {
       `REQUIRED_CHANNELS = ${AUDIO_CHANNELS}`,
       `REQUIRED_SAMPLE_WIDTH_BYTES = ${AUDIO_BITS_PER_SAMPLE / 8}`,
     ];
-    for (const source of [
-      workerSource("worker/localscribe_worker/worker.py"),
-      workerSource("worker/windows_transformers/localscribe_windows_worker/worker.py"),
-    ]) {
-      for (const constant of expected) expect(source).toContain(constant);
-    }
+    const source = workerSource("worker/localscribe_worker/worker.py");
+    for (const constant of expected) expect(source).toContain(constant);
   });
 });

@@ -47,14 +47,9 @@ describe("release metadata", () => {
     const root = project(manifest());
     const metadata = loadReleaseMetadata(root);
     const mac = releaseLayout(metadata, "darwin", root);
-    const windows = releaseLayout(metadata, "win32", root);
 
     expect(metadata.repository).toBe("bobjoemama/LocalScribe");
-    expect(metadata.windowsAppUserModelId).toBe(
-      RELEASE_POLICY.windowsAppUserModelId,
-    );
     expect(metadata.targets.darwin).toMatchObject(RELEASE_POLICY.targets.darwin);
-    expect(metadata.targets.win32).toMatchObject(RELEASE_POLICY.targets.win32);
     expect(mac.tag).toBe("v2.3.4-beta.5");
     expect(mac.primaryArtifactNames).toEqual([
       "LocalScribe-2.3.4-beta.5-arm64.dmg",
@@ -62,12 +57,6 @@ describe("release metadata", () => {
     ]);
     expect(mac.coreSbomName).toBe(
       "LocalScribe-2.3.4-beta.5-macos-arm64-core-runtime.sbom.cdx.json",
-    );
-    expect(windows.primaryArtifactNames).toEqual([
-      "LocalScribe-win32-x64-2.3.4-beta.5.zip",
-    ]);
-    expect(windows.checksumName).toBe(
-      "LocalScribe-2.3.4-beta.5-windows-x64-SHA256SUMS.txt",
     );
   });
 
@@ -123,15 +112,12 @@ describe("release metadata", () => {
     expect(packageJson.scripts["make:mac"]).toContain(
       "run-forge-target.mjs make darwin",
     );
-    expect(packageJson.scripts["make:windows"]).toContain(
-      "run-forge-target.mjs make win32",
-    );
     expect(targetRunner).not.toMatch(/--arch=(?:arm64|x64)/u);
-    expect(releasing).toContain("scripts/verify-release-assets.mjs `");
-    expect(releasing).toContain("--platform win32 `");
+    expect(releasing).toContain("scripts/verify-release-assets.mjs");
+    expect(releasing).not.toContain("--platform win32");
     expect(releasing).toContain("--require-prerelease");
-    expect(releasing).toContain("gh release upload $release.tag @assetPaths");
-    expect(releasing).toContain("Do not delete or replace a reviewed asset in place.");
+    expect(releasing).toContain("No local command automatically creates a GitHub Release");
+    expect(releasing).toMatch(/do not delete or replace a\s+reviewed asset in place\./u);
     expect(readme).not.toContain("/releases/download/v0.1.0");
     expect(readme).not.toContain("LocalScribe-0.1.0-arm64.dmg");
   });

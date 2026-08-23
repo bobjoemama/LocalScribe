@@ -45,30 +45,19 @@ describe("local Insights app attribution", () => {
     expect(appCategory("com.apple.Safari").key).toBe("browser");
   });
 
-  it("recognizes common Windows executable paths and presents useful app names", () => {
-    const cases = [
-      ["C:\\Users\\dev\\AppData\\Local\\Programs\\Microsoft VS Code\\Code.exe", "development", "Visual Studio Code"],
-      ["C:\\Program Files\\Microsoft Office\\root\\Office16\\WINWORD.EXE", "documents", "Microsoft Word"],
-      ["C:\\Windows\\System32\\notepad.exe", "documents", "Notepad"],
-      ["C:\\Program Files\\Microsoft Office\\root\\Office16\\EXCEL.EXE", "documents", "Microsoft Excel"],
-      ["C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe", "browser", "Microsoft Edge"],
-      ["C:\\Program Files\\Microsoft Office\\root\\Office16\\OUTLOOK.EXE", "email", "Microsoft Outlook"],
-      ["C:\\Program Files\\PowerShell\\7\\pwsh.exe", "development", "PowerShell"],
-      ["C:\\Program Files\\WindowsApps\\Microsoft.WindowsTerminal\\WindowsTerminal.exe", "development", "Windows Terminal"],
-    ] as const;
-
-    for (const [applicationId, category, name] of cases) {
-      expect(appCategory(applicationId).key).toBe(category);
-      expect(friendlyAppName(applicationId)).toBe(name);
-    }
+  it("recognizes common macOS bundle identifiers", () => {
+    expect(appCategory("com.microsoft.Word").key).toBe("documents");
+    expect(appCategory("com.microsoft.Excel").key).toBe("documents");
+    expect(appCategory("com.microsoft.Outlook").key).toBe("email");
+    expect(appCategory("com.microsoft.VSCode").key).toBe("development");
+    expect(friendlyAppName("com.microsoft.vscode")).toBe("Visual Studio Code");
   });
 
-  it("uses only the Windows executable name and never path folders for attribution", () => {
-    expect(friendlyAppName("C:\\Users\\Alice\\app.exe")).toBe("App");
-    expect(friendlyAppName("  C:\\Programs\\Code.exe  ")).toBe("Visual Studio Code");
-    expect(appCategory("C:\\Users\\openai\\Tools\\paint.exe").key).toBe("other");
-    expect(appCategory("C:\\Tools\\Knowledge.exe").key).toBe("other");
-    expect(appCategory("C:\\Browsers\\msedge.exe").key).toBe("browser");
+  it("uses only an application path basename and never parent folders for display", () => {
+    expect(friendlyAppName("/Users/Alice/Applications/Example.app")).toBe("Example");
+    expect(friendlyAppName("  /Applications/Visual Studio Code.app  ")).toBe("Visual Studio Code");
+    expect(appCategory("/Users/openai/Tools/Paint.app").key).toBe("other");
+    expect(appCategory("/Browsers/Canvas.app").key).toBe("other");
   });
 
   it("derives the recent-history label from the shared history limit", () => {

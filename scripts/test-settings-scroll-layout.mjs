@@ -571,20 +571,18 @@ async function inspectSize(width, height, platform, verification, settingsPreset
     await sleep(100);
     const contentSize = await window.webContents.executeJavaScript(\`({ width: window.innerWidth, height: window.innerHeight })\`);
     const tabs = [
-      await inspectTab(window, "General", platform === "win32" ? "Input access" : "Accessibility"),
+      await inspectTab(window, "General", "Accessibility"),
       await inspectTab(window, "System", "History retention"),
       await inspectTab(
         window,
         "Model & Performance",
-        platform === "win32"
-          ? ".localscribe-model-install-deadbeefdeadbeefdeadbeefdeadbeef"
-          : "Additional model families appear only after their supported profiles have pinned manifests and package validation for this local runtime.",
+        "Additional model families appear only after their supported profiles have pinned manifests and package validation for this local runtime.",
       ),
       await inspectTab(
         window,
         "Writing",
         settingsPreset === "custom"
-          ? platform === "win32" ? "Notepad" : "TextEdit"
+          ? "TextEdit"
           : "No app profiles",
       ),
       await inspectTab(window, "Data & Privacy", "Automatic paste reads the active app identity and hashes limited focused-window metadata to confirm the dictation target. LocalScribe does not read field or document contents from other applications."),
@@ -638,15 +636,8 @@ async function run() {
   for (const [width, height] of sizes) {
     results.push(await inspectSize(width, height, "darwin", "missing"));
   }
-  for (const verification of ["missing", "invalid", "verified"]) {
-    for (const [width, height] of sizes) {
-      results.push(await inspectSize(width, height, "win32", verification));
-    }
-  }
-  for (const platform of ["darwin", "win32"]) {
-    for (const [width, height] of sizes) {
-      results.push(await inspectSize(width, height, platform, "missing", "custom"));
-    }
+  for (const [width, height] of sizes) {
+    results.push(await inspectSize(width, height, "darwin", "missing", "custom"));
   }
   results.push(await inspectSize(900, 640, "darwin", "verified", "default", "success"));
   results.push(await inspectSize(900, 640, "darwin", "verified", "default", "fail"));
@@ -710,9 +701,12 @@ function assertTab(result, size) {
     `${label}: an application control does not keep the stable arrow cursor: ${JSON.stringify(result.interactiveCursors)}`,
   );
   if (label === "Model & Performance") {
+    const expectedModes = size.settingsPreset === "custom"
+      ? "auto\u0000high\u0000medium\u0000low"
+      : "auto\u0000high\u0000medium";
     assert(
-      result.modelControls.modes.map((mode) => mode.value).join("\u0000") === "auto\u0000high\u0000medium\u0000low",
-      `Model & Performance: expected Auto, High, Medium, and Low controls: ${layoutEvidence}`,
+      result.modelControls.modes.map((mode) => mode.value).join("\u0000") === expectedModes,
+      `Model & Performance: performance controls do not match the selected family: ${layoutEvidence}`,
     );
     assert(
       result.modelControls.modes.every((control) => control.visible),
@@ -723,57 +717,24 @@ function assertTab(result, size) {
         === (size.settingsPreset === "custom" ? "low" : "auto"),
       `Model & Performance: selected mode does not match persisted settings: ${layoutEvidence}`,
     );
-    if (size.platform === "win32") {
-      const expectedAction = {
-        missing: "Download High profile for whisper-large-v3",
-        invalid: "Repair High profile for whisper-large-v3",
-        verified: "Remove High profile for whisper-large-v3",
-      }[size.verification];
+    assert(
+      result.modelControls.actions.length === (size.applyResult ? 6 : 3)
+      && result.modelControls.actions.every((control) => control.visible),
+      `Model & Performance: a macOS install control cannot be scrolled into view: ${layoutEvidence}`,
+    );
+    for (const expected of [
+      "Parakeet Unified EN 0.6B",
+      "FluidAudio CoreML / ANE",
+      "One downloaded model supports both After I stop and Live",
+    ]) {
       assert(
-        result.modelControls.actions.length === 1
-        && result.modelControls.actions[0]?.label === expectedAction
-        && result.modelControls.actions[0]?.visible,
-        `Model & Performance: Windows shared artifact action is not truthful and reachable: ${layoutEvidence}`,
+        result.modelControls.copy.includes(expected),
+        `Model & Performance: macOS copy is missing "${expected}": ${layoutEvidence}`,
       );
-      const copy = result.modelControls.copy;
-      for (const expected of [
-        "NVIDIA GeForce RTX 3060 Laptop GPU",
-        "NVIDIA VRAM",
-        "Runtimefaster-whisper/CTranslate2",
-        "FP16",
-        "INT8 weights + FP16 compute",
-        "INT8",
-        "legacy-qwen3-asr",
-        "Unmanaged model data",
-        ".localscribe-model-install-deadbeefdeadbeefdeadbeefdeadbeef",
-        "Interrupted model installation",
-        "will not be deleted automatically",
-      ]) {
-        assert(copy.includes(expected), `Model & Performance: Windows copy is missing "${expected}": ${layoutEvidence}`);
-      }
-      assert(
-        result.modelControls.sharedLabels === 2,
-        `Model & Performance: Windows shared profile labels are incomplete: ${layoutEvidence}`,
-      );
-    } else {
-      assert(
-        result.modelControls.actions.length === (size.applyResult ? 6 : 3)
-        && result.modelControls.actions.every((control) => control.visible),
-        `Model & Performance: a macOS install control cannot be scrolled into view: ${layoutEvidence}`,
-      );
-      for (const expected of [
-        "Parakeet Unified EN 0.6B",
-        "FluidAudio CoreML / ANE",
-        "One downloaded model supports both After I stop and Live",
-      ]) {
-        assert(
-          result.modelControls.copy.includes(expected),
-          `Model & Performance: macOS copy is missing "${expected}": ${layoutEvidence}`,
-        );
-      }
     }
   }
 }
+
 
 function assertModelSelection(size) {
   const evidence = size.modelSelection;
@@ -805,7 +766,7 @@ function assertModelSelection(size) {
     );
   } else {
     assert(evidence.afterApply.persisted.modelPerformanceMode === "auto", `Model Apply: failed mode mutated persisted settings: ${serialized}`);
-    assert(evidence.afterApply.persisted.activeModelFamilyId === "whisper-large-v3", `Model Apply: failed family mutated persisted settings: ${serialized}`);
+    assert(evidence.afterApply.persisted.activeModelFamilyId === "parakeet-unified-en-0-6b", `Model Apply: failed family mutated persisted settings: ${serialized}`);
     assert(evidence.afterApply.persisted.asrMode === "after-stop", `Model Apply: failed experience mutated persisted settings: ${serialized}`);
     assert(evidence.afterApply.checked.join("") === "low", `Model Apply: failed selection was not preserved: ${serialized}`);
     assert(!evidence.afterApply.applyDisabled, `Model Apply: failed pending selection cannot be retried: ${serialized}`);
@@ -918,8 +879,8 @@ function assertChangedSettings(size) {
     general?.language?.selectedLabel === "Italian (saved; unsupported by selected model)",
     `Older saved language is rendered blank or misleadingly: ${evidence}`,
   );
-  const expectedHold = size.platform === "win32" ? "Alt + F13" : "Option + F13";
-  const expectedToggle = size.platform === "win32" ? "Control + F14" : "Command + F14";
+  const expectedHold = "Option + F13";
+  const expectedToggle = "Command + F14";
   assert(general?.holdShortcut?.includes(expectedHold), `Saved hold shortcut is not platform-formatted: ${evidence}`);
   assert(general?.toggleShortcut?.includes(expectedToggle), `Saved toggle shortcut is not platform-formatted: ${evidence}`);
 
@@ -939,7 +900,7 @@ function assertChangedSettings(size) {
   assert(writing?.["Spoken commands"]?.checked === true, `Spoken-command setting is not bound: ${evidence}`);
   assert(writing?.["Smart punctuation"]?.checked === false, `Punctuation setting is not bound: ${evidence}`);
   assert(
-    writing?.copy?.includes(size.platform === "win32" ? "notepad.exe" : "com.apple.TextEdit"),
+    writing?.copy?.includes("com.apple.TextEdit"),
     `Persisted app profile is not rendered for the runtime platform: ${evidence}`,
   );
 

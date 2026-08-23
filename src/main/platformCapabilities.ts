@@ -11,15 +11,18 @@ export type PermissionKind = "microphone" | "accessibility";
  * infer OS support from a browser user agent.
  */
 export function runtimePlatformFor(platform: string): RuntimePlatform {
-  if (platform === "darwin" || platform === "win32" || platform === "linux") return platform;
-  return "unsupported";
+  if (platform === "darwin") return platform;
+  throw new Error(`LocalScribe supports only macOS; received ${platform}`);
+}
+
+export function runtimeArchitectureFor(architecture: string): "arm64" {
+  if (architecture === "arm64") return architecture;
+  throw new Error(`LocalScribe supports only Apple Silicon; received ${architecture}`);
 }
 
 /**
- * macOS is the only currently supported platform with a separately granted
- * Accessibility permission.  Windows has no equivalent privacy toggle for
- * this app; Linux is deliberately reported as unsupported instead of claiming
- * that a synthetic input path will work.
+ * LocalScribe uses macOS microphone, Accessibility, and global-hotkey
+ * capabilities. The renderer receives the live readiness of each path.
  */
 export function permissionSnapshotForPlatform(
   platform: RuntimePlatform,
@@ -34,26 +37,24 @@ export function permissionSnapshotForPlatform(
    */
   globalToggleReady = true,
 ): PermissionSnapshot {
-  const isMac = platform === "darwin";
-  const isWindows = platform === "win32";
   return {
     platform,
     microphone,
-    microphoneSettingsAvailable: isMac || isWindows,
+    microphoneSettingsAvailable: true,
     accessibility: {
-      supported: isMac,
-      granted: isMac && accessibilityGranted,
+      supported: true,
+      granted: accessibilityGranted,
     },
     automaticPaste: {
-      supported: isMac || isWindows,
-      ready: isMac ? accessibilityGranted : isWindows && automaticPasteReady,
+      supported: true,
+      ready: accessibilityGranted && automaticPasteReady,
     },
     globalHold: {
-      supported: isMac || isWindows,
+      supported: true,
       // Common Mac chords use the narrow native key-state monitor; rare keys
       // without a macOS virtual-key code retain the Accessibility hook. Only
       // HotkeyService can prove that the selected path actually started.
-      ready: (isMac || isWindows) && globalHoldReady,
+      ready: globalHoldReady,
     },
     globalToggle: {
       // Every desktop platform can register an accelerator; whether this one
@@ -67,14 +68,10 @@ export function permissionSnapshotForPlatform(
 
 /** Returns a real settings deep-link only where the operating system supports one. */
 export function permissionSettingsUrl(
-  platform: RuntimePlatform,
+  _platform: RuntimePlatform,
   permission: PermissionKind,
-): string | null {
-  if (platform === "darwin") {
-    return permission === "microphone"
-      ? "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone"
-      : "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility";
-  }
-  if (platform === "win32" && permission === "microphone") return "ms-settings:privacy-microphone";
-  return null;
+): string {
+  return permission === "microphone"
+    ? "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone"
+    : "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility";
 }

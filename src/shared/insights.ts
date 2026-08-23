@@ -50,28 +50,8 @@ const FRIENDLY_APP_NAMES: Record<string, string> = {
   "com.localscribe.desktop": "LocalScribe",
 };
 
-const FRIENDLY_EXECUTABLE_NAMES: Record<string, string> = {
-  brave: "Brave",
-  code: "Visual Studio Code",
-  excel: "Microsoft Excel",
-  msedge: "Microsoft Edge",
-  "ms-teams": "Microsoft Teams",
-  notepad: "Notepad",
-  onenote: "Microsoft OneNote",
-  opera: "Opera",
-  outlook: "Microsoft Outlook",
-  powerpnt: "Microsoft PowerPoint",
-  powershell: "PowerShell",
-  pwsh: "PowerShell",
-  teams: "Microsoft Teams",
-  vivaldi: "Vivaldi",
-  winword: "Microsoft Word",
-  windowsterminal: "Windows Terminal",
-  wordpad: "WordPad",
-};
-
 const GENERIC_BUNDLE_SEGMENTS = new Set([
-  "app", "application", "beta", "com", "desktop", "dev", "exe", "io", "net", "nightly", "org", "release", "stable",
+  "app", "application", "beta", "com", "desktop", "dev", "io", "net", "nightly", "org", "release", "stable",
 ]);
 
 export function countWords(text: string): number {
@@ -90,12 +70,7 @@ export function friendlyAppName(sourceAppId: string | null | undefined): string 
 export function appIdentityKey(sourceAppId: string | null | undefined): string | null {
   const source = sourceAppId?.trim();
   if (!source) return null;
-  const normalizedPath = source.replace(/\\/gu, "/");
-  const basename = normalizedPath.split("/").filter(Boolean).at(-1);
-  if (basename && /\.exe$/iu.test(basename)) {
-    return `windows:${basename.toLocaleLowerCase("en-US")}`;
-  }
-  return `app:${source.toLocaleLowerCase("en-US")}`;
+  return `app:${source.replace(/\\/gu, "/").toLocaleLowerCase("en-US")}`;
 }
 
 function genericFriendlyApplicationName(sourceAppId: string): string {
@@ -110,11 +85,8 @@ function genericFriendlyApplicationName(sourceAppId: string): string {
   // A filesystem path is not an application namespace. Never walk its parent
   // folders for a display name: they can contain usernames or unrelated words.
   const displayCandidate = pathLike ? pathBasename ?? sourceAppId : candidate;
-  const executableStem = displayCandidate.replace(/\.exe$/iu, "").trim().toLocaleLowerCase("en-US");
-  const knownExecutableName = FRIENDLY_EXECUTABLE_NAMES[executableStem];
-  if (knownExecutableName) return knownExecutableName;
   const genericName = displayCandidate
-    .replace(/\.exe$/iu, "")
+    .replace(/\.app$/iu, "")
     .trim()
     .replace(/[-_]+/gu, " ")
     .replace(/\b\w/g, (letter) => letter.toLocaleUpperCase());
@@ -123,10 +95,13 @@ function genericFriendlyApplicationName(sourceAppId: string): string {
 
 export function appCategory(sourceAppId: string | null | undefined): AppCategory {
   const source = sourceAppId?.trim() ?? "";
-  const app = source.toLocaleLowerCase();
+  const normalizedPath = source.replace(/\\/gu, "/");
+  const pathLike = normalizedPath.includes("/");
+  const app = (pathLike
+    ? normalizedPath.split("/").filter(Boolean).at(-1) ?? ""
+    : normalizedPath
+  ).toLocaleLowerCase();
   if (!app) return { key: "other", label: "Other tasks" };
-  const executable = windowsExecutableStem(source);
-  if (executable) return executableCategory(executable);
   if (/(chatgpt|openai|claude|anthropic|perplexity|lmstudio|lm studio|ollama|codex)/.test(app)) {
     return { key: "ai", label: "AI prompts" };
   }
@@ -139,45 +114,13 @@ export function appCategory(sourceAppId: string | null | undefined): AppCategory
   if (/(apple\.mail|outlook|spark|airmail|thunderbird|superhuman|hey\.email|protonmail)/.test(app)) {
     return { key: "email", label: "Emails" };
   }
-  if (/(notion|obsidian|microsoft\.word|\.word|winword(?:\.exe)?|excel(?:\.exe)?|powerpnt(?:\.exe)?|onenote(?:\.exe)?|wordpad(?:\.exe)?|notepad(?:\.exe)?|libreoffice|pages|google.*docs|notes|bear|ulysses|craft)/.test(app)) {
+  if (/(notion|obsidian|microsoft\.(?:word|excel|powerpoint|onenote)|libreoffice|pages|google.*docs|notes|bear|ulysses|craft)/.test(app)) {
     return { key: "documents", label: "Documents" };
   }
-  if (/(cmux|vscode|vs[ ._-]?code|(?:^|[\\/])code\.exe|visual.?studio|xcode|terminal|iterm|warp|github|jetbrains|cursor|zed|cmd\.exe|powershell|pwsh\.exe|windowsterminal)/.test(app)) {
+  if (/(cmux|vscode|vs[ ._-]?code|visual.?studio|xcode|terminal|iterm|warp|github|jetbrains|cursor|zed)/.test(app)) {
     return { key: "development", label: "Development" };
   }
   if (/(safari|chrome|firefox|brave|opera|vivaldi|arc|edge|zen|browser)/.test(app)) {
-    return { key: "browser", label: "Browsing" };
-  }
-  return { key: "other", label: "Other tasks" };
-}
-
-function windowsExecutableStem(sourceAppId: string): string | null {
-  const normalizedPath = sourceAppId.replace(/\\/gu, "/");
-  const basename = normalizedPath.split("/").filter(Boolean).at(-1)?.trim() ?? "";
-  if (!/\.exe$/iu.test(basename)) return null;
-  return basename.replace(/\.exe$/iu, "").toLocaleLowerCase("en-US");
-}
-
-function executableCategory(executable: string): AppCategory {
-  if (/^(?:chatgpt|claude|lmstudio|ollama|codex)$/u.test(executable)) {
-    return { key: "ai", label: "AI prompts" };
-  }
-  if (/^(?:messenger|signal|telegram|whatsapp)$/u.test(executable)) {
-    return { key: "personal", label: "Personal messages" };
-  }
-  if (/^(?:discord|ms-teams|slack|teams|zoom)$/u.test(executable)) {
-    return { key: "work", label: "Work messages" };
-  }
-  if (/^(?:outlook|spark|thunderbird)$/u.test(executable)) {
-    return { key: "email", label: "Emails" };
-  }
-  if (/^(?:excel|libreoffice|notepad|notion|obsidian|onenote|powerpnt|winword|wordpad)$/u.test(executable)) {
-    return { key: "documents", label: "Documents" };
-  }
-  if (/^(?:cmd|code|cursor|devenv|githubdesktop|idea64|powershell|pwsh|pycharm64|webstorm64|windowsterminal|zed)$/u.test(executable)) {
-    return { key: "development", label: "Development" };
-  }
-  if (/^(?:arc|brave|chrome|firefox|msedge|opera|vivaldi|zen)$/u.test(executable)) {
     return { key: "browser", label: "Browsing" };
   }
   return { key: "other", label: "Other tasks" };

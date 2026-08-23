@@ -49,7 +49,7 @@ import {
   formatModelBytes,
   MODEL_MODE_CHOICES,
   modelVerificationPresentation,
-  platformModelCopy,
+  modelMemoryCopy,
 } from "../src/renderer/settings/screens/ModelPerformanceSettings";
 
 describe("feature availability copy", () => {
@@ -62,21 +62,11 @@ describe("feature availability copy", () => {
 });
 
 describe("app profile presentation", () => {
-  it("uses runtime-platform app identity examples instead of a macOS-only fixture", () => {
-    expect(appProfilePresentation("darwin")).toEqual({
+  it("uses macOS bundle identity examples", () => {
+    expect(appProfilePresentation()).toEqual({
       detail: "Override cleanup for a macOS app bundle identifier.",
       labelPlaceholder: "TextEdit",
       appIdPlaceholder: "com.apple.TextEdit",
-    });
-    expect(appProfilePresentation("win32")).toEqual({
-      detail: "Override cleanup for a Windows executable name.",
-      labelPlaceholder: "Notepad",
-      appIdPlaceholder: "notepad.exe",
-    });
-    expect(appProfilePresentation(null)).toEqual({
-      detail: "Override cleanup for an application identifier reported by this platform.",
-      labelPlaceholder: "App name",
-      appIdPlaceholder: "Application identifier",
     });
   });
 
@@ -159,27 +149,10 @@ describe("settings loading truthfulness", () => {
     expect(shortcutCommitErrorMessage()).toBe(
       "Could not apply that shortcut. Choose another key combination or try again.",
     );
-    expect(shortcutCommitErrorMessage()).not.toMatch(/macOS|Windows|System Settings/i);
+    expect(shortcutCommitErrorMessage()).not.toMatch(/macOS|System Settings/i);
   });
 
-  it("keeps Windows automatic paste copy-only until its local helper is ready", () => {
-    const unavailable = automaticPasteSettingsPresentation({
-      platform: "win32",
-      automaticPaste: { supported: true, ready: false },
-    } as never);
-    expect(unavailable).toEqual({
-      editable: false,
-      detail: "The local Windows paste helper is unavailable. Completed dictation will be copied until the helper is available.",
-      value: "Copy only",
-    });
-
-    expect(automaticPasteSettingsPresentation({
-      platform: "win32",
-      automaticPaste: { supported: true, ready: true },
-    } as never)).toMatchObject({
-      editable: true,
-      value: null,
-    });
+  it("waits for macOS automatic paste availability", () => {
     expect(automaticPasteSettingsPresentation(null)).toMatchObject({
       editable: false,
       value: "Checking",
@@ -209,8 +182,8 @@ describe("settings loading truthfulness", () => {
   });
 
   it("keeps the macOS switch usable so the preference survives granting access", () => {
-    // Unlike the Windows helper, this is a permission the user can grant, and
-    // the preference has to already be set for granting it to do anything.
+    // Accessibility is a permission the user can grant, and the preference has
+    // to already be set for granting it to do anything.
     expect(automaticPasteSettingsPresentation({
       platform: "darwin",
       automaticPaste: { supported: true, ready: false },
@@ -246,25 +219,6 @@ describe("settings loading truthfulness", () => {
     );
   });
 
-  it("uses the trusted runtime platform for push-to-talk labels and Windows recovery", () => {
-    const windowsPermissions = {
-      platform: "win32",
-      globalHold: { ready: false },
-      globalToggle: { ready: true },
-      accessibility: { granted: false },
-    } as const;
-    expect(shortcutHelpText(windowsPermissions as never, "Control+Shift")).toBe(
-      "The current push-to-talk key is Control + Shift. The Windows global keyboard hook is not running; restart LocalScribe or use the toggle shortcut.",
-    );
-    expect(shortcutHelpText({
-      platform: "win32",
-      globalHold: { ready: true },
-      globalToggle: { ready: true },
-      accessibility: { granted: false },
-    } as never, "Control")).toBe(
-      "Shortcut changes apply immediately. Hold Control to dictate from any app.",
-    );
-  });
 });
 
 /*
@@ -461,7 +415,7 @@ describe("launch-at-login operating system state", () => {
     });
   });
 
-  it("does not claim enabled when Windows externally disabled the startup item", () => {
+  it("does not claim enabled when macOS externally disabled the startup item", () => {
     expect(launchAtLoginSettingsPresentation(true, {
       supported: true,
       registered: true,
@@ -544,14 +498,10 @@ describe("model and performance presentation", () => {
     ]);
   });
 
-  it("uses platform-accurate memory language without assuming a model backend", () => {
-    expect(platformModelCopy("darwin")).toEqual({
+  it("uses macOS unified-memory language", () => {
+    expect(modelMemoryCopy()).toEqual({
       summary: "Auto uses available unified memory to choose the highest profile that fits in the active family.",
       memoryLabel: "Unified memory",
-    });
-    expect(platformModelCopy("win32")).toEqual({
-      summary: "Auto uses available NVIDIA VRAM to choose the highest profile that fits in the active family.",
-      memoryLabel: "NVIDIA VRAM",
     });
   });
 
@@ -565,14 +515,6 @@ describe("model and performance presentation", () => {
         options: [{ tier: "medium", engine: "internal-engine-slug" }],
       },
     } as never)).toBe("MLX Whisper from the active manifest");
-    expect(resolvedModelEngine({
-      platform: "win32",
-      backend: "faster-whisper/CTranslate2 from the active manifest",
-      performance: {
-        resolvedTier: "low",
-        options: [],
-      },
-    } as never)).toBe("faster-whisper/CTranslate2 from the active manifest");
   });
 
   it("distinguishes verified, missing, and damaged installations", () => {

@@ -1,7 +1,7 @@
 :root {
   color: #242320;
   background: #f3f1ed;
-  font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, sans-serif;
   font-synthesis: none;
   --canvas: #f3f1ed;
   --surface: #fff;
@@ -16,7 +16,7 @@
   --local: #176b61;
   --local-soft: #e2f4ed;
   --danger: #a2443f;
-  --serif: Iowan Old Style, "Palatino Linotype", Palatino, Georgia, serif;
+  --serif: Iowan Old Style, Palatino, Georgia, serif;
 }
 
 * { box-sizing: border-box; }
@@ -198,7 +198,7 @@ html[data-surface="pill"], html[data-surface="pill"] body, html[data-surface="pi
   display: flex;
   align-items: center;
   color: white;
-  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI Variable Text", "Segoe UI", sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
 }
 .pill button { font: inherit; }
 .pill--idle { width: var(--pill-idle-collapsed-width); height: var(--pill-idle-collapsed-height); justify-content: center; transition: width 140ms ease, height 140ms ease; }
@@ -380,7 +380,7 @@ html[data-surface="pill"], html[data-surface="pill"] body, html[data-surface="pi
   align-items: center;
   justify-content: flex-end;
   color: #f8f8f8;
-  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI Variable Text", "Segoe UI", sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
 }
 .pill-error-notice {
   display: grid;

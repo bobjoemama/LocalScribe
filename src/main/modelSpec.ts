@@ -53,7 +53,7 @@ export const modelSpecSchema = z.object({
   schemaVersion: z.literal(1),
   familyId: modelFamilyIdSchema,
   artifactId: stableIdSchema,
-  platform: z.enum(["darwin-arm64", "win32-x64-cuda"]),
+  platform: z.literal("darwin-arm64"),
   backend: z.string().min(1).max(120),
   displayName: z.string().min(1).max(200),
   modelId: huggingFaceRepositoryIdSchema,
@@ -79,19 +79,12 @@ export type ModelCatalogPlatform = ModelSpec["platform"];
 export type ModelEngine =
   | "mlx-whisper"
   | "mlx-audio"
-  | "fluid-audio"
-  | "faster-whisper"
-  | "crispasr";
+  | "fluid-audio";
 export type ModelPrecision =
   | "fp16"
   | "bf16"
   | "8-bit"
   | "4-bit"
-  | "float16"
-  | "int8_float16"
-  | "int8"
-  | "q8_0"
-  | "q4_k"
   | "coreml-fp16"
   | "coreml-int8";
 
@@ -278,24 +271,6 @@ const mlxTier = (
   ),
 });
 
-const windowsTier = (
-  familyId: ModelFamilyId,
-  precision: "float16" | "int8_float16" | "int8",
-  input: {
-    manifestFilename: string;
-    memory: readonly [number, number];
-  },
-): CatalogTierDefinition => ({
-  manifestFilename: input.manifestFilename,
-  engine: "faster-whisper",
-  precision,
-  acceleratorMemory: estimatedMemory(
-    `CTranslate2 ${familyId} ${precision} weights plus conservative CUDA inference overhead; physical benchmark pending`,
-    input.memory[0],
-    input.memory[1],
-  ),
-});
-
 const mlxAudioTier = (
   familyLabel: string,
   input: {
@@ -309,24 +284,6 @@ const mlxAudioTier = (
   precision: input.precision,
   acceleratorMemory: estimatedMemory(
     `MLX Audio ${familyLabel} ${input.precision} artifact size plus conservative inference overhead; physical benchmark pending`,
-    input.memory[0],
-    input.memory[1],
-  ),
-});
-
-const crispAsrTier = (
-  familyLabel: string,
-  input: {
-    manifestFilename: string;
-    precision: "float16" | "q8_0" | "q4_k";
-    memory: readonly [number, number];
-  },
-): CatalogTierDefinition => ({
-  manifestFilename: input.manifestFilename,
-  engine: "crispasr",
-  precision: input.precision,
-  acceleratorMemory: estimatedMemory(
-    `CrispASR ${familyLabel} ${input.precision} GGUF plus conservative CUDA inference overhead; physical Windows benchmark pending`,
     input.memory[0],
     input.memory[1],
   ),
@@ -367,8 +324,8 @@ const QWEN_CAPABILITIES: ModelCapabilities = {
 };
 
 /*
- * Both MLX Whisper and faster-whisper accept explicit language codes and an
- * initial prompt. Keep this separate from the generic final-only default:
+ * MLX Whisper accepts explicit language codes and an initial prompt. Keep
+ * this separate from the generic final-only default:
  * reporting English-only/no-context here would make the settings UI reject
  * real, supported Whisper requests before they reached either runtime.
  */
@@ -510,79 +467,7 @@ const qwen06Mac: FamilyCatalogDefinition = {
   },
 };
 
-const v3WindowsArtifact = {
-  manifestFilename: "faster-whisper-large-v3.json",
-} as const;
-
-const v2WindowsArtifact = {
-  manifestFilename: "faster-whisper-large-v2.json",
-} as const;
-
-const windowsFamily = (
-  familyId: ModelFamilyId,
-  displayName: string,
-  artifact: typeof v3WindowsArtifact | typeof v2WindowsArtifact,
-): FamilyCatalogDefinition => ({
-  familyId,
-  displayName,
-  engine: "faster-whisper",
-  capabilities: WHISPER_CAPABILITIES,
-  tiers: {
-    high: windowsTier(familyId, "float16", { ...artifact, memory: [4.5, 5.5] }),
-    medium: windowsTier(familyId, "int8_float16", { ...artifact, memory: [2.9, 3.5] }),
-    low: windowsTier(familyId, "int8", { ...artifact, memory: [2.6, 3.3] }),
-  },
-});
-
-const qwenWindows: FamilyCatalogDefinition = {
-  familyId: "qwen3-asr-1-7b",
-  displayName: "Qwen3-ASR 1.7B",
-  engine: "crispasr",
-  capabilities: QWEN_CAPABILITIES,
-  tiers: {
-    high: crispAsrTier("Qwen3-ASR 1.7B", {
-      manifestFilename: "qwen3-asr-1-7b-crisp-f16.json",
-      precision: "float16",
-      memory: [4.8, 5.8],
-    }),
-    medium: crispAsrTier("Qwen3-ASR 1.7B", {
-      manifestFilename: "qwen3-asr-1-7b-crisp-q8-0.json",
-      precision: "q8_0",
-      memory: [2.6, 3.6],
-    }),
-    low: crispAsrTier("Qwen3-ASR 1.7B", {
-      manifestFilename: "qwen3-asr-1-7b-crisp-q4-k.json",
-      precision: "q4_k",
-      memory: [1.8, 2.8],
-    }),
-  },
-};
-
-const qwen06Windows: FamilyCatalogDefinition = {
-  familyId: "qwen3-asr-0-6b",
-  displayName: "Qwen3-ASR 0.6B",
-  engine: "crispasr",
-  capabilities: QWEN_CAPABILITIES,
-  tiers: {
-    high: crispAsrTier("Qwen3-ASR 0.6B", {
-      manifestFilename: "qwen3-asr-0-6b-crisp-f16.json",
-      precision: "float16",
-      memory: [2.5, 3.5],
-    }),
-    medium: crispAsrTier("Qwen3-ASR 0.6B", {
-      manifestFilename: "qwen3-asr-0-6b-crisp-q8-0.json",
-      precision: "q8_0",
-      memory: [1.6, 2.6],
-    }),
-    low: crispAsrTier("Qwen3-ASR 0.6B", {
-      manifestFilename: "qwen3-asr-0-6b-crisp-q4-k.json",
-      precision: "q4_k",
-      memory: [1.2, 2.2],
-    }),
-  },
-};
-
-/** Every shipped family is declared for both supported runtime platforms. */
+/** Every shipped family is declared for the supported Apple Silicon runtime. */
 export const MODEL_CATALOG_DEFINITIONS = {
   "darwin-arm64": {
     recommendedDefaultFamilyId: "parakeet-unified-en-0-6b",
@@ -594,30 +479,17 @@ export const MODEL_CATALOG_DEFINITIONS = {
       "whisper-large-v2": v2Mac,
     },
   },
-  "win32-x64-cuda": {
-    // No Windows Parakeet entry until a native backend is physically verified.
-    // Omitting it is safer than presenting an installable-looking no-op.
-    recommendedDefaultFamilyId: "whisper-large-v3",
-    families: {
-      "whisper-large-v3": windowsFamily("whisper-large-v3", "Whisper large-v3", v3WindowsArtifact),
-      "qwen3-asr-0-6b": qwen06Windows,
-      "qwen3-asr-1-7b": qwenWindows,
-      "whisper-large-v2": windowsFamily("whisper-large-v2", "Whisper large-v2", v2WindowsArtifact),
-    },
-  },
 } as const satisfies PlatformCatalogDefinition;
 
 function platformCatalogDefinition(platform: ModelCatalogPlatform): PlatformCatalogDefinition[ModelCatalogPlatform] {
   // `satisfies` keeps the literal manifest names useful while this boundary
-  // deliberately erases the union of platform object shapes. A Windows
-  // catalog can omit a macOS-only family, so indexing must remain optional.
+  // deliberately erases the platform object shape at this boundary.
   return MODEL_CATALOG_DEFINITIONS[platform] as PlatformCatalogDefinition[ModelCatalogPlatform];
 }
 
 export function manifestPlatformForRuntime(platform: NodeJS.Platform, architecture: string): ModelCatalogPlatform {
   if (platform === "darwin" && architecture === "arm64") return "darwin-arm64";
-  if (platform === "win32" && architecture === "x64") return "win32-x64-cuda";
-  throw new Error(`LocalScribe has no packaged model manifest for ${platform}/${architecture}`);
+  throw new Error(`LocalScribe supports only macOS on Apple Silicon; received ${platform}/${architecture}`);
 }
 
 export function modelManifestPath(
@@ -800,7 +672,6 @@ const MODEL_TIER_PRIORITY: readonly ModelPerformanceTier[] = ["high", "medium", 
 const UNQUANTIZED_PRECISIONS = new Set<ModelPrecision>([
   "fp16",
   "bf16",
-  "float16",
   "coreml-fp16",
 ]);
 
@@ -950,8 +821,6 @@ function assertManifestMatchesCatalog(
     "mlx-whisper": "MLX Whisper",
     "mlx-audio": "MLX Audio",
     "fluid-audio": "FluidAudio CoreML / ANE",
-    "faster-whisper": "faster-whisper/CTranslate2",
-    crispasr: "CrispASR CUDA",
   };
   const expectedBackend = expectedBackends[definition.engine];
   const expected = {
@@ -1327,10 +1196,9 @@ export async function verifyRuntimeModelCatalog(
 /**
  * Verifies every distinct artifact in the complete platform catalog.
  *
- * The result is keyed by family plus artifact identity rather than by profile:
- * Windows exposes three compute profiles over one physical CTranslate2 model,
- * while MLX uses a distinct artifact for each profile. Verification work is
- * also deduplicated by immutable manifest identity across the whole platform.
+ * The result is keyed by family plus artifact identity rather than by profile.
+ * Verification work is deduplicated by immutable manifest identity across the
+ * whole platform.
  */
 export async function verifyRuntimePlatformModelCatalog(
   modelRoot: string,

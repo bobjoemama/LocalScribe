@@ -140,12 +140,8 @@ export const MODEL_FAMILY_IDS = [
   "qwen3-asr-1-7b",
   "whisper-large-v2",
  ] as const;
-/**
- * Backward-safe global default. The runtime catalog exposes a platform-aware
- * recommendation; macOS can recommend Parakeet without making a fresh Windows
- * database select an unsupported family.
- */
-export const DEFAULT_MODEL_FAMILY_ID = "whisper-large-v3" as const;
+/** Fresh macOS installs default to the Apple-native Parakeet runtime. */
+export const DEFAULT_MODEL_FAMILY_ID = "parakeet-unified-en-0-6b" as const;
 export const modelFamilyIdSchema = z.enum(MODEL_FAMILY_IDS);
 export type ModelFamilyId = z.infer<typeof modelFamilyIdSchema>;
 
@@ -244,7 +240,7 @@ export const appSettingsPatchSchema = appSettingsFieldsSchema.omit({
 );
 export type AppSettingsPatch = z.infer<typeof appSettingsPatchSchema>;
 
-export const runtimePlatformSchema = z.enum(["darwin", "win32", "linux", "unsupported"]);
+export const runtimePlatformSchema = z.literal("darwin");
 export type RuntimePlatform = z.infer<typeof runtimePlatformSchema>;
 
 export const permissionSnapshotSchema = z.object({
@@ -332,8 +328,8 @@ const modelDiagnosticsSchema = z.object({
 });
 
 export const diagnosticsSchema = z.object({
-  platform: z.string(),
-  architecture: z.string(),
+  platform: z.literal("darwin"),
+  architecture: z.literal("arm64"),
   backend: z.string(),
   databaseIntegrity: z.string(),
   /*
@@ -344,7 +340,7 @@ export const diagnosticsSchema = z.object({
   unreadableRecords: z.number().int().nonnegative(),
   model: modelDiagnosticsSchema,
   accelerator: z.object({
-    kind: z.enum(["apple-unified", "nvidia-cuda", "unsupported"]),
+    kind: z.literal("apple-unified"),
     displayName: z.string(),
     totalMemoryBytes: z.number().int().nonnegative().nullable(),
     freeMemoryBytes: z.number().int().nonnegative().nullable(),
@@ -397,7 +393,7 @@ const modelCatalogProfileSchema = z.object({
   profileId: z.string().regex(/^[a-z0-9][a-z0-9-]*$/),
   tier: modelPerformanceTierSchema,
   artifactId: z.string().regex(/^[a-z0-9][a-z0-9-]*$/),
-  engine: z.enum(["mlx-whisper", "mlx-audio", "fluid-audio", "faster-whisper", "crispasr"]),
+  engine: z.enum(["mlx-whisper", "mlx-audio", "fluid-audio"]),
   precision: z.string().min(1).max(40),
   expectedMemoryMinBytes: z.number().int().positive(),
   expectedMemoryMaxBytes: z.number().int().positive(),
@@ -467,18 +463,14 @@ const modelCatalogFamilySchema = z.object({
 
 /** A static curated platform catalog; it deliberately contains no hardware probe result. */
 export const modelCatalogSchema = z.object({
-  platform: z.enum(["darwin-arm64", "win32-x64-cuda"]),
+  platform: z.literal("darwin-arm64"),
   activeModelFamilyId: modelFamilyIdSchema,
   modelLibraryFamilyIds: modelLibraryFamilyIdsSchema,
   /** Independent of persisted user settings; used for platform-aware first run. */
   recommendedDefaultFamilyId: modelFamilyIdSchema,
   /** Unsupported families are absent instead of being represented by fake profiles. */
   families: z.array(modelCatalogFamilySchema).min(1).max(MODEL_FAMILY_IDS.length),
-  /**
-   * Current cryptographic disk status for every distinct curated artifact.
-   * Profiles join through artifactId, so Windows' shared model data appears
-   * once per family even though it powers three compute profiles.
-   */
+  /** Current cryptographic disk status for every distinct curated artifact. */
   verifications: z.array(modelCatalogVerificationSchema),
   /** Unexpected app-owned model-root entries are reported, never auto-deleted. */
   unmanagedEntries: z.array(unmanagedModelEntrySchema).max(1_000),

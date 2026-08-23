@@ -98,7 +98,6 @@ export function resolveRuntimeVersions({
   packageJson,
   packageLock,
   macRuntimeScript,
-  windowsRuntimeScript,
 }) {
   const app = exactVersion(packageJson?.version, "LocalScribe");
   const electronDeclared = exactVersion(
@@ -116,27 +115,19 @@ export function resolveRuntimeVersions({
   if (electronDeclared !== electronRootLock || electronDeclared !== electron) {
     throw new Error("Electron declaration and lock pins disagree.");
   }
-  const macPython = captureVersion(
+  const python = captureVersion(
     macRuntimeScript,
     /^python_version="([^"]+)"$/mu,
     "macOS CPython",
   );
-  const windowsPython = captureVersion(
-    windowsRuntimeScript,
-    /^\$PythonVersion = "([^"]+)"$/mu,
-    "Windows CPython",
-  );
-  if (macPython !== windowsPython) {
-    throw new Error("macOS and Windows CPython pins disagree.");
-  }
-  return { app, electron, python: macPython };
+  return { app, electron, python };
 }
 
 function main() {
 const platformArgumentIndex = process.argv.indexOf("--platform");
 const platform = platformArgumentIndex >= 0 ? process.argv[platformArgumentIndex + 1] : undefined;
-if (platform !== "darwin" && platform !== "win32") {
-  throw new Error("Runtime SBOM generation requires --platform darwin or --platform win32.");
+if (platform !== "darwin") {
+  throw new Error("Runtime SBOM generation requires --platform darwin.");
 }
 const packageJson = readJson("package.json");
 const packageLock = readJson("package-lock.json");
@@ -145,10 +136,6 @@ const runtimeVersions = resolveRuntimeVersions({
   packageLock,
   macRuntimeScript: readFileSync(
     path.join(projectRoot, "scripts/build-worker-runtime.sh"),
-    "utf8",
-  ),
-  windowsRuntimeScript: readFileSync(
-    path.join(projectRoot, "scripts/build-worker-runtime.ps1"),
     "utf8",
   ),
 });
@@ -185,36 +172,20 @@ const appVersion = runtimeVersions.app;
 const electronLocked = runtimeVersions.electron;
 const macPython = runtimeVersions.python;
 const platformName = RELEASE_POLICY.targets[platform].label;
-const crispAsrManifest = platform === "win32"
-  ? readJson("resources/native/windows/crispasr-runtime.json")
-  : null;
-const fluidAudio = platform === "darwin"
-  ? resolveFluidAudioDependency({
-      packageSwift: readFileSync(
-        path.join(projectRoot, "tools/fluidaudio-parakeet-helper/Package.swift"),
-        "utf8",
-      ),
-      packageResolved: readFileSync(
-        path.join(projectRoot, "tools/fluidaudio-parakeet-helper/Package.resolved"),
-        "utf8",
-      ),
-    })
-  : null;
+const fluidAudio = resolveFluidAudioDependency({
+  packageSwift: readFileSync(
+    path.join(projectRoot, "tools/fluidaudio-parakeet-helper/Package.swift"),
+    "utf8",
+  ),
+  packageResolved: readFileSync(
+    path.join(projectRoot, "tools/fluidaudio-parakeet-helper/Package.resolved"),
+    "utf8",
+  ),
+});
 const fluidAudioHelperPath = path.join(
   projectRoot,
   "resources/native/macos/localscribe-fluidaudio-parakeet",
 );
-if (
-  crispAsrManifest !== null &&
-  (
-    crispAsrManifest?.schemaVersion !== 1 ||
-    crispAsrManifest?.name !== "CrispASR" ||
-    crispAsrManifest?.license !== "MIT" ||
-    typeof crispAsrManifest?.source !== "string"
-  )
-) {
-  throw new Error("Runtime SBOM rejected the pinned CrispASR runtime manifest.");
-}
 /*
  * On macOS the bundled interpreter is a release input, so the SBOM names the
  * exact python-build-standalone build and hashes the binary that shipped. The
@@ -223,7 +194,7 @@ if (
  * yet still produces the version-only component rather than failing, and says
  * so by omitting the distribution properties.
  */
-const cpythonDistribution = platform === "darwin" && existsSync(
+const cpythonDistribution = existsSync(
   path.join(projectRoot, "resources/python-runtime", `cpython-${macPython}-macos-aarch64-none`),
 )
   ? bundledCPythonDistribution({
@@ -233,9 +204,7 @@ const cpythonDistribution = platform === "darwin" && existsSync(
     readInterpreter: (interpreterPath) => readFileSync(interpreterPath),
   })
   : null;
-const helperName = platform === "darwin"
-  ? "native/macos/active-target"
-  : "native/windows/active-target.exe";
+const helperName = "native/macos/active-target";
 const supplementalComponents = [
   {
     type: "framework",
@@ -245,9 +214,7 @@ const supplementalComponents = [
     purl: `pkg:npm/electron@${electronLocked}`,
     properties: [{ name: "com.localscribe.runtime-role", value: "desktop-shell" }],
   },
-  ...(fluidAudio === null
-    ? []
-    : [{
+  {
         type: "library",
         "bom-ref": `fluidaudio@${fluidAudio.version}+${fluidAudio.revision}`,
         name: "FluidAudio",
@@ -267,7 +234,7 @@ const supplementalComponents = [
               }]
             : []),
         ],
-      }]),
+  },
   {
     type: "platform",
     "bom-ref": `cpython@${macPython}`,
@@ -299,28 +266,6 @@ const supplementalComponents = [
     purl: `pkg:generic/localscribe-active-target@${appVersion}?platform=${platformName}`,
     properties: [{ name: "com.localscribe.runtime-role", value: "target-bound-paste-helper" }],
   },
-  ...(crispAsrManifest === null
-    ? []
-    : [{
-        type: "library",
-        "bom-ref": `crispasr@${exactVersion(crispAsrManifest.version, "CrispASR")}`,
-        name: crispAsrManifest.name,
-        version: exactVersion(crispAsrManifest.version, "CrispASR"),
-        purl: `pkg:generic/crispasr@${exactVersion(crispAsrManifest.version, "CrispASR")}?download_url=${encodeURIComponent(crispAsrManifest.archive.url)}`,
-        licenses: [{ license: { id: crispAsrManifest.license } }],
-        externalReferences: [{
-          type: "vcs",
-          url: crispAsrManifest.source,
-        }],
-        hashes: [{
-          alg: "SHA-256",
-          content: crispAsrManifest.archive.sha256,
-        }],
-        properties: [
-          { name: "com.localscribe.runtime-role", value: "qwen-asr-native-engine" },
-          { name: "com.localscribe.runtime-archive", value: crispAsrManifest.archive.url },
-        ],
-      }]),
 ];
 
 // npm can mark a direct production package as `peer: true` when a development

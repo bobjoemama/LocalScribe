@@ -51,34 +51,23 @@ describe("scratchpad window presentation", () => {
     expect(scratchpadHeaderTitle("Persisted note", "saved")).toBe("Persisted note");
   });
 
-  it("uses native Windows chrome and reserves custom controls for macOS", () => {
-    expect(shouldShowCustomWindowActions("darwin")).toBe(true);
-    expect(shouldShowCustomWindowActions("win32")).toBe(false);
-    expect(shouldShowCustomWindowActions("linux")).toBe(false);
-    expect(shouldShowCustomWindowActions(null)).toBe(false);
+  it("uses the custom macOS window controls", () => {
+    expect(shouldShowCustomWindowActions()).toBe(true);
+    expect(scratchpadWindowControlMode()).toBe("custom");
 
-    expect(scratchpadWindowControlMode(null)).toBe("pending");
-    expect(scratchpadWindowControlMode("darwin")).toBe("custom");
-    expect(scratchpadWindowControlMode("win32")).toBe("native");
-    expect(scratchpadWindowControlMode("linux")).toBe("native");
-
-    const windowsControls = renderToStaticMarkup(
-      createElement(ScratchpadWindowControls, { platform: "win32" }),
-    );
     const macControls = renderToStaticMarkup(
-      createElement(ScratchpadWindowControls, { platform: "darwin" }),
+      createElement(ScratchpadWindowControls),
     );
-    expect(windowsControls).toBe("");
     expect(macControls).toContain('aria-label="Toggle expanded Scratchpad"');
     expect(macControls).toContain('aria-label="Close Scratchpad"');
-    expect(scratchpadSource).toContain("window.localScribe.system.appInfo()");
+    expect(scratchpadSource).not.toContain("window.localScribe.system.appInfo()");
     expect(scratchpadSource).not.toContain("navigator.userAgent");
     expect(scratchpadSource).not.toContain("shortcutDisplayPlatform");
   });
 
   it("renders a bounded editor and keyboard-scrollable note list", () => {
     const html = renderToStaticMarkup(createElement(ScratchpadWindow));
-    expect(html).toContain('data-window-controls="pending"');
+    expect(html).toContain('data-window-controls="custom"');
     expect(html).toContain('aria-busy="true"');
     expect(html).toContain('role="status"');
     expect(html).toContain('role="list" aria-label="Saved notes" tabindex="0"');

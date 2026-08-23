@@ -16,7 +16,7 @@ export interface DictationErrorPresentation {
   detail: string;
 }
 
-export type DictationErrorPlatform = "darwin" | "win32" | "linux" | "unsupported";
+export type DictationErrorPlatform = "darwin";
 
 const FALLBACK_MESSAGE = "Dictation could not finish";
 const FALLBACK_DETAIL = "Try again. If this keeps happening, quit and reopen LocalScribe.";
@@ -137,13 +137,8 @@ export function presentDictationError(
 }
 
 export function microphonePermissionRecovery(platform?: DictationErrorPlatform): string {
-  if (platform === "darwin") {
-    return "Allow LocalScribe in System Settings > Privacy & Security > Microphone.";
-  }
-  if (platform === "win32") {
-    return "Allow LocalScribe in Windows Settings > Privacy & security > Microphone.";
-  }
-  return "Allow LocalScribe in your operating system's microphone privacy settings, then try again.";
+  void platform;
+  return "Allow LocalScribe in System Settings > Privacy & Security > Microphone.";
 }
 
 function safeDetail(message: string): string {

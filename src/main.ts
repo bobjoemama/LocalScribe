@@ -1,5 +1,4 @@
 import path from "node:path";
-import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
@@ -122,6 +121,7 @@ import { verifyPackagedResourceIntegrity } from "./main/resourceIntegrity";
 import {
   permissionSettingsUrl,
   permissionSnapshotForPlatform,
+  runtimeArchitectureFor,
   runtimePlatformFor,
 } from "./main/platformCapabilities";
 import { SETTINGS_WINDOW_LAYOUT } from "./shared/windowLayout.mts";
@@ -147,11 +147,9 @@ import {
 import { assertRendererSurfaceCanInvoke } from "./main/ipcAuthorization";
 import {
   launchAtLoginStatusFor,
-  loginItemQueryOptions,
   loginItemSettings,
   shouldOpenSettingsAtStartup,
-  WINDOWS_APP_USER_MODEL_ID,
-} from "./main/windowsLifecycle";
+} from "./main/launchAtLogin";
 
 declare const MAIN_WINDOW_VITE_DEV_SERVER_URL: string | undefined;
 declare const MAIN_WINDOW_VITE_NAME: string;
@@ -252,22 +250,7 @@ let activeSessionModelResolution: {
 let acceleratorSnapshot: WorkerAcceleratorSnapshot | null = null;
 let modelOperationTail: Promise<void> = Promise.resolve();
 let modelOperationCount = 0;
-// Squirrel must process install/update/uninstall lifecycle events before the
-// app acquires its normal instance lock or creates any windows/tray state.
-// Vite emits the Electron main process as CommonJS, where `import.meta.url`
-// is not available. Anchor createRequire to Electron's guaranteed-absolute
-// application path so the same bootstrap works in development and app.asar.
-if (process.platform === "win32") app.setAppUserModelId(WINDOWS_APP_USER_MODEL_ID);
-if (process.platform === "win32" && process.argv.includes("--squirrel-uninstall")) {
-  try {
-    app.setLoginItemSettings(loginItemSettings(false, process.platform, process.execPath));
-  } catch (error) {
-    console.warn("LocalScribe could not remove its login startup entry during uninstall", error);
-  }
-}
-const appRequire = createRequire(path.join(app.getAppPath(), "package.json"));
-const squirrelStartup = Boolean(appRequire("electron-squirrel-startup"));
-const hasSingleInstanceLock = !squirrelStartup && app.requestSingleInstanceLock();
+const hasSingleInstanceLock = app.requestSingleInstanceLock();
 if (!hasSingleInstanceLock) app.quit();
 
 const uuidSchema = z.string().uuid();
@@ -363,27 +346,9 @@ async function collectModelCatalogForSettings(
 }
 
 function unavailableAccelerator(): Diagnostics["accelerator"] {
-  if (process.platform === "darwin") {
-    return {
-      kind: "apple-unified",
-      displayName: "Apple Silicon GPU · MLX",
-      totalMemoryBytes: null,
-      freeMemoryBytes: null,
-      memoryBasis: "unavailable",
-    };
-  }
-  if (process.platform === "win32") {
-    return {
-      kind: "nvidia-cuda",
-      displayName: "NVIDIA GPU · CUDA",
-      totalMemoryBytes: null,
-      freeMemoryBytes: null,
-      memoryBasis: "unavailable",
-    };
-  }
   return {
-    kind: "unsupported",
-    displayName: "Unsupported accelerator",
+    kind: "apple-unified",
+    displayName: "Apple Silicon GPU · MLX",
     totalMemoryBytes: null,
     freeMemoryBytes: null,
     memoryBasis: "unavailable",
@@ -395,7 +360,7 @@ function acceleratorDiagnostics(): Diagnostics["accelerator"] {
   return {
     kind: acceleratorSnapshot.kind,
     // This is hardware identity only. The selected engine (MLX, CoreML/ANE,
-    // CTranslate2, or CrispASR) is reported separately from its catalog tier.
+    // FluidAudio, MLX Whisper, or MLX Audio) is reported separately from its catalog tier.
     displayName: acceleratorSnapshot.displayName,
     totalMemoryBytes: acceleratorSnapshot.totalMemoryBytes,
     freeMemoryBytes: acceleratorSnapshot.freeMemoryBytes,
@@ -633,13 +598,6 @@ function workerComputeType(tier: RuntimeModelTierSpec): WorkerComputeType {
       return "int4";
     case "bf16":
       return "bfloat16";
-    case "q8_0":
-    case "q4_k":
-      return tier.precision;
-    case "float16":
-    case "int8_float16":
-    case "int8":
-      return tier.precision;
     case "coreml-fp16":
     case "coreml-int8":
       return tier.precision;
@@ -691,8 +649,8 @@ async function collectDiagnosticsForResolution(
     throw new Error(`No verification was produced for the selected ${resolution.effectiveTier} profile`);
   }
   return {
-    platform: process.platform,
-    architecture: process.arch,
+    platform: runtimePlatformFor(process.platform),
+    architecture: runtimeArchitectureFor(process.arch),
     backend: model.backend,
     databaseIntegrity: database.integrityCheck(),
     unreadableRecords: database.unreadableRecordCount(),
@@ -882,8 +840,8 @@ function createSettingsWindow(): BrowserWindow {
     title: "LocalScribe",
     show: false,
     backgroundColor: "#f3f1ed",
-    titleBarStyle: process.platform === "darwin" ? "hiddenInset" : "default",
-    ...(process.platform === "darwin" ? { trafficLightPosition: { x: 18, y: 18 } } : {}),
+    titleBarStyle: "hiddenInset",
+    trafficLightPosition: { x: 18, y: 18 },
     webPreferences: commonWebPreferences(),
   });
   window.removeMenu();
@@ -909,16 +867,16 @@ function createScratchpadWindow(): BrowserWindow {
     title: "Scratchpad",
     show: false,
     backgroundColor: "#eeece7",
-    titleBarStyle: process.platform === "darwin" ? "hiddenInset" : "default",
-    ...(process.platform === "darwin" ? { trafficLightPosition: { x: 18, y: 18 } } : {}),
+    titleBarStyle: "hiddenInset",
+    trafficLightPosition: { x: 18, y: 18 },
     alwaysOnTop: true,
-    type: process.platform === "darwin" ? "panel" : undefined,
+    type: "panel",
     webPreferences: commonWebPreferences(),
   });
   window.removeMenu();
   hideWindowInsteadOfClosing(window);
-  if (process.platform === "darwin") window.setWindowButtonVisibility(false);
-  window.setAlwaysOnTop(true, process.platform === "darwin" ? "floating" : "normal");
+  window.setWindowButtonVisibility(false);
+  window.setAlwaysOnTop(true, "floating");
   window.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
   hardenWindow(window);
   void window.loadURL(rendererUrl("scratchpad"));
@@ -1048,23 +1006,14 @@ function createPillWindow(): BrowserWindow {
     skipTaskbar: true,
     alwaysOnTop: true,
     show: false,
-    type: process.platform === "darwin" ? "panel" : undefined,
+    type: "panel",
     webPreferences: commonWebPreferences(),
   });
   window.setHasShadow(false);
-  window.setAlwaysOnTop(true, process.platform === "darwin" ? "floating" : "pop-up-menu");
+  window.setAlwaysOnTop(true, "floating");
   hardenWindow(window);
   window.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
-  if (process.platform === "darwin") window.setHiddenInMissionControl(true);
-  if (process.platform === "win32") {
-    // Electron does not emit app.before-quit for Windows logout, restart, or
-    // shutdown. BrowserWindow session-end is the only in-process cleanup
-    // opportunity before the OS tears the process down.
-    window.once("session-end", () => {
-      if (!beginShutdown()) return;
-      void releaseRuntimeResources();
-    });
-  }
+  window.setHiddenInMissionControl(true);
   void window.loadURL(rendererUrl("pill"));
   window.once("ready-to-show", () => {
     syncPillVisibility();
@@ -1096,7 +1045,7 @@ function setSession(next: SessionSnapshot): SessionSnapshot {
   }
   if (session.state !== "idle") pillMode = "collapsed";
   resizePill();
-  if (process.platform === "darwin" && database) installApplicationMenu();
+  if (database) installApplicationMenu();
   for (const window of [pillWindow, settingsWindow, scratchpadWindow]) {
     if (window && !window.isDestroyed()) window.webContents.send(IPC.sessionChanged, session);
   }
@@ -1332,7 +1281,7 @@ async function completeDictationFinal(input: {
       ...insertionDiagnosticEvent(outcome, settings.autoPaste, automaticPasteReady),
       sessionId,
     });
-    const copiedMessage = settings.autoPaste && !automaticPasteReady && process.platform === "darwin"
+    const copiedMessage = settings.autoPaste && !automaticPasteReady
       ? "Copied — allow Accessibility"
       : "Copied to clipboard";
     successMessage = outcome === "pasted"
@@ -1975,11 +1924,7 @@ function registerIpc(): void {
     const preview = appSettingsSchema.parse({ ...previous, ...patch });
     const launchAtLoginRequested = Object.prototype.hasOwnProperty.call(patch, "launchAtLogin");
     if (launchAtLoginRequested) {
-      app.setLoginItemSettings(loginItemSettings(
-        preview.launchAtLogin,
-        process.platform,
-        process.execPath,
-      ));
+      app.setLoginItemSettings(loginItemSettings(preview.launchAtLogin));
     }
     let settings: ReturnType<LocalDatabase["getSettings"]>;
     try {
@@ -1987,11 +1932,7 @@ function registerIpc(): void {
     } catch (error) {
       if (launchAtLoginRequested) {
         try {
-          app.setLoginItemSettings(loginItemSettings(
-            previous.launchAtLogin,
-            process.platform,
-            process.execPath,
-          ));
+          app.setLoginItemSettings(loginItemSettings(previous.launchAtLogin));
         } catch (rollbackError) {
           console.error("Could not restore the previous login startup setting", rollbackError);
         }
@@ -2049,15 +1990,9 @@ function registerIpc(): void {
   });
   handle(IPC.systemGetPermissions, async () => {
     const platform = runtimePlatformFor(process.platform);
-    const microphone = platform === "darwin" || platform === "win32"
-      ? systemPreferences.getMediaAccessStatus("microphone")
-      : "unknown";
-    const accessibilityGranted = platform === "darwin"
-      ? await insertion.accessibilityReady()
-      : false;
-    const automaticPasteReady = platform === "darwin"
-      ? accessibilityGranted
-      : await insertion.automaticPasteReady();
+    const microphone = systemPreferences.getMediaAccessStatus("microphone");
+    const accessibilityGranted = await insertion.accessibilityReady();
+    const automaticPasteReady = await insertion.automaticPasteReady();
     return permissionSnapshotForPlatform(
       platform,
       microphone,
@@ -2067,14 +2002,11 @@ function registerIpc(): void {
       hotkeys?.isToggleReady() ?? false,
     );
   });
-  handle(IPC.systemGetLaunchAtLoginStatus, () => launchAtLoginStatusFor(
-    process.platform,
-    app.getLoginItemSettings(loginItemQueryOptions(process.platform, process.execPath)),
-  ));
+  handle(IPC.systemGetLaunchAtLoginStatus, () => launchAtLoginStatusFor(app.getLoginItemSettings()));
   handle(IPC.systemOpenPermission, async (_event, kind: unknown) => {
     const permission = z.enum(["microphone", "accessibility"]).parse(kind);
     const platform = runtimePlatformFor(process.platform);
-    if (platform === "darwin" && permission === "accessibility") {
+    if (permission === "accessibility") {
       // Prompting here registers the exact currently running signed build with
       // TCC. Merely opening the list can leave users toggling a stale entry
       // from a previous development build.
@@ -2082,7 +2014,6 @@ function registerIpc(): void {
       systemPreferences.isTrustedAccessibilityClient(true);
     }
     const url = permissionSettingsUrl(platform, permission);
-    if (!url) throw new Error(`Opening ${permission} settings is not supported on this platform.`);
     await shell.openExternal(url);
   });
   handle(IPC.systemAppInfo, () => ({
@@ -2248,14 +2179,9 @@ function registerIpc(): void {
 }
 
 function createTray(): Tray {
-  const windowsIconPath = app.isPackaged
-    ? path.join(process.resourcesPath, "branding", "LocalScribe.ico")
-    : path.join(app.getAppPath(), "resources", "branding", "LocalScribe.ico");
-  const icon = process.platform === "win32"
-    ? nativeImage.createFromPath(windowsIconPath)
-    : nativeImage.createEmpty();
+  const icon = nativeImage.createEmpty();
   const result = new Tray(icon);
-  result.setTitle(process.platform === "darwin" ? "L" : "");
+  result.setTitle("L");
   result.setToolTip("LocalScribe — local dictation");
   const rebuild = () => result.setContextMenu(Menu.buildFromTemplate([
     { label: session.state === "listening" ? "Stop dictating" : "Start dictating", click: () => void (session.state === "listening" ? finishListening() : beginListening("toggle")) },
@@ -2271,8 +2197,6 @@ function createTray(): Tray {
 }
 
 function installApplicationMenu(): void {
-  if (process.platform !== "darwin") return;
-
   /*
    * Read lazily, inside the click handler. Building the menu must not decrypt
    * anything: this runs on every session transition, six times per dictation,
@@ -2351,11 +2275,12 @@ const SMOKE_READY_MARKER = "localscribe-startup-ready";
 
 startupPromise = app.whenReady().then(async () => {
   if (!hasSingleInstanceLock || quitting) return;
+  runtimePlatformFor(process.platform);
+  runtimeArchitectureFor(process.arch);
   verifyPackagedResourceIntegrity({ isPackaged: app.isPackaged });
   const nativeHelperPinned = insertion.pinNativeHelperIntegrity();
   if (
     app.isPackaged
-    && (process.platform === "darwin" || process.platform === "win32")
     && !nativeHelperPinned
   ) {
     throw new Error("The packaged native input helper could not be integrity-pinned.");
@@ -2387,12 +2312,9 @@ startupPromise = app.whenReady().then(async () => {
   if (quitting) return;
   audioCacheRoot = await createAudioCache(temporaryDirectory);
   if (quitting) return;
-  const baseWorkerDirectory = app.isPackaged
+  const workerDirectory = app.isPackaged
     ? path.join(process.resourcesPath, "worker")
     : path.join(app.getAppPath(), "worker");
-  const workerDirectory = process.platform === "win32"
-    ? path.join(baseWorkerDirectory, "windows_transformers")
-    : baseWorkerDirectory;
   /*
    * Persistent, app-owned, and deliberately outside the packaged resource tree
    * the startup integrity check covers. Importing the ML stack is 1,492 modules
@@ -2410,11 +2332,11 @@ startupPromise = app.whenReady().then(async () => {
     path.join(app.getPath("userData"), "models"),
     app.isPackaged
       ? path.join(app.getPath("userData"), "python-env")
-      : path.join(app.getAppPath(), process.platform === "win32" ? ".worker-venv-windows" : ".worker-venv"),
+      : path.join(app.getAppPath(), ".worker-venv"),
     app.isPackaged
-      ? path.join(process.resourcesPath, process.platform === "win32" ? "python-runtime-windows" : "python-runtime")
+      ? path.join(process.resourcesPath, "python-runtime")
       : null,
-    process.platform === "win32" ? "localscribe_windows_worker" : "localscribe_worker",
+    "localscribe_worker",
     audioCacheRoot,
     bytecodeCacheDirectory,
   );
@@ -2457,16 +2379,12 @@ startupPromise = app.whenReady().then(async () => {
   await refreshModelResolution({ reprobeUnloaded: true });
   // A quit request can interrupt the initial hardware probe. The shutdown
   // path waits for this promise before closing the database; do not construct
-  // windows, IPC handlers, or hotkeys after that request.
+  // app windows, IPC handlers, or hotkeys after that request.
   if (quitting) return;
   registerIpc();
   pillWindow = createPillWindow();
   startPillDisplayFollowing();
-  if (shouldOpenSettingsAtStartup(
-    process.platform,
-    process.argv,
-    app.getLoginItemSettings().wasOpenedAtLogin,
-  )) {
+  if (shouldOpenSettingsAtStartup(app.getLoginItemSettings().wasOpenedAtLogin)) {
     settingsWindow = createSettingsWindow();
   }
   tray = createTray();
@@ -2478,16 +2396,14 @@ startupPromise = app.whenReady().then(async () => {
       if (session.state === "listening" && session.activation === "hold") finishListening();
     },
     () => (session.state === "listening" ? finishListening() : beginListening("toggle")),
-    process.platform === "darwin"
-      ? new MacControlMonitor(defaultMacControlMonitorPath({
-        allowEnvironmentOverride: !app.isPackaged,
-        workingDirectory: app.getAppPath(),
-      }))
-      : null,
+    new MacControlMonitor(defaultMacControlMonitorPath({
+      allowEnvironmentOverride: !app.isPackaged,
+      workingDirectory: app.getAppPath(),
+    })),
     shortcutSettings.holdShortcut,
     shortcutSettings.toggleShortcut,
   );
-  if (process.platform !== "darwin" || systemPreferences.isTrustedAccessibilityClient(false)) {
+  if (systemPreferences.isTrustedAccessibilityClient(false)) {
     try {
       hotkeys.start();
       diagnostics.record({ stage: "hotkey", event: "global_register", outcome: "ok" });
@@ -2576,8 +2492,7 @@ function releaseRuntimeResources(): Promise<void> {
       : Promise.resolve();
     workerInitialized = false;
 
-    // Close synchronous local state immediately. On Windows session-end the OS
-    // may terminate the process before an asynchronous worker wait completes.
+    // Close synchronous local state immediately while the worker exits.
     if (databaseInitialized) {
       try {
         database.close();
@@ -2644,7 +2559,7 @@ function beginShutdown(): boolean {
    * My Voice items read the database, so a click in that window threw inside
    * main. Retire the menu with the same latch that retires everything else.
    */
-  if (process.platform === "darwin") Menu.setApplicationMenu(null);
+  Menu.setApplicationMenu(null);
   try {
     if (workerInitialized) {
       // Latch first: abort only kills the live process, and a model operation

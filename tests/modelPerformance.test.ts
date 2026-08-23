@@ -57,7 +57,12 @@ describe("model performance vocabulary", () => {
 });
 
 describe("automatic model performance resolution", () => {
-  const catalog = loadRuntimeModelCatalog(manifestDirectory, "darwin", "arm64");
+  const catalog = loadRuntimeModelCatalog(
+    manifestDirectory,
+    "darwin",
+    "arm64",
+    "whisper-large-v3",
+  );
 
   it("uses both total and free memory with conservative headroom", () => {
     const high = resolveModelPerformance({
@@ -225,7 +230,13 @@ describe("automatic model performance resolution", () => {
   );
 
   it("applies the same telemetry policy to every curated model family", () => {
-    for (const familyId of ["whisper-large-v3", "whisper-large-v2"] as const) {
+    for (const familyId of [
+      "parakeet-unified-en-0-6b",
+      "whisper-large-v3",
+      "qwen3-asr-0-6b",
+      "qwen3-asr-1-7b",
+      "whisper-large-v2",
+    ] as const) {
       const family = loadRuntimeModelCatalog(
         manifestDirectory,
         "darwin",
@@ -251,7 +262,7 @@ describe("automatic model performance resolution", () => {
         ...catalog.tiers,
         low: {
           ...runtimeModelTier(catalog, "low"),
-          engine: "faster-whisper" as const,
+          engine: "fluid-audio" as const,
         },
       },
     };
@@ -265,9 +276,9 @@ describe("automatic model performance resolution", () => {
   it("binds the complete catalog engine and tier precisions to the runtime platform", () => {
     const crossedEngine = {
       ...catalog,
-      engine: "faster-whisper" as const,
+      engine: "fluid-audio" as const,
       tiers: Object.fromEntries(Object.entries(catalog.tiers).flatMap(([tier, spec]) => (
-        spec ? [[tier, { ...spec, engine: "faster-whisper" as const }]] : []
+        spec ? [[tier, { ...spec, engine: "fluid-audio" as const }]] : []
       ))) as typeof catalog.tiers,
     };
     expect(() => resolveModelPerformance({
@@ -293,136 +304,33 @@ describe("automatic model performance resolution", () => {
     })).toThrow(/crosses a platform, engine, or tier routing boundary/);
   });
 
-  it("resolves Windows compute tiers inside the faster-whisper catalog only", () => {
-    const windowsCatalog = loadRuntimeModelCatalog(manifestDirectory, "win32", "x64");
-    const high = resolveModelPerformance({
-      preference: "auto",
-      catalog: windowsCatalog,
-      memory: { totalBytes: 8 * GIBIBYTE, freeBytes: 7.5 * GIBIBYTE },
-    });
-    expect(high).toMatchObject({
-      effectiveTier: "high",
-      tier: {
-        engine: "faster-whisper",
-        precision: "float16",
-      },
-    });
-
-    const medium = resolveModelPerformance({
-      preference: "auto",
-      catalog: windowsCatalog,
-      memory: { totalBytes: 8 * GIBIBYTE, freeBytes: 6 * GIBIBYTE },
-    });
-    expect(medium).toMatchObject({
-      effectiveTier: "medium",
-      tier: {
-        engine: "faster-whisper",
-        precision: "int8_float16",
-      },
-    });
-    expect(medium.tier.manifest).toEqual(high.tier.manifest);
-  });
-
-  it("selects explicit RTX 3060 6 GB profiles without a hidden CPU or model fallback", () => {
-    const windowsCatalog = loadRuntimeModelCatalog(manifestDirectory, "win32", "x64");
-    const reportedFreeVram = 6_285_164_544;
-    const mediumRequired = (
-      runtimeModelTier(windowsCatalog, "medium").acceleratorMemory.maximumBytes
-      + 2 * GIBIBYTE
+  it("keeps Parakeet High unquantized and Medium INT8 without inventing Low", () => {
+    const parakeet = loadRuntimeModelCatalog(
+      manifestDirectory,
+      "darwin",
+      "arm64",
+      "parakeet-unified-en-0-6b",
     );
-    const lowRequired = (
-      runtimeModelTier(windowsCatalog, "low").acceleratorMemory.maximumBytes
-      + 2 * GIBIBYTE
-    );
-
-    expect(resolveModelPerformance({
-      preference: "auto",
-      catalog: windowsCatalog,
-      memory: { totalBytes: 6 * GIBIBYTE, freeBytes: reportedFreeVram },
-    })).toMatchObject({
-      effectiveTier: "medium",
-      reason: "auto-highest-fit",
-      fitsMemoryBudget: true,
-      requiredMemoryBytes: mediumRequired,
-      tier: {
-        engine: "faster-whisper",
-        precision: "int8_float16",
-        manifest: {
-          modelId: "Systran/faster-whisper-large-v3",
-        },
-      },
-    });
-
-    expect(resolveModelPerformance({
-      preference: "auto",
-      catalog: windowsCatalog,
-      memory: { totalBytes: 6 * GIBIBYTE, freeBytes: mediumRequired - 1 },
-    })).toMatchObject({
-      effectiveTier: "low",
-      reason: "auto-highest-fit",
-      fitsMemoryBudget: true,
-      requiredMemoryBytes: lowRequired,
-      tier: {
-        engine: "faster-whisper",
-        precision: "int8",
-      },
-    });
-
-    expect(resolveModelPerformance({
-      preference: "auto",
-      catalog: windowsCatalog,
-      memory: { totalBytes: 6 * GIBIBYTE, freeBytes: lowRequired - 1 },
-    })).toMatchObject({
-      effectiveTier: "low",
-      reason: "auto-insufficient-memory",
-      fitsMemoryBudget: false,
-    });
-
-    // An explicit High request stays High and blocked. It never silently
-    // substitutes a lower compute profile, CPU execution, or another model.
     expect(resolveModelPerformance({
       preference: "high",
-      catalog: windowsCatalog,
-      memory: { totalBytes: 6 * GIBIBYTE, freeBytes: reportedFreeVram },
+      catalog: parakeet,
+      memory: { totalBytes: 48 * GIBIBYTE, freeBytes: 20 * GIBIBYTE },
     })).toMatchObject({
-      preference: "high",
       effectiveTier: "high",
-      reason: "explicit",
-      fitsMemoryBudget: false,
-      tier: {
-        engine: "faster-whisper",
-        precision: "float16",
-        manifest: {
-          modelId: "Systran/faster-whisper-large-v3",
-        },
-      },
+      tier: { engine: "fluid-audio", precision: "coreml-fp16" },
     });
+    expect(resolveModelPerformance({
+      preference: "medium",
+      catalog: parakeet,
+      memory: { totalBytes: 48 * GIBIBYTE, freeBytes: 20 * GIBIBYTE },
+    })).toMatchObject({
+      effectiveTier: "medium",
+      tier: { engine: "fluid-audio", precision: "coreml-int8" },
+    });
+    expect(() => resolveModelPerformance({
+      preference: "low",
+      catalog: parakeet,
+      memory: { totalBytes: 48 * GIBIBYTE, freeBytes: 20 * GIBIBYTE },
+    })).toThrow(/no low performance profile/u);
   });
-
-  it.each([
-    [4, 3.5, "low", false],
-    [6, 5.75, "medium", true],
-    [8, 7.5, "high", true],
-    [24, 20, "high", true],
-  ] as const)(
-    "derives Windows Auto from arbitrary numeric VRAM: %d GiB total / %d GiB free",
-    (totalGiB, freeGiB, effectiveTier, fitsMemoryBudget) => {
-      const windowsCatalog = loadRuntimeModelCatalog(
-        manifestDirectory,
-        "win32",
-        "x64",
-      );
-      expect(resolveModelPerformance({
-        preference: "auto",
-        catalog: windowsCatalog,
-        memory: {
-          totalBytes: totalGiB * GIBIBYTE,
-          freeBytes: freeGiB * GIBIBYTE,
-        },
-      })).toMatchObject({
-        effectiveTier,
-        fitsMemoryBudget,
-      });
-    },
-  );
 });

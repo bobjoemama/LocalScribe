@@ -58,7 +58,7 @@ describe("macOS hold monitor protocol", () => {
       .mockReturnValueOnce(second as never);
     const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const stopped = vi.fn();
-    const monitor = new MacControlMonitor(process.execPath, "darwin");
+    const monitor = new MacControlMonitor(process.execPath);
 
     expect(monitor.start("Command+Control", vi.fn(), stopped)).toBe(true);
     expect(vi.mocked(spawn).mock.calls[0]?.[1]).toEqual(["hold-monitor", "Command+Control"]);
@@ -66,7 +66,6 @@ describe("macOS hold monitor protocol", () => {
     expect(options).toMatchObject({
       env: {},
       shell: false,
-      windowsHide: true,
     });
     expect(options?.env).not.toHaveProperty("HF_TOKEN");
     expect(options?.env).not.toHaveProperty("HTTPS_PROXY");

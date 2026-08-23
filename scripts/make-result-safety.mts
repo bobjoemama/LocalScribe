@@ -15,17 +15,11 @@ export function assertExpectedMakeResults(
   makeResults: readonly MakeResultLike[],
   hostPlatform: NodeJS.Platform,
 ): void {
-  const expectedPlatform = hostPlatform === "darwin"
-    ? "darwin"
-    : hostPlatform === "win32"
-      ? "win32"
-      : null;
-  const expectedArch = expectedPlatform
-    ? RELEASE_POLICY.targets[expectedPlatform].arch
-    : null;
-  if (!expectedPlatform) {
+  if (hostPlatform !== "darwin") {
     throw new Error(`LocalScribe make verification is unsupported on ${hostPlatform}.`);
   }
+  const expectedPlatform = "darwin";
+  const expectedArch = RELEASE_POLICY.targets.darwin.arch;
   if (makeResults.length === 0) {
     throw new Error(
       `${expectedPlatform}/${expectedArch} make returned no results or artifacts.`,

@@ -11,7 +11,12 @@ import {
   type NativeActiveTargetHelperPathOptions,
 } from "../nativeHelperPath";
 import { nativeHelperEnvironment } from "../nativeHelperEnvironment";
-import type { ActiveTarget, PasteInjectionResult, PlatformInsertionBridge } from "./types";
+import type {
+  ActiveTarget,
+  PasteFailureReason,
+  PasteInjectionResult,
+  PlatformInsertionBridge,
+} from "./types";
 
 const execFileAsync = promisify(execFile);
 type ExecutableDigest = (executablePath: string) => string | null;
@@ -65,10 +70,22 @@ function parseAccessibility(raw: string): boolean {
 
 function parsePaste(raw: string): PasteInjectionResult {
   try {
-    const payload = JSON.parse(raw) as { injected?: unknown };
-    return payload.injected === true ? { status: "injected" } : { status: "failed" };
+    const payload = JSON.parse(raw) as { injected?: unknown; reason?: unknown };
+    if (payload.injected === true) return { status: "injected" };
+    const failureReasons = new Set<PasteFailureReason>([
+      "permission_denied",
+      "target_unavailable",
+      "target_changed",
+      "clipboard_changed",
+      "event_unavailable",
+    ]);
+    return payload.injected === false
+      && typeof payload.reason === "string"
+      && failureReasons.has(payload.reason as PasteFailureReason)
+      ? { status: "failed", reason: payload.reason as PasteFailureReason }
+      : { status: "failed", reason: "invalid_response" };
   } catch {
-    return { status: "failed" };
+    return { status: "failed", reason: "invalid_response" };
   }
 }
 
@@ -81,26 +98,17 @@ function parseTarget(raw: string): ActiveTarget | null {
   }
 
   if (
-    (payload.platform !== "darwin" && payload.platform !== "win32") ||
+    payload.platform !== "darwin" ||
     !Number.isSafeInteger(payload.processId) ||
     (payload.processId as number) <= 0 ||
     typeof payload.applicationId !== "string" ||
     payload.applicationId.length === 0 ||
     payload.applicationId.length > 1_024 ||
     (payload.windowFingerprint !== null && typeof payload.windowFingerprint !== "string") ||
+    (payload.focusedEditable !== null && typeof payload.focusedEditable !== "boolean") ||
     (
-      payload.platform === "darwin" &&
-      payload.focusedEditable !== null &&
-      typeof payload.focusedEditable !== "boolean"
-    ) ||
-    (
-      payload.platform === "darwin" &&
-      payload.focusedElementFingerprint !== null &&
-      typeof payload.focusedElementFingerprint !== "string"
-    ) ||
-    (
-      payload.platform === "win32" &&
-      typeof payload.focusedEditable !== "boolean"
+      payload.focusedElementFingerprint !== null
+      && typeof payload.focusedElementFingerprint !== "string"
     )
   ) {
     return null;
@@ -108,11 +116,8 @@ function parseTarget(raw: string): ActiveTarget | null {
 
   const windowFingerprint = payload.windowFingerprint as string | null;
   if (windowFingerprint !== null && !/^[a-f0-9]{64}$/i.test(windowFingerprint)) return null;
-  const focusedElementFingerprint = payload.platform === "darwin"
-    ? payload.focusedElementFingerprint as string | null
-    : undefined;
+  const focusedElementFingerprint = payload.focusedElementFingerprint as string | null;
   if (
-    focusedElementFingerprint !== undefined &&
     focusedElementFingerprint !== null &&
     !/^[a-f0-9]{64}$/i.test(focusedElementFingerprint)
   ) {
@@ -126,9 +131,7 @@ function parseTarget(raw: string): ActiveTarget | null {
     windowFingerprint,
   };
   target.focusedEditable = payload.focusedEditable as boolean | null;
-  if (payload.platform === "darwin") {
-    target.focusedElementFingerprint = focusedElementFingerprint;
-  }
+  target.focusedElementFingerprint = focusedElementFingerprint;
   return target;
 }
 
@@ -137,16 +140,11 @@ function pasteArguments(
   expectedClipboardSequence: number,
 ): string[] | null {
   if (!target || typeof target !== "object") return null;
-  const maximumProcessId = target.platform === "darwin"
-    ? 2_147_483_647
-    : target.platform === "win32"
-      ? 4_294_967_295
-      : 0;
   if (
-    maximumProcessId === 0 ||
+    target.platform !== "darwin" ||
     !Number.isSafeInteger(target.processId) ||
     target.processId <= 0 ||
-    target.processId > maximumProcessId ||
+    target.processId > 2_147_483_647 ||
     typeof target.applicationId !== "string" ||
     target.applicationId.length === 0 ||
     Buffer.byteLength(target.applicationId, "utf8") > 1_024 ||
@@ -154,20 +152,13 @@ function pasteArguments(
     typeof target.windowFingerprint !== "string" ||
     !/^[a-f0-9]{64}$/.test(target.windowFingerprint) ||
     !Number.isSafeInteger(expectedClipboardSequence) ||
-    expectedClipboardSequence < (target.platform === "win32" ? 1 : 0) ||
-    (
-      target.platform === "win32" &&
-      expectedClipboardSequence > 4_294_967_295
-    )
+    expectedClipboardSequence < 0
   ) {
     return null;
   }
   if (
-    target.platform === "darwin"
-    && (
-      typeof target.focusedElementFingerprint !== "string"
-      || !/^[a-f0-9]{64}$/.test(target.focusedElementFingerprint)
-    )
+    typeof target.focusedElementFingerprint !== "string"
+    || !/^[a-f0-9]{64}$/.test(target.focusedElementFingerprint)
   ) {
     return null;
   }
@@ -179,7 +170,7 @@ function pasteArguments(
     target.applicationId,
     target.windowFingerprint,
   ];
-  if (target.platform === "darwin") arguments_.push(target.focusedElementFingerprint!);
+  arguments_.push(target.focusedElementFingerprint);
   arguments_.push(String(expectedClipboardSequence));
   return arguments_;
 }
@@ -216,10 +207,7 @@ export class NativeExecutableInsertionBridge implements PlatformInsertionBridge 
           platform?: unknown;
           selfTest?: unknown;
         };
-        return (
-          (payload.platform === "darwin" || payload.platform === "win32")
-          && payload.selfTest === true
-        );
+        return payload.platform === "darwin" && payload.selfTest === true;
       } catch {
         return false;
       }
@@ -245,9 +233,9 @@ export class NativeExecutableInsertionBridge implements PlatformInsertionBridge 
       return null;
     }
     if (
-      (payload.platform !== "darwin" && payload.platform !== "win32") ||
+      payload.platform !== "darwin" ||
       !Number.isSafeInteger(payload.sequence) ||
-      (payload.sequence as number) < (payload.platform === "win32" ? 1 : 0)
+      (payload.sequence as number) < 0
     ) {
       return null;
     }
@@ -262,9 +250,9 @@ export class NativeExecutableInsertionBridge implements PlatformInsertionBridge 
       expectedTarget,
       expectedClipboardSequence,
     );
-    if (arguments_ === null) return { status: "failed" };
+    if (arguments_ === null) return { status: "failed", reason: "invalid_request" };
     const output = await this.run(arguments_);
-    if (output === null) return { status: "failed" };
+    if (output === null) return { status: "failed", reason: "helper_unavailable" };
     return parsePaste(output);
   }
 

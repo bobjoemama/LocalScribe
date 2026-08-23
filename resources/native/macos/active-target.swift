@@ -61,6 +61,12 @@ private struct AccessibilityPayload: Encodable {
 
 private struct PastePayload: Encodable {
     let injected: Bool
+    let reason: String?
+
+    init(injected: Bool, reason: String? = nil) {
+        self.injected = injected
+        self.reason = reason
+    }
 }
 
 private struct SelfTestPayload: Encodable {
@@ -98,6 +104,18 @@ private func attributeString(_ element: AXUIElement, _ attribute: CFString) -> S
     var value: CFTypeRef?
     guard AXUIElementCopyAttributeValue(element, attribute, &value) == .success else { return nil }
     return value as? String
+}
+
+private func attributeBool(_ element: AXUIElement, _ attribute: CFString) -> Bool? {
+    var value: CFTypeRef?
+    guard AXUIElementCopyAttributeValue(element, attribute, &value) == .success else { return nil }
+    return value as? Bool
+}
+
+private func attributeIsSettable(_ element: AXUIElement, _ attribute: CFString) -> Bool {
+    var settable = DarwinBoolean(false)
+    return AXUIElementIsAttributeSettable(element, attribute, &settable) == .success
+        && settable.boolValue
 }
 
 private func attributeElement(_ element: AXUIElement, _ attribute: CFString) -> AXUIElement? {
@@ -287,7 +305,6 @@ private func focusedWindowFingerprint(for processId: pid_t) -> String? {
             kCGNullWindowID
         ) as? [[String: Any]]
     else { return coreGraphicsWindowFingerprint(for: processId) }
-    let title = attributeString(focusedWindow, kAXTitleAttribute as CFString) ?? ""
     let tolerance: CGFloat = 1
     var matchingWindowNumbers: [CGWindowID] = []
     for window in windowInfo {
@@ -307,13 +324,6 @@ private func focusedWindowFingerprint(for processId: pid_t) -> String? {
                 || abs(bounds.origin.y - position.y) > tolerance
                 || abs(bounds.size.width - size.width) > tolerance
                 || abs(bounds.size.height - size.height) > tolerance
-        {
-            continue
-        }
-        if
-            !title.isEmpty,
-            let windowTitle = window[kCGWindowName as String] as? String,
-            windowTitle != title
         {
             continue
         }
@@ -350,6 +360,126 @@ private func accessibilityPathDescriptor(for element: AXUIElement) -> String? {
     return nil
 }
 
+private func boundedAccessibilityIdentifier(_ element: AXUIElement) -> String? {
+    guard let identifier = attributeString(element, kAXIdentifierAttribute as CFString) else {
+        return nil
+    }
+    let trimmed = identifier.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty, trimmed.utf8.count <= 1_024 else { return nil }
+    return trimmed
+}
+
+private func finiteGeometryComponent(_ value: CGFloat) -> String? {
+    guard value.isFinite else { return nil }
+    // Accessibility geometry can move by sub-pixel rounding between adjacent
+    // reads. Half-point quantization keeps the identity stable without making
+    // distinct controls at normal UI spacing collide.
+    return String(Int((value * 2).rounded()))
+}
+
+private func accessibilityGeometryDescriptor(for element: AXUIElement) -> String? {
+    guard
+        let position = attributePoint(element, kAXPositionAttribute as CFString),
+        let size = attributeSize(element, kAXSizeAttribute as CFString),
+        size.width >= 0,
+        size.height >= 0
+    else { return nil }
+
+    var relativePosition = position
+    if
+        let window = attributeElement(element, kAXWindowAttribute as CFString),
+        let windowPosition = attributePoint(window, kAXPositionAttribute as CFString)
+    {
+        relativePosition.x -= windowPosition.x
+        relativePosition.y -= windowPosition.y
+    }
+    guard
+        let x = finiteGeometryComponent(relativePosition.x),
+        let y = finiteGeometryComponent(relativePosition.y),
+        let width = finiteGeometryComponent(size.width),
+        let height = finiteGeometryComponent(size.height)
+    else { return nil }
+    let role = attributeString(element, kAXRoleAttribute as CFString) ?? ""
+    let subrole = attributeString(element, kAXSubroleAttribute as CFString) ?? ""
+    return "geometry:\(role):\(subrole):\(x):\(y):\(width):\(height)"
+}
+
+private func layeredElementIdentityDescriptor(
+    identifier: String?,
+    role: String,
+    subrole: String,
+    geometry: () -> String?,
+    ancestry: () -> String?
+) -> String? {
+    if let identifier {
+        return "identifier:\(role):\(subrole):\(identifier)"
+    }
+    if let geometry = geometry() {
+        return geometry
+    }
+    if let ancestry = ancestry() {
+        return "ancestry:\(ancestry)"
+    }
+    return nil
+}
+
+private func focusedElementIdentityDescriptor(_ element: AXUIElement) -> String? {
+    let role = attributeString(element, kAXRoleAttribute as CFString) ?? ""
+    let subrole = attributeString(element, kAXSubroleAttribute as CFString) ?? ""
+    return layeredElementIdentityDescriptor(
+        identifier: boundedAccessibilityIdentifier(element),
+        role: role,
+        subrole: subrole,
+        geometry: { accessibilityGeometryDescriptor(for: element) },
+        ancestry: { accessibilityPathDescriptor(for: element) }
+    )
+}
+
+private func editabilityFromCapabilities(
+    role: String?,
+    subrole: String?,
+    enabled: Bool?,
+    selectedTextSettable: Bool
+) -> Bool {
+    if subrole == (kAXSecureTextFieldSubrole as String) { return false }
+    if enabled == false { return false }
+
+    let knownStaticRoles: Set<String> = [
+        kAXStaticTextRole as String,
+        kAXButtonRole as String,
+        kAXCheckBoxRole as String,
+        kAXRadioButtonRole as String,
+        kAXImageRole as String,
+        "AXLink",
+    ]
+    if let role, knownStaticRoles.contains(role) { return false }
+
+    let knownEditableRoles: Set<String> = [
+        kAXTextFieldRole as String,
+        kAXTextAreaRole as String,
+        kAXComboBoxRole as String,
+    ]
+    if let role, knownEditableRoles.contains(role) { return true }
+    return selectedTextSettable
+}
+
+private func focusedElementIsEditable(_ element: AXUIElement) -> Bool {
+    // Chromium and Electron contenteditable surfaces commonly expose a web
+    // role rather than AXTextArea. A settable selected-text attribute is the
+    // relevant write capability: unlike selection/range support alone, it
+    // means Accessibility can replace the selected text. Static and secure
+    // controls are rejected before these capabilities are considered.
+    return editabilityFromCapabilities(
+        role: attributeString(element, kAXRoleAttribute as CFString),
+        subrole: attributeString(element, kAXSubroleAttribute as CFString),
+        enabled: attributeBool(element, kAXEnabledAttribute as CFString),
+        selectedTextSettable: attributeIsSettable(
+            element,
+            kAXSelectedTextAttribute as CFString
+        )
+    )
+}
+
 private func focusedElementState(
     for processId: pid_t,
     windowFingerprint: String?
@@ -373,42 +503,19 @@ private func focusedElementState(
         return FocusedElementState(editable: nil, fingerprint: nil)
     }
 
-    let subrole = attributeString(focusedElement, kAXSubroleAttribute as CFString)
-    if subrole == (kAXSecureTextFieldSubrole as String) {
-        return FocusedElementState(editable: false, fingerprint: nil)
-    }
-
-    let role = attributeString(focusedElement, kAXRoleAttribute as CFString)
-    let knownEditableRoles: Set<String> = [
-        kAXTextFieldRole as String,
-        kAXTextAreaRole as String,
-        kAXComboBoxRole as String,
-    ]
-    var editable = false
-    if let role, knownEditableRoles.contains(role) {
-        editable = true
-    } else {
-        var settable = DarwinBoolean(false)
-        if AXUIElementIsAttributeSettable(
-            focusedElement,
-            kAXValueAttribute as CFString,
-            &settable
-        ) == .success {
-            editable = settable.boolValue
-        }
-    }
+    let editable = focusedElementIsEditable(focusedElement)
 
     guard
         editable,
         let windowFingerprint,
-        let pathDescriptor = accessibilityPathDescriptor(for: focusedElement)
+        let identityDescriptor = focusedElementIdentityDescriptor(focusedElement)
     else {
         return FocusedElementState(editable: editable, fingerprint: nil)
     }
     return FocusedElementState(
         editable: true,
         fingerprint: hashFingerprint(
-            "\(processId)\u{0}\(windowFingerprint)\u{0}\(pathDescriptor)"
+            "\(processId)\u{0}\(windowFingerprint)\u{0}\(identityDescriptor)"
         )
     )
 }
@@ -473,14 +580,16 @@ private func targetMatches(_ target: TargetPayload, expectation: PasteExpectatio
 
 private func pasteIntoFocusedControl(expectation: PasteExpectation) -> PastePayload {
     guard CGPreflightPostEventAccess() else {
-        return PastePayload(injected: false)
+        return PastePayload(injected: false, reason: "permission_denied")
     }
-    guard
-        let currentTarget = try? captureTarget(),
-        targetMatches(currentTarget, expectation: expectation),
-        NSPasteboard.general.changeCount == expectation.clipboardSequence
-    else {
-        return PastePayload(injected: false)
+    guard let currentTarget = try? captureTarget() else {
+        return PastePayload(injected: false, reason: "target_unavailable")
+    }
+    guard targetMatches(currentTarget, expectation: expectation) else {
+        return PastePayload(injected: false, reason: "target_changed")
+    }
+    guard NSPasteboard.general.changeCount == expectation.clipboardSequence else {
+        return PastePayload(injected: false, reason: "clipboard_changed")
     }
 
     // Focus can still change in the irreducible handoff between this native
@@ -491,12 +600,12 @@ private func pasteIntoFocusedControl(expectation: PasteExpectation) -> PastePayl
         let keyDown = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: true),
         let keyUp = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: false)
     else {
-        return PastePayload(injected: false)
+        return PastePayload(injected: false, reason: "event_unavailable")
     }
     keyDown.flags = .maskCommand
     keyUp.flags = .maskCommand
     guard NSPasteboard.general.changeCount == expectation.clipboardSequence else {
-        return PastePayload(injected: false)
+        return PastePayload(injected: false, reason: "clipboard_changed")
     }
     keyDown.post(tap: .cghidEventTap)
     Thread.sleep(forTimeInterval: 0.012)
@@ -507,10 +616,58 @@ private func pasteIntoFocusedControl(expectation: PasteExpectation) -> PastePayl
 private func selfTest() -> Bool {
     let fingerprint = String(repeating: "a", count: 64)
     let elementFingerprint = String(repeating: "b", count: 64)
+    let identifierIdentity = layeredElementIdentityDescriptor(
+        identifier: "editor-id",
+        role: "AXWebArea",
+        subrole: "",
+        geometry: { "geometry:unused" },
+        ancestry: { "ancestry-unused" }
+    )
+    let geometryIdentity = layeredElementIdentityDescriptor(
+        identifier: nil,
+        role: "AXWebArea",
+        subrole: "",
+        geometry: { "geometry:AXWebArea::10:20:30:40" },
+        ancestry: { "ancestry-unused" }
+    )
+    let ancestryIdentity = layeredElementIdentityDescriptor(
+        identifier: nil,
+        role: "AXWebArea",
+        subrole: "",
+        geometry: { nil },
+        ancestry: { "0:AXWebArea:" }
+    )
     guard
         unambiguousWindowNumber([7]) == 7,
         unambiguousWindowNumber([]) == nil,
         unambiguousWindowNumber([7, 8]) == nil,
+        identifierIdentity == "identifier:AXWebArea::editor-id",
+        geometryIdentity == "geometry:AXWebArea::10:20:30:40",
+        ancestryIdentity == "ancestry:0:AXWebArea:",
+        editabilityFromCapabilities(
+            role: "AXWebArea",
+            subrole: nil,
+            enabled: true,
+            selectedTextSettable: true
+        ),
+        !editabilityFromCapabilities(
+            role: kAXStaticTextRole as String,
+            subrole: nil,
+            enabled: true,
+            selectedTextSettable: true
+        ),
+        !editabilityFromCapabilities(
+            role: kAXTextFieldRole as String,
+            subrole: kAXSecureTextFieldSubrole as String,
+            enabled: true,
+            selectedTextSettable: true
+        ),
+        !editabilityFromCapabilities(
+            role: kAXTextAreaRole as String,
+            subrole: nil,
+            enabled: false,
+            selectedTextSettable: true
+        ),
         let holdShortcut = parseHoldShortcut("Command+Control"),
         holdShortcut.modifierOnly,
         holdShortcut.groups.count == 2,
@@ -524,14 +681,6 @@ private func selfTest() -> Bool {
             elementFingerprint,
             "7",
         ]),
-        parsePasteExpectation([
-            "win32",
-            "42",
-            "com.example.Editor",
-            fingerprint,
-            elementFingerprint,
-            "7",
-        ]) == nil,
         parsePasteExpectation([
             "darwin",
             "042",

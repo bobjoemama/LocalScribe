@@ -128,7 +128,7 @@ function isSafeDatabaseParent(databasePath: string, parentPath: string): boolean
 }
 
 function hardenDatabasePermissions(databasePath: string): void {
-  if (process.platform === "win32" || databasePath === ":memory:") return;
+  if (databasePath === ":memory:") return;
 
   const resolvedDatabasePath = path.resolve(databasePath);
   const parentPath = path.dirname(resolvedDatabasePath);

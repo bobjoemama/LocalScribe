@@ -36,8 +36,8 @@ export class InsertionService {
     });
     const pasteInjector: PasteInjector = dependencies.pasteInjector ?? {
       paste: async (expectedTarget, expectedClipboardSequence) => {
-        // Native auto-paste owns the final editable-target recheck on both
-        // platforms. A missing helper deliberately degrades to copy-only.
+        // Native auto-paste owns the final editable-target recheck. A missing
+        // helper deliberately degrades to copy-only.
         return this.platformBridge.paste?.(
           expectedTarget,
           expectedClipboardSequence,
@@ -76,14 +76,11 @@ export class InsertionService {
 
   automaticPasteReady(): Promise<boolean> {
     if (this.platform === "darwin") return this.accessibilityReady();
-    if (this.platform === "win32") {
-      return this.platformBridge.ready?.() ?? Promise.resolve(false);
-    }
     return Promise.resolve(false);
   }
 
   accessibilityReady(): Promise<boolean> {
-    return this.platformBridge.accessibilityReady?.() ?? Promise.resolve(this.platform !== "darwin");
+    return this.platformBridge.accessibilityReady?.() ?? Promise.resolve(false);
   }
 
   requestAccessibility(): Promise<boolean> {

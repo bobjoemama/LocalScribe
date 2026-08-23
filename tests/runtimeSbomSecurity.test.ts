@@ -41,7 +41,7 @@ function requiredPackageVersion(
   return version;
 }
 
-function runtimeSbomOutput(platform: "macos" | "windows"): string {
+function runtimeSbomOutput(): string {
   const npmExecPath = process.env.npm_execpath;
   if (!npmExecPath) {
     throw new Error("runtime SBOM test requires npm_execpath");
@@ -50,7 +50,7 @@ function runtimeSbomOutput(platform: "macos" | "windows"): string {
     npmExecPath,
     "run",
     "--silent",
-    `sbom:runtime:${platform}`,
+    "sbom:runtime:macos",
   ], {
     cwd: root,
     encoding: "utf8",
@@ -58,8 +58,8 @@ function runtimeSbomOutput(platform: "macos" | "windows"): string {
   });
 }
 
-function runtimeSbom(platform: "macos" | "windows"): CycloneDxBom {
-  return JSON.parse(runtimeSbomOutput(platform)) as CycloneDxBom;
+function runtimeSbom(): CycloneDxBom {
+  return JSON.parse(runtimeSbomOutput()) as CycloneDxBom;
 }
 
 function evaluateGeneratorModule(source: string): string {
@@ -103,13 +103,9 @@ function expectOneExactComponent(
 }
 
 describe("runtime core SBOM generation", () => {
-  it.each([
-    ["macos", "native/macos/active-target", "native/windows/active-target.exe"],
-    ["windows", "native/windows/active-target.exe", "native/macos/active-target"],
-  ] as const)(
-    "emits a complete, platform-specific runtime graph for %s",
-    (platform, expectedHelper, wrongPlatformHelper) => {
-      const bom = runtimeSbom(platform);
+  it("emits a complete Apple Silicon macOS runtime graph", () => {
+      const bom = runtimeSbom();
+      const expectedHelper = "native/macos/active-target";
 
       expectOneExactComponent(
         bom,
@@ -119,24 +115,19 @@ describe("runtime core SBOM generation", () => {
       expectOneExactComponent(bom, "CPython", "3.12.13");
 
       expectOneExactComponent(bom, expectedHelper, packageJson.version);
-      expect(namedComponents(bom, wrongPlatformHelper)).toHaveLength(0);
-      if (platform === "windows") {
-        expectOneExactComponent(bom, "CrispASR", "0.8.24");
-      } else {
-        expect(namedComponents(bom, "CrispASR")).toHaveLength(0);
-        expectOneExactComponent(bom, "FluidAudio", "0.15.5");
-        const fluidAudio = namedComponents(bom, "FluidAudio")[0];
-        if (!fluidAudio) {
-          throw new Error("runtime SBOM is missing FluidAudio");
-        }
-        expect(fluidAudio["bom-ref"]).toBe(
-          "fluidaudio@0.15.5+19600a485baa4998812e4654b70d2bab8f2c9949",
-        );
-        expect(fluidAudio.properties).toContainEqual({
-          name: "com.localscribe.runtime-role",
-          value: "parakeet-coreml-ane-engine",
-        });
+      expect(namedComponents(bom, "CrispASR")).toHaveLength(0);
+      expectOneExactComponent(bom, "FluidAudio", "0.15.5");
+      const fluidAudio = namedComponents(bom, "FluidAudio")[0];
+      if (!fluidAudio) {
+        throw new Error("runtime SBOM is missing FluidAudio");
       }
+      expect(fluidAudio["bom-ref"]).toBe(
+        "fluidaudio@0.15.5+19600a485baa4998812e4654b70d2bab8f2c9949",
+      );
+      expect(fluidAudio.properties).toContainEqual({
+        name: "com.localscribe.runtime-role",
+        value: "parakeet-coreml-ane-engine",
+      });
 
       for (const [productionDependency, version] of Object.entries(
         packageJson.dependencies,
@@ -153,12 +144,10 @@ describe("runtime core SBOM generation", () => {
       )) {
         expect(namedComponents(bom, developmentOnlyTool)).toHaveLength(0);
       }
-    },
-  );
+  });
 
   it("is byte-for-byte deterministic for each platform graph", () => {
-    expect(runtimeSbomOutput("macos")).toBe(runtimeSbomOutput("macos"));
-    expect(runtimeSbomOutput("windows")).toBe(runtimeSbomOutput("windows"));
+    expect(runtimeSbomOutput()).toBe(runtimeSbomOutput());
   }, 20_000);
 
   it("fails closed on missing, ranged, malformed, or inconsistent runtime versions", () => {
@@ -182,7 +171,6 @@ describe("runtime core SBOM generation", () => {
         },
       },
       macRuntimeScript: 'python_version="3.12.13"',
-      windowsRuntimeScript: '$PythonVersion = "3.12.13"',
     };
     expect(
       JSON.parse(
@@ -201,10 +189,6 @@ describe("runtime core SBOM generation", () => {
             "node_modules/electron": { version: "43.2.1" },
           },
         },
-      },
-      {
-        ...validMetadata,
-        windowsRuntimeScript: '$PythonVersion = "3.12.12"',
       },
     ]) {
       expect(() =>
@@ -226,7 +210,7 @@ describe("runtime core SBOM generation", () => {
  */
 describe("bundled CPython distribution identity", () => {
   it("names the exact python-build-standalone build and hashes the shipped interpreter", () => {
-    const bom = runtimeSbom("macos") as { components?: unknown };
+    const bom = runtimeSbom() as { components?: unknown };
     const components = Array.isArray(bom.components) ? bom.components : [];
     const cpython = components.find(
       (component) => (component as { name?: unknown }).name === "CPython",

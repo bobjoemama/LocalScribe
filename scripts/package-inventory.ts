@@ -306,26 +306,21 @@ export function assertPlatformResourceEntries(
     );
   }
 
-  const oppositePlatformEntries = normalizedEntries.filter((entry) =>
-    platform === "darwin"
-      ? entry === "python-runtime-windows" ||
-        entry.startsWith("python-runtime-windows/") ||
-        entry.startsWith("worker/windows_transformers/") ||
-        entry.startsWith("native/windows/") ||
-        entry === "branding" ||
-        entry.startsWith("branding/")
-      : entry === "python-runtime" ||
-        entry.startsWith("python-runtime/") ||
-        entry.startsWith("worker/localscribe_worker/") ||
-        entry.startsWith("native/macos/"),
+  const unsupportedPlatformEntries = normalizedEntries.filter((entry) =>
+    entry === "python-runtime-windows" ||
+    entry.startsWith("python-runtime-windows/") ||
+    entry.startsWith("worker/windows_transformers/") ||
+    entry.startsWith("native/windows/") ||
+    entry === "branding" ||
+    entry.startsWith("branding/")
   );
-  forbidden.push(...oppositePlatformEntries);
+  forbidden.push(...unsupportedPlatformEntries);
 
   if (missingFiles.length > 0 || forbidden.length > 0) {
     const problems = [
       missingFiles.length > 0 ? `required platform files missing: ${missingFiles.join(", ")}` : null,
       forbidden.length > 0
-        ? `forbidden or opposite-platform resources: ${[...new Set(forbidden)].sort().join(", ")}`
+        ? `forbidden or unsupported-platform resources: ${[...new Set(forbidden)].sort().join(", ")}`
         : null,
     ].filter((problem): problem is string => problem !== null);
     throw new Error(`Packaged app resource inventory check failed: ${problems.join("; ")}`);
@@ -394,8 +389,7 @@ export function prunePackagedResources(
     rmSync(path.join(resourcesPath, "branding"), { recursive: true, force: true });
   }
 
-  const oppositeRuntime = platform === "darwin" ? "python-runtime-windows" : "python-runtime";
-  rmSync(path.join(resourcesPath, oppositeRuntime), { recursive: true, force: true });
+  rmSync(path.join(resourcesPath, "python-runtime-windows"), { recursive: true, force: true });
   removeForbiddenArtifacts(path.join(resourcesPath, policy.runtimeDirectory));
 }
 

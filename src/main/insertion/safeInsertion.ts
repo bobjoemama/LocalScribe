@@ -33,7 +33,6 @@ function sameTarget(expected: ActiveTarget, current: ActiveTarget): boolean {
     expected.windowFingerprint === current.windowFingerprint
   );
   if (!sameWindow) return false;
-  if (expected.platform !== "darwin") return true;
   return (
     typeof expected.focusedElementFingerprint === "string"
     && typeof current.focusedElementFingerprint === "string"
@@ -44,14 +43,8 @@ function sameTarget(expected: ActiveTarget, current: ActiveTarget): boolean {
 function clipboardAdvancedExactlyOnce(
   before: number,
   after: number,
-  platform: ActiveTarget["platform"],
 ): boolean {
   if (!Number.isSafeInteger(before) || !Number.isSafeInteger(after)) return false;
-  if (platform === "win32") {
-    // Windows uses a DWORD sequence. Fail closed at wrap instead of treating
-    // zero (also the access-denied sentinel) as a trustworthy write.
-    return before > 0 && before < 4_294_967_295 && after === before + 1;
-  }
   return before >= 0 && after === before + 1;
 }
 
@@ -194,7 +187,6 @@ export class SafeInsertionCoordinator {
         !clipboardAdvancedExactlyOnce(
           sequenceAfterSnapshot,
           sequenceAfterWrite,
-          expectedTarget.platform,
         )
       ) {
         // Our synchronous clipboard write must be the only change since the
@@ -219,7 +211,7 @@ export class SafeInsertionCoordinator {
       // desktop, or another non-editable control. If Accessibility cannot
       // identify a writable focused element, retaining the transcription on
       // the clipboard is the safe and predictable fallback.
-      if (currentTarget.platform === "darwin" && currentTarget.focusedEditable !== true) {
+      if (currentTarget.focusedEditable !== true) {
         return "copied";
       }
 

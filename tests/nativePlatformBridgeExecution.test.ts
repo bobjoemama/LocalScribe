@@ -44,16 +44,17 @@ describe("native platform bridge execution", () => {
     vi.stubEnv("HF_TOKEN", "must-not-cross-process-boundary");
     vi.stubEnv("HTTPS_PROXY", "http://sensitive-proxy.invalid");
     mocks.stdout = JSON.stringify({
-      platform: "win32",
+      platform: "darwin",
       processId: 812,
-      applicationId: "C:\\Program Files\\Editor\\editor.exe",
+      applicationId: "com.example.Editor",
       windowFingerprint: "c".repeat(64),
       focusedEditable: true,
+      focusedElementFingerprint: "d".repeat(64),
     });
     const bridge = bridgeWithDigest();
 
     await expect(bridge.captureActiveTarget()).resolves.toMatchObject({
-      platform: "win32",
+      platform: "darwin",
       processId: 812,
       focusedEditable: true,
     });
@@ -98,57 +99,16 @@ describe("native platform bridge execution", () => {
     expect(JSON.stringify(mocks.execFile.mock.calls)).not.toContain(transcript);
   });
 
-  it("binds Windows paste to the expected nonzero clipboard sequence", async () => {
-    mocks.stdout = JSON.stringify({ injected: true });
+  it("accepts zero as a valid macOS clipboard sequence", async () => {
     const bridge = bridgeWithDigest();
-    const windowsTarget: ActiveTarget = {
-      platform: "win32",
-      processId: 812,
-      applicationId: "C:\\Program Files\\Editor\\editor.exe",
-      windowFingerprint: "c".repeat(64),
-      focusedEditable: true,
-    };
-
-    await expect(bridge.paste(windowsTarget, 101)).resolves.toEqual({
-      status: "injected",
-    });
-    expect(mocks.execFile).toHaveBeenCalledWith(
-      process.execPath,
-      [
-        "paste",
-        "win32",
-        "812",
-        "C:\\Program Files\\Editor\\editor.exe",
-        "c".repeat(64),
-        "101",
-      ],
-      expect.objectContaining({ shell: false }),
-      expect.any(Function),
-    );
-
-    mocks.execFile.mockClear();
-    await expect(bridge.paste(windowsTarget, 0)).resolves.toEqual({
-      status: "failed",
-    });
-    expect(mocks.execFile).not.toHaveBeenCalled();
-  });
-
-  it("rejects Windows' zero clipboard access sentinel", async () => {
-    const bridge = bridgeWithDigest();
-    mocks.stdout = JSON.stringify({ platform: "win32", sequence: 0 });
-    await expect(bridge.clipboardSequence()).resolves.toBeNull();
-
-    mocks.stdout = JSON.stringify({ platform: "win32", sequence: 17 });
-    await expect(bridge.clipboardSequence()).resolves.toBe(17);
-
     mocks.stdout = JSON.stringify({ platform: "darwin", sequence: 0 });
     await expect(bridge.clipboardSequence()).resolves.toBe(0);
   });
 
   it("proves helper readiness once with its deterministic self-test", async () => {
     mocks.stdout = JSON.stringify({
-      platform: "win32",
-      architecture: "x64",
+      platform: "darwin",
+      architecture: "arm64",
       selfTest: true,
     });
     const bridge = bridgeWithDigest();
@@ -165,7 +125,7 @@ describe("native platform bridge execution", () => {
   });
 
   it("fails helper readiness closed on malformed self-test output", async () => {
-    mocks.stdout = JSON.stringify({ platform: "win32", selfTest: false });
+    mocks.stdout = JSON.stringify({ platform: "darwin", selfTest: false });
     const bridge = bridgeWithDigest();
 
     await expect(bridge.ready()).resolves.toBe(false);
@@ -174,7 +134,7 @@ describe("native platform bridge execution", () => {
   it("refuses a helper whose bytes change after the verified pin", async () => {
     let digest = "a".repeat(64);
     mocks.stdout = JSON.stringify({
-      platform: "win32",
+      platform: "darwin",
       selfTest: true,
     });
     const bridge = bridgeWithDigest(() => digest);
@@ -194,24 +154,26 @@ describe("native platform bridge execution", () => {
     await expect(bridge.paste({
       ...EXPECTED_TARGET,
       windowFingerprint: null,
-    }, 101)).resolves.toEqual({ status: "failed" });
+    }, 101)).resolves.toEqual({ status: "failed", reason: "invalid_request" });
     await expect(bridge.paste({
       ...EXPECTED_TARGET,
       processId: 0,
-    }, 101)).resolves.toEqual({ status: "failed" });
+    }, 101)).resolves.toEqual({ status: "failed", reason: "invalid_request" });
     await expect(bridge.paste({
       ...EXPECTED_TARGET,
       windowFingerprint: "C".repeat(64),
-    }, 101)).resolves.toEqual({ status: "failed" });
+    }, 101)).resolves.toEqual({ status: "failed", reason: "invalid_request" });
     await expect(bridge.paste({
       ...EXPECTED_TARGET,
       focusedElementFingerprint: null,
-    }, 101)).resolves.toEqual({ status: "failed" });
+    }, 101)).resolves.toEqual({ status: "failed", reason: "invalid_request" });
     await expect(bridge.paste(null as unknown as ActiveTarget, 101)).resolves.toEqual({
       status: "failed",
+      reason: "invalid_request",
     });
     await expect(bridge.paste(EXPECTED_TARGET, -1)).resolves.toEqual({
       status: "failed",
+      reason: "invalid_request",
     });
 
     expect(mocks.execFile).not.toHaveBeenCalled();

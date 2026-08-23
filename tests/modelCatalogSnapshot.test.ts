@@ -79,64 +79,6 @@ describe("main-process model catalog snapshot", () => {
     expect(snapshot.unmanagedEntries).toEqual([]);
   });
 
-  it("represents one Windows model artifact per family across all compute profiles", async () => {
-    const modelRoot = await mkdtemp(path.join(os.tmpdir(), "localscribe-model-snapshot-"));
-    temporaryRoots.push(modelRoot);
-    const catalog = loadRuntimePlatformModelCatalog(
-      path.resolve("resources/model-manifest"),
-      "win32",
-      "x64",
-    );
-
-    const snapshot = await buildModelCatalogSnapshot({
-      settings: {
-        activeModelFamilyId: "whisper-large-v2",
-        modelLibraryFamilyIds: ["whisper-large-v3", "whisper-large-v2"],
-      },
-      catalog,
-      modelRoot,
-    });
-
-    expect(snapshot.verifications).toEqual([
-      expect.objectContaining({
-        familyId: "whisper-large-v3",
-        artifactId: "whisper-large-v3-ctranslate2",
-      }),
-      expect.objectContaining({
-        familyId: "qwen3-asr-0-6b",
-        artifactId: "qwen3-asr-0-6b-crisp-f16",
-      }),
-      expect.objectContaining({
-        familyId: "qwen3-asr-0-6b",
-        artifactId: "qwen3-asr-0-6b-crisp-q8-0",
-      }),
-      expect.objectContaining({
-        familyId: "qwen3-asr-0-6b",
-        artifactId: "qwen3-asr-0-6b-crisp-q4-k",
-      }),
-      expect.objectContaining({
-        familyId: "qwen3-asr-1-7b",
-        artifactId: "qwen3-asr-1-7b-crisp-f16",
-      }),
-      expect.objectContaining({
-        familyId: "qwen3-asr-1-7b",
-        artifactId: "qwen3-asr-1-7b-crisp-q8-0",
-      }),
-      expect.objectContaining({
-        familyId: "qwen3-asr-1-7b",
-        artifactId: "qwen3-asr-1-7b-crisp-q4-k",
-      }),
-      expect.objectContaining({
-        familyId: "whisper-large-v2",
-        artifactId: "whisper-large-v2-ctranslate2",
-      }),
-    ]);
-    expect(snapshot.families.find((family) => family.familyId === "whisper-large-v2"))
-      .toMatchObject({ active: true, inLibrary: true });
-    expect(snapshot.families.find((family) => family.familyId === "parakeet-unified-en-0-6b"))
-      .toBeUndefined();
-  });
-
   it("keeps the model root under app-owned userData", () => {
     expect(modelRootForUserData("/private/app-data")).toBe(
       path.join("/private/app-data", "models"),

@@ -62,7 +62,7 @@ const KEY_GROUPS: Record<string, readonly (readonly number[])[]> = {
   NumpadEnter: [[UiohookKey.NumpadEnter]],
 };
 
-function modifierKeyGroups(token: string, platform: NodeJS.Platform): readonly (readonly number[])[] | null {
+function modifierKeyGroups(token: string): readonly (readonly number[])[] | null {
   switch (token) {
     case "Control":
       return [[UiohookKey.Ctrl, UiohookKey.CtrlRight]];
@@ -71,9 +71,7 @@ function modifierKeyGroups(token: string, platform: NodeJS.Platform): readonly (
     case "Meta":
       return [[UiohookKey.Meta, UiohookKey.MetaRight]];
     case "CommandOrControl":
-      return platform === "darwin"
-        ? [[UiohookKey.Meta, UiohookKey.MetaRight]]
-        : [[UiohookKey.Ctrl, UiohookKey.CtrlRight]];
+      return [[UiohookKey.Meta, UiohookKey.MetaRight]];
     case "Alt":
       return [[UiohookKey.Alt, UiohookKey.AltRight]];
     case "AltGr":
@@ -105,10 +103,9 @@ function keyboardKeyGroups(token: string): readonly (readonly number[])[] | null
  */
 export function uiohookHoldKeyGroups(
   shortcut: string,
-  platform: NodeJS.Platform = process.platform,
 ): readonly (readonly number[])[] {
   const groups = shortcutTokens(shortcut).flatMap((token) =>
-    modifierKeyGroups(token, platform) ?? keyboardKeyGroups(token) ?? [],
+    modifierKeyGroups(token) ?? keyboardKeyGroups(token) ?? [],
   );
   if (!groups.length) throw new Error(`Unsupported hold shortcut: ${shortcut}.`);
   const seen = new Set<string>();
@@ -145,7 +142,6 @@ export class HotkeyService {
     private readonly fallbackMonitor: ControlMonitor | null,
     private holdShortcut: HoldShortcut,
     private toggleShortcut: ToggleShortcut,
-    private readonly platform: NodeJS.Platform = process.platform,
   ) {
     this.gesture = new HoldShortcutGesture({
       onHoldStart: onPress,
@@ -257,13 +253,6 @@ export class HotkeyService {
     if (this.mode === "full") return;
     const enteringFallback = this.mode !== "fallback";
     if (enteringFallback) this.registerToggle(requireToggle);
-    if (this.platform !== "darwin") {
-      if (enteringFallback) console.warn(
-        `${this.holdShortcut} push-to-talk is unavailable because the ${this.platformLabel()} global keyboard hook could not start`,
-      );
-      this.mode = "fallback";
-      return;
-    }
     if (this.nativeMacMonitorSupports(this.holdShortcut) && !this.fallbackMonitorStarted) {
       try {
         this.fallbackMonitorStarted = this.fallbackMonitor?.start(
@@ -293,7 +282,7 @@ export class HotkeyService {
     const canonicalHold = parseShortcut(holdShortcut).canonical;
     const canonicalToggle = parseShortcut(toggleShortcut).canonical;
     if (this.captureActive) throw new Error("Finish recording the shortcut before saving it.");
-    if (shortcutsUseSamePhysicalKeys(canonicalHold, canonicalToggle, this.platform)) {
+    if (shortcutsUseSamePhysicalKeys(canonicalHold, canonicalToggle)) {
       throw new Error("Push-to-talk and toggle dictation must use different shortcuts.");
     }
 
@@ -306,16 +295,6 @@ export class HotkeyService {
       }
       return;
     }
-    if (
-      this.mode === "fallback"
-      && this.platform !== "darwin"
-      && canonicalHold !== this.holdShortcut
-    ) {
-      throw new Error(
-        `${this.platformLabel()} push-to-talk cannot be changed because the global keyboard hook did not start. Toggle dictation remains available.`,
-      );
-    }
-
     // Build before touching live registration so an unsupported hold cannot
     // interrupt a currently working shortcut configuration.
     const nextMatcher = this.createHoldMatcher(canonicalHold);
@@ -403,7 +382,7 @@ export class HotkeyService {
       };
     }
 
-    if (otherShortcut && shortcutsUseSamePhysicalKeys(shortcut, otherShortcut, this.platform)) {
+    if (otherShortcut && shortcutsUseSamePhysicalKeys(shortcut, otherShortcut)) {
       return {
         shortcut,
         available: false,
@@ -414,7 +393,7 @@ export class HotkeyService {
       return {
         shortcut,
         available: false,
-        error: `Toggle dictation needs a non-modifier key so ${this.platformLabel()} can register it.`,
+        error: "Toggle dictation needs a non-modifier key so macOS can register it.",
       };
     }
     const kindError = shortcutKindValidationError(input.kind, parsedShortcut);
@@ -425,17 +404,9 @@ export class HotkeyService {
         error: kindError,
       };
     }
-    if (input.kind === "hold" && this.mode === "fallback" && this.platform !== "darwin") {
-      return {
-        shortcut,
-        available: false,
-        error: `${this.platformLabel()} push-to-talk is unavailable because the global keyboard hook did not start. Toggle dictation remains available.`,
-      };
-    }
     if (
       input.kind === "hold"
       && this.mode === "fallback"
-      && this.platform === "darwin"
       && !this.nativeMacMonitorSupports(shortcut)
     ) {
       return {
@@ -455,7 +426,7 @@ export class HotkeyService {
     // does not need Electron: uiohook exposes its physical keypad keycode.
     if (input.kind === "hold" && parsedShortcut.key === "NumpadEnter") {
       try {
-        uiohookHoldKeyGroups(shortcut, this.platform);
+        uiohookHoldKeyGroups(shortcut);
         return { shortcut, available: true };
       } catch (error) {
         return {
@@ -481,7 +452,7 @@ export class HotkeyService {
         return {
           shortcut,
           available: false,
-          error: `This shortcut is already used by ${this.platformLabel()} or another app.`,
+          error: "This shortcut is already used by macOS or another app.",
         };
       }
       return { shortcut, available: true };
@@ -579,7 +550,7 @@ export class HotkeyService {
 
   private readonly handleToggle = (): void => {
     if (this.captureActive) return;
-    if (!this.gesture.prepareToggle(toggleUsesHoldKey(this.toggleShortcut, this.holdShortcut, this.platform))) return;
+    if (!this.gesture.prepareToggle(toggleUsesHoldKey(this.toggleShortcut, this.holdShortcut))) return;
     if (this.toggleLocked) return;
     this.toggleLocked = true;
     this.onToggle();
@@ -588,7 +559,7 @@ export class HotkeyService {
 
   private createHoldMatcher(shortcut: string): HoldChordMatcher {
     return new HoldChordMatcher(
-      uiohookHoldKeyGroups(shortcut, this.platform),
+      uiohookHoldKeyGroups(shortcut),
       {
         onChordStart: () => this.gesture.keyDown(),
         onChordEnd: () => this.gesture.keyUp(),
@@ -598,8 +569,7 @@ export class HotkeyService {
       // use that modifier in another shortcut. Once every modifier is down,
       // the matcher must continue watching for a non-required key: otherwise
       // Command+Control+A can start dictation after the grace period on macOS.
-      // Windows already needs this behavior for its modifier holds.
-      this.platform === "win32" || (this.platform === "darwin" && isModifierOnlyShortcut(shortcut)),
+      isModifierOnlyShortcut(shortcut),
     );
   }
 
@@ -658,13 +628,7 @@ export class HotkeyService {
     const detail = error instanceof Error && error.message
       ? ` (${error.message})`
       : "";
-    return `Toggle dictation is unavailable because ${shortcut} is already used by ${this.platformLabel()} or another app${detail}. Choose another toggle shortcut in Settings.`;
-  }
-
-  private platformLabel(): string {
-    if (this.platform === "darwin") return "macOS";
-    if (this.platform === "win32") return "Windows";
-    return "the operating system";
+    return `Toggle dictation is unavailable because ${shortcut} is already used by macOS or another app${detail}. Choose another toggle shortcut in Settings.`;
   }
 
   private resumeShortcutsAfterCapture(): void {
@@ -699,6 +663,6 @@ export class HotkeyService {
   }
 
   private nativeMacMonitorSupports(shortcut: string): boolean {
-    return this.platform === "darwin" && (this.fallbackMonitor?.supports(shortcut) ?? false);
+    return this.fallbackMonitor?.supports(shortcut) ?? false;
   }
 }

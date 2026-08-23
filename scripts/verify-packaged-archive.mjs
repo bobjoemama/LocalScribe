@@ -6,10 +6,10 @@ import { assertPackagedArchive } from "./package-provenance.mts";
 const [asarArgument, platformArgument, archArgument] = process.argv.slice(2);
 if (!asarArgument || !platformArgument || !archArgument) {
   throw new Error(
-    "Usage: node scripts/verify-packaged-archive.mjs <app.asar> <darwin|win32> <arch>",
+    "Usage: node scripts/verify-packaged-archive.mjs <app.asar> darwin arm64",
   );
 }
-if (platformArgument !== "darwin" && platformArgument !== "win32") {
+if (platformArgument !== "darwin") {
   throw new Error(`Unsupported packaged archive platform: ${platformArgument}`);
 }
 

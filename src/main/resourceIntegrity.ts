@@ -28,7 +28,7 @@ const HASH_BUFFER_BYTES = 1024 * 1024;
 const GENERATED_MODULE_PLACEHOLDER = `// This committed placeholder is replaced only while Forge prepares a package.\n// The generated value is bundled into app.asar, then this exact file is restored.\nexport const generatedResourceIntegrity = {\n  root: "",\n  entryCount: 0,\n  coveredRoots: [],\n  platform: "",\n} as const;\n`;
 
 type TreeEntryType = "directory" | "file" | "symlink";
-type ResourceIntegrityPlatform = "darwin-arm64" | "win32-x64";
+type ResourceIntegrityPlatform = "darwin-arm64";
 type ScanMode = "source" | "packaged";
 
 interface ResourceTreeEntry {
@@ -123,11 +123,11 @@ function hashFile(filePath: string, expectedSize: number): string {
 }
 
 function packagedPlatformFor(platform: NodeJS.Platform, arch: string): PackagedPlatform {
-  if (platform === "darwin" || platform === "win32") {
+  if (platform === "darwin" && arch === "arm64") {
     resourcePolicyFor(platform, arch);
     return platform;
   }
-  throw new Error(`Resource integrity is unsupported on ${platform}/${arch}`);
+  throw new Error(`Resource integrity supports only macOS on Apple Silicon; received ${platform}/${arch}`);
 }
 
 function descriptorFor(platform: PackagedPlatform, arch: string): IntegrityDescriptor {
@@ -174,7 +174,6 @@ function isCandidateResourcePath(relativePath: string): boolean {
   return [
     "worker",
     "python-runtime",
-    "python-runtime-windows",
     "native",
     "model-manifest",
     "branding",
@@ -329,7 +328,6 @@ function scanResourceTree(
   for (const root of [
     "worker",
     "python-runtime",
-    "python-runtime-windows",
     "native",
     "model-manifest",
     "branding",

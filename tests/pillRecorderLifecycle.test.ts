@@ -72,16 +72,16 @@ describe("pill recorder lifecycle", () => {
       listening,
       "ready",
       null,
-      "persisted-windows-microphone",
+      "persisted-usb-microphone",
     )).toEqual({
       sessionId: FIRST_SESSION_ID,
-      microphoneId: "persisted-windows-microphone",
+      microphoneId: "persisted-usb-microphone",
     });
     expect(listeningRecorderStart(
       listening,
       "ready",
       FIRST_SESSION_ID,
-      "persisted-windows-microphone",
+      "persisted-usb-microphone",
     )).toBeNull();
   });
 
@@ -110,31 +110,15 @@ describe("pill shortcut presentation", () => {
       dictateAriaLabel: "Start dictating; shortcut settings are unavailable",
     });
     expect(holdShortcutPresentation("Control", "ready")).toEqual({
-      tooltip: "Dictate · platform details are loading",
-      dictateAriaLabel: "Start dictating; platform details are loading",
-    });
-    expect(holdShortcutPresentation("Control", "ready", undefined, "unavailable")).toEqual({
-      tooltip: "Dictate · platform details are unavailable",
-      dictateAriaLabel: "Start dictating; platform details are unavailable",
-    });
-    expect(holdShortcutPresentation("Control", "ready", "unsupported")).toEqual({
-      tooltip: "Dictate · shortcut unavailable on this platform",
-      dictateAriaLabel: "Start dictating; shortcut unavailable on this platform",
+      tooltip: "Dictate · hold ⌃",
+      dictateAriaLabel: "Start dictating; hold ⌃",
     });
   });
 
   it("formats the persisted shortcut for the runtime platform", () => {
-    expect(holdShortcutPresentation("Alt+Space", "ready", "darwin")).toEqual({
+    expect(holdShortcutPresentation("Alt+Space", "ready")).toEqual({
       tooltip: "Dictate · hold ⌥ + Space",
       dictateAriaLabel: "Start dictating; hold ⌥ + Space",
-    });
-    expect(holdShortcutPresentation("Alt+Space", "ready", "win32")).toEqual({
-      tooltip: "Dictate · hold Alt + Space",
-      dictateAriaLabel: "Start dictating; hold Alt + Space",
-    });
-    expect(holdShortcutPresentation("Command+Space", "ready", "win32")).toEqual({
-      tooltip: "Dictate · hold Win + Space",
-      dictateAriaLabel: "Start dictating; hold Win + Space",
     });
   });
 });

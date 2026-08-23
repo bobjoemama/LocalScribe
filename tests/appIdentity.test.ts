@@ -14,10 +14,9 @@ describe("application identity normalization", () => {
     expect(applicationIdsMatch("com.apple.TextEdit", "com.apple.Notes")).toBe(false);
   });
 
-  it("matches a configured Windows executable name to its captured full path", () => {
-    expect(
-      applicationIdsMatch("Slack.exe", "C:\\Users\\Alice\\AppData\\Local\\slack\\SLACK.EXE"),
-    ).toBe(true);
-    expect(applicationIdsMatch("Teams.exe", "C:\\Apps\\Slack.exe")).toBe(false);
+  it("does not reduce path-like hostile input to a basename", () => {
+    expect(applicationIdsMatch("Slack.app", "/Applications/Slack.app")).toBe(false);
+    expect(applicationIdsMatch("Slack.app", "Volume:\\Apps\\Slack.app")).toBe(false);
+    expect(applicationIdsMatch("/Applications/Slack.app", "\\Applications\\SLACK.APP")).toBe(true);
   });
 });

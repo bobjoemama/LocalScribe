@@ -1,32 +1,32 @@
 # Audio protocol
 
 `resources/audio-protocol.json` is the canonical manifest for audio passed
-from the Electron renderer to LocalScribe's local workers:
+from the Electron renderer to LocalScribe's local macOS worker:
 
-- canonical WAV container with mono, 16 kHz, signed PCM16 frames;
-- a maximum duration and total file-byte limit.
+- canonical WAV container;
+- mono, 16 kHz, signed PCM16 frames;
+- maximum duration and total file-byte limits.
 
-## The dictionary recognizer hint
+`src/shared/audioProtocol.ts` is the Electron-facing authority used by capture
+and IPC validation. The packaged Python worker keeps literal constants because
+it runs as a standalone runtime. `tests/audioProtocol.test.ts` checks those
+constants against the manifest. Update the manifest and worker constants
+together; do not add a runtime cross-language source import.
 
-`maxAsrContextChars` (4,000) bounds the dictionary hint sent with each
-`transcribe` request. That is a protocol ceiling, not a promise the backend will
-read all of it: mlx-whisper passes the string as `initial_prompt` and its
-decoder keeps only `prompt_tokens[-(n_text_ctx // 2 - 1):]` — 223 tokens for
-large-v3, roughly a fifth of a full 4,000-character hint. The truncation takes
-the **tail**.
+## Dictionary recognizer hints
 
-`buildDictionaryAsrContext` therefore emits its selected terms
-**lowest-priority first**, so the highest-priority terms are the ones at the end
-that survive. Emitting newest-first — the order the function computes — meant
-Whisper's own truncation discarded exactly the newest entries the builder had
-prioritised. If you change that ordering, change it knowing which end the
-consumer keeps; `tests/dictionaryContext.test.ts` pins the surviving tail rather
-than just the selection.
+`maxAsrContextChars` (4,000) is the protocol ceiling for a dictionary hint, not
+a promise that every backend consumes it. MLX Whisper passes the hint as
+`initial_prompt` and its decoder retains the tail of the permitted prompt
+window.
 
-`src/shared/audioProtocol.ts` is the Electron-facing authority and is used by
-the recorder and IPC schema. The macOS MLX Whisper and Windows faster-whisper workers
-keep literal constants rather than importing application code, because each is
-packaged as a standalone Python runtime. `tests/audioProtocol.test.ts` checks
-those literals against the manifest on every TypeScript test run. Update the
-manifest and both worker constants together; do not add a runtime
-cross-language import.
+`buildDictionaryAsrContext` therefore emits selected terms lowest-priority
+first so the highest-priority terms remain at the end. Changing that order can
+cause the decoder to discard the newest/highest-priority entries;
+`tests/dictionaryContext.test.ts` pins the surviving tail.
+
+Parakeet does not advertise recognizer-context support, so LocalScribe sends it
+an empty context. Deterministic Dictionary and snippet correction still runs
+after transcription. Capability-aware routing must remain authoritative: a
+backend never receives an unsupported prompt merely because the protocol has a
+global ceiling.

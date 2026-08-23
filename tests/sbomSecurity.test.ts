@@ -17,14 +17,8 @@ describe("platform SBOM generation", () => {
     expect(packageJson.scripts["sbom:runtime:macos"]).toBe(
       "node scripts/generate-runtime-sbom.mjs --platform darwin",
     );
-    expect(packageJson.scripts["sbom:runtime:windows"]).toBe(
-      "node scripts/generate-runtime-sbom.mjs --platform win32",
-    );
     expect(packageJson.scripts["sbom:python:macos"]).toBe(
       "uv export --project worker --locked --no-dev --format cyclonedx1.5 --preview-features sbom-export",
-    );
-    expect(packageJson.scripts["sbom:python:windows"]).toBe(
-      "uv export --project worker/windows_transformers --locked --no-dev --format cyclonedx1.5 --preview-features sbom-export",
     );
   });
 
@@ -47,18 +41,5 @@ describe("platform SBOM generation", () => {
     );
   });
 
-  it("generates and checksums the Windows SBOM pair during local verification", () => {
-    const localWindowsVerification = projectFile("scripts/verify-local-windows.ps1");
 
-    expect(localWindowsVerification.match(
-      /sbom:runtime:windows/g,
-    )).toHaveLength(1);
-    expect(localWindowsVerification.match(
-      /sbom:python:windows/g,
-    )).toHaveLength(1);
-    expect(localWindowsVerification).toContain("$Release.coreSbomPath");
-    expect(localWindowsVerification).toContain("$Release.pythonSbomPath");
-    expect(localWindowsVerification).toContain("$Release.checksumPath");
-    expect(localWindowsVerification).toContain("Get-FileHash -Algorithm SHA256");
-  });
 });

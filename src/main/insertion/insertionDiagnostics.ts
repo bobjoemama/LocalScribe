@@ -1,10 +1,12 @@
-import type { InsertionOutcome } from "./types";
+import type { InsertionOutcome, InsertionReasonCode } from "./types";
 
 export interface InsertionDiagnosticEvent {
   readonly stage: "insertion";
   readonly event: InsertionOutcome;
   readonly outcome: "ok" | "skipped";
   readonly permission: "disabled" | "not_ready" | "ready";
+  /** Privacy-safe reason classification; contains no dictated or target data. */
+  readonly detail?: InsertionReasonCode;
 }
 
 /**
@@ -18,14 +20,25 @@ export function insertionDiagnosticEvent(
   automaticPasteEnabled: boolean,
   automaticPasteReady: boolean,
 ): InsertionDiagnosticEvent {
+  const permission = !automaticPasteEnabled
+    ? "disabled"
+    : automaticPasteReady
+      ? "ready"
+      : "not_ready";
+  const reason: InsertionReasonCode | undefined = insertionOutcome === "pasted"
+    ? undefined
+    : insertionOutcome === "pasted-with-copy"
+      ? "clipboard_retained"
+      : permission === "disabled"
+        ? "automatic_paste_disabled"
+        : permission === "not_ready"
+          ? "automatic_paste_unavailable"
+          : "safety_check_declined";
   return {
     stage: "insertion",
     event: insertionOutcome,
     outcome: insertionOutcome === "copied" ? "skipped" : "ok",
-    permission: !automaticPasteEnabled
-      ? "disabled"
-      : automaticPasteReady
-        ? "ready"
-        : "not_ready",
+    permission,
+    ...(reason ? { detail: reason } : {}),
   };
 }

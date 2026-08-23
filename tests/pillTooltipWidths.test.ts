@@ -113,7 +113,7 @@ describe("what the tooltip can be asked to show", () => {
     expect(presentation).toContain("tooltip: `Dictate · ${detail}`");
     produced.push(...details.map((detail) => `Dictate · ${detail}`));
 
-    expect(details.length).toBe(4);
+    expect(details.length).toBe(2);
     const unmeasured = produced.filter((text) => !(text in MEASURED_TOOLTIP_WIDTHS));
     expect(unmeasured, "run scripts/measure-pill-tooltip-widths.mjs and update MEASURED_TOOLTIP_WIDTHS")
       .toEqual([]);

@@ -20,18 +20,14 @@ describe("dictation error presentation", () => {
     expect(presentDictationError("NotReadableError: Could not start audio source").title).toBe("Microphone is busy");
   });
 
-  it("uses the matching operating-system permission path when known and neutral recovery otherwise", () => {
+  it("always points microphone recovery to macOS System Settings", () => {
     expect(microphonePermissionRecovery("darwin"))
       .toBe("Allow LocalScribe in System Settings > Privacy & Security > Microphone.");
-    expect(microphonePermissionRecovery("win32"))
-      .toBe("Allow LocalScribe in Windows Settings > Privacy & security > Microphone.");
     expect(microphonePermissionRecovery()).toBe(
-      "Allow LocalScribe in your operating system's microphone privacy settings, then try again.",
+      "Allow LocalScribe in System Settings > Privacy & Security > Microphone.",
     );
-    expect(presentDictationError("NotAllowedError: Permission denied", "win32").detail)
-      .toContain("Windows Settings");
     expect(presentDictationError("NotAllowedError: Permission denied").detail)
-      .not.toContain("System Settings");
+      .toContain("System Settings");
   });
 
   it("turns worker and invalid-response failures into plain language", () => {

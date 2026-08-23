@@ -9,9 +9,9 @@ const [action, platform] = arguments_;
 if (
   arguments_.length !== 2 ||
   (action !== "package" && action !== "make") ||
-  (platform !== "darwin" && platform !== "win32")
+  platform !== "darwin"
 ) {
-  throw new Error("Usage: run-forge-target.mjs <package|make> <darwin|win32>");
+  throw new Error("Usage: run-forge-target.mjs <package|make> darwin");
 }
 if (process.platform !== platform) {
   throw new Error(
@@ -29,7 +29,6 @@ const result = spawnSync(
     cwd: process.cwd(),
     env: process.env,
     stdio: "inherit",
-    windowsHide: true,
   },
 );
 if (result.error) throw result.error;

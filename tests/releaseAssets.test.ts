@@ -94,9 +94,8 @@ afterEach(() => {
 });
 
 describe("release asset verification", () => {
-  it.each(["darwin", "win32"] as const)(
-    "verifies the exact checksummed %s upload inventory",
-    async (platform) => {
+  it("verifies the exact checksummed macOS upload inventory", async () => {
+      const platform = "darwin";
       const root = makeProject();
       writeReleaseFixture(root, platform);
 
@@ -105,30 +104,29 @@ describe("release asset verification", () => {
       expect(result.repository).toBe("bobjoemama/LocalScribe");
       expect(result.tag).toBe("v3.4.5-rc.2");
       expect(result.prerelease).toBe(true);
-      expect(result.assets).toHaveLength(platform === "darwin" ? 5 : 4);
+      expect(result.assets).toHaveLength(5);
       expect(result.assets.at(-1)?.path).toBe(result.checksumPath);
-    },
-  );
+  });
 
   it("rejects a checksum inventory with the wrong path casing", async () => {
     const root = makeProject();
-    const { checksumPath } = writeReleaseFixture(root, "win32");
+    const { checksumPath } = writeReleaseFixture(root, "darwin");
     writeFileSync(
       checksumPath,
       readFileSync(checksumPath, "utf8").replace("LocalScribe", "localscribe"),
     );
 
-    await expect(verifyReleaseAssets("win32", root)).rejects.toThrow(
+    await expect(verifyReleaseAssets("darwin", root)).rejects.toThrow(
       /checksum does not match/u,
     );
   });
 
   it("rejects an asset at GitHub's two-GiB per-file limit before hashing", async () => {
     const root = makeProject();
-    const { contentPaths } = writeReleaseFixture(root, "win32");
+    const { contentPaths } = writeReleaseFixture(root, "darwin");
     truncateSync(contentPaths[0]!, 2 * 1024 * 1024 * 1024);
 
-    await expect(verifyReleaseAssets("win32", root)).rejects.toThrow(
+    await expect(verifyReleaseAssets("darwin", root)).rejects.toThrow(
       /must be smaller/u,
     );
   });

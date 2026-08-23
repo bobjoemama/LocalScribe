@@ -25,20 +25,18 @@ function digest(value: string): string {
 
 describe("curated Parakeet Unified catalog", () => {
   it("reports the actual multilingual Whisper language and prompt capabilities", () => {
-    for (const [platform, arch] of [["darwin", "arm64"], ["win32", "x64"]] as const) {
-      const catalog = loadRuntimePlatformModelCatalog(
-        path.resolve("resources/model-manifest"),
-        platform,
-        arch,
-      );
-      const whisper = catalog.families["whisper-large-v3"];
-      expect(whisper?.capabilities).toMatchObject({
-        modes: ["after-stop"],
-        languageDetection: true,
-        promptContext: true,
-        supportedLanguages: ["auto", "en", "es", "fr", "de", "hi"],
-      });
-    }
+    const catalog = loadRuntimePlatformModelCatalog(
+      path.resolve("resources/model-manifest"),
+      "darwin",
+      "arm64",
+    );
+    const whisper = catalog.families["whisper-large-v3"];
+    expect(whisper?.capabilities).toMatchObject({
+      modes: ["after-stop"],
+      languageDetection: true,
+      promptContext: true,
+      supportedLanguages: ["auto", "en", "es", "fr", "de", "hi"],
+    });
   });
 
   it("recommends an Apple-native, two-mode family on macOS without faking a Low profile", () => {
@@ -69,16 +67,6 @@ describe("curated Parakeet Unified catalog", () => {
     );
   });
 
-  it("omits the unvalidated Windows backend rather than displaying a fake model", () => {
-    const catalog = loadRuntimePlatformModelCatalog(
-      path.resolve("resources/model-manifest"),
-      "win32",
-      "x64",
-    );
-    expect(catalog.recommendedDefaultFamilyId).toBe("whisper-large-v3");
-    expect(catalog.families["parakeet-unified-en-0-6b"]).toBeUndefined();
-  });
-
   it("fails closed for unsupported live and absent explicit profiles", () => {
     const catalog = loadRuntimePlatformModelCatalog(
       path.resolve("resources/model-manifest"),
@@ -102,36 +90,36 @@ describe("curated Parakeet Unified catalog", () => {
     })).toThrow(/no low performance profile/u);
   });
 
-  it("rejects a snapshot that retains a platform-absent family in its library", () => {
+  it("rejects a snapshot that references a Mac library family omitted from its catalog", () => {
     const invalid = {
-      platform: "win32-x64-cuda",
-      activeModelFamilyId: "whisper-large-v3",
-      modelLibraryFamilyIds: ["whisper-large-v3", "parakeet-unified-en-0-6b"],
-      recommendedDefaultFamilyId: "whisper-large-v3",
+      platform: "darwin-arm64",
+      activeModelFamilyId: "parakeet-unified-en-0-6b",
+      modelLibraryFamilyIds: ["parakeet-unified-en-0-6b", "whisper-large-v3"],
+      recommendedDefaultFamilyId: "parakeet-unified-en-0-6b",
       families: [{
-        familyId: "whisper-large-v3",
-        displayName: "Whisper large-v3",
+        familyId: "parakeet-unified-en-0-6b",
+        displayName: "Parakeet Unified EN 0.6B",
         capabilities: {
-          modes: ["after-stop"], partialResults: false, timestamps: false,
+          modes: ["after-stop", "live"], partialResults: true, timestamps: false,
           languageDetection: false, promptContext: false, keywordBoost: false,
-          supportedLanguages: ["auto"],
+          supportedLanguages: ["en"],
         },
         recommendedDefault: true,
         active: true,
         inLibrary: true,
         artifacts: [{
-          artifactId: "whisper-large-v3-ctranslate2", displayName: "Whisper", backend: "faster-whisper/CTranslate2",
-          modelId: "Systran/faster-whisper-large-v3", storageDirectory: "whisper", revision: "a".repeat(40),
+          artifactId: "parakeet-unified-en-0-6b-coreml-fp16", displayName: "Parakeet", backend: "FluidAudio CoreML / ANE",
+          modelId: "trusted-owner/parakeet", storageDirectory: "parakeet", revision: "a".repeat(40),
           license: "MIT", expectedDownloadBytes: 1,
         }],
         profiles: [{
-          profileId: "whisper-large-v3-high", tier: "high", artifactId: "whisper-large-v3-ctranslate2",
-          engine: "faster-whisper", precision: "float16", expectedMemoryMinBytes: 1,
+          profileId: "parakeet-unified-en-0-6b-high", tier: "high", artifactId: "parakeet-unified-en-0-6b-coreml-fp16",
+          engine: "fluid-audio", precision: "coreml-fp16", expectedMemoryMinBytes: 1,
           expectedMemoryMaxBytes: 2, memoryBasis: "estimated",
         }],
       }],
       verifications: [{
-        familyId: "whisper-large-v3", artifactId: "whisper-large-v3-ctranslate2", present: false, verified: false,
+        familyId: "parakeet-unified-en-0-6b", artifactId: "parakeet-unified-en-0-6b-coreml-fp16", present: false, verified: false,
         verificationStatus: "missing", sizeBytes: 0, expectedBytes: 1, verifiedFiles: 0, expectedFiles: 1,
       }],
       unmanagedEntries: [],

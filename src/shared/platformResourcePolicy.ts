@@ -1,10 +1,10 @@
 import { RELEASE_POLICY } from "./releasePolicy.mts";
 
-export type PackagedPlatform = "darwin" | "win32";
+export type PackagedPlatform = "darwin";
 
 export interface PlatformResourcePolicy {
   platform: PackagedPlatform;
-  arch: "arm64" | "x64";
+  arch: "arm64";
   workerDirectory: string;
   runtimeDirectory: string;
   runtimeExecutable: string;
@@ -28,28 +28,6 @@ const MAC_MANIFESTS = [
   "qwen3-asr-0-6b-mlx-4bit.json",
   "parakeet-unified-en-0-6b-coreml-fp16.json",
   "parakeet-unified-en-0-6b-coreml-int8.json",
-] as const;
-
-const WINDOWS_MANIFESTS = [
-  "faster-whisper-large-v3.json",
-  "faster-whisper-large-v2.json",
-  "qwen3-asr-1-7b-crisp-f16.json",
-  "qwen3-asr-1-7b-crisp-q8-0.json",
-  "qwen3-asr-1-7b-crisp-q4-k.json",
-  "qwen3-asr-0-6b-crisp-f16.json",
-  "qwen3-asr-0-6b-crisp-q8-0.json",
-  "qwen3-asr-0-6b-crisp-q4-k.json",
-] as const;
-
-const WINDOWS_NATIVE_RUNTIME = [
-  "native/windows/crispasr/LICENSE",
-  "native/windows/crispasr/THIRD_PARTY_NOTICES.txt",
-  "native/windows/crispasr/crispasr.dll",
-  "native/windows/crispasr/cudart64_12.dll",
-  "native/windows/crispasr/ggml-base.dll",
-  "native/windows/crispasr/ggml-cpu.dll",
-  "native/windows/crispasr/ggml-cuda.dll",
-  "native/windows/crispasr/ggml.dll",
 ] as const;
 
 const FORBIDDEN_PACKAGED_RESOURCE_PATH_PATTERNS: readonly RegExp[] = [
@@ -92,21 +70,6 @@ export function resourcePolicyFor(
       ],
       manifestFiles: MAC_MANIFESTS.map((filename) => `model-manifest/${filename}`),
       brandingFiles: [],
-    };
-  }
-  if (platform === "win32" && arch === RELEASE_POLICY.targets.win32.arch) {
-    return {
-      platform,
-      arch,
-      workerDirectory: "worker/windows_transformers/localscribe_windows_worker",
-      runtimeDirectory: "python-runtime-windows",
-      runtimeExecutable: "python-runtime-windows/venv/Scripts/python.exe",
-      helperFiles: [
-        "native/windows/active-target.exe",
-        ...WINDOWS_NATIVE_RUNTIME,
-      ],
-      manifestFiles: WINDOWS_MANIFESTS.map((filename) => `model-manifest/${filename}`),
-      brandingFiles: ["branding/LocalScribe.ico"],
     };
   }
   throw new Error(`LocalScribe has no release resource policy for ${platform}/${arch}`);

@@ -54,7 +54,7 @@ describe("HoldChordMatcher", () => {
     expect(callbacks.onChordStart).toHaveBeenCalledOnce();
   });
 
-  it("can cancel a pending Windows modifier-only hold when a chord key arrives", () => {
+  it("can cancel an eager modifier-only hold when a chord key arrives", () => {
     const callbacks = {
       onChordStart: vi.fn(),
       onChordEnd: vi.fn(),

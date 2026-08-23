@@ -55,18 +55,4 @@ describe("persisted app-profile identity matching", () => {
     });
     database.close();
   });
-
-  it("matches a saved executable name to a captured Windows image path", () => {
-    const database = createDatabase();
-    const saved = database.saveProfile({
-      appId: "Slack.exe",
-      label: "Slack",
-      removeFillers: false,
-      spokenCommands: true,
-      smartPunctuation: true,
-    });
-
-    expect(database.findProfile("C:\\Users\\Alice\\Apps\\SLACK.EXE")?.id).toBe(saved.id);
-    database.close();
-  });
 });

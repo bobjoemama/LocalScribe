@@ -10,7 +10,6 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const auditToolProject = "tools/python-audit";
 const projects = [
   { label: "macOS worker", directory: "worker" },
-  { label: "Windows worker", directory: "worker/windows_transformers" },
 ];
 
 function run(command, args, captureStdout = false) {
@@ -47,9 +46,8 @@ function exportAuditRequirements(project) {
     true,
   );
 
-  // Audit every exact package/version present in the lock, including branches
-  // selected by platform markers for a different audit host. pip-audit otherwise
-  // skips inactive markers, which could make one target's graph invisible.
+  // Audit every exact package/version present in the lock, including inactive
+  // environment-marker branches. pip-audit otherwise skips them on this host.
   const requirements = [];
   let pinCount = 0;
   for (const rawLine of exported.split(/\r?\n/u)) {

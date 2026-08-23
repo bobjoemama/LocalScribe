@@ -70,7 +70,6 @@ export const EXPECTED_BUILD_TOOL_VULNERABILITIES = Object.freeze({
   "@electron-forge/core-utils": Object.freeze({ nodes: Object.freeze(["node_modules/@electron-forge/core-utils"]), via: Object.freeze(["@electron-forge/shared-types"]) }),
   "@electron-forge/maker-base": Object.freeze({ nodes: Object.freeze(["node_modules/@electron-forge/maker-base"]), via: Object.freeze(["@electron-forge/shared-types"]) }),
   "@electron-forge/maker-dmg": Object.freeze({ nodes: Object.freeze(["node_modules/@electron-forge/maker-dmg"]), via: Object.freeze(["@electron-forge/maker-base", "@electron-forge/shared-types", "electron-installer-dmg"]) }),
-  "@electron-forge/maker-squirrel": Object.freeze({ nodes: Object.freeze(["node_modules/@electron-forge/maker-squirrel"]), via: Object.freeze(["@electron-forge/maker-base", "@electron-forge/shared-types"]) }),
   "@electron-forge/maker-zip": Object.freeze({ nodes: Object.freeze(["node_modules/@electron-forge/maker-zip"]), via: Object.freeze(["@electron-forge/maker-base", "@electron-forge/shared-types"]) }),
   "@electron-forge/plugin-auto-unpack-natives": Object.freeze({ nodes: Object.freeze(["node_modules/@electron-forge/plugin-auto-unpack-natives"]), via: Object.freeze(["@electron-forge/plugin-base", "@electron-forge/shared-types"]) }),
   "@electron-forge/plugin-base": Object.freeze({ nodes: Object.freeze(["node_modules/@electron-forge/plugin-base"]), via: Object.freeze(["@electron-forge/shared-types"]) }),

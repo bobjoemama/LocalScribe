@@ -23,18 +23,14 @@ export function resolveNativeActiveTargetHelperPath(
 ): string | null {
   const environment = options.environment ?? process.env;
   const workingDirectory = options.workingDirectory ?? process.cwd();
+  const platform = options.platform ?? process.platform;
+  if (platform !== "darwin") return null;
   const override = environment[NATIVE_ACTIVE_TARGET_HELPER_OVERRIDE];
   if (override && options.allowEnvironmentOverride === true) {
     return path.resolve(workingDirectory, override);
   }
 
-  const platform = options.platform ?? process.platform;
-  const relativePath = platform === "darwin"
-    ? ["native", "macos", "active-target"]
-    : platform === "win32"
-      ? ["native", "windows", "active-target.exe"]
-      : null;
-  if (!relativePath) return null;
+  const relativePath = ["native", "macos", "active-target"];
 
   const resourcesPath = options.resourcesPath ?? process.resourcesPath;
   const exists = options.exists ?? existsSync;

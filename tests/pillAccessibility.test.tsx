@@ -24,14 +24,14 @@ describe("pill accessibility", () => {
     expect(reducedMotion).toContain(".pill-error-notice__countdown-progress");
   });
 
-  it("uses the native Windows UI font before the generic fallback", () => {
+  it("uses the native macOS UI font before the generic fallback", () => {
     const css = readFileSync(resolve(process.cwd(), "src/renderer/styles.css"), "utf8");
 
     expect(css).toMatch(
-      /\.pill\s*\{[\s\S]*?"Segoe UI Variable Text", "Segoe UI", sans-serif;/,
+      /\.pill\s*\{[\s\S]*?"SF Pro Text", sans-serif;/,
     );
     expect(css).toMatch(
-      /\.pill-error-stack\s*\{[\s\S]*?"Segoe UI Variable Text", "Segoe UI", sans-serif;/,
+      /\.pill-error-stack\s*\{[\s\S]*?"SF Pro Text", sans-serif;/,
     );
   });
 

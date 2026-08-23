@@ -20,9 +20,7 @@ export const SOURCE_VERIFICATION_CHECKS = Object.freeze([
   Object.freeze(["run", "audit:all"]),
   Object.freeze(["run", "worker:check-locks"]),
   Object.freeze(["run", "audit:python"]),
-  Object.freeze(["run", "verify:windows:source"]),
   Object.freeze(["run", "lint:all"]),
-  Object.freeze(["run", "worker:test:windows"]),
   Object.freeze(["run", "typecheck"]),
   Object.freeze(["test", "--", "--reporter=dot"]),
 ]);
@@ -38,7 +36,6 @@ function runSourceVerification() {
       cwd: process.cwd(),
       env: process.env,
       stdio: "inherit",
-      windowsHide: true,
     });
     if (result.error) throw result.error;
     if (result.status !== 0) process.exit(result.status ?? 1);

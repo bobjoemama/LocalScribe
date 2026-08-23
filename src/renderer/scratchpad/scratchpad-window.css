@@ -13,7 +13,7 @@ html[data-surface="scratchpad"] #root {
   overflow: hidden;
   color: #292927;
   background: #fbfbfa;
-  font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, sans-serif;
 }
 
 .scratchpad-window button,
@@ -125,7 +125,7 @@ button.scratchpad-window__save-state:hover { background: #f8ecea; }
 @keyframes scratchpad-window-pulse { to { opacity: .35; } }
 .scratchpad-window__editor { display: flex; min-height: 0; }
 .scratchpad-window__editor:focus-within { box-shadow: inset 0 0 0 2px #878780; }
-.scratchpad-window__editor textarea { width: 100%; min-height: 0; flex: 1; resize: none; padding: 16px 18px; color: #353530; border: 0; outline: 0; background: transparent; font-family: Iowan Old Style, Palatino Linotype, Georgia, serif; font-size: 15px; line-height: 1.65; }
+.scratchpad-window__editor textarea { width: 100%; min-height: 0; flex: 1; resize: none; padding: 16px 18px; color: #353530; border: 0; outline: 0; background: transparent; font-family: Iowan Old Style, Georgia, serif; font-size: 15px; line-height: 1.65; }
 .scratchpad-window__editor textarea::placeholder { color: #bbb9b2; }
 .scratchpad-window__editor textarea:disabled { cursor: default; }
 .scratchpad-window__editor-footer { display: flex; align-items: center; justify-content: flex-end; gap: 10px; padding: 6px 11px; color: #aaa9a4; border-top: 1px solid #f0f0ed; background: #fcfcfb; font-size: 10px; }

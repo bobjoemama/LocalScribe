@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { RELEASE_POLICY } from "../src/shared/releasePolicy.mts";
 
-export type ReleasePlatform = "darwin" | "win32";
+export type ReleasePlatform = "darwin";
 
 interface RawPackageJson {
   name?: unknown;
@@ -14,7 +14,7 @@ interface RawPackageJson {
 
 export interface ReleaseTarget {
   platform: ReleasePlatform;
-  arch: "arm64" | "x64";
+  arch: "arm64";
   label: string;
 }
 
@@ -25,7 +25,6 @@ export interface ReleaseMetadata {
   packageManager: string;
   repository: string;
   macBundleId: string;
-  windowsAppUserModelId: string;
   minimumMacOSVersion: string;
   targets: Readonly<Record<ReleasePlatform, ReleaseTarget>>;
 }
@@ -90,7 +89,7 @@ function repositorySlug(value: unknown): string {
 function target(
   platform: ReleasePlatform,
   raw: unknown,
-  expectedArch: "arm64" | "x64",
+  expectedArch: "arm64",
   expectedLabel: string,
 ): ReleaseTarget {
   if (typeof raw !== "object" || raw === null) fail(`missing ${platform} target`);
@@ -121,9 +120,6 @@ export function loadReleaseMetadata(projectPath = process.cwd()): ReleaseMetadat
   if (!BUNDLE_ID.test(RELEASE_POLICY.macBundleId)) {
     fail("macBundleId is malformed");
   }
-  if (!BUNDLE_ID.test(RELEASE_POLICY.windowsAppUserModelId)) {
-    fail("windowsAppUserModelId is malformed");
-  }
   if (!MAC_VERSION.test(RELEASE_POLICY.minimumMacOSVersion)) {
     fail("minimumMacOSVersion is malformed");
   }
@@ -134,7 +130,6 @@ export function loadReleaseMetadata(projectPath = process.cwd()): ReleaseMetadat
     packageManager: raw.packageManager,
     repository: repositorySlug(raw.repository),
     macBundleId: RELEASE_POLICY.macBundleId,
-    windowsAppUserModelId: RELEASE_POLICY.windowsAppUserModelId,
     minimumMacOSVersion: RELEASE_POLICY.minimumMacOSVersion,
     targets: {
       darwin: target(
@@ -142,12 +137,6 @@ export function loadReleaseMetadata(projectPath = process.cwd()): ReleaseMetadat
         RELEASE_POLICY.targets.darwin,
         "arm64",
         "macos-arm64",
-      ),
-      win32: target(
-        "win32",
-        RELEASE_POLICY.targets.win32,
-        "x64",
-        "windows-x64",
       ),
     },
   };
@@ -163,21 +152,15 @@ export function releaseLayout(
   const packageDirectoryName =
     `${metadata.productName}-${target.platform}-${target.arch}`;
   const packageDirectory = path.join(project, "out", packageDirectoryName);
-  const applicationName = platform === "darwin"
-    ? `${metadata.productName}.app`
-    : `${metadata.productName}.exe`;
+  const applicationName = `${metadata.productName}.app`;
   const applicationPath = path.join(packageDirectory, applicationName);
-  const makerDirectory = platform === "darwin"
-    ? path.join(project, "out", "make")
-    : path.join(project, "out", "make", "zip", "win32", target.arch);
-  const primaryArtifactNames = platform === "darwin"
-    ? [
-        `${metadata.productName}-${metadata.version}-${target.arch}.dmg`,
-        `${packageDirectoryName}-${metadata.version}.zip`,
-      ]
-    : [`${packageDirectoryName}-${metadata.version}.zip`];
+  const makerDirectory = path.join(project, "out", "make");
+  const primaryArtifactNames = [
+    `${metadata.productName}-${metadata.version}-${target.arch}.dmg`,
+    `${packageDirectoryName}-${metadata.version}.zip`,
+  ];
   const primaryArtifactPaths = primaryArtifactNames.map((name, index) =>
-    platform === "darwin" && index === 1
+    index === 1
       ? path.join(project, "out", "make", "zip", "darwin", target.arch, name)
       : path.join(makerDirectory, name)
   );

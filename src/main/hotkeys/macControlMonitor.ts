@@ -66,13 +66,10 @@ export class MacControlMonitor implements ControlMonitor {
   private buffer = "";
   private onStopped: (() => void) | null = null;
 
-  constructor(
-    private readonly executablePath: string,
-    private readonly platform: NodeJS.Platform = process.platform,
-  ) {}
+  constructor(private readonly executablePath: string) {}
 
   supports(shortcut: HoldShortcut): boolean {
-    return this.platform === "darwin" && nativeMacHoldMonitorSupports(shortcut);
+    return nativeMacHoldMonitorSupports(shortcut);
   }
 
   start(
@@ -84,10 +81,9 @@ export class MacControlMonitor implements ControlMonitor {
     if (!this.supports(shortcut) || !existsSync(this.executablePath)) return false;
 
     const child = spawn(this.executablePath, ["hold-monitor", shortcut], {
-      env: nativeHelperEnvironment(this.platform),
+      env: nativeHelperEnvironment(),
       shell: false,
       stdio: ["ignore", "pipe", "pipe"],
-      windowsHide: true,
     });
     this.process = child;
     this.onStopped = onStopped ?? null;

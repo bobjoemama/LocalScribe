@@ -131,8 +131,7 @@ async function listUnmanagedModelEntries(
 function interruptedTransactionName(name: string): boolean {
   return /^\.localscribe-model-install-[a-f0-9]{32}$/.test(name)
     || /^\.whisper-(?:high|medium|low)-staging-[a-z0-9_-]+$/.test(name)
-    || /^\.replaced-(?:high|medium|low)-[a-f0-9]+$/.test(name)
-    || /^\.faster-whisper-(?:staging|replaced)-[a-z0-9_-]+$/.test(name);
+    || /^\.replaced-(?:high|medium|low)-[a-f0-9]+$/.test(name);
 }
 
 async function boundedEntrySize(entryPath: string): Promise<number | null> {

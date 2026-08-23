@@ -1,10 +1,8 @@
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import {
   holdShortcutSchema,
-  shortcutDisplayPlatform,
   shortcutDisplayLabel,
   toggleShortcutSchema,
-  type ShortcutDisplayPlatform,
 } from "../../../shared/shortcuts";
 import { rendererSafeErrorMessage } from "../../../shared/rendererErrors";
 
@@ -50,7 +48,6 @@ type ShortcutRecorderProps = {
   label: string;
   detail: string;
   value: string;
-  platform: ShortcutDisplayPlatform | null;
   /** Commits through main; accepted values are already live and persisted. */
   onAccept(shortcut: string): Promise<ShortcutValidationOutcome>;
 };
@@ -69,9 +66,7 @@ const modifierCodes = new Set([
 type ShortcutKeyboardEvent = Pick<
   KeyboardEvent,
   "code" | "ctrlKey" | "altKey" | "metaKey" | "shiftKey"
-> & {
-  getModifierState?: (keyArg: string) => boolean;
-};
+>;
 
 /**
  * Creates an accelerator candidate from physical DOM key codes. Keeping this
@@ -79,21 +74,11 @@ type ShortcutKeyboardEvent = Pick<
  */
 export function shortcutFromKeyboardEvent(
   event: ShortcutKeyboardEvent,
-  platform: ShortcutDisplayPlatform = shortcutDisplayPlatform(),
 ): string | null {
-  const metaModifier = platform === "darwin" ? "Command" : "Super";
-  const altGraph = event.getModifierState?.("AltGraph") === true ||
-    (event.code === "AltRight" && event.ctrlKey && event.altKey);
-  const modifiers = altGraph
-    ? [
-        "AltGr",
-        ...(event.metaKey ? [metaModifier] : []),
-        ...(event.shiftKey ? ["Shift"] : []),
-      ]
-    : (["Control", "Alt", metaModifier, "Shift"] as const).filter((modifier) => {
+  const modifiers = (["Control", "Alt", "Command", "Shift"] as const).filter((modifier) => {
         if (modifier === "Control") return event.ctrlKey;
         if (modifier === "Alt") return event.altKey;
-        if (modifier === metaModifier) return event.metaKey;
+        if (modifier === "Command") return event.metaKey;
         return event.shiftKey;
       });
   const key = shortcutTokenFromCode(event.code);
@@ -116,12 +101,9 @@ export function shortcutRecorderErrorMessage(error: unknown, fallback: string): 
   return rendererSafeErrorMessage(error, fallback);
 }
 
-function readableShortcutLabel(
-  shortcut: string,
-  platform: ShortcutDisplayPlatform | null,
-): string {
+function readableShortcutLabel(shortcut: string): string {
   try {
-    return platform ? shortcutDisplayLabel(shortcut, platform) : shortcut;
+    return shortcutDisplayLabel(shortcut);
   } catch {
     return shortcut;
   }
@@ -132,7 +114,6 @@ export function ShortcutRecorder({
   label,
   detail,
   value,
-  platform,
   onAccept,
 }: ShortcutRecorderProps) {
   const [capturing, setCapturing] = useState(false);
@@ -262,8 +243,7 @@ export function ShortcutRecorder({
         return;
       }
       if (event.repeat) return;
-      if (!platform) return;
-      const candidate = shortcutFromKeyboardEvent(event, platform);
+      const candidate = shortcutFromKeyboardEvent(event);
       if (!candidate) return;
       lastShortcut.current = candidate;
       setLiveShortcut(candidate);
@@ -285,14 +265,14 @@ export function ShortcutRecorder({
       window.removeEventListener("keyup", onKeyUp, true);
       window.removeEventListener("blur", onWindowBlur);
     };
-  }, [cancelCapture, capturing, finishCapture, platform]);
+  }, [cancelCapture, capturing, finishCapture]);
 
   useEffect(() => () => {
     if (capturingRef.current) cancelCapture();
   }, [cancelCapture]);
 
   const startCapture = () => {
-    if (validating || !platform) return;
+    if (validating) return;
     if (capturingRef.current) {
       cancelCapture("Shortcut recording cancelled.");
       return;
@@ -337,23 +317,21 @@ export function ShortcutRecorder({
         className={capturing ? "ls-shortcut-recorder__button is-capturing" : "ls-shortcut-recorder__button"}
         onClick={startCapture}
         onBlur={() => cancelCapture("Shortcut recording cancelled when focus changed.")}
-        disabled={validating || !platform}
+        disabled={validating}
         aria-busy={validating || undefined}
         aria-pressed={capturing}
         aria-describedby={`${descriptionId}${hasFeedback ? ` ${feedbackId}` : ""}`}
         aria-label={capturing
           ? `${label}: recording. Press a shortcut, Escape to cancel, or Backspace to clear.`
-          : platform
-            ? `${label}: ${readableShortcutLabel(value, platform)}. Activate to record a new shortcut.`
-            : `${label}: shortcut platform information is loading.`}
+          : `${label}: ${readableShortcutLabel(value)}. Activate to record a new shortcut.`}
       >
         <span className="ls-shortcut-recorder__key">
           {displayedShortcut
-            ? readableShortcutLabel(displayedShortcut, platform)
+            ? readableShortcutLabel(displayedShortcut)
             : "Press a shortcut"}
         </span>
         <span className="ls-shortcut-recorder__action">
-          {validating ? "Applying…" : capturing ? "Cancel" : platform ? "Record" : "Loading…"}
+          {validating ? "Applying…" : capturing ? "Cancel" : "Record"}
         </span>
       </button>
     </div>

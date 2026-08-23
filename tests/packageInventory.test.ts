@@ -38,27 +38,6 @@ const MAC_MODEL_MANIFESTS = [
   "parakeet-unified-en-0-6b-coreml-fp16.json",
   "parakeet-unified-en-0-6b-coreml-int8.json",
 ] as const;
-const WINDOWS_MODEL_MANIFESTS = [
-  "faster-whisper-large-v3.json",
-  "faster-whisper-large-v2.json",
-  "qwen3-asr-1-7b-crisp-f16.json",
-  "qwen3-asr-1-7b-crisp-q8-0.json",
-  "qwen3-asr-1-7b-crisp-q4-k.json",
-  "qwen3-asr-0-6b-crisp-f16.json",
-  "qwen3-asr-0-6b-crisp-q8-0.json",
-  "qwen3-asr-0-6b-crisp-q4-k.json",
-] as const;
-const WINDOWS_NATIVE_FILES = [
-  "native/windows/active-target.exe",
-  "native/windows/crispasr/LICENSE",
-  "native/windows/crispasr/THIRD_PARTY_NOTICES.txt",
-  "native/windows/crispasr/crispasr.dll",
-  "native/windows/crispasr/cudart64_12.dll",
-  "native/windows/crispasr/ggml-base.dll",
-  "native/windows/crispasr/ggml-cpu.dll",
-  "native/windows/crispasr/ggml-cuda.dll",
-  "native/windows/crispasr/ggml.dll",
-] as const;
 
 function makeTemporaryProject(): string {
   const project = mkdtempSync(path.join(tmpdir(), "localscribe-package-inventory-"));
@@ -165,9 +144,8 @@ describe("packaged dependency inventory", () => {
     expect(stagedManifest).not.toHaveProperty("config");
   });
 
-  it("defines exact, separate Mac and Windows runtime policies", () => {
+  it("defines the exact Apple Silicon macOS runtime policy", () => {
     const mac = resourcePolicyFor("darwin", "arm64");
-    const windows = resourcePolicyFor("win32", "x64");
 
     expect(mac.manifestFiles).toEqual(
       MAC_MODEL_MANIFESTS.map((filename) => `model-manifest/${filename}`),
@@ -179,29 +157,16 @@ describe("packaged dependency inventory", () => {
       "native/macos/localscribe-fluidaudio-parakeet",
     ]);
     expect(mac.brandingFiles).toEqual([]);
-
-    expect(windows.manifestFiles).toEqual(
-      WINDOWS_MODEL_MANIFESTS.map((filename) => `model-manifest/${filename}`),
-    );
-    expect(windows.workerDirectory).toBe("worker/windows_transformers/localscribe_windows_worker");
-    expect(windows.runtimeDirectory).toBe("python-runtime-windows");
-    expect(windows.helperFiles).toEqual(WINDOWS_NATIVE_FILES);
-    expect(windows.brandingFiles).toEqual(["branding/LocalScribe.ico"]);
   });
 
-  it("keeps the source inventory and each platform allowlist to the exact curated manifests", () => {
+  it("keeps the source inventory and macOS allowlist to the exact curated manifests", () => {
     const sourceManifests = readdirSync(path.resolve("resources/model-manifest"))
       .filter((entry) => entry.endsWith(".json"))
       .sort();
 
-    expect(sourceManifests).toEqual(
-      [...MAC_MODEL_MANIFESTS, ...WINDOWS_MODEL_MANIFESTS].sort(),
-    );
+    expect(sourceManifests).toEqual([...MAC_MODEL_MANIFESTS].sort());
     expect(resourcePolicyFor("darwin", "arm64").manifestFiles).toEqual(
       MAC_MODEL_MANIFESTS.map((filename) => `model-manifest/${filename}`),
-    );
-    expect(resourcePolicyFor("win32", "x64").manifestFiles).toEqual(
-      WINDOWS_MODEL_MANIFESTS.map((filename) => `model-manifest/${filename}`),
     );
   });
 
@@ -226,7 +191,7 @@ describe("packaged dependency inventory", () => {
         "darwin",
         "arm64",
       ),
-    ).toThrow(/model-manifest inventory|opposite-platform/);
+    ).toThrow(/model-manifest inventory|unsupported-platform/);
     expect(() =>
       assertPlatformResourceEntries(
         [...valid, "python-runtime/venv/lib/python3.12/site-packages/model/weights.npz"],
@@ -236,35 +201,6 @@ describe("packaged dependency inventory", () => {
     ).toThrow(/weights\.npz/);
   });
 
-  it("accepts a complete Windows allowlist and rejects missing helpers and source maps", () => {
-    const valid = [
-      "worker/windows_transformers/localscribe_windows_worker/__init__.py",
-      "worker/windows_transformers/localscribe_windows_worker/__main__.py",
-      "python-runtime-windows/venv/Scripts/python.exe",
-      ...WINDOWS_NATIVE_FILES,
-      ...WINDOWS_MODEL_MANIFESTS.map((filename) => `model-manifest/${filename}`),
-      "branding/LocalScribe.ico",
-    ];
-    expect(() => assertPlatformResourceEntries(valid, "win32", "x64")).not.toThrow();
-    expect(() =>
-      assertPlatformResourceEntries(
-        valid.filter((entry) => entry !== "native/windows/active-target.exe"),
-        "win32",
-        "x64",
-      ),
-    ).toThrow(/active-target\.exe/);
-    expect(() =>
-      assertPlatformResourceEntries([...valid, "worker/main.js.map"], "win32", "x64"),
-    ).toThrow(/main\.js\.map/);
-    expect(() =>
-      assertPlatformResourceEntries(
-        [...valid, "python-runtime-windows/venv/Lib/site-packages/model/model.bin"],
-        "win32",
-        "x64",
-      ),
-    ).toThrow(/model\.bin/);
-  });
-
   it("reduces copied resources to one operating system before signing", () => {
     const resources = makeTemporaryProject();
     const files = [
@@ -272,7 +208,8 @@ describe("packaged dependency inventory", () => {
       "worker/localscribe_worker/__main__.py",
       "worker/windows_transformers/tests/test_worker.py",
       ...MAC_MODEL_MANIFESTS.map((filename) => `model-manifest/${filename}`),
-      ...WINDOWS_MODEL_MANIFESTS.map((filename) => `model-manifest/${filename}`),
+      "model-manifest/faster-whisper-large-v2.json",
+      "model-manifest/faster-whisper-large-v3.json",
       "native/macos/active-target",
       "native/macos/localscribe-fluidaudio-parakeet",
       "native/macos/active-target.swift",
@@ -302,41 +239,9 @@ describe("packaged dependency inventory", () => {
     expect(existsSync(path.join(resources, "python-runtime-windows"))).toBe(false);
   });
 
-  it("prunes every Mac manifest when preparing a Windows package", () => {
-    const resources = makeTemporaryProject();
-    const files = [
-      "worker/localscribe_worker/__init__.py",
-      "worker/localscribe_worker/__main__.py",
-      "worker/windows_transformers/localscribe_windows_worker/__init__.py",
-      "worker/windows_transformers/localscribe_windows_worker/__main__.py",
-      ...MAC_MODEL_MANIFESTS.map((filename) => `model-manifest/${filename}`),
-      ...WINDOWS_MODEL_MANIFESTS.map((filename) => `model-manifest/${filename}`),
-      "native/macos/active-target",
-      "native/macos/localscribe-fluidaudio-parakeet",
-      ...WINDOWS_NATIVE_FILES,
-      "python-runtime/venv/bin/python3",
-      "python-runtime-windows/venv/Scripts/python.exe",
-      "branding/LocalScribe.ico",
-    ];
-    for (const file of files) {
-      mkdirSync(path.dirname(path.join(resources, file)), { recursive: true });
-      writeFileSync(path.join(resources, file), "fixture");
-    }
-
-    prunePackagedResources(resources, "win32", "x64");
-
-    expect(existsSync(path.join(resources, "worker", "localscribe_worker"))).toBe(false);
-    expect(existsSync(path.join(resources, "python-runtime"))).toBe(false);
-    expect(existsSync(path.join(resources, "native", "macos"))).toBe(false);
-    expect(readdirSync(path.join(resources, "model-manifest")).sort()).toEqual(
-      [...WINDOWS_MODEL_MANIFESTS].sort(),
-    );
-  });
-
-  it.each([
-    ["darwin", "arm64"],
-    ["win32", "x64"],
-  ] as const)("keeps only %s/%s native npm binaries", (platform, arch) => {
+  it("keeps only darwin/arm64 native npm binaries", () => {
+    const platform = "darwin";
+    const arch = "arm64";
     const resources = makeTemporaryProject();
     const unpacked = path.join(resources, "app.asar.unpacked", "node_modules");
     const files = [
@@ -378,20 +283,5 @@ describe("packaged dependency inventory", () => {
     ).toBe(true);
   });
 
-  it("rejects a Windows package containing a macOS native module", () => {
-    const resources = makeTemporaryProject();
-    const unpacked = path.join(resources, "app.asar.unpacked", "node_modules");
-    for (const file of [
-      "better-sqlite3/prebuilds/win32-x64.node",
-      "uiohook-napi/prebuilds/win32-x64/uiohook-napi.node",
-      "uiohook-napi/prebuilds/darwin-arm64/uiohook-napi.node",
-    ]) {
-      mkdirSync(path.dirname(path.join(unpacked, file)), { recursive: true });
-      writeFileSync(path.join(unpacked, file), "fixture");
-    }
 
-    expect(() =>
-      assertPackagedNativeModuleTargets(resources, "win32", "x64")
-    ).toThrow(/darwin-arm64/);
-  });
 });
