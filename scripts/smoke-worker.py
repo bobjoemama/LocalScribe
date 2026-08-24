@@ -65,6 +65,7 @@ MAX_WORKER_RESPONSE_BYTES: Final = 1024 * 1024
 MAX_WORKER_STDERR_BYTES: Final = 256 * 1024
 WORKER_REQUEST_TIMEOUT_SECONDS: Final = 20 * 60
 WORKER_SHUTDOWN_TIMEOUT_SECONDS: Final = 5
+PROCESS_GROUP_POLL_SECONDS: Final = 0.05
 
 
 @dataclass(frozen=True)
@@ -463,19 +464,67 @@ def require_response_type(response: dict[str, Any], expected: str) -> None:
         raise RuntimeError(f"candidate worker returned {response.get('type')!r}, expected {expected!r}")
 
 
-def wait_for_exit(process: subprocess.Popen[bytes], stderr: WorkerStderrReader) -> None:
+def process_group_is_alive(process_group_id: int) -> bool:
+    try:
+        os.killpg(process_group_id, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+
+
+def signal_process_group(process_group_id: int, signal_number: int) -> None:
+    try:
+        os.killpg(process_group_id, signal_number)
+    except ProcessLookupError:
+        return
+
+
+def wait_for_process_group_exit(process_group_id: int, timeout_seconds: float) -> bool:
+    deadline = time.monotonic() + timeout_seconds
+    while process_group_is_alive(process_group_id):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        time.sleep(min(PROCESS_GROUP_POLL_SECONDS, remaining))
+    return True
+
+
+def retire_process_group(process_group_id: int) -> None:
+    if not process_group_is_alive(process_group_id):
+        return
+    signal_process_group(process_group_id, 15)
+    if wait_for_process_group_exit(process_group_id, WORKER_SHUTDOWN_TIMEOUT_SECONDS):
+        return
+    signal_process_group(process_group_id, 9)
+    if not wait_for_process_group_exit(process_group_id, WORKER_SHUTDOWN_TIMEOUT_SECONDS):
+        raise RuntimeError(
+            f"candidate worker process group {process_group_id} survived SIGKILL"
+        )
+
+
+def wait_for_exit(
+    process: subprocess.Popen[bytes],
+    stderr: WorkerStderrReader,
+    process_group_id: int,
+) -> None:
     try:
         exit_code = process.wait(timeout=WORKER_SHUTDOWN_TIMEOUT_SECONDS)
-    except subprocess.TimeoutExpired:
-        process.terminate()
-        try:
-            exit_code = process.wait(timeout=WORKER_SHUTDOWN_TIMEOUT_SECONDS)
-        except subprocess.TimeoutExpired:
-            process.kill()
-            exit_code = process.wait(timeout=WORKER_SHUTDOWN_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired as error:
+        retire_process_group(process_group_id)
+        process.wait(timeout=WORKER_SHUTDOWN_TIMEOUT_SECONDS)
+        stderr.join()
+        raise RuntimeError("candidate worker did not acknowledge shutdown in time") from error
     stderr.join()
     if exit_code != 0:
         raise RuntimeError(stderr.text() or f"candidate worker exited with {exit_code}")
+    if not wait_for_process_group_exit(
+        process_group_id,
+        WORKER_SHUTDOWN_TIMEOUT_SECONDS,
+    ):
+        retire_process_group(process_group_id)
+        raise RuntimeError("candidate worker left a descendant running after shutdown")
 
 
 def read_smoke_pcm(audio_path: Path) -> bytes:
@@ -522,7 +571,9 @@ def smoke_mode(
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
+        start_new_session=True,
     )
+    process_group_id = process.pid
     stderr = WorkerStderrReader(process)
     reader = WorkerResponseReader(process, stderr)
     try:
@@ -610,7 +661,7 @@ def smoke_mode(
             timeout_seconds=WORKER_SHUTDOWN_TIMEOUT_SECONDS,
         )
         require_response_type(shutdown, "shutdown")
-        wait_for_exit(process, stderr)
+        wait_for_exit(process, stderr, process_group_id)
         return {
             "mode": mode,
             "finalCount": len(finals),
@@ -618,13 +669,10 @@ def smoke_mode(
             "partialCount": partial_count,
         }
     finally:
+        if process_group_is_alive(process_group_id):
+            retire_process_group(process_group_id)
         if process.poll() is None:
-            process.terminate()
-            try:
-                process.wait(timeout=WORKER_SHUTDOWN_TIMEOUT_SECONDS)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait(timeout=WORKER_SHUTDOWN_TIMEOUT_SECONDS)
+            process.wait(timeout=WORKER_SHUTDOWN_TIMEOUT_SECONDS)
         stderr.join()
 
 

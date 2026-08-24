@@ -127,8 +127,13 @@ let persistedSettings: AppSettings = appSettingsSchema.parse(usesCustomSettings
 if (harnessParams.has("apply")) {
   persistedSettings = appSettingsSchema.parse({
     ...persistedSettings,
+    // The Apply scenario begins with the exact verified Whisper runtime in
+    // the diagnostics fixture, then proves a staged switch to Qwen. Keep the
+    // saved selection and resident runtime coherent before the click.
+    activeModelFamilyId: "whisper-large-v3",
+    asrMode: "after-stop",
+    modelPerformanceMode: "high",
     modelLibraryFamilyIds: [
-      persistedSettings.activeModelFamilyId,
       "whisper-large-v3",
       "qwen3-asr-1-7b",
     ],
@@ -392,7 +397,9 @@ const diagnostics: Diagnostics = {
     modelId: "curated/whisper-large-v3-high",
     storageDirectory: activeArtifacts[0]!.storageDirectory,
     installed: modelVerified,
-    loaded: harnessParams.has("apply-success"),
+    // Both Apply scenarios begin with a warm verified model. Success switches
+    // it; failure must leave this exact prior runtime active.
+    loaded: harnessParams.has("apply"),
     present: modelPresent,
     verified: modelVerified,
     verificationStatus: harnessVerification,
@@ -498,30 +505,82 @@ window.localScribe = {
         modelPerformanceMode: request.performanceMode,
       });
       for (const listener of settingsListeners) listener(persistedSettings);
-      const family = catalog.families.find((candidate) => candidate.familyId === request.familyId);
+      const appliedCatalog: ModelCatalog = {
+        ...catalog,
+        activeModelFamilyId: request.familyId,
+        modelLibraryFamilyIds: [...new Set([...catalog.modelLibraryFamilyIds, request.familyId])],
+        families: catalog.families.map((candidate) => ({
+          ...candidate,
+          active: candidate.familyId === request.familyId,
+          inLibrary: candidate.inLibrary || candidate.familyId === request.familyId,
+        })),
+      };
+      const family = appliedCatalog.families.find((candidate) => candidate.familyId === request.familyId);
       const appliedTier = request.performanceMode === "auto" ? "medium" : request.performanceMode;
       const profile = family?.profiles.find((candidate) => candidate.tier === appliedTier)
         ?? family?.profiles[0];
+      const artifact = family?.artifacts.find((candidate) => candidate.artifactId === profile?.artifactId);
+      if (!family || !profile || !artifact) throw new Error("Harness applied model is missing catalog data");
       return {
         applied: true as const,
         appliedSelection: {
           familyId: request.familyId,
-          artifactId: profile?.artifactId ?? "whisper-large-v3-medium",
-          tier: profile?.tier ?? "medium",
+          artifactId: profile.artifactId,
+          tier: profile.tier,
           asrMode: request.asrMode,
         },
         settings: persistedSettings,
-        catalog,
+        catalog: appliedCatalog,
         diagnostics: {
           ...diagnostics,
           model: {
             ...diagnostics.model,
+            familyId: family.familyId,
+            artifactId: profile.artifactId,
+            profileId: profile.profileId,
+            displayName: `${family.displayName} ${profile.tier}`,
+            modelId: artifact.modelId,
+            storageDirectory: artifact.storageDirectory,
+            installed: true,
             loaded: true,
+            present: true,
+            verified: true,
+            verificationStatus: "verified" as const,
+            sizeBytes: artifact.expectedDownloadBytes,
+            expectedBytes: artifact.expectedDownloadBytes,
+            verifiedFiles: 1,
+            expectedFiles: 1,
+            revision: artifact.revision,
+            license: artifact.license,
           },
           performance: {
             ...diagnostics.performance,
             preference: request.performanceMode,
             resolvedTier: request.performanceMode === "auto" ? diagnostics.performance.resolvedTier : request.performanceMode,
+            options: family.profiles.map((candidate, index) => {
+              const candidateArtifact = family.artifacts.find((entry) => (
+                entry.artifactId === candidate.artifactId
+              ));
+              if (!candidateArtifact) throw new Error("Harness model profile has no artifact");
+              return {
+                ...diagnostics.performance.options[index % diagnostics.performance.options.length]!,
+                tier: candidate.tier,
+                modelKey: candidate.profileId,
+                profileId: candidate.profileId,
+                artifactId: candidate.artifactId,
+                displayName: `${family.displayName} ${candidate.tier}`,
+                engine: candidate.engine,
+                precision: candidate.precision,
+                expectedMemoryMinBytes: candidate.expectedMemoryMinBytes,
+                expectedMemoryMaxBytes: candidate.expectedMemoryMaxBytes,
+                memoryBasis: candidate.memoryBasis,
+                expectedDownloadBytes: candidateArtifact.expectedDownloadBytes,
+                verificationStatus: "verified" as const,
+                installed: true,
+                present: true,
+                verified: true,
+              };
+            }),
           },
         },
       };

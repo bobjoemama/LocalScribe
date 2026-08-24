@@ -1,6 +1,13 @@
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import vitestConfig from "../vitest.config";
+import {
+  processGroupIdForChild,
+  TEST_RUN_DEADLINE_MS,
+  TEST_RUN_TERM_GRACE_MS,
+} from "../scripts/run-bounded-vitest.mjs";
 
 /*
  * The suite had no config file, so a wedged test ran until a human noticed —
@@ -48,6 +55,24 @@ describe("vitest run bounds", () => {
     const { setupFiles } = testOptions();
     const files = typeof setupFiles === "string" ? [setupFiles] : setupFiles ?? [];
     expect(files.some((file) => file.includes("orphanWatchdog"))).toBe(true);
+  });
+
+  it("runs the suite inside an externally bounded POSIX process group", () => {
+    const manifest = JSON.parse(readFileSync(path.resolve("package.json"), "utf8")) as {
+      scripts?: Record<string, string>;
+    };
+    const runner = readFileSync(path.resolve("scripts/run-bounded-vitest.mjs"), "utf8");
+
+    expect(manifest.scripts?.test).toBe("node scripts/run-bounded-vitest.mjs");
+    expect(TEST_RUN_DEADLINE_MS).toBeGreaterThan(0);
+    expect(TEST_RUN_DEADLINE_MS).toBeLessThanOrEqual(5 * 60_000);
+    expect(TEST_RUN_TERM_GRACE_MS).toBeGreaterThan(0);
+    expect(TEST_RUN_TERM_GRACE_MS).toBeLessThanOrEqual(10_000);
+    expect(runner).toContain("detached: true");
+    expect(runner).toContain('signalProcessGroup(processGroupId, "SIGTERM")');
+    expect(runner).toContain('signalProcessGroup(processGroupId, "SIGKILL")');
+    expect(runner).not.toContain("shell: true");
+    expect(() => processGroupIdForChild(process.pid)).toThrow(/unsafe child process id/u);
   });
 });
 

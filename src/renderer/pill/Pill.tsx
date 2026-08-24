@@ -1,4 +1,4 @@
-import { type CSSProperties, useEffect, useRef, useState } from "react";
+import { type CSSProperties, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import {
   type AppSettings,
@@ -161,6 +161,13 @@ export function livePartialText(
 ): string | null {
   if (snapshot.state !== "listening" || !partial || partial.sessionId !== snapshot.sessionId) return null;
   return partial.text.trim() || null;
+}
+
+/** Keep the newest words visible as a replacement-style Live snapshot grows. */
+export function scrollLiveTranscriptToEnd(
+  viewport: { scrollHeight: number; scrollTop: number } | null,
+): void {
+  if (viewport) viewport.scrollTop = viewport.scrollHeight;
 }
 
 export function Pill() {
@@ -601,21 +608,29 @@ function ActivePill({
     const ariaLabel = transcript
       ? `LocalScribe is listening. Current live transcript: ${transcript}`
       : "LocalScribe is listening";
+    if (asrMode === "live") {
+      return (
+        <LiveListeningPill
+          activation={snapshot.activation}
+          ariaLabel={ariaLabel}
+          transcript={transcript}
+          waveform={waveform}
+        />
+      );
+    }
     if (snapshot.activation === "hold") {
       return (
-        <section className={`pill pill--listening pill--hold-listening${asrMode === "live" ? " pill--live-listening" : ""}`} aria-label={ariaLabel}>
+        <section className="pill pill--listening pill--hold-listening" aria-label={ariaLabel}>
           <Wave samples={waveform} />
-          {transcript && <span className="pill__live-partial" title={transcript}>{transcript}</span>}
         </section>
       );
     }
     return (
-      <section className={`pill pill--listening${asrMode === "live" ? " pill--live-listening" : ""}`} aria-label={ariaLabel}>
+      <section className="pill pill--listening" aria-label={ariaLabel}>
         <button className="pill__end pill__end--cancel" type="button" onClick={() => void window.localScribe.session.cancel()} aria-label="Cancel dictation">
           <CloseIcon />
         </button>
         <Wave samples={waveform} />
-        {transcript && <span className="pill__live-partial" title={transcript}>{transcript}</span>}
         <button className="pill__end pill__end--finish" type="button" onClick={() => void window.localScribe.session.toggle()} aria-label="Finish dictation">
           <CheckIcon />
         </button>
@@ -650,6 +665,50 @@ function ActivePill({
           <CloseIcon />
         </button>
       )}
+    </section>
+  );
+}
+
+function LiveListeningPill({
+  activation,
+  ariaLabel,
+  transcript,
+  waveform,
+}: {
+  activation: "hold" | "toggle" | undefined;
+  ariaLabel: string;
+  transcript: string | null;
+  waveform: number[];
+}) {
+  const transcriptViewport = useRef<HTMLDivElement>(null);
+  const isHold = activation === "hold";
+
+  useLayoutEffect(() => {
+    scrollLiveTranscriptToEnd(transcriptViewport.current);
+  }, [transcript]);
+
+  return (
+    <section className={`pill pill-live-stack${isHold ? " pill-live-stack--hold" : ""}`} aria-label={ariaLabel}>
+      <div
+        className="pill__live-transcript"
+        ref={transcriptViewport}
+        title={transcript ?? undefined}
+      >
+        <span>{transcript ?? "Listening…"}</span>
+      </div>
+      <div className={`pill pill--listening pill__live-controls${isHold ? " pill--hold-listening" : ""}`}>
+        {!isHold && (
+          <button className="pill__end pill__end--cancel" type="button" onClick={() => void window.localScribe.session.cancel()} aria-label="Cancel dictation">
+            <CloseIcon />
+          </button>
+        )}
+        <Wave samples={waveform} />
+        {!isHold && (
+          <button className="pill__end pill__end--finish" type="button" onClick={() => void window.localScribe.session.toggle()} aria-label="Finish dictation">
+            <CheckIcon />
+          </button>
+        )}
+      </div>
     </section>
   );
 }

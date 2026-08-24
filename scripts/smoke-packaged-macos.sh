@@ -26,9 +26,62 @@ stderr_path="$smoke_root/stderr.log"
 mkdir -m 700 "$profile_path"
 
 candidate_pid=""
+tracked_pids=()
+
+capture_descendants() {
+  local root_pid="$1"
+  ps -axo pid=,ppid= | awk -v root="$root_pid" '
+    {
+      pid[NR] = $1
+      parent[$1] = $2
+    }
+    END {
+      selected[root] = 1
+      changed = 1
+      while (changed) {
+        changed = 0
+        for (row = 1; row <= NR; row += 1) {
+          current = pid[row]
+          if (!selected[current] && selected[parent[current]]) {
+            selected[current] = 1
+            changed = 1
+          }
+        }
+      }
+      for (row = 1; row <= NR; row += 1) {
+        if (pid[row] != root && selected[pid[row]]) print pid[row]
+      }
+    }
+  '
+}
+
+tracked_processes_alive() {
+  local pid
+  for pid in "${tracked_pids[@]}"; do
+    if kill -0 "$pid" 2>/dev/null; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+terminate_tracked_processes() {
+  local signal="$1"
+  local pid
+  for pid in "${tracked_pids[@]}"; do
+    if kill -0 "$pid" 2>/dev/null; then
+      kill "-$signal" "$pid" 2>/dev/null || true
+    fi
+  done
+}
+
 cleanup() {
-  if [[ -n "$candidate_pid" ]] && kill -0 "$candidate_pid" 2>/dev/null; then
-    kill -TERM "$candidate_pid" 2>/dev/null || true
+  if tracked_processes_alive; then
+    terminate_tracked_processes TERM
+    sleep 0.2
+    terminate_tracked_processes KILL
+  fi
+  if [[ -n "$candidate_pid" ]]; then
     wait "$candidate_pid" 2>/dev/null || true
   fi
   find "$smoke_root" -depth -delete 2>/dev/null || true
@@ -49,9 +102,36 @@ if ! kill -0 "$candidate_pid" 2>/dev/null; then
   exit 1
 fi
 
+tracked_pids=("$candidate_pid")
+descendants_path="$smoke_root/descendants.txt"
+if ! capture_descendants "$candidate_pid" >"$descendants_path"; then
+  echo "Packaged macOS smoke could not enumerate the candidate process tree." >&2
+  exit 1
+fi
+while IFS= read -r descendant_pid; do
+  if [[ -n "$descendant_pid" ]]; then
+    tracked_pids+=("$descendant_pid")
+  fi
+done <"$descendants_path"
+
 kill -TERM "$candidate_pid"
 wait "$candidate_pid" || true
 candidate_pid=""
+
+for _ in {1..50}; do
+  if ! tracked_processes_alive; then
+    break
+  fi
+  sleep 0.1
+done
+
+if tracked_processes_alive; then
+  terminate_tracked_processes TERM
+  sleep 0.2
+  terminate_tracked_processes KILL
+  echo "Packaged macOS app left an observed child process running after shutdown." >&2
+  exit 1
+fi
 
 # A positive assertion. Liveness alone cannot distinguish "started" from
 # "blocked in a failure dialog".
@@ -72,4 +152,4 @@ if grep -Eiq \
   exit 1
 fi
 
-echo "Packaged macOS main-process smoke passed."
+echo "Packaged macOS main-process and observed-child shutdown smoke passed."

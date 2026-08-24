@@ -44,7 +44,7 @@
     "lint:python:macos": "uv run --project worker --locked --only-dev ruff check --config worker/pyproject.toml worker/localscribe_worker worker/tests scripts/smoke-worker.py",
     "lint:all": "npm run lint && npm run lint:python:macos",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run",
+    "test": "node scripts/run-bounded-vitest.mjs",
     "test:settings-layout": "node scripts/test-settings-scroll-layout.mjs",
     "test:packaging": "vitest run tests/packageInventory.test.ts tests/packageProvenance.test.ts tests/releaseMetadata.test.ts tests/releaseAssets.test.ts tests/macPackagingRelease.test.ts tests/resourceIntegrity.test.ts tests/buildSecurity.test.ts tests/makeResultSafety.test.ts",
     "test:watch": "vitest",

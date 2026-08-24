@@ -57,4 +57,18 @@ describe("packaged macOS smoke gate cannot fail open", () => {
     expect(startupFailure).toContain("dialog.showErrorBox(");
     expect(startupFailure).toContain("app.exit(1)");
   });
+
+  it("requires every observed packaged Electron child to retire with the main process", () => {
+    expect(smokeScript).toContain("capture_descendants");
+    expect(smokeScript).toContain("tracked_processes_alive");
+    expect(smokeScript).toContain(
+      "Packaged macOS smoke could not enumerate the candidate process tree.",
+    );
+    expect(smokeScript).toContain(
+      "Packaged macOS app left an observed child process running after shutdown.",
+    );
+    expect(smokeScript).toContain(
+      "Packaged macOS main-process and observed-child shutdown smoke passed.",
+    );
+  });
 });

@@ -155,6 +155,42 @@ describe("packaged macOS real-model smoke", () => {
     expect(smoke).toContain("candidate worker resolved a source-tree or unexpected resource");
     expect(smoke).toContain("MAX_SMOKE_AUDIO_SECONDS: Final = 120");
     expect(smoke).toContain("candidate {mode} smoke returned an empty final transcript");
+    expect(smoke).toContain("start_new_session=True");
+    expect(smoke).toContain("wait_for_process_group_exit(");
+    expect(smoke).toContain("candidate worker left a descendant running after shutdown");
+  });
+
+  it("rejects a clean worker exit that leaves a helper descendant running", () => {
+    const probe = [
+      "import importlib.util, json, subprocess, sys",
+      "spec = importlib.util.spec_from_file_location('smoke', sys.argv[1])",
+      "module = importlib.util.module_from_spec(spec)",
+      "sys.modules[spec.name] = module",
+      "spec.loader.exec_module(module)",
+      "module.WORKER_SHUTDOWN_TIMEOUT_SECONDS = 0.1",
+      "child = 'import subprocess, sys\\nsubprocess.Popen([sys.executable, \"-c\", \"import time; time.sleep(30)\"])'",
+      "process = subprocess.Popen([sys.executable, '-c', child], stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)",
+      "stderr = module.WorkerStderrReader(process)",
+      "try:",
+      "  try:",
+      "    module.wait_for_exit(process, stderr, process.pid)",
+      "    result = 'accepted'",
+      "  except RuntimeError as error:",
+      "    result = str(error)",
+      "  print(json.dumps({'result': result, 'alive': module.process_group_is_alive(process.pid)}))",
+      "finally:",
+      "  if module.process_group_is_alive(process.pid): module.retire_process_group(process.pid)",
+    ].join("\n");
+
+    const answer = execFileSync(
+      "python3",
+      ["-B", "-c", probe, resolve("scripts/smoke-worker.py")],
+      { encoding: "utf8", timeout: 5_000 },
+    );
+    expect(JSON.parse(answer)).toEqual({
+      result: "candidate worker left a descendant running after shutdown",
+      alive: false,
+    });
   });
 
   it("is offline and read-only by default, while making download opt-in explicit", () => {

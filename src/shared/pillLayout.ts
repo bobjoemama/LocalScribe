@@ -88,12 +88,17 @@ export const PILL_LAYOUT = {
   /*
    * Live recognizers publish a revisable transcript while recording. The
    * native window cannot resize on each revision without sliding under a
-   * stationary pointer, so reserve one fixed, readable line only for those
-   * Live sessions. Final-only dictation keeps its compact original bounds.
+   * stationary pointer, so Live mode gets a fixed transcript panel above its
+   * controls. The 84px panel fits four lines at the shipped type size and
+   * scrolls internally as the decoder snapshot grows. Final-only dictation
+   * keeps its compact original bounds.
+   *
+   * Toggle: 84px transcript + 6px gap + 36px controls = 126px.
+   * Hold:   84px transcript + 6px gap + 30px controls = 120px.
    */
   liveListening: {
-    hold: { width: 236, height: 26 },
-    toggle: { width: 280, height: 32 },
+    hold: { width: 336, height: 120 },
+    toggle: { width: 360, height: 126 },
   },
   /*
    * Wide enough for the longest status the product can show.
