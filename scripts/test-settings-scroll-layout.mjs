@@ -701,7 +701,7 @@ function assertTab(result, size) {
     `${label}: an application control does not keep the stable arrow cursor: ${JSON.stringify(result.interactiveCursors)}`,
   );
   if (label === "Model & Performance") {
-    const expectedModes = size.settingsPreset === "custom"
+    const expectedModes = size.settingsPreset === "custom" || size.applyResult
       ? "auto\u0000high\u0000medium\u0000low"
       : "auto\u0000high\u0000medium";
     assert(
@@ -714,7 +714,7 @@ function assertTab(result, size) {
     );
     assert(
       result.modelControls.modes.filter((control) => control.checked).map((control) => control.value).join("")
-        === (size.settingsPreset === "custom" ? "low" : "auto"),
+        === (size.applyResult ? "high" : size.settingsPreset === "custom" ? "low" : "auto"),
       `Model & Performance: selected mode does not match persisted settings: ${layoutEvidence}`,
     );
     assert(
@@ -743,7 +743,7 @@ function assertModelSelection(size) {
   assert(evidence.enabledBeforeClick, `Model Apply: expected verified selection to be applicable: ${serialized}`);
   assert(evidence.beforeApply.applyCalls.length === 0, `Model Apply: selection invoked IPC before Apply: ${serialized}`);
   assert(evidence.beforeApply.patchCalls.length === 0, `Model Apply: selection leaked into generic settings patch: ${serialized}`);
-  assert(evidence.beforeApply.summary.includes("Currently using"), `Model Apply: current summary missing: ${serialized}`);
+  assert(evidence.beforeApply.summary.includes("Saved selection"), `Model Apply: current summary missing: ${serialized}`);
   assert(evidence.beforeApply.summary.includes("After applying"), `Model Apply: pending summary missing: ${serialized}`);
   assert(evidence.afterApply.applyCalls.length === 1, `Model Apply: expected exactly one combined call: ${serialized}`);
   const applyRequest = evidence.afterApply.applyCalls[0];
@@ -765,8 +765,8 @@ function assertModelSelection(size) {
       `Model Apply: exact loaded-artifact acknowledgement is missing: ${serialized}`,
     );
   } else {
-    assert(evidence.afterApply.persisted.modelPerformanceMode === "auto", `Model Apply: failed mode mutated persisted settings: ${serialized}`);
-    assert(evidence.afterApply.persisted.activeModelFamilyId === "parakeet-unified-en-0-6b", `Model Apply: failed family mutated persisted settings: ${serialized}`);
+    assert(evidence.afterApply.persisted.modelPerformanceMode === "high", `Model Apply: failed mode mutated persisted settings: ${serialized}`);
+    assert(evidence.afterApply.persisted.activeModelFamilyId === "whisper-large-v3", `Model Apply: failed family mutated persisted settings: ${serialized}`);
     assert(evidence.afterApply.persisted.asrMode === "after-stop", `Model Apply: failed experience mutated persisted settings: ${serialized}`);
     assert(evidence.afterApply.checked.join("") === "low", `Model Apply: failed selection was not preserved: ${serialized}`);
     assert(!evidence.afterApply.applyDisabled, `Model Apply: failed pending selection cannot be retried: ${serialized}`);

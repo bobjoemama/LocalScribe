@@ -8,6 +8,7 @@ import {
   listSelectableMicrophones,
   livePartialText,
   listeningRecorderStart,
+  scrollLiveTranscriptToEnd,
   selectedMicrophoneIsUnavailable,
   startLiveRecorderForCurrentSession,
   trySelectMicrophone,
@@ -43,6 +44,14 @@ describe("pill recorder lifecycle", () => {
     expect(livePartialText({ state: "finalizing", sessionId: FIRST_SESSION_ID }, current)).toBeNull();
     expect(livePartialText({ state: "listening", sessionId: SECOND_SESSION_ID }, current)).toBeNull();
     expect(livePartialText(listening, current)).toBe("the revised phrase");
+  });
+
+  it("keeps the newest words in a growing Live transcript visible", () => {
+    const viewport = { scrollHeight: 480, scrollTop: 0 };
+    scrollLiveTranscriptToEnd(viewport);
+    expect(viewport.scrollTop).toBe(480);
+
+    scrollLiveTranscriptToEnd(null);
   });
 
   it("accepts finalization work only while the same session is still finalizing", () => {

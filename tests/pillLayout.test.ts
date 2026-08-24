@@ -34,7 +34,7 @@ describe("pill layout contract", () => {
     expect(pillSizeFor("transcribing")).toEqual(PILL_LAYOUT.status);
   });
 
-  it("reserves fixed readable space for revisable Live transcript snapshots", () => {
+  it("reserves a fixed multiline panel for revisable Live transcript snapshots", () => {
     // Size is independent of transcript length, so a decoder revision cannot
     // move the transparent native window under a stationary pointer.
     expect(PILL_LAYOUT.listening.hold.width).toBe(76);
@@ -42,10 +42,14 @@ describe("pill layout contract", () => {
       .toEqual(PILL_LAYOUT.liveListening.toggle);
     expect(pillSizeFor("listening", "collapsed", "hold", "live"))
       .toEqual(PILL_LAYOUT.liveListening.hold);
-    expect(PILL_LAYOUT.liveListening.toggle.width).toBe(280);
-    expect(PILL_LAYOUT.liveListening.hold.width).toBe(236);
-    expect(stylesheet).toContain(".pill__live-partial { min-width: 0; flex: 1; overflow: hidden;");
-    expect(stylesheet).toContain("text-overflow: ellipsis");
+    expect(PILL_LAYOUT.liveListening.toggle).toEqual({ width: 360, height: 126 });
+    expect(PILL_LAYOUT.liveListening.hold).toEqual({ width: 336, height: 120 });
+    expect(PILL_LAYOUT.liveListening.toggle.height).toBeGreaterThan(PILL_LAYOUT.error.stack.height);
+    const transcriptPanel = exactCssRule(".pill__live-transcript");
+    expect(transcriptPanel).toContain("overflow-y: auto");
+    expect(transcriptPanel).toContain("overflow-wrap: anywhere");
+    expect(transcriptPanel).toContain("white-space: pre-wrap");
+    expect(transcriptPanel).not.toContain("text-overflow: ellipsis");
   });
 
   it("exposes the shared renderer dimensions as CSS variables", () => {
