@@ -41,7 +41,10 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: 3.12.13
+          # Source checks support Python 3.12. GitHub's macOS arm64 tool cache
+          # does not publish 3.12.11+; the packaged runtime remains separately
+          # pinned and digest-verified at 3.12.13.
+          python-version: 3.12.10
 
       - name: Set up uv
         uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1

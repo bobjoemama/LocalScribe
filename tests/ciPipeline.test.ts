@@ -145,6 +145,8 @@ describe("hosted ci pipeline", () => {
     expect(workflow).toContain("name: Source verification");
     expect(workflow).toContain('CI: "true"');
     expect(workflow).toContain('UV_PYTHON_DOWNLOADS: "never"');
+    expect(workflow).toContain("python-version: 3.12.10");
+    expect(workflow).toContain("packaged runtime remains separately");
   });
 
   it("does not run packaging or release commands", () => {
