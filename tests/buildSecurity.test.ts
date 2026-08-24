@@ -105,7 +105,8 @@ describe("release hardening configuration", () => {
     expect(workflow).not.toMatch(/uses:\s+[^\s@]+@(?:main|master|v?\d+(?:\.\d+)*)\s*$/mu);
     expect(workflow).toContain("node-version-file: .nvmrc");
     expect(workflow).toContain("python-version: 3.12.10");
-    expect(workflow).toContain("version-file: .uv-version");
+    expect(workflow).toContain('version: "0.11.11"');
+    expect(projectFile(".uv-version").trim()).toBe("0.11.11");
     expect(workflow).toContain(
       "npm install --global npm@11.16.0 --ignore-scripts --no-audit --no-fund",
     );
