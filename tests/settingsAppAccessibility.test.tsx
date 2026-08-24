@@ -10,5 +10,6 @@ describe("settings app shell accessibility", () => {
     expect(html.match(/aria-current="page"/g)).toHaveLength(1);
     expect(html).toContain('aria-haspopup="dialog"');
     expect(html).toContain('aria-expanded="false"');
+    expect(html.match(/<main\b/g)).toHaveLength(1);
   });
 });

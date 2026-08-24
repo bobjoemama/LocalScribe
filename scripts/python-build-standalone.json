@@ -1,0 +1,19 @@
+{
+  "cpython-3.12.13-darwin-aarch64-none": {
+    "arch": {
+      "family": "aarch64",
+      "variant": null
+    },
+    "build": "20260504",
+    "libc": "none",
+    "major": 3,
+    "minor": 12,
+    "name": "cpython",
+    "os": "darwin",
+    "patch": 13,
+    "prerelease": "",
+    "sha256": "dbba2cb07d0c5c1e641aefefe78c5706ff7a01e2c4d1de18e8447522af37431e",
+    "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20260504/cpython-3.12.13%2B20260504-aarch64-apple-darwin-install_only_stripped.tar.gz",
+    "variant": null
+  }
+}

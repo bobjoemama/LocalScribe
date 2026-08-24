@@ -91,6 +91,9 @@ describe("atomic model selection architecture", () => {
     expect(latestMerge).toBeGreaterThan(save);
     expect(saveEnd).toBeGreaterThan(latestMerge);
     expect(body.slice(latestRead, saveEnd)).not.toContain("await ");
+    expect(body.slice(latestRead, save)).toContain("assertModelLanguageSupported(");
+    expect(body.slice(latestRead, save)).toContain("latestSettings.language");
+    expect(body.slice(latestRead, save)).toContain("targetCatalog.capabilities");
     expect(body.slice(latestRead, saveEnd)).toContain("activeModelFamilyId: request.familyId");
     expect(body.slice(latestRead, saveEnd)).toContain("asrMode: request.asrMode");
     expect(body.slice(latestRead, saveEnd)).toContain("modelPerformanceMode: request.performanceMode");
@@ -182,7 +185,7 @@ describe("atomic model selection architecture", () => {
     expect(partial).toContain('session.state !== "listening"');
     expect(partial).toContain("session.sessionId !== partial.sessionId");
     expect(partial).toContain("activeSessionId !== partial.sessionId");
-    expect(partial).toContain("pillWindow.webContents.send(IPC.sessionLivePartial, partial)");
+    expect(partial).toContain("sendToLiveRenderers([pillWindow], IPC.sessionLivePartial, partial");
   });
 
   it("uses model capabilities to suppress unsupported recognizer context", () => {
@@ -196,8 +199,7 @@ describe("atomic model selection architecture", () => {
     const install = between("handle(IPC.systemInstallModel", "handle(IPC.systemRemoveModel");
     expect(install).toContain("replacesLoadedArtifact");
     expect(install).toContain("workerSelection(modelResolution.tier, currentSettings.asrMode)");
-    expect(install).toContain("install: () => {");
-    expect(install).toContain("return worker.installModel(workerSelection(");
+    expect(install).toContain("install: () => worker.installModel(");
     expect(install).toContain("replacesLoadedArtifact,");
     // The install request budget scales with the artifact, so the size has to
     // reach the supervisor with the request. See tests/workerSupervisor.test.ts.
@@ -208,7 +210,9 @@ describe("atomic model selection architecture", () => {
 
     const remove = between("handle(IPC.systemRemoveModel", "\n  });\n}");
     expect(remove).toContain("Apply another model or performance tier before removing it");
+    expect(remove).toContain("quarantineAndRemoveModelArtifact(modelRoot, tier.manifest)");
     expect(remove).not.toContain("worker.shutdown");
+    expect(remove).not.toContain("await rm(");
     expect(remove).not.toContain("modelResolution = null");
     expect(ipc).toContain("activeResolution.tier.artifactId === tier.artifactId");
   });

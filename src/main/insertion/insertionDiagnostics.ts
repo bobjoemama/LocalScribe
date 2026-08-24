@@ -1,4 +1,4 @@
-import type { InsertionOutcome, InsertionReasonCode } from "./types";
+import type { InsertionOutcome, InsertionReasonCode, InsertionResult } from "./types";
 
 export interface InsertionDiagnosticEvent {
   readonly stage: "insertion";
@@ -11,15 +11,16 @@ export interface InsertionDiagnosticEvent {
 
 /**
  * Describes the insertion boundary without recording target identity, clipboard
- * contents, or dictated text. A copy-only outcome with `permission: ready`
- * means a target/clipboard safety check declined injection; `not_ready` means
- * macOS Accessibility or the native bridge was unavailable.
+ * contents, or dictated text. Copy-only results preserve a closed reason code
+ * from the coordinator; permission state takes precedence when automatic paste
+ * was disabled or unavailable before the coordinator ran.
  */
 export function insertionDiagnosticEvent(
-  insertionOutcome: InsertionOutcome,
+  insertionResult: InsertionResult,
   automaticPasteEnabled: boolean,
   automaticPasteReady: boolean,
 ): InsertionDiagnosticEvent {
+  const insertionOutcome = insertionResult.outcome;
   const permission = !automaticPasteEnabled
     ? "disabled"
     : automaticPasteReady
@@ -27,13 +28,11 @@ export function insertionDiagnosticEvent(
       : "not_ready";
   const reason: InsertionReasonCode | undefined = insertionOutcome === "pasted"
     ? undefined
-    : insertionOutcome === "pasted-with-copy"
-      ? "clipboard_retained"
-      : permission === "disabled"
-        ? "automatic_paste_disabled"
-        : permission === "not_ready"
-          ? "automatic_paste_unavailable"
-          : "safety_check_declined";
+    : permission === "disabled"
+      ? "automatic_paste_disabled"
+      : permission === "not_ready"
+        ? "automatic_paste_unavailable"
+        : insertionResult.reason;
   return {
     stage: "insertion",
     event: insertionOutcome,

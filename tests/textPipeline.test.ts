@@ -49,4 +49,35 @@ describe("applyLocalTextRules", () => {
     const input = "  Hello   there , world !  ";
     expect(applyLocalTextRules(input, [], [], { normalizeSpacing: false })).toBe(input);
   });
+
+  it("uses longest-match-first rules without cascading within a phase", () => {
+    expect(applyLocalTextRules(
+      "new york and nyc",
+      [
+        { phrase: "new", replacement: "old" },
+        { phrase: "new york", replacement: "NYC" },
+        { phrase: "nyc", replacement: "New York City" },
+      ],
+      [],
+    )).toBe("NYC and New York City");
+  });
+
+  it("matches canonically equivalent Unicode rules", () => {
+    expect(applyLocalTextRules(
+      "Send the résumé",
+      [{ phrase: "re\u0301sume\u0301", replacement: "CV" }],
+      [],
+    )).toBe("Send the CV");
+  });
+
+  it("does not cascade one snippet expansion into another snippet", () => {
+    expect(applyLocalTextRules(
+      "Use signoff",
+      [],
+      [
+        { trigger: "signoff", expansion: "my address" },
+        { trigger: "my address", expansion: "private@example.invalid" },
+      ],
+    )).toBe("Use my address");
+  });
 });

@@ -1,4 +1,14 @@
-import { mkdtempSync, readFileSync, rmSync, existsSync, writeFileSync, statSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -21,16 +31,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
  */
 
 const faults = vi.hoisted(() => ({
-  appendFile: null as null | (() => Error),
-  rm: null as null | (() => Error),
-  rename: null as null | (() => Error),
+  open: null as null | (() => Error),
   mkdir: null as null | (() => Error),
-  stat: null as null | (() => Error),
+  lstat: null as null | (() => Error),
+  afterOpen: null as null | ((openedPath: string) => void),
 }));
 
 vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
-  const wrap = <K extends keyof typeof faults>(name: K, real: (...args: never[]) => unknown) =>
+  const wrap = <K extends Exclude<keyof typeof faults, "afterOpen">>(name: K, real: (...args: never[]) => unknown) =>
     (...args: never[]) => {
       const fault = faults[name];
       if (fault) return Promise.reject(fault());
@@ -38,11 +47,14 @@ vi.mock("node:fs/promises", async (importOriginal) => {
     };
   return {
     ...actual,
-    appendFile: wrap("appendFile", actual.appendFile),
-    rm: wrap("rm", actual.rm),
-    rename: wrap("rename", actual.rename),
+    open: async (...args: Parameters<typeof actual.open>) => {
+      if (faults.open) return Promise.reject(faults.open());
+      const handle = await actual.open(...args);
+      faults.afterOpen?.(String(args[0]));
+      return handle;
+    },
     mkdir: wrap("mkdir", actual.mkdir),
-    stat: wrap("stat", actual.stat),
+    lstat: wrap("lstat", actual.lstat),
   };
 });
 
@@ -58,10 +70,6 @@ const IDENTITY = {
 };
 
 const SESSION = "11111111-2222-4333-8444-555555555555";
-
-/* Longest detail the allowlist accepts, so rotation is reached in far fewer
- * writes than short fillers would need. */
-const FILLER = "f".repeat(56);
 
 let directory: string;
 
@@ -95,14 +103,14 @@ afterEach(() => {
 describe("writing the trail", () => {
   it("stamps the build identity once, ahead of the events", async () => {
     const recorder = makeRecorder();
-    recorder.record({ stage: "session", event: "started", outcome: "ok" });
-    recorder.record({ stage: "session", event: "finished", outcome: "ok" });
+    recorder.record({ stage: "lifecycle", event: "startup", outcome: "ok" });
+    recorder.record({ stage: "worker", event: "transcribe", outcome: "ok" });
     await recorder.flush();
 
     const written = lines(currentLog());
     expect(written[0]).toMatchObject({ kind: "localscribe-diagnostics", version: "0.1.0-dev.5" });
     expect(written.filter((entry) => entry.kind === "localscribe-diagnostics")).toHaveLength(1);
-    expect(written.slice(1).map((entry) => entry.event)).toEqual(["started", "finished"]);
+    expect(written.slice(1).map((entry) => entry.event)).toEqual(["startup", "transcribe"]);
   });
 
   /*
@@ -112,18 +120,18 @@ describe("writing the trail", () => {
   it("keeps events in call order without the caller awaiting anything", async () => {
     const recorder = makeRecorder();
     for (let index = 0; index < 40; index += 1) {
-      recorder.record({ stage: "session", event: `event-${index}`, outcome: "ok" });
+      recorder.record({ stage: "worker", event: "transcribe", outcome: "ok", count: index });
     }
     await recorder.flush();
 
-    expect(lines(currentLog()).slice(1).map((entry) => entry.event))
-      .toEqual(Array.from({ length: 40 }, (_, index) => `event-${index}`));
+    expect(lines(currentLog()).slice(1).map((entry) => entry.count))
+      .toEqual(Array.from({ length: 40 }, (_, index) => index));
   });
 
   it("creates the directory and the file with owner-only permissions", async () => {
     const nested = path.join(directory, "nested", "deeper");
     const recorder = new DiagnosticsRecorder(nested, IDENTITY);
-    recorder.record({ stage: "session", event: "started", outcome: "ok" });
+    recorder.record({ stage: "lifecycle", event: "startup", outcome: "ok" });
     await recorder.flush();
 
     if (process.platform === "win32") return;
@@ -131,17 +139,37 @@ describe("writing the trail", () => {
     expect(statSync(path.join(nested, "diagnostics.log")).mode & 0o777).toBe(0o600);
   });
 
+  it("tightens preexisting 0755/0644 diagnostics storage before appending", async () => {
+    const log = path.join(directory, "diagnostics.log");
+    const previous = path.join(directory, "diagnostics.1.log");
+    writeFileSync(log, "");
+    writeFileSync(previous, "");
+    chmodSync(directory, 0o755);
+    chmodSync(log, 0o644);
+    chmodSync(previous, 0o644);
+
+    const recorder = makeRecorder();
+    recorder.record({ stage: "lifecycle", event: "startup", outcome: "ok" });
+    await recorder.flush();
+    await recorder.read();
+
+    if (process.platform === "win32") return;
+    expect(statSync(directory).mode & 0o777).toBe(0o700);
+    expect(statSync(log).mode & 0o777).toBe(0o600);
+    expect(statSync(previous).mode & 0o777).toBe(0o600);
+  });
+
   it("resumes an existing file rather than truncating it", async () => {
     const first = makeRecorder();
-    first.record({ stage: "session", event: "before-restart", outcome: "ok" });
+    first.record({ stage: "lifecycle", event: "startup", outcome: "ok" });
     await first.flush();
 
     const second = makeRecorder();
-    second.record({ stage: "session", event: "after-restart", outcome: "ok" });
+    second.record({ stage: "worker", event: "transcribe", outcome: "ok" });
     await second.flush();
 
     const events = lines(currentLog()).filter((entry) => entry.event !== undefined);
-    expect(events.map((entry) => entry.event)).toEqual(["before-restart", "after-restart"]);
+    expect(events.map((entry) => entry.event)).toEqual(["startup", "transcribe"]);
   });
 });
 
@@ -150,7 +178,13 @@ describe("staying bounded", () => {
     const recorder = makeRecorder();
     // Each event is well under a kilobyte; 512KiB is the rotation threshold.
     for (let index = 0; index < 5_000; index += 1) {
-      recorder.record({ stage: "session", event: "filler", outcome: "ok", detail: `${FILLER}${index}` });
+      recorder.record({
+        stage: "worker",
+        event: "transcribe",
+        outcome: "failed",
+        detail: "model_verification_failed",
+        count: index,
+      });
     }
     await recorder.flush();
 
@@ -162,7 +196,13 @@ describe("staying bounded", () => {
   it("never keeps more than the two rotation files", async () => {
     const recorder = makeRecorder();
     for (let index = 0; index < 12_000; index += 1) {
-      recorder.record({ stage: "session", event: "filler", outcome: "ok", detail: `${FILLER}${index}` });
+      recorder.record({
+        stage: "worker",
+        event: "transcribe",
+        outcome: "failed",
+        detail: "model_verification_failed",
+        count: index,
+      });
     }
     await recorder.flush();
 
@@ -173,7 +213,13 @@ describe("staying bounded", () => {
   it("keeps the whole trail small enough to paste into a bug report", async () => {
     const recorder = makeRecorder();
     for (let index = 0; index < 12_000; index += 1) {
-      recorder.record({ stage: "session", event: "filler", outcome: "ok", detail: `${FILLER}${index}` });
+      recorder.record({
+        stage: "worker",
+        event: "transcribe",
+        outcome: "failed",
+        detail: "model_verification_failed",
+        count: index,
+      });
     }
     await recorder.flush();
 
@@ -189,34 +235,14 @@ describe("staying bounded", () => {
  */
 describe("failing to write is never the application's problem", () => {
   it.each([
-    ["appendFile", "ENOSPC: no space left on device"],
+    ["open", "ENOSPC: no space left on device"],
     ["mkdir", "EACCES: permission denied"],
-    ["stat", "EIO: i/o error"],
+    ["lstat", "EIO: i/o error"],
   ] as const)("survives a %s failure without rejecting", async (operation, message) => {
     faults[operation] = () => new Error(message);
     const recorder = makeRecorder();
 
-    expect(() => recorder.record({ stage: "session", event: "started", outcome: "ok" })).not.toThrow();
-    await expect(recorder.flush()).resolves.toBeUndefined();
-  });
-
-  it("survives an rm failure during rotation", async () => {
-    const recorder = makeRecorder();
-    faults.rm = () => new Error("EPERM: operation not permitted");
-    for (let index = 0; index < 5_000; index += 1) {
-      recorder.record({ stage: "session", event: "filler", outcome: "ok", detail: `${FILLER}${index}` });
-    }
-
-    await expect(recorder.flush()).resolves.toBeUndefined();
-  });
-
-  it("survives a rename failure during rotation", async () => {
-    const recorder = makeRecorder();
-    faults.rename = () => new Error("EXDEV: cross-device link not permitted");
-    for (let index = 0; index < 5_000; index += 1) {
-      recorder.record({ stage: "session", event: "filler", outcome: "ok", detail: `${FILLER}${index}` });
-    }
-
+    expect(() => recorder.record({ stage: "lifecycle", event: "startup", outcome: "ok" })).not.toThrow();
     await expect(recorder.flush()).resolves.toBeUndefined();
   });
 
@@ -227,33 +253,77 @@ describe("failing to write is never the application's problem", () => {
    */
   it("keeps recording after a write failure clears", async () => {
     const recorder = makeRecorder();
-    faults.appendFile = () => new Error("ENOSPC: no space left on device");
-    recorder.record({ stage: "session", event: "lost", outcome: "failed" });
+    faults.open = () => new Error("ENOSPC: no space left on device");
+    recorder.record({ stage: "worker", event: "transcribe", outcome: "failed" });
     await recorder.flush();
 
-    faults.appendFile = null;
-    recorder.record({ stage: "session", event: "recovered", outcome: "ok" });
+    faults.open = null;
+    recorder.record({ stage: "lifecycle", event: "startup", outcome: "ok" });
     await recorder.flush();
 
-    expect(currentLog()).toContain("recovered");
+    expect(currentLog()).toContain("startup");
   });
 
-  it("survives clear() failing to remove the files", async () => {
+  it("reports clear() failing to open the files and keeps the trail", async () => {
     const recorder = makeRecorder();
-    recorder.record({ stage: "session", event: "started", outcome: "ok" });
+    recorder.record({ stage: "lifecycle", event: "startup", outcome: "ok" });
     await recorder.flush();
 
-    faults.rm = () => new Error("EPERM: operation not permitted");
-    await expect(recorder.clear()).resolves.toBeUndefined();
+    faults.open = () => new Error("EPERM: operation not permitted");
+    await expect(recorder.clear()).rejects.toThrow(/EPERM/u);
+    expect(currentLog()).toContain("startup");
   });
 });
 
 describe("never containing user content", () => {
+  it("rejects short secret tokens from every caller-controlled token field", async () => {
+    const recorder = makeRecorder();
+    recorder.record({
+      stage: "session",
+      event: "pin7",
+      outcome: "ok",
+      detail: "pin8",
+      modelFamily: "pin9",
+      modelTier: "pin0",
+      hotkeyMode: "pin1",
+      permission: "pin2",
+    });
+    await recorder.flush();
+
+    const content = currentLog();
+    for (const secret of ["pin7", "pin8", "pin9", "pin0", "pin1", "pin2"]) {
+      expect(content).not.toContain(secret);
+    }
+    expect(lines(content)[1]).toMatchObject({ event: "unknown_event" });
+  });
+
+  it("does not echo short secrets through build identity fields", async () => {
+    const recorder = new DiagnosticsRecorder(directory, {
+      version: "pin7",
+      platform: "pin8",
+      arch: "pin9",
+      electron: "pin0",
+      sourceRoot: "pin1",
+    });
+    recorder.record({ stage: "lifecycle", event: "startup", outcome: "ok" });
+    await recorder.flush();
+
+    const header = lines(currentLog())[0];
+    expect(header).toMatchObject({
+      version: "unknown",
+      platform: "unknown",
+      arch: "unknown",
+      electron: "unknown",
+    });
+    expect(header?.sourceRoot).toBeUndefined();
+    expect(currentLog()).not.toMatch(/pin[0-9]/u);
+  });
+
   it("drops fields that are not on the allowlist", async () => {
     const recorder = makeRecorder();
     recorder.record({
       stage: "session",
-      event: "finished",
+      event: "transcribe",
       outcome: "ok",
       // Exactly the shape of an accidental transcript leak.
       transcript: "my bank password is hunter2",
@@ -267,8 +337,8 @@ describe("never containing user content", () => {
 
   it("drops a session id that is not actually a generated id", async () => {
     const recorder = makeRecorder();
-    recorder.record({ stage: "session", event: "finished", outcome: "ok", sessionId: SESSION });
-    recorder.record({ stage: "session", event: "finished", outcome: "ok", sessionId: "the meeting notes" as never });
+    recorder.record({ stage: "worker", event: "transcribe", outcome: "ok", sessionId: SESSION });
+    recorder.record({ stage: "worker", event: "transcribe", outcome: "ok", sessionId: "the meeting notes" as never });
     await recorder.flush();
 
     const events = lines(currentLog()).slice(1);
@@ -281,7 +351,7 @@ describe("never containing user content", () => {
     const recorder = makeRecorder();
     recorder.record({
       stage: "session",
-      event: "failed",
+      event: "transcribe",
       outcome: "failed",
       detail: "a".repeat(400),
     });
@@ -297,7 +367,7 @@ describe("never containing user content", () => {
    */
   it("withholds a file on disk that fails the redaction check", async () => {
     const recorder = makeRecorder();
-    recorder.record({ stage: "session", event: "started", outcome: "ok" });
+    recorder.record({ stage: "lifecycle", event: "startup", outcome: "ok" });
     await recorder.flush();
 
     writeFileSync(
@@ -311,17 +381,145 @@ describe("never containing user content", () => {
   });
 });
 
+describe("filesystem entry safety", () => {
+  it("does not follow a symlink used as the diagnostics directory", async () => {
+    const realDirectory = mkdtempSync(path.join(tmpdir(), "localscribe-diagnostics-real-"));
+    const linkedDirectory = path.join(directory, "linked");
+    symlinkSync(realDirectory, linkedDirectory, "dir");
+    try {
+      const recorder = new DiagnosticsRecorder(linkedDirectory, IDENTITY);
+      recorder.record({ stage: "lifecycle", event: "startup", outcome: "ok" });
+      await recorder.flush();
+
+      expect(existsSync(path.join(realDirectory, "diagnostics.log"))).toBe(false);
+      await expect(recorder.read()).resolves.toMatch(/withheld/u);
+      await expect(recorder.clear()).rejects.toThrow(/Unsafe diagnostics entry/u);
+    } finally {
+      rmSync(realDirectory, { recursive: true, force: true });
+    }
+  });
+
+  it("does not read, overwrite, or clear through a diagnostics-file symlink", async () => {
+    const outside = path.join(directory, "outside.txt");
+    const log = path.join(directory, "diagnostics.log");
+    writeFileSync(outside, "pin7\n");
+    symlinkSync(outside, log);
+    const recorder = makeRecorder();
+
+    recorder.record({ stage: "lifecycle", event: "startup", outcome: "ok" });
+    await recorder.flush();
+
+    expect(readFileSync(outside, "utf8")).toBe("pin7\n");
+    await expect(recorder.read()).resolves.toMatch(/withheld/u);
+    await expect(recorder.clear()).rejects.toThrow(/regular file/u);
+    expect(readFileSync(outside, "utf8")).toBe("pin7\n");
+  });
+
+  it("fails closed when the diagnostics parent is swapped during read", async () => {
+    const recorder = makeRecorder();
+    recorder.record({ stage: "lifecycle", event: "startup", outcome: "ok" });
+    await recorder.flush();
+    const held = `${directory}-held`;
+    const outside = mkdtempSync(path.join(tmpdir(), "localscribe-diagnostics-swap-"));
+    writeFileSync(path.join(outside, "diagnostics.log"), "pin7\n");
+    let swapped = false;
+    faults.afterOpen = (openedPath) => {
+      if (swapped || openedPath !== path.join(directory, "diagnostics.log")) return;
+      swapped = true;
+      renameSync(directory, held);
+      symlinkSync(outside, directory, "dir");
+    };
+    try {
+      await expect(recorder.read()).resolves.toMatch(/withheld/u);
+      expect(readFileSync(path.join(outside, "diagnostics.log"), "utf8")).toBe("pin7\n");
+    } finally {
+      faults.afterOpen = null;
+      if (swapped) {
+        rmSync(directory, { force: true });
+        renameSync(held, directory);
+      }
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  it("does not truncate through a parent swapped during clear", async () => {
+    const recorder = makeRecorder();
+    recorder.record({ stage: "lifecycle", event: "startup", outcome: "ok" });
+    await recorder.flush();
+    const before = currentLog();
+    const held = `${directory}-held`;
+    const outside = mkdtempSync(path.join(tmpdir(), "localscribe-diagnostics-clear-swap-"));
+    writeFileSync(path.join(outside, "diagnostics.log"), "pin7\n");
+    let swapped = false;
+    faults.afterOpen = (openedPath) => {
+      if (swapped || openedPath !== path.join(directory, "diagnostics.log")) return;
+      swapped = true;
+      renameSync(directory, held);
+      symlinkSync(outside, directory, "dir");
+    };
+    try {
+      await expect(recorder.clear()).rejects.toThrow(/Unsafe diagnostics entry/u);
+      expect(readFileSync(path.join(outside, "diagnostics.log"), "utf8")).toBe("pin7\n");
+      expect(readFileSync(path.join(held, "diagnostics.log"), "utf8")).toBe(before);
+    } finally {
+      faults.afterOpen = null;
+      if (swapped) {
+        rmSync(directory, { force: true });
+        renameSync(held, directory);
+      }
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  it("does not rotate into a parent swapped while opening the previous file", async () => {
+    const recorder = makeRecorder();
+    const held = `${directory}-held`;
+    const outside = mkdtempSync(path.join(tmpdir(), "localscribe-diagnostics-rotate-swap-"));
+    writeFileSync(path.join(outside, "diagnostics.1.log"), "pin7\n");
+    let swapped = false;
+    faults.afterOpen = (openedPath) => {
+      if (swapped || openedPath !== path.join(directory, "diagnostics.1.log")) return;
+      swapped = true;
+      renameSync(directory, held);
+      symlinkSync(outside, directory, "dir");
+    };
+    try {
+      for (let index = 0; index < 5_000; index += 1) {
+        recorder.record({
+          stage: "worker",
+          event: "transcribe",
+          outcome: "failed",
+          detail: "model_verification_failed",
+          count: index,
+        });
+      }
+      await recorder.flush();
+
+      expect(swapped).toBe(true);
+      expect(readFileSync(path.join(outside, "diagnostics.1.log"), "utf8")).toBe("pin7\n");
+      expect(readFileSync(path.join(held, "diagnostics.log"), "utf8").length).toBeGreaterThan(0);
+    } finally {
+      faults.afterOpen = null;
+      if (swapped) {
+        rmSync(directory, { force: true });
+        renameSync(held, directory);
+      }
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("reading the trail back", () => {
   it("returns the rotated file before the current one", async () => {
     const recorder = makeRecorder();
     for (let index = 0; index < 5_000; index += 1) {
-      recorder.record({ stage: "session", event: "filler", outcome: "ok", detail: `${FILLER}${index}` });
+      recorder.record({ stage: "worker", event: "transcribe", outcome: "failed", detail: "model_verification_failed", count: index });
     }
-    recorder.record({ stage: "session", event: "newest", outcome: "ok" });
+    recorder.record({ stage: "lifecycle", event: "startup", outcome: "ok" });
     await recorder.flush();
 
     const read = await recorder.read();
-    expect(read.indexOf("newest")).toBeGreaterThan(0);
+    expect(read.lastIndexOf("startup")).toBeGreaterThan(0);
     expect(read.startsWith(previousLog().slice(0, 40))).toBe(true);
   });
 
@@ -329,32 +527,32 @@ describe("reading the trail back", () => {
     await expect(makeRecorder().read()).resolves.toBe("");
   });
 
-  it("removes both files on clear", async () => {
+  it("clears both files through verified descriptors", async () => {
     const recorder = makeRecorder();
     for (let index = 0; index < 5_000; index += 1) {
-      recorder.record({ stage: "session", event: "filler", outcome: "ok", detail: `${FILLER}${index}` });
+      recorder.record({ stage: "worker", event: "transcribe", outcome: "failed", detail: "model_verification_failed", count: index });
     }
     await recorder.flush();
     expect(previousLog().length).toBeGreaterThan(0);
 
     await recorder.clear();
 
-    expect(existsSync(path.join(directory, "diagnostics.log"))).toBe(false);
-    expect(existsSync(path.join(directory, "diagnostics.1.log"))).toBe(false);
+    expect(currentLog()).toBe("");
+    expect(previousLog()).toBe("");
   });
 
   it("writes a fresh header after a clear rather than resuming a stale byte count", async () => {
     const recorder = makeRecorder();
-    recorder.record({ stage: "session", event: "before", outcome: "ok" });
+    recorder.record({ stage: "worker", event: "transcribe", outcome: "ok" });
     await recorder.flush();
     await recorder.clear();
 
-    recorder.record({ stage: "session", event: "after", outcome: "ok" });
+    recorder.record({ stage: "lifecycle", event: "startup", outcome: "ok" });
     await recorder.flush();
 
     const written = lines(currentLog());
     expect(written[0]).toMatchObject({ kind: "localscribe-diagnostics" });
-    expect(written.map((entry) => entry.event)).not.toContain("before");
+    expect(written.map((entry) => entry.event)).not.toContain("transcribe");
   });
 });
 

@@ -31,7 +31,7 @@ const manifestFileSchema = z.object({
   sha256: sha256Schema,
 }).strict();
 
-const MAX_MANIFEST_FILE_ENTRIES = 512;
+export const MAX_MANIFEST_FILE_ENTRIES = 64;
 const MAX_MANIFEST_PATH_DEPTH = 16;
 const MAX_MANIFEST_PATH_LENGTH = 1_024;
 const manifestRelativePathSchema = z.string()
@@ -134,6 +134,50 @@ export interface RuntimePlatformModelCatalog {
   recommendedDefaultFamilyId: ModelFamilyId;
   /** A platform may omit a family rather than pretending it has a backend. */
   families: Partial<Record<ModelFamilyId, RuntimeModelCatalog>>;
+}
+
+export interface CuratedWorkerSelection {
+  readonly modelId: string;
+  readonly tier: ModelPerformanceTier;
+  readonly computeType: "float16" | "bfloat16" | "int8" | "int4" | "coreml-fp16" | "coreml-int8";
+  readonly asrMode?: AsrMode;
+}
+
+export function workerComputeTypeForTier(
+  tier: RuntimeModelTierSpec,
+): CuratedWorkerSelection["computeType"] {
+  switch (tier.precision) {
+    case "fp16": return "float16";
+    case "bf16": return "bfloat16";
+    case "8-bit": return "int8";
+    case "4-bit": return "int4";
+    case "coreml-fp16": return "coreml-fp16";
+    case "coreml-int8": return "coreml-int8";
+  }
+}
+
+/** Resolve only an exact curated runtime identity and declared ASR mode. */
+export function manifestForWorkerSelection(
+  catalog: RuntimePlatformModelCatalog,
+  selection: CuratedWorkerSelection,
+): ModelSpec | null {
+  const mode = selection.asrMode ?? "after-stop";
+  let match: ModelSpec | null = null;
+  for (const family of Object.values(catalog.families)) {
+    if (!family || !family.capabilities.modes.includes(mode)) continue;
+    for (const candidate of Object.values(family.tiers)) {
+      if (
+        !candidate
+        || candidate.manifest.modelId !== selection.modelId
+        || candidate.tier !== selection.tier
+        || workerComputeTypeForTier(candidate) !== selection.computeType
+      ) continue;
+      // Ambiguous catalog routing is not an exact identity.
+      if (match) return null;
+      match = candidate.manifest;
+    }
+  }
+  return match;
 }
 
 /**

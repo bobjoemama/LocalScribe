@@ -10,13 +10,39 @@ function escapeRegularExpression(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
 }
 
-function replacePhrase(text: string, phrase: string, replacement: string): string {
-  if (!phrase) return text;
-  const escaped = escapeRegularExpression(phrase);
-  const startsWithWord = /^[\p{L}\p{N}\p{M}_]/u.test(phrase);
-  const endsWithWord = /[\p{L}\p{N}\p{M}_]$/u.test(phrase);
-  const pattern = `${startsWithWord ? `(?<!${WORD_CHARACTER})` : ""}${escaped}${endsWithWord ? `(?!${WORD_CHARACTER})` : ""}`;
-  return text.replace(new RegExp(pattern, "giu"), () => replacement);
+function canonicalRuleKey(value: string): string {
+  return value.normalize("NFC").toLocaleLowerCase("und");
+}
+
+function replacePhase(
+  text: string,
+  rules: ReadonlyArray<{ match: string; replacement: string }>,
+): string {
+  const unique = new Map<string, { match: string; replacement: string }>();
+  for (const rule of rules) {
+    const match = rule.match.normalize("NFC");
+    if (!match) continue;
+    const key = canonicalRuleKey(match);
+    if (!unique.has(key)) unique.set(key, { match, replacement: rule.replacement });
+  }
+  const ordered = [...unique.values()].sort((left, right) =>
+    right.match.length - left.match.length || left.match.localeCompare(right.match),
+  );
+  if (ordered.length === 0) return text;
+
+  const alternatives = ordered.map(({ match }) => {
+    const escaped = escapeRegularExpression(match);
+    const startsWithWord = /^[\p{L}\p{N}\p{M}_]/u.test(match);
+    const endsWithWord = /[\p{L}\p{N}\p{M}_]$/u.test(match);
+    return `${startsWithWord ? `(?<!${WORD_CHARACTER})` : ""}${escaped}${endsWithWord ? `(?!${WORD_CHARACTER})` : ""}`;
+  });
+  const replacements = new Map(
+    ordered.map((rule) => [canonicalRuleKey(rule.match), rule.replacement]),
+  );
+  return text.normalize("NFC").replace(
+    new RegExp(alternatives.map((pattern) => `(?:${pattern})`).join("|"), "giu"),
+    (matched) => replacements.get(canonicalRuleKey(matched)) ?? matched,
+  );
 }
 
 export function applyLocalTextRules(
@@ -28,7 +54,13 @@ export function applyLocalTextRules(
   let output = options.normalizeSpacing === false
     ? text
     : text.trim().replace(/\s+([,.;!?])/gu, "$1").replace(/ {2,}/gu, " ");
-  for (const entry of dictionary) output = replacePhrase(output, entry.phrase, entry.replacement);
-  for (const snippet of snippets) output = replacePhrase(output, snippet.trigger, snippet.expansion);
+  output = replacePhase(
+    output,
+    dictionary.map((entry) => ({ match: entry.phrase, replacement: entry.replacement })),
+  );
+  output = replacePhase(
+    output,
+    snippets.map((snippet) => ({ match: snippet.trigger, replacement: snippet.expansion })),
+  );
   return output;
 }

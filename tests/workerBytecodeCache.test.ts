@@ -153,7 +153,12 @@ describe("bytecode beside the worker sources breaks the packaged app", () => {
       write(`${policy.workerDirectory}/__init__.py`);
       write(`${policy.workerDirectory}/__main__.py`);
       write(policy.runtimeExecutable, "python");
-      for (const file of [...policy.helperFiles, ...policy.manifestFiles, ...policy.brandingFiles]) {
+      for (const file of [
+        ...policy.helperFiles,
+        ...policy.manifestFiles,
+        ...policy.licenseFiles,
+        ...policy.brandingFiles,
+      ]) {
         write(file);
       }
 

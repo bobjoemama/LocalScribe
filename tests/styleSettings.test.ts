@@ -23,6 +23,7 @@ import {
   launchAtLoginSettingsPresentation,
   pendingSettingsAfterSave,
   profileCleanupDefaults,
+  residentModelMatchesSavedSelection,
   resolvedModelEngine,
   selectedMicrophoneIsUnavailable,
   SettingsModal,
@@ -196,7 +197,7 @@ describe("settings loading truthfulness", () => {
       automaticPaste: { supported: true, ready: true },
     } as never)).toEqual({
       editable: true,
-      detail: "Paste only when the app active at start is still the target; otherwise copy.",
+      detail: "Best-effort paste rechecks the app and editor immediately before sending Command-V. If macOS changes focus at the final handoff, the dictated text remains copied as a fallback.",
       value: null,
     });
   });
@@ -595,6 +596,38 @@ describe("model and performance presentation", () => {
     }]);
   });
 
+  it("calls a runtime resident only when exact saved family, profile, artifact, and mode resolve", () => {
+    const settings = {
+      activeModelFamilyId: "whisper-large-v3",
+      modelPerformanceMode: "medium",
+    } as const;
+    const diagnostics = {
+      model: {
+        loaded: true,
+        familyId: "whisper-large-v3",
+        profileId: "v3-medium",
+        artifactId: "v3-medium-artifact",
+      },
+      performance: { preference: "medium", resolvedTier: "medium" },
+    };
+    const catalog = {
+      families: [{
+        familyId: "whisper-large-v3",
+        profiles: [{ tier: "medium", profileId: "v3-medium", artifactId: "v3-medium-artifact" }],
+      }],
+    };
+
+    expect(residentModelMatchesSavedSelection(settings, diagnostics as never, catalog as never)).toBe(true);
+    expect(residentModelMatchesSavedSelection(settings, {
+      ...diagnostics,
+      model: { ...diagnostics.model, artifactId: "different-artifact" },
+    } as never, catalog as never)).toBe(false);
+    expect(residentModelMatchesSavedSelection(settings, {
+      ...diagnostics,
+      model: { ...diagnostics.model, loaded: false },
+    } as never, catalog as never)).toBe(false);
+  });
+
   it("uses artifact verification for inactive families and every profile sharing model data", () => {
     const statuses = modelRuntimeTierStatuses(
       {
@@ -790,20 +823,20 @@ describe("model-library actions are mutually exclusive before the next render", 
     "%s refuses to start while another library action is in flight",
     (name) => {
       const handler = body(name);
-      expect(handler).toContain("if (modelLibraryActionInFlight.current) return;");
-      expect(handler).toContain("modelLibraryActionInFlight.current = true;");
-      expect(handler).toContain("modelLibraryActionInFlight.current = false;");
+      expect(handler).toContain("if (modelOperationInFlight.current) return;");
+      expect(handler).toContain("modelOperationInFlight.current = true;");
+      expect(handler).toContain("modelOperationInFlight.current = false;");
 
       // The latch has to be taken before the first await, or the second
       // dispatch runs before it is set and the guard proves nothing.
-      const latch = handler.indexOf("modelLibraryActionInFlight.current = true;");
+      const latch = handler.indexOf("modelOperationInFlight.current = true;");
       const firstAwait = handler.indexOf("await ");
       expect(latch).toBeGreaterThan(0);
       expect(latch).toBeLessThan(firstAwait);
 
       // And released in `finally`, so a rejected download does not wedge the
       // whole model library until the window is reopened.
-      const release = handler.indexOf("modelLibraryActionInFlight.current = false;");
+      const release = handler.indexOf("modelOperationInFlight.current = false;");
       expect(handler.slice(0, release)).toContain("} finally {");
     },
   );
@@ -820,7 +853,7 @@ describe("model-library actions are mutually exclusive before the next render", 
       expectPrecedes(
         body(name),
         "window.confirm",
-        "modelLibraryActionInFlight.current = true;",
+        "modelOperationInFlight.current = true;",
         name,
       );
     }

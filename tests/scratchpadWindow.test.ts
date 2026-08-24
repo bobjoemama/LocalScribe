@@ -9,6 +9,8 @@ import {
   ScratchpadWindow,
   ScratchpadWindowControls,
   scratchpadHeaderTitle,
+  scratchpadInitialLoadAction,
+  scratchpadIntegrityWarning,
   scratchpadStatusLabel,
   scratchpadWindowControlMode,
   shouldShowCustomWindowActions,
@@ -51,18 +53,42 @@ describe("scratchpad window presentation", () => {
     expect(scratchpadHeaderTitle("Persisted note", "saved")).toBe("Persisted note");
   });
 
+  it("distinguishes a genuinely empty scratchpad from all-unreadable storage", () => {
+    expect(scratchpadInitialLoadAction({ items: [], totalStored: 0 })).toBe("create");
+    expect(scratchpadInitialLoadAction({ items: [], totalStored: 2 })).toBe("blocked-unreadable");
+    expect(scratchpadInitialLoadAction({
+      items: [{ id: "n", title: "Note", body: "", createdAt: 1, updatedAt: 1 }],
+      totalStored: 2,
+    })).toBe("select");
+    expect(scratchpadIntegrityWarning(0)).toBeNull();
+    expect(scratchpadIntegrityWarning(2)).toContain("will not overwrite it");
+  });
+
   it("uses the custom macOS window controls", () => {
     expect(shouldShowCustomWindowActions()).toBe(true);
     expect(scratchpadWindowControlMode()).toBe("custom");
 
     const macControls = renderToStaticMarkup(
-      createElement(ScratchpadWindowControls),
+      createElement(ScratchpadWindowControls, { onClose: () => undefined }),
     );
     expect(macControls).toContain('aria-label="Toggle expanded Scratchpad"');
     expect(macControls).toContain('aria-label="Close Scratchpad"');
     expect(scratchpadSource).not.toContain("window.localScribe.system.appInfo()");
     expect(scratchpadSource).not.toContain("navigator.userAgent");
     expect(scratchpadSource).not.toContain("shortcutDisplayPlatform");
+  });
+
+  it("flushes and awaits pending note writes before closing", () => {
+    expect(scratchpadSource).toContain("if (!await drainPendingSaves())");
+    expect(scratchpadSource).toContain("await window.localScribe.windows.closeScratchpad()");
+    expect(scratchpadSource.indexOf("if (!await drainPendingSaves())"))
+      .toBeLessThan(scratchpadSource.indexOf("await window.localScribe.windows.closeScratchpad()"));
+    expect(scratchpadSource).toContain("inFlightSavePromisesRef");
+  });
+
+  it("does not auto-create over an all-unreadable stored scratchpad", () => {
+    expect(scratchpadInitialLoadAction({ items: [], totalStored: 1 })).toBe("blocked-unreadable");
+    expect(scratchpadSource).toContain('loadAction === "blocked-unreadable"');
   });
 
   it("renders a bounded editor and keyboard-scrollable note list", () => {

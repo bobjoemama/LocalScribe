@@ -49,18 +49,20 @@ fi
 
 npm run verify:local
 npm run make:mac
+LOCALSCRIBE_REQUIRE_BUNDLED_CPYTHON=1 \
+  npm test -- --reporter=dot tests/runtimeSbomSecurity.test.ts
 npm run smoke:packaged:macos
 
 PYTHONDONTWRITEBYTECODE=1 \
   resources/python-runtime/venv/bin/python3 -B \
   -m unittest discover -s worker/tests -v
 
+candidate_python="$app_path/Contents/Resources/python-runtime/venv/bin/python3"
+if [[ ! -x "$candidate_python" ]]; then
+  echo "Packaged macOS Python runtime is missing or unusable: $candidate_python" >&2
+  exit 1
+fi
 if [[ -n "$smoke_model_root" ]]; then
-  candidate_python="$app_path/Contents/Resources/python-runtime/venv/bin/python3"
-  if [[ ! -x "$candidate_python" ]]; then
-    echo "Packaged macOS Python runtime is missing or unusable: $candidate_python" >&2
-    exit 1
-  fi
   smoke_arguments=(
     --app "$app_path"
     --model-root "$smoke_model_root"
@@ -81,8 +83,17 @@ if [[ -n "$smoke_model_root" ]]; then
     "${smoke_arguments[@]}"
 fi
 
-npm run --silent sbom:runtime:macos > "$core_sbom"
-npm run --silent sbom:python:macos > "$python_sbom"
+npm run --silent sbom:runtime:macos:candidate -- --app "$app_path" > "$core_sbom"
+python_sbom_raw="$(mktemp "${TMPDIR:-/tmp}/localscribe-python-sbom.XXXXXX")"
+trap 'rm -f -- "$python_sbom_raw"' EXIT
+npm run --silent sbom:python:macos > "$python_sbom_raw"
+"$candidate_python" -B scripts/reconcile-python-sbom.py \
+  --app "$app_path" \
+  --lock worker/uv.lock \
+  --sbom "$python_sbom_raw" \
+  > "$python_sbom"
+rm -f -- "$python_sbom_raw"
+trap - EXIT
 
 for artifact in "$dmg_path" "$zip_path" "$core_sbom" "$python_sbom"; do
   if [[ ! -f "$artifact" || -L "$artifact" ]]; then
@@ -92,14 +103,22 @@ for artifact in "$dmg_path" "$zip_path" "$core_sbom" "$python_sbom"; do
 done
 
 (
-  cd out
-  shasum -a 256 -- \
-    "${dmg_path#"$project_root/out/"}" \
-    "${zip_path#"$project_root/out/"}" \
-    "${core_sbom#"$project_root/out/"}" \
-    "${python_sbom#"$project_root/out/"}" \
-    > "$(basename "$checksum_path")"
-  shasum -a 256 -c "$(basename "$checksum_path")"
+  checksum_temporary="$(mktemp "$checksum_path.tmp.XXXXXX")"
+  trap 'rm -f -- "$checksum_temporary"' EXIT
+  asset_names=""
+  for artifact in "$dmg_path" "$zip_path" "$core_sbom" "$python_sbom"; do
+    asset_name="$(basename "$artifact")"
+    canonical_asset_name="$(printf '%s' "$asset_name" | tr '[:upper:]' '[:lower:]')"
+    case "|$asset_names|" in
+      *"|$canonical_asset_name|"*) echo "Release assets collide by basename: $asset_name" >&2; exit 1 ;;
+    esac
+    asset_names="${asset_names}${asset_names:+|}$canonical_asset_name"
+    digest="$(shasum -a 256 -- "$artifact")"
+    digest="${digest%% *}"
+    printf '%s *%s\n' "$digest" "$asset_name" >> "$checksum_temporary"
+  done
+  mv -f -- "$checksum_temporary" "$checksum_path"
+  trap - EXIT
 )
 node scripts/verify-release-assets.mjs --platform darwin --candidate >/dev/null
 

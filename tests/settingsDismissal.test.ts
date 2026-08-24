@@ -2,8 +2,8 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 import {
-  APPLY_BUSY_MESSAGE,
-  LIBRARY_BUSY_MESSAGE,
+  MODEL_BUSY_MESSAGE,
+  SETTINGS_SAVE_BUSY_MESSAGE,
   decideSettingsDismissal,
   type SettingsActivity,
 } from "../src/renderer/settings/dismissal";
@@ -19,7 +19,7 @@ import { expectPrecedes, requireIndex, sliceBetween } from "./support/order";
  * and queues behind the first.
  */
 
-const IDLE: SettingsActivity = { applyInFlight: false, libraryActionInFlight: false };
+const IDLE: SettingsActivity = { modelOperationInFlight: false, settingsSaveInFlight: false };
 
 describe("deciding whether Settings may close", () => {
   it("closes when nothing is in flight", () => {
@@ -27,10 +27,10 @@ describe("deciding whether Settings may close", () => {
   });
 
   it("refuses while a model selection is being applied", () => {
-    const decision = decideSettingsDismissal({ ...IDLE, applyInFlight: true });
+    const decision = decideSettingsDismissal({ ...IDLE, modelOperationInFlight: true });
 
     expect(decision.dismiss).toBe(false);
-    expect(decision).toMatchObject({ blockedBy: "apply", message: APPLY_BUSY_MESSAGE });
+    expect(decision).toMatchObject({ blockedBy: "model", message: MODEL_BUSY_MESSAGE });
   });
 
   /*
@@ -39,22 +39,28 @@ describe("deciding whether Settings may close", () => {
    * operations in the app — were dismissable throughout.
    */
   it("refuses while a model is being installed, repaired, removed, or added", () => {
-    const decision = decideSettingsDismissal({ ...IDLE, libraryActionInFlight: true });
+    const decision = decideSettingsDismissal({ ...IDLE, modelOperationInFlight: true });
 
     expect(decision.dismiss).toBe(false);
-    expect(decision).toMatchObject({ blockedBy: "library", message: LIBRARY_BUSY_MESSAGE });
+    expect(decision).toMatchObject({ blockedBy: "model", message: MODEL_BUSY_MESSAGE });
   });
 
-  it("names the apply when both are somehow live, because it changes the loaded runtime", () => {
-    const decision = decideSettingsDismissal({ applyInFlight: true, libraryActionInFlight: true });
+  it("refuses while ordinary settings are being saved", () => {
+    const decision = decideSettingsDismissal({ ...IDLE, settingsSaveInFlight: true });
 
-    expect(decision).toMatchObject({ dismiss: false, blockedBy: "apply" });
+    expect(decision).toMatchObject({ dismiss: false, blockedBy: "save", message: SETTINGS_SAVE_BUSY_MESSAGE });
+  });
+
+  it("names the model operation when both are somehow live", () => {
+    const decision = decideSettingsDismissal({ modelOperationInFlight: true, settingsSaveInFlight: true });
+
+    expect(decision).toMatchObject({ dismiss: false, blockedBy: "model" });
   });
 
   it("always explains a refusal instead of refusing silently", () => {
     for (const activity of [
-      { ...IDLE, applyInFlight: true },
-      { ...IDLE, libraryActionInFlight: true },
+      { ...IDLE, modelOperationInFlight: true },
+      { ...IDLE, settingsSaveInFlight: true },
     ]) {
       const decision = decideSettingsDismissal(activity);
       expect(decision.dismiss).toBe(false);
@@ -66,14 +72,14 @@ describe("deciding whether Settings may close", () => {
   it("tells the user the wait ends on its own and needs nothing from them", () => {
     // The alternative reading — "this is stuck" — is what makes people
     // force-quit an app in the middle of writing a model to disk.
-    for (const message of [APPLY_BUSY_MESSAGE, LIBRARY_BUSY_MESSAGE]) {
+    for (const message of [MODEL_BUSY_MESSAGE, SETTINGS_SAVE_BUSY_MESSAGE]) {
       expect(message).toMatch(/on its own/u);
       expect(message).toMatch(/stays open/u);
     }
   });
 
   it("keeps redacted material out of both messages", () => {
-    for (const message of [APPLY_BUSY_MESSAGE, LIBRARY_BUSY_MESSAGE]) {
+    for (const message of [MODEL_BUSY_MESSAGE, SETTINGS_SAVE_BUSY_MESSAGE]) {
       expect(message).not.toMatch(/\/|\\|https?:|\.app\b|~|Users/u);
     }
   });
@@ -89,12 +95,12 @@ describe("every path that unmounts the dialog consults the decision", () => {
   const hub = readFileSync("src/renderer/settings/SettingsApp.tsx", "utf8");
   const modal = readFileSync("src/renderer/settings/screens/StyleSettings.tsx", "utf8");
 
-  it("reads both in-flight refs, not just the apply", () => {
+  it("reads the unified model-operation and ordinary-save latches", () => {
     const attempt = sliceBetween(modal, "const attemptDismissal", "const closeSettings");
 
     expect(attempt).toContain("decideSettingsDismissal(");
-    expect(attempt).toContain("applyInFlight: modelApplyInFlight.current");
-    expect(attempt).toContain("libraryActionInFlight: modelLibraryActionInFlight.current");
+    expect(attempt).toContain("modelOperationInFlight: modelOperationInFlight.current");
+    expect(attempt).toContain("settingsSaveInFlight: settingsSaveInFlight.current");
   });
 
   it("surfaces the refusal on both status surfaces so no tab is left silent", () => {
@@ -111,7 +117,7 @@ describe("every path that unmounts the dialog consults the decision", () => {
     const close = sliceBetween(modal, "const closeSettings", "registerDismissalGate?.(attemptDismissal)");
 
     expect(close).toContain("attemptDismissal()");
-    expect(close).not.toContain("modelApplyInFlight.current");
+    expect(close).not.toContain("modelOperationInFlight.current");
   });
 
   it("only closes after the decision allows it", () => {
@@ -160,6 +166,6 @@ describe("every path that unmounts the dialog consults the decision", () => {
     const footer = sliceBetween(modal, "ls-settings-footer", "</footer>");
     const cancel = footer.slice(requireIndex(footer, "ls-secondary-button"));
 
-    expect(cancel).toContain("disabled={modelApplying || modelAction !== null}");
+    expect(cancel).toContain("disabled={busy || modelApplying || modelRefreshing || modelAction !== null}");
   });
 });

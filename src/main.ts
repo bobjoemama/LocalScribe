@@ -41,6 +41,7 @@ import {
   modelSelectionApplyRequestSchema,
   navigationTargetSchema,
   pillModeSchema,
+  sessionFailureSchema,
   sessionSnapshotSchema,
   snippetSchema,
   transcribeAudioSchema,
@@ -63,6 +64,11 @@ import { discardAudio, prepareTranscription } from "./main/session/transcribePre
 import { createFinalizeWatchdog } from "./main/session/finalizeWatchdog";
 import { createNoticeTimer } from "./main/session/noticeTimer";
 import { persistCompletedDictationHistory } from "./main/session/historyPersistence";
+import {
+  dictationMenuPolicy,
+  rendererFailureRecoveryPolicy,
+  sendToLiveRenderers,
+} from "./main/session/rendererResilience";
 import { normalizeDiagnosticCode } from "./shared/diagnosticsLog";
 import {
   DiagnosticsRecorder,
@@ -79,7 +85,6 @@ import {
   WorkerSupervisor,
   workerModelSelectionsMatch,
   type WorkerAcceleratorSnapshot,
-  type WorkerComputeType,
   type WorkerModelSelection,
 } from "./main/worker/workerSupervisor";
 import { HotkeyService } from "./main/hotkeys/hotkeyService";
@@ -96,8 +101,9 @@ import {
   loadRuntimePlatformModelCatalog,
   defaultSettingsForRuntimeCatalog,
   modelArtifactIsVerifiedNow,
+  manifestForWorkerSelection,
   runtimeModelTier,
-  type ModelSpec,
+  workerComputeTypeForTier,
   resolveModelPerformance,
   verifyModelDirectory,
   verifyRuntimeModelCatalog,
@@ -113,9 +119,8 @@ import {
   modelRootForUserData,
 } from "./main/modelCatalogSnapshot";
 import {
-  assertSafeModelRoot,
   installVerifiedModelArtifact,
-  modelArtifactDirectory,
+  quarantineAndRemoveModelArtifact,
 } from "./main/modelOperations";
 import { verifyPackagedResourceIntegrity } from "./main/resourceIntegrity";
 import {
@@ -137,7 +142,10 @@ import {
   resolvePackagedRendererPath,
   type RendererSurface,
 } from "./main/rendererProtocol";
-import { rendererPermissionAllowed } from "./main/rendererPermissions";
+import {
+  rendererPermissionCheckAllowed,
+  rendererPermissionRequestAllowed,
+} from "./main/rendererPermissions";
 import { writePrivateFile } from "./main/persistence/privateFile";
 import {
   cleanStaleAudioCaches,
@@ -232,6 +240,9 @@ let workerInitialized = false;
 let databaseInitialized = false;
 let startupPromise: Promise<void> | null = null;
 let runtimeReleasePromise: Promise<void> | null = null;
+const rendererRecoveryInFlight = new Set<RendererSurface>();
+const handledRendererFailures = new WeakSet<WebContents>();
+const retiringRendererWindows = new WeakSet<BrowserWindow>();
 let runtimeModelPlatformCatalog: RuntimePlatformModelCatalog | null = null;
 let modelResolution: ModelPerformanceResolution | null = null;
 let previousAutoTier: ModelPerformanceTier | undefined;
@@ -312,6 +323,7 @@ function assertFamilyInLibrary(familyId: ModelFamilyId): void {
 
 function runExclusiveModelOperation<T>(operation: () => Promise<T>): Promise<T> {
   modelOperationCount += 1;
+  refreshNativeMenus();
   const result = modelOperationTail.catch(() => undefined).then(operation);
   modelOperationTail = result.then(
     () => undefined,
@@ -319,6 +331,7 @@ function runExclusiveModelOperation<T>(operation: () => Promise<T>): Promise<T> 
   );
   return result.finally(() => {
     modelOperationCount -= 1;
+    refreshNativeMenus();
   });
 }
 
@@ -549,33 +562,6 @@ async function currentModelResolution(): Promise<ModelPerformanceResolution> {
   });
 }
 
-/**
- * The curated manifest a worker selection refers to, searched across every
- * packaged family rather than only the active one.
- *
- * The supervisor's guard runs for restores and post-install reloads too, and
- * those can name a family the user has since switched away from. Returning
- * `null` for an unrecognised selection is deliberate: the guard then declines
- * to block, leaving the worker's own digest verification as the authority. It
- * must never invent a manifest, because a wrong manifest would either refuse a
- * good model or bless a bad one.
- */
-function manifestForWorkerSelection(selection: WorkerModelSelection): ModelSpec | null {
-  for (const family of Object.values(platformModelCatalog().families)) {
-    if (!family) continue;
-    for (const candidate of Object.values(family.tiers)) {
-      if (!candidate) continue;
-      if (
-        candidate.manifest.modelId === selection.modelId
-        && candidate.tier === selection.tier
-      ) {
-        return candidate.manifest;
-      }
-    }
-  }
-  return null;
-}
-
 function workerSelection(
   tier: RuntimeModelTierSpec,
   asrMode: AsrMode = "after-stop",
@@ -583,25 +569,9 @@ function workerSelection(
   return {
     modelId: tier.manifest.modelId,
     tier: tier.tier,
-    computeType: workerComputeType(tier),
+    computeType: workerComputeTypeForTier(tier),
     asrMode,
   };
-}
-
-function workerComputeType(tier: RuntimeModelTierSpec): WorkerComputeType {
-  switch (tier.precision) {
-    case "fp16":
-      return "float16";
-    case "8-bit":
-      return "int8";
-    case "4-bit":
-      return "int4";
-    case "bf16":
-      return "bfloat16";
-    case "coreml-fp16":
-    case "coreml-int8":
-      return tier.precision;
-  }
 }
 
 function assertResolutionFitsMemory(resolution: ModelPerformanceResolution): void {
@@ -777,13 +747,24 @@ function surfaceForWebContents(contents: WebContents): RendererSurface | null {
  */
 function installPermissionHandlers(): void {
   const defaultSession = electronSession.defaultSession;
-  defaultSession.setPermissionRequestHandler((contents, permission, callback) => {
-    callback(rendererPermissionAllowed(surfaceForWebContents(contents), permission));
+  defaultSession.setPermissionRequestHandler((contents, permission, callback, details) => {
+    callback(rendererPermissionRequestAllowed(
+      surfaceForWebContents(contents),
+      permission,
+      {
+        isMainFrame: details.isMainFrame,
+        mediaTypes: "mediaTypes" in details ? details.mediaTypes : undefined,
+      },
+    ));
   });
   // The synchronous sibling. A handler on only one of the two leaves the other
   // answering from the default manager, which is the behaviour being replaced.
-  defaultSession.setPermissionCheckHandler((contents, permission) =>
-    contents !== null && rendererPermissionAllowed(surfaceForWebContents(contents), permission),
+  defaultSession.setPermissionCheckHandler((contents, permission, _requestingOrigin, details) =>
+    contents !== null && rendererPermissionCheckAllowed(
+      surfaceForWebContents(contents),
+      permission,
+      { isMainFrame: details.isMainFrame, mediaType: details.mediaType },
+    ),
   );
   // Screen and window capture is never part of dictation. Denying the request
   // outright is narrower than any permission answer, which only decides
@@ -801,9 +782,113 @@ function hardenWindow(window: BrowserWindow): void {
   });
 }
 
+function windowForSurface(surface: RendererSurface): BrowserWindow | null {
+  switch (surface) {
+    case "pill": return pillWindow;
+    case "settings": return settingsWindow;
+    case "scratchpad": return scratchpadWindow;
+  }
+}
+
+function assignSurfaceWindow(surface: RendererSurface, window: BrowserWindow | null): void {
+  switch (surface) {
+    case "pill": pillWindow = window; break;
+    case "settings": settingsWindow = window; break;
+    case "scratchpad": scratchpadWindow = window; break;
+  }
+}
+
+type ReadyVisibility = "active" | "inactive" | "hidden";
+
+function showWhenReady(window: BrowserWindow, visibility: ReadyVisibility): void {
+  if (visibility === "hidden") return;
+  window.once("ready-to-show", () => {
+    if (window.isDestroyed()) return;
+    if (visibility === "active") window.show();
+    else window.showInactive();
+  });
+}
+
+/**
+ * Own renderer-process failures in main. A pill failure invalidates active
+ * capture because the renderer owns microphone recording and final encoding;
+ * the other surfaces are observational and must not cancel dictation.
+ *
+ * One automatic replacement is allowed per surface generation. The in-flight
+ * latch is cleared only after a successful main-frame load, preventing a bad
+ * bundle from creating an unbounded crash/reload loop.
+ */
+function installRendererFailureHandlers(window: BrowserWindow, surface: RendererSurface): void {
+  const contents = window.webContents;
+  contents.on("did-finish-load", () => {
+    if (windowForSurface(surface) === window) rendererRecoveryInFlight.delete(surface);
+  });
+
+  const recover = (detail: "renderer_load_failed" | "renderer_process_gone") => {
+    if (quitting || handledRendererFailures.has(contents)) return;
+    const currentWindow = windowForSurface(surface);
+    if (currentWindow !== null && currentWindow !== window) return;
+    handledRendererFailures.add(contents);
+    let wasVisible = false;
+    try {
+      wasVisible = !window.isDestroyed() && window.isVisible();
+    } catch {
+      // Teardown won the race. Hidden is the safe recovery default.
+    }
+    const policy = rendererFailureRecoveryPolicy({
+      surface,
+      quitting,
+      hasActiveDictation: activeSessionId !== null,
+      recoveryAlreadyInFlight: rendererRecoveryInFlight.has(surface),
+      wasVisible,
+    });
+    diagnostics.record({
+      stage: "lifecycle",
+      event: "renderer_failure",
+      outcome: "failed",
+      detail,
+      sessionId: activeSessionId ?? undefined,
+    });
+    if (windowForSurface(surface) === window) assignSurfaceWindow(surface, null);
+    retiringRendererWindows.add(window);
+    try {
+      if (!window.isDestroyed()) window.destroy();
+    } catch (error) {
+      if (!quitting) console.warn(`LocalScribe could not retire its failed ${surface} window`, error);
+    }
+    if (policy.failActiveDictation) {
+      failSession("The dictation display stopped unexpectedly. Try dictating again.");
+    }
+    if (!policy.recreate) return;
+    rendererRecoveryInFlight.add(surface);
+    queueMicrotask(() => {
+      if (quitting) return;
+      // A user action can create a new surface before this microtask runs.
+      // Keep that newer generation instead of overwriting it with a duplicate.
+      if (windowForSurface(surface) !== null) return;
+      const visibility: ReadyVisibility = policy.restoreVisibleInactive ? "inactive" : "hidden";
+      try {
+        const replacement = surface === "pill"
+          ? createPillWindow()
+          : surface === "settings"
+            ? createSettingsWindow(visibility)
+            : createScratchpadWindow(visibility);
+        assignSurfaceWindow(surface, replacement);
+      } catch (error) {
+        if (!quitting) console.warn(`LocalScribe could not recreate its ${surface} window`, error);
+      }
+    });
+  };
+
+  contents.on("did-fail-load", (_event, _code, _description, _url, isMainFrame) => {
+    if (isMainFrame) recover("renderer_load_failed");
+  });
+  contents.on("render-process-gone", () => recover("renderer_process_gone"));
+}
+
 function hideWindowInsteadOfClosing(window: BrowserWindow): void {
   window.on("close", (event) => {
-    if (quitting) return;
+    if (quitting || retiringRendererWindows.has(window)) return;
     event.preventDefault();
     window.hide();
   });
@@ -821,8 +906,9 @@ function hideWindowInsteadOfClosing(window: BrowserWindow): void {
  */
 function reportWindowVisibility(window: BrowserWindow): void {
   const send = (visible: boolean) => {
-    if (window.isDestroyed() || window.webContents.isDestroyed()) return;
-    window.webContents.send(IPC.windowVisibility, visible);
+    sendToLiveRenderers([window], IPC.windowVisibility, visible, (error) => {
+      if (!quitting) console.warn("LocalScribe could not report window visibility", error);
+    });
   };
   window.on("show", () => send(true));
   window.on("restore", () => send(true));
@@ -831,7 +917,7 @@ function reportWindowVisibility(window: BrowserWindow): void {
   window.webContents.on("did-finish-load", () => send(window.isVisible()));
 }
 
-function createSettingsWindow(): BrowserWindow {
+function createSettingsWindow(readyVisibility: ReadyVisibility = "active"): BrowserWindow {
   const window = new BrowserWindow({
     width: SETTINGS_WINDOW_LAYOUT.defaultWidth,
     height: SETTINGS_WINDOW_LAYOUT.defaultHeight,
@@ -848,15 +934,16 @@ function createSettingsWindow(): BrowserWindow {
   hideWindowInsteadOfClosing(window);
   reportWindowVisibility(window);
   hardenWindow(window);
+  installRendererFailureHandlers(window, "settings");
   void window.loadURL(rendererUrl("settings"));
-  window.once("ready-to-show", () => window.show());
+  showWhenReady(window, readyVisibility);
   window.on("closed", () => {
-    settingsWindow = null;
+    if (settingsWindow === window) settingsWindow = null;
   });
   return window;
 }
 
-function createScratchpadWindow(): BrowserWindow {
+function createScratchpadWindow(readyVisibility: ReadyVisibility = "active"): BrowserWindow {
   const window = new BrowserWindow({
     width: 500,
     height: 430,
@@ -875,20 +962,26 @@ function createScratchpadWindow(): BrowserWindow {
   });
   window.removeMenu();
   hideWindowInsteadOfClosing(window);
+  reportWindowVisibility(window);
   window.setWindowButtonVisibility(false);
   window.setAlwaysOnTop(true, "floating");
   window.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
   hardenWindow(window);
+  installRendererFailureHandlers(window, "scratchpad");
   void window.loadURL(rendererUrl("scratchpad"));
-  window.once("ready-to-show", () => window.show());
+  showWhenReady(window, readyVisibility);
   window.on("closed", () => {
-    scratchpadWindow = null;
+    if (scratchpadWindow === window) scratchpadWindow = null;
   });
   return window;
 }
 
 function showScratchpad(): void {
-  scratchpadWindow ??= createScratchpadWindow();
+  if (!scratchpadWindow || scratchpadWindow.isDestroyed()) {
+    // A direct user action may retry after the one bounded automatic recovery.
+    rendererRecoveryInFlight.delete("scratchpad");
+    scratchpadWindow = createScratchpadWindow();
+  }
   if (scratchpadWindow.isMinimized()) scratchpadWindow.restore();
   scratchpadWindow.show();
   scratchpadWindow.focus();
@@ -899,7 +992,11 @@ function showHub(target: NavigationTarget = "dictation"): void {
     showScratchpad();
     return;
   }
-  settingsWindow ??= createSettingsWindow();
+  if (!settingsWindow || settingsWindow.isDestroyed()) {
+    // A direct user action may retry after the one bounded automatic recovery.
+    rendererRecoveryInFlight.delete("settings");
+    settingsWindow = createSettingsWindow();
+  }
   const sendTarget = () => settingsWindow?.webContents.send(IPC.windowNavigate, target);
   if (settingsWindow.webContents.isLoading()) settingsWindow.webContents.once("did-finish-load", sendTarget);
   else sendTarget();
@@ -965,15 +1062,23 @@ function followPillHover(): void {
    * renderer would otherwise keep the expanded controls mounted and clipped
    * inside a 40x8 window, with its own `pointerInside` still true.
    */
-  pillWindow.webContents.send(IPC.windowPillMode, pillMode);
+  sendToLiveRenderers([pillWindow], IPC.windowPillMode, pillMode, (error) => {
+    if (!quitting) console.warn("LocalScribe could not synchronize dictation-display mode", error);
+  });
 }
 
 function startPillDisplayFollowing(): void {
   if (pillDisplayTimer) return;
   pillDisplayTimer = setInterval(() => {
-    if (pillWindow && !pillWindow.isDestroyed() && pillWindow.isVisible()) {
-      positionPill(pillWindow);
-      followPillHover();
+    try {
+      if (pillWindow && !pillWindow.isDestroyed() && pillWindow.isVisible()) {
+        positionPill(pillWindow);
+        followPillHover();
+      }
+    } catch (error) {
+      // The renderer-failure handler owns recreation. This timer must not turn
+      // the teardown race into an uncaught main-process exception.
+      if (!quitting) console.warn("LocalScribe could not follow the active display", error);
     }
   }, 75);
   pillDisplayTimer.unref();
@@ -1012,11 +1117,15 @@ function createPillWindow(): BrowserWindow {
   window.setHasShadow(false);
   window.setAlwaysOnTop(true, "floating");
   hardenWindow(window);
+  installRendererFailureHandlers(window, "pill");
   window.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
   window.setHiddenInMissionControl(true);
   void window.loadURL(rendererUrl("pill"));
   window.once("ready-to-show", () => {
     syncPillVisibility();
+  });
+  window.on("closed", () => {
+    if (pillWindow === window) pillWindow = null;
   });
   return window;
 }
@@ -1043,17 +1152,31 @@ function setSession(next: SessionSnapshot): SessionSnapshot {
     activeSessionModelResolution = null;
     activeLiveSession = null;
   }
-  if (session.state !== "idle") pillMode = "collapsed";
-  resizePill();
-  if (database) installApplicationMenu();
-  for (const window of [pillWindow, settingsWindow, scratchpadWindow]) {
-    if (window && !window.isDestroyed()) window.webContents.send(IPC.sessionChanged, session);
-  }
-  syncPillVisibility();
-  // Arms on entry to finalizing and disarms on every other transition.
+  // State observers are part of the transition itself. Arm/disarm them before
+  // any native-menu, window, or renderer notification that can race teardown
+  // or throw, otherwise a dead renderer can leave `finalizing` wedged forever.
   finalizeWatchdog.observe(session);
-  // Arms on entry to success/error and disarms on every other transition.
   noticeTimer.observe(session);
+  if (session.state !== "idle") pillMode = "collapsed";
+  try {
+    resizePill();
+  } catch (error) {
+    if (!quitting) console.warn("LocalScribe could not resize its dictation display", error);
+  }
+  refreshNativeMenus();
+  sendToLiveRenderers(
+    [pillWindow, settingsWindow, scratchpadWindow],
+    IPC.sessionChanged,
+    session,
+    (error) => {
+      if (!quitting) console.warn("LocalScribe could not deliver a session update to one window", error);
+    },
+  );
+  try {
+    syncPillVisibility();
+  } catch (error) {
+    if (!quitting) console.warn("LocalScribe could not refresh dictation-display visibility", error);
+  }
   return session;
 }
 
@@ -1079,14 +1202,11 @@ function scheduleLiveWorkerCancellation(sessionId: string): void {
 
 
 function notifyHistoryChanged(): void {
-  if (!settingsWindow || settingsWindow.isDestroyed()) return;
-  try {
-    settingsWindow.webContents.send(IPC.historyChanged);
-  } catch (error) {
+  sendToLiveRenderers([settingsWindow], IPC.historyChanged, undefined, (error) => {
     // The durable write already happened. A renderer closing between this
     // predicate and send must not turn a completed dictation into a failure.
     console.warn("LocalScribe could not refresh history after saving", error);
-  }
+  });
 }
 
 /** Rebuild the macOS My Voice counts after a successful Dictionary/Snippet mutation. */
@@ -1102,14 +1222,11 @@ function refreshVoiceMenuAfterLibraryMutation(): void {
 
 /** Deliver a validated install/repair event only to the model-management UI. */
 function notifyModelInstallProgress(progress: ModelInstallProgress): void {
-  if (!settingsWindow || settingsWindow.isDestroyed() || settingsWindow.webContents.isDestroyed()) return;
-  try {
-    settingsWindow.webContents.send(IPC.systemModelInstallProgress, progress);
-  } catch (error) {
+  sendToLiveRenderers([settingsWindow], IPC.systemModelInstallProgress, progress, (error) => {
     // Progress delivery is observational. A hidden or torn-down settings
     // window must not interrupt a verified disk transaction.
     console.warn("LocalScribe could not deliver model-install progress", error);
-  }
+  });
 }
 
 /** Send only ordered, current-session Live snapshots to the pill preview. */
@@ -1122,28 +1239,25 @@ function notifyLivePartial(partial: LivePartialTranscript): void {
     || session.sessionId !== partial.sessionId
     || activeSessionId !== partial.sessionId
     || !pillWindow
-    || pillWindow.isDestroyed()
-    || pillWindow.webContents.isDestroyed()
   ) return;
-  try {
-    pillWindow.webContents.send(IPC.sessionLivePartial, partial);
-  } catch (error) {
+  sendToLiveRenderers([pillWindow], IPC.sessionLivePartial, partial, (error) => {
     // Provisional rendering never owns the dictation transaction. A destroyed
     // or reloading pill must not affect capture or final insertion.
     console.warn("LocalScribe could not deliver a Live transcript preview", error);
-  }
+  });
 }
 
 /** Broadcast only validated, persisted settings after a successful save. */
 function notifySettingsChanged(settings: ReturnType<LocalDatabase["getSettings"]>): void {
-  for (const window of [pillWindow, settingsWindow, scratchpadWindow]) {
-    if (!window || window.isDestroyed()) continue;
-    try {
-      window.webContents.send(IPC.settingsChanged, settings);
-    } catch (error) {
-      console.warn("LocalScribe could not deliver a persisted settings update to one window", error);
-    }
-  }
+  sendToLiveRenderers(
+    [pillWindow, settingsWindow, scratchpadWindow],
+    IPC.settingsChanged,
+    settings,
+    (error) => console.warn(
+      "LocalScribe could not deliver a persisted settings update to one window",
+      error,
+    ),
+  );
 }
 
 function beginListening(activation: "hold" | "toggle" = "toggle"): SessionSnapshot {
@@ -1267,18 +1381,20 @@ async function completeDictationFinal(input: {
   if (!text.trim()) throw new Error("No speech detected");
   let successMessage: string;
   if (settingsWindow?.isFocused() || scratchpadWindow?.isFocused()) {
-    const outcome = await insertion.copyAndPaste(text, false);
+    const insertionResult = await insertion.copyAndPasteDetailed(text, false);
+    const { outcome } = insertionResult;
     assertActiveSession(sessionId);
-    diagnostics.record({ ...insertionDiagnosticEvent(outcome, false, false), sessionId });
+    diagnostics.record({ ...insertionDiagnosticEvent(insertionResult, false, false), sessionId });
     successMessage = outcome === "copied" ? "Copied to clipboard" : "Inserted";
   } else {
     const automaticPasteReady = await insertion.automaticPasteReady();
     const canAutoPaste = settings.autoPaste && automaticPasteReady;
     setSession({ state: "inserting", sessionId, message: canAutoPaste ? "Inserting" : "Copying" });
-    const outcome = await insertion.copyAndPaste(text, canAutoPaste);
+    const insertionResult = await insertion.copyAndPasteDetailed(text, canAutoPaste);
+    const { outcome } = insertionResult;
     assertActiveSession(sessionId);
     diagnostics.record({
-      ...insertionDiagnosticEvent(outcome, settings.autoPaste, automaticPasteReady),
+      ...insertionDiagnosticEvent(insertionResult, settings.autoPaste, automaticPasteReady),
       sessionId,
     });
     const copiedMessage = settings.autoPaste && !automaticPasteReady
@@ -1287,7 +1403,7 @@ async function completeDictationFinal(input: {
     successMessage = outcome === "pasted"
       ? "Inserted"
       : outcome === "pasted-with-copy"
-        ? "Inserted · copied as backup"
+        ? "Paste sent · copied as backup"
         : copiedMessage;
   }
   // Insertion/copy is the completion boundary. History follows it as a
@@ -1498,6 +1614,11 @@ async function applyModelSelection(
       // update committed while Apply was running cannot be reverted here.
       // There must be no await between this read and write.
       const latestSettings = database.getSettings();
+      assertModelLanguageSupported(
+        latestSettings.language,
+        targetCatalog.capabilities,
+        targetCatalog.displayName,
+      );
       const settings = database.saveSettings(appSettingsSchema.parse({
         ...latestSettings,
         activeModelFamilyId: request.familyId,
@@ -1593,7 +1714,14 @@ function registerIpc(): void {
     }
     return setSession({ state: "idle" });
   });
-  handle(IPC.sessionFail, (_event, message: unknown) => failSession(message));
+  handle(IPC.sessionFail, (_event, rawFailure: unknown) => {
+    const failure = sessionFailureSchema.parse(rawFailure);
+    if (
+      activeSessionId !== failure.sessionId
+      || session.sessionId !== failure.sessionId
+    ) return session;
+    return failSession(failure.message);
+  });
 
   handle(IPC.sessionBeginLive, async (_event, rawSession: unknown) => {
     const request = liveAudioSessionSchema.parse(rawSession);
@@ -1819,7 +1947,9 @@ function registerIpc(): void {
     }
   });
 
-  handle(IPC.historyList, (_event, limit?: unknown) => database.listTranscriptions(limitSchema.parse(limit)));
+  handle(IPC.historyList, (_event, limit?: unknown) =>
+    database.listTranscriptionsWithIntegrity(limitSchema.parse(limit)),
+  );
   handle(IPC.historyDelete, (_event, id: unknown) => {
     database.deleteTranscription(uuidSchema.parse(id));
     notifyHistoryChanged();
@@ -1902,7 +2032,7 @@ function registerIpc(): void {
     database.saveProfile(profileInputSchema.parse(input)),
   );
   handle(IPC.profilesDelete, (_event, id: unknown) => database.deleteProfile(uuidSchema.parse(id)));
-  handle(IPC.scratchpadList, () => database.listScratchpadNotes());
+  handle(IPC.scratchpadList, () => database.listScratchpadNotesWithIntegrity());
   handle(IPC.scratchpadCreate, () => database.createScratchpadNote());
   handle(IPC.scratchpadUpdate, (_event, id: unknown, body: unknown) =>
     database.updateScratchpadNote(uuidSchema.parse(id), scratchpadSchema.parse(body)),
@@ -2022,6 +2152,7 @@ function registerIpc(): void {
   }));
   handle(IPC.systemDiagnostics, () => collectDiagnostics());
   handle(IPC.systemDiagnosticsLog, () => diagnostics.read());
+  handle(IPC.systemClearDiagnostics, () => diagnostics.clear());
   handle(IPC.systemModelCatalog, () => collectModelCatalog());
   handle(IPC.systemAddModelFamily, async (_event, rawRequest: unknown) => {
     const request = modelFamilyLibraryRequestSchema.parse(rawRequest);
@@ -2082,25 +2213,14 @@ function registerIpc(): void {
           modelRoot,
           model: tier.manifest,
           replaceExisting: request.replaceExisting,
-          install: () => {
-            // This is a truthful initial state, not a progress estimate. The
-            // preflight above has already accepted this exact Download/Repair
-            // intent, so the immutable artifact is now entering the worker
-            // transaction before its first measured byte callback. A runtime
-            // that has no byte callback remains indeterminate at zero; main
-            // must not manufacture an intermediate percentage.
-            notifyModelInstallProgress({
-              ...progressBase,
-              phase: "downloading",
-              completedBytes: 0,
-              totalBytes: artifactBytes,
-            });
-            return worker.installModel(workerSelection(
+          install: () => worker.installModel(
+            workerSelection(
               tier,
               request.familyId === currentSettings.activeModelFamilyId
                 ? currentSettings.asrMode
                 : "after-stop",
-            ), {
+            ),
+            {
               replacesLoadedArtifact,
               // The request budget is derived from the artifact's own size; see
               // installTimeoutMs. A flat cap made the largest tiers uninstallable
@@ -2124,8 +2244,8 @@ function registerIpc(): void {
                   totalBytes,
                 });
               },
-            });
-          },
+            },
+          ),
         });
         // `installVerifiedModelArtifact` performed an independent main-process
         // SHA-256 verification after the worker's atomic promotion, so this is
@@ -2138,11 +2258,40 @@ function registerIpc(): void {
           message: "Model downloaded and cryptographically verified.",
         });
       } catch (error) {
+        let restoreError: unknown = null;
+        // A protocol failure or timeout may terminate the shared installer
+        // process. If it also held an unrelated warm runtime, reconstruct that
+        // exact prior selection before reporting the failed disk operation.
+        if (
+          warmSelection
+          && !quitting
+          && !workerModelSelectionsMatch(worker.loadedSelection(), warmSelection)
+        ) {
+          try {
+            await worker.ensureReady(warmSelection);
+          } catch (caught) {
+            restoreError = caught;
+          }
+        }
         notifyModelInstallProgress({
           ...progressBase,
           phase: "failed",
           message: "The model download or verification did not finish. No new model was applied.",
         });
+        diagnostics.record({
+          stage: "model",
+          event: "install",
+          outcome: "failed",
+          modelFamily: request.familyId,
+          modelTier: request.tier,
+          detail: normalizeDiagnosticCode(error),
+        });
+        if (restoreError) {
+          throw new Error(
+            "The model install failed, and the previously loaded model could not be restored. The next dictation will retry loading it.",
+            { cause: error },
+          );
+        }
         throw error;
       }
       return collectDiagnostics();
@@ -2164,13 +2313,7 @@ function registerIpc(): void {
         );
       }
       const modelRoot = modelRootForUserData(app.getPath("userData"));
-      const rootStatus = await assertSafeModelRoot(modelRoot, true);
-      if (rootStatus === "safe") {
-        await rm(modelArtifactDirectory(modelRoot, tier.manifest), {
-          recursive: true,
-          force: true,
-        });
-      }
+      await quarantineAndRemoveModelArtifact(modelRoot, tier.manifest);
       // The active selection and its warm runtime are unrelated to this
       // artifact, so removal must remain a storage-only operation.
       return collectDiagnostics();
@@ -2178,21 +2321,53 @@ function registerIpc(): void {
   });
 }
 
+function runDictationMenuAction(): void {
+  const policy = dictationMenuPolicy(session.state, modelOperationInProgress());
+  if (policy.action === "stop") finishListening();
+  else if (policy.action === "start") beginListening("toggle");
+}
+
+function buildTrayMenu(): Menu {
+  const policy = dictationMenuPolicy(session.state, modelOperationInProgress());
+  return Menu.buildFromTemplate([
+    {
+      label: policy.label,
+      enabled: policy.enabled,
+      click: runDictationMenuAction,
+    },
+    { label: "Open LocalScribe", click: () => showHub("dictation") },
+    { label: "Open Scratchpad", click: () => showScratchpad() },
+    { type: "separator" },
+    { label: "Quit", click: () => app.quit() },
+  ]);
+}
+
+function installTrayMenu(): void {
+  if (tray && !tray.isDestroyed()) tray.setContextMenu(buildTrayMenu());
+}
+
+function refreshNativeMenus(): void {
+  if (!databaseInitialized || quitting) return;
+  try {
+    installApplicationMenu();
+  } catch (error) {
+    console.warn("LocalScribe could not refresh its application menu", error);
+  }
+  try {
+    installTrayMenu();
+  } catch (error) {
+    console.warn("LocalScribe could not refresh its tray menu", error);
+  }
+}
+
 function createTray(): Tray {
   const icon = nativeImage.createEmpty();
   const result = new Tray(icon);
   result.setTitle("L");
   result.setToolTip("LocalScribe — local dictation");
-  const rebuild = () => result.setContextMenu(Menu.buildFromTemplate([
-    { label: session.state === "listening" ? "Stop dictating" : "Start dictating", click: () => void (session.state === "listening" ? finishListening() : beginListening("toggle")) },
-    { label: "Open LocalScribe", click: () => showHub("dictation") },
-    { label: "Open Scratchpad", click: () => showScratchpad() },
-    { type: "separator" },
-    { label: "Quit", click: () => app.quit() },
-  ]));
-  rebuild();
+  result.setContextMenu(buildTrayMenu());
   result.on("click", () => showHub("dictation"));
-  result.on("right-click", rebuild);
+  result.on("right-click", () => result.setContextMenu(buildTrayMenu()));
   return result;
 }
 
@@ -2204,6 +2379,7 @@ function installApplicationMenu(): void {
    */
   const latest = () => database.listTranscriptions(1)[0];
   const toggleShortcut = database.getSettings().toggleShortcut;
+  const dictationItem = dictationMenuPolicy(session.state, modelOperationInProgress());
   const template: MenuItemConstructorOptions[] = [
     {
       label: "LocalScribe",
@@ -2225,10 +2401,11 @@ function installApplicationMenu(): void {
       label: "Dictation",
       submenu: [
         {
-          label: session.state === "listening" ? "Stop Dictating" : "Start Dictating",
+          label: dictationItem.label,
+          enabled: dictationItem.enabled,
           accelerator: toggleShortcut,
           registerAccelerator: false,
-          click: () => void (session.state === "listening" ? finishListening() : beginListening("toggle")),
+          click: runDictationMenuAction,
         },
         {
           label: "Copy Last Transcript",
@@ -2275,6 +2452,18 @@ const SMOKE_READY_MARKER = "localscribe-startup-ready";
 
 startupPromise = app.whenReady().then(async () => {
   if (!hasSingleInstanceLock || quitting) return;
+  app.setName("LocalScribe");
+  /*
+   * Stand the failure trail up before the first startup gate. The packaged
+   * app's stdout and stderr are /dev/null, so integrity, platform, or helper
+   * failures must also leave a privacy-safe durable verdict.
+   */
+  diagnostics = new DiagnosticsRecorder(path.join(app.getPath("userData"), "diagnostics"), {
+    version: app.getVersion(),
+    platform: process.platform,
+    arch: process.arch,
+    electron: process.versions.electron ?? "unknown",
+  });
   runtimePlatformFor(process.platform);
   runtimeArchitectureFor(process.arch);
   verifyPackagedResourceIntegrity({ isPackaged: app.isPackaged });
@@ -2285,19 +2474,6 @@ startupPromise = app.whenReady().then(async () => {
   ) {
     throw new Error("The packaged native input helper could not be integrity-pinned.");
   }
-  app.setName("LocalScribe");
-  /*
-   * Stand the failure trail up before anything that can fail. The packaged
-   * app's stdout and stderr are /dev/null, so any startup failure before this
-   * line is genuinely unobservable after the fact.
-   */
-  diagnostics = new DiagnosticsRecorder(path.join(app.getPath("userData"), "diagnostics"), {
-    version: app.getVersion(),
-    platform: process.platform,
-    arch: process.arch,
-    electron: process.versions.electron ?? "unknown",
-  });
-  diagnostics.record({ stage: "lifecycle", event: "startup", outcome: "ok" });
   installRendererProtocol();
   installPermissionHandlers();
   runtimeModelPlatformCatalog = loadRuntimePlatformModelCatalog(runtimeModelManifestDirectory());
@@ -2354,8 +2530,19 @@ startupPromise = app.whenReady().then(async () => {
    */
   worker.setTargetLoadableGuard(async (selection) => {
     const modelRoot = modelRootForUserData(app.getPath("userData"));
-    const manifest = manifestForWorkerSelection(selection);
-    if (!manifest) return;
+    const manifest = manifestForWorkerSelection(platformModelCatalog(), selection);
+    if (!manifest) {
+      diagnostics.record({
+        stage: "model",
+        event: "switch_refused",
+        outcome: "failed",
+        modelTier: selection.tier,
+        detail: "model_selection_mismatch",
+      });
+      throw new Error(
+        "The selected local speech model does not match a supported model, quality, compute, and dictation-mode profile, so LocalScribe kept the model that is currently working.",
+      );
+    }
     if (await modelArtifactIsVerifiedNow(modelRoot, manifest)) return;
     const verification = await verifyModelDirectory(modelRoot, manifest);
     if (verification.verified) return;
@@ -2448,17 +2635,27 @@ startupPromise = app.whenReady().then(async () => {
     stage: "hotkey",
     event: "toggle_register",
     outcome: hotkeys.isToggleReady() ? "ok" : "failed",
+    detail: hotkeys.toggleRegistrationDiagnosticDetail() ?? undefined,
   });
   startAccessibilityUpgradeCheck();
 
   app.on("activate", () => {
     showHub("dictation");
   });
+  // This is a readiness verdict, not a startup-attempt marker. It is emitted
+  // only after windows, IPC, menus, worker policy, and hotkeys are established.
+  diagnostics.record({ stage: "lifecycle", event: "startup", outcome: "ok" });
 });
 void startupPromise.then(() => {
   if (smokeMode && !quitting) process.stdout.write(`${SMOKE_READY_MARKER}\n`);
 }).catch(async (error: unknown) => {
   if (quitting) return;
+  diagnostics.record({
+    stage: "lifecycle",
+    event: "startup",
+    outcome: "failed",
+    detail: normalizeDiagnosticCode(error),
+  });
   quitting = true;
   console.error("LocalScribe startup failed", error);
   if (!smokeMode) {
@@ -2485,8 +2682,10 @@ app.on("window-all-closed", () => {
 
 function releaseRuntimeResources(): Promise<void> {
   runtimeReleasePromise ??= (async () => {
+    let releaseFailed = false;
     const workerShutdown = workerInitialized
       ? worker.shutdown().catch((error: unknown) => {
+          releaseFailed = true;
           console.warn("LocalScribe worker could not shut down cleanly", error);
         })
       : Promise.resolve();
@@ -2497,11 +2696,17 @@ function releaseRuntimeResources(): Promise<void> {
       try {
         database.close();
       } catch (error) {
+        releaseFailed = true;
         console.warn("LocalScribe database could not close cleanly", error);
       }
       databaseInitialized = false;
     }
-    tray?.destroy();
+    try {
+      tray?.destroy();
+    } catch (error) {
+      releaseFailed = true;
+      console.warn("LocalScribe tray could not close cleanly", error);
+    }
     tray = null;
 
     await workerShutdown;
@@ -2509,8 +2714,18 @@ function releaseRuntimeResources(): Promise<void> {
       await removeAudioCache(app.getPath("temp"), audioCacheRoot);
       audioCacheRoot = null;
     } catch (error) {
+      releaseFailed = true;
       console.warn("LocalScribe temporary audio could not be removed cleanly", error);
     }
+    diagnostics.record({
+      stage: "lifecycle",
+      event: "shutdown",
+      outcome: releaseFailed ? "failed" : "ok",
+    });
+    // The app exits immediately after this promise. Without an explicit drain,
+    // the final startup/shutdown failure can remain only in an abandoned
+    // Promise and never reach the durable diagnostics file.
+    await diagnostics.flush();
   })();
   return runtimeReleasePromise;
 }

@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -23,7 +23,7 @@ import { LocalDatabase } from "../src/main/persistence/database";
 const temporaryDirectories: string[] = [];
 
 function createDatabasePath(): string {
-  const directory = mkdtempSync(path.join(tmpdir(), "localscribe-secure-delete-"));
+  const directory = mkdtempSync(path.join(realpathSync(tmpdir()), "localscribe-secure-delete-"));
   temporaryDirectories.push(directory);
   return path.join(directory, "test.db");
 }
@@ -59,13 +59,14 @@ afterEach(() => {
 });
 
 /*
- * "Clear history" is labelled "Permanently delete encrypted transcripts." With
+ * "Clear history" deletes encrypted transcripts from LocalScribe history. With
  * SQLite's default settings that was not true: a DELETE unlinks the row but
  * leaves the freed page contents in the file until some later insert happens to
  * reuse the page, so every "deleted" transcript stayed on disk byte for byte.
- * `secure_delete = ON` overwrites the freed pages inside the delete itself, and
- * it also disables the truncate optimisation that would otherwise let a bare
- * `DELETE FROM transcriptions` drop pages without visiting them.
+ * `secure_delete = ON` overwrites freed cells in the current database state.
+ * LocalDatabase additionally requires a successful truncating WAL checkpoint
+ * before reporting the deletion successful, because an older frame can retain
+ * ciphertext while another reader pins the WAL.
  */
 describe("deleted transcripts leave no residue in the database file", () => {
   const SENTINEL = "quarterly-forecast-sentinel-9f2c41";
@@ -133,5 +134,26 @@ describe("deleted transcripts leave no residue in the database file", () => {
     expect(bytes.includes(SENTINEL)).toBe(false);
     expect(bytes.includes("kept-transcript-sentinel")).toBe(true);
     expect(keep.text).toBe("kept-transcript-sentinel");
+  });
+
+  it("reports physical cleanup failure when a reader pins the WAL", () => {
+    const databasePath = createDatabasePath();
+    const database = new LocalDatabase(databasePath);
+    const saved = database.saveTranscription(transcriptionInput(SENTINEL));
+    const reader = new Database(databasePath, { readonly: true });
+    reader.exec("BEGIN");
+    reader.prepare("SELECT text_encrypted FROM transcriptions WHERE id = ?").get(saved.id);
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    expect(() => database.deleteTranscription(saved.id)).toThrow(/cleanup could not be completed/u);
+    expect(warning).toHaveBeenCalledWith(
+      expect.stringContaining("could not complete physical single history deletion cleanup"),
+    );
+
+    reader.exec("ROLLBACK");
+    reader.close();
+    warning.mockRestore();
+    database.close();
+    expect(storedBytes(databasePath).includes(SENTINEL)).toBe(false);
   });
 });

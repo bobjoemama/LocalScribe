@@ -2,11 +2,11 @@
 #
 # Runs the source-level gate suite before anything reaches the remote.
 #
-# LocalScribe deliberately has no hosted CI (docs/RELEASING.md), so nothing on
-# the server side will catch a broken push. This is where that check lives
-# instead. It runs the same pipeline a release candidate runs — toolchain pins,
-# both npm audits, dependency locks, lint, typecheck, and the full test suite —
-# and refuses the push if any of it fails.
+# LocalScribe also runs this source pipeline in read-only pull-request CI. The
+# local hook catches failures before network publication; hosted CI independently
+# checks the reviewed PR commit. Both invoke the same entry point — toolchain
+# pins, both npm audits, dependency locks, lint, typecheck, and the full test
+# suite — so the two paths cannot intentionally drift.
 #
 # It deliberately does NOT run the macOS packaging gates. Those need an Apple
 # Silicon machine, signing identity, and several minutes; making every push pay

@@ -16,12 +16,13 @@ import { fileURLToPath } from "node:url";
  *   that source input. It is a build-only dependency and absent from the
  *   packaged application, which `audit:production` proves separately.
  * - `extract-zip` remains a transitive dependency of the pinned Electron
- *   packager. Its advisory is a symlink traversal during extraction. Our two
- *   artifact verifiers no longer call it: they preflight every archive entry
- *   and extract with `safe-zip-extraction.mts`, which rejects links, unsafe
- *   names, collisions, special files, and expansion limits *before* creating
- *   an output path. The remaining transitive copy is build-only. No patched
- *   compatible Electron Forge / packager release is currently available.
+ *   packager. Its advisory is a symlink traversal during extraction. Our
+ *   artifact verifier never calls it. `macos-zip-preflight.mts` validates
+ *   canonical paths, Unix modes, collisions, special files, expansion limits,
+ *   and every bundle-relative symlink target before macOS `ditto` extracts the
+ *   archive while preserving signed `.app` semantics. The remaining transitive
+ *   copy is build-only. No patched compatible Electron Forge / packager release
+ *   is currently available.
  *
  * This narrowly accepts the current build-tool graph only. It is not a waiver
  * for archive extraction in runtime code, arbitrary archives, or new

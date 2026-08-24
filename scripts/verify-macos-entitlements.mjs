@@ -136,19 +136,37 @@ const nestedBundles = readdirSync(frameworksPath)
 if (nestedBundles.length === 0) fail("Contents/Frameworks contains no helper applications");
 
 const verifiedHelpers = [];
+let nestedHelperMachOCount = 0;
 for (const bundle of nestedBundles) {
   const role = helperEntitlementRole(bundle);
   // An unrecognised nested application is a rejection, not something to skip:
   // "we did not know how to check it" must never read as "it is fine".
   if (!role) fail(`${path.basename(bundle)} is not a known helper and has no entitlement policy`);
   const declaredPlistPath = HELPER_ENTITLEMENT_ROLES[role].declaredPlistPath;
+  const executableName = execFileSync(
+    "plutil",
+    ["-extract", "CFBundleExecutable", "raw", "-o", "-", path.join(bundle, "Contents", "Info.plist")],
+    { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
+  ).trim();
+  if (!executableName || executableName.includes("/") || executableName.includes("\\")) {
+    fail(`${path.basename(bundle)} has an invalid CFBundleExecutable`);
+  }
+  const executable = path.join(bundle, "Contents", "MacOS", executableName);
+  const nestedMachOFiles = collectMachOFiles(bundle);
+  if (!nestedMachOFiles.includes(executable)) {
+    fail(`${path.basename(bundle)} executable is not a nested Mach-O file`);
+  }
   const keys = assertHelperEntitlements({
     role,
     label: path.basename(bundle),
     declaredPlist: readFileSync(path.resolve(declaredPlistPath), "utf8"),
-    signedPlist: entitlements(bundle),
+    signedPlist: entitlements(executable),
     fail,
   });
+  for (const binary of nestedMachOFiles) {
+    if (binary !== executable) assertNoEntitlementKeys(binary);
+  }
+  nestedHelperMachOCount += nestedMachOFiles.length;
   verifiedHelpers.push(`${path.basename(bundle, ".app")} [${role}]: ${keys.join(", ") || "none"}`);
 }
 
@@ -167,6 +185,7 @@ console.log(
   `macOS entitlements verified: main app carries exactly ${signedEntitlements.join(", ")};`
   + ` ${verifiedHelpers.length} helper bundles match their declared plists`
   + ` (${verifiedHelpers.join("; ")});`
-  + ` active-target, FluidAudio helper, ${runtimeMachOFiles.length} runtime and ${frameworkMachOFiles.length}`
+  + ` active-target, FluidAudio helper, ${runtimeMachOFiles.length} runtime, ${nestedHelperMachOCount}`
+  + ` nested-helper and ${frameworkMachOFiles.length}`
   + " framework Mach-O files are unprivileged.",
 );

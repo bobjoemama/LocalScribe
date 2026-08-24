@@ -105,4 +105,25 @@ export const migrations: Migration[] = [
       DROP TABLE IF EXISTS scratchpad;
     `,
   },
+  {
+    version: 5,
+    name: "stage_encrypted_text_rules",
+    sql: `
+      CREATE TABLE dictionary_entries_encrypted (
+        id TEXT PRIMARY KEY,
+        phrase_encrypted BLOB NOT NULL,
+        replacement_encrypted BLOB NOT NULL,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+
+      CREATE TABLE snippets_encrypted (
+        id TEXT PRIMARY KEY,
+        trigger_encrypted BLOB NOT NULL,
+        expansion_encrypted BLOB NOT NULL,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+    `,
+  },
 ];

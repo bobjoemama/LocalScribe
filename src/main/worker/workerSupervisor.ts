@@ -10,7 +10,7 @@ import {
   type LiveAudioSink,
   type LivePcmFrame,
 } from "../../shared/liveAudioTransport";
-import type { AsrMode } from "../../shared/contracts";
+import { asrModeSchema, type AsrMode } from "../../shared/contracts";
 import { modelPerformanceTierSchema, type ModelPerformanceTier } from "../../shared/modelPerformance";
 
 /*
@@ -167,6 +167,7 @@ const modelReadyMessageSchema = z.object({
   tier: modelPerformanceTierSchema,
   modelId: z.string().min(1).max(200),
   computeType: computeTypeSchema,
+  asrMode: asrModeSchema,
   loadMs: z.number().nonnegative(),
 }).strict();
 
@@ -325,6 +326,22 @@ const MAX_WORKER_STDOUT_LINE_BYTES = 1024 * 1024;
 /** Runtime worker rejects larger base64-decoded Live audio payloads. */
 export const LIVE_WORKER_MAX_CHUNK_BYTES = 8 * 1024;
 
+/*
+ * A worker may have both a launcher (`uv`) and native-runtime descendants.
+ * Killing only the direct child can therefore leave Python or FluidAudio
+ * resident after a model replacement or application quit. On POSIX, a
+ * detached spawn makes the child the leader of a new process group; retaining
+ * that exact leader pid lets shutdown address the whole app-owned tree.
+ */
+const WORKER_TERM_GRACE_MS = 1_000;
+const WORKER_KILL_GRACE_MS = 1_000;
+const WORKER_EXIT_POLL_MS = 25;
+
+interface RetiringProcess {
+  completion: Promise<void>;
+  resolve(): void;
+}
+
 interface ActiveLiveSession {
   readonly sessionId: string;
   phase: "open" | "finishing" | "cancelled";
@@ -368,8 +385,9 @@ export class WorkerSupervisor {
   private process: ChildProcessWithoutNullStreams | null = null;
   private readonly retiringProcesses = new Map<
     ChildProcessWithoutNullStreams,
-    Promise<void>
+    RetiringProcess
   >();
+  private readonly processGroupIds = new WeakMap<ChildProcessWithoutNullStreams, number>();
   private readonly pending = new Map<string, PendingRequest>();
   private hello: Promise<void> | null = null;
   private resolveHello: (() => void) | null = null;
@@ -882,6 +900,7 @@ export class WorkerSupervisor {
       ready.data.modelId !== selection.modelId
       || ready.data.tier !== selection.tier
       || ready.data.computeType !== selection.computeType
+      || ready.data.asrMode !== modeFor(selection)
     ) {
       const error = new Error(
         "ASR worker acknowledged a model selection other than the validated catalog tier",
@@ -923,19 +942,41 @@ export class WorkerSupervisor {
       {
         cwd: this.workerDirectory,
         env: this.workerEnvironment(Boolean(bundledPython)),
+        // POSIX `detached` creates a new session and process group. The pipes
+        // remain referenced, so this does not let the worker outlive Electron;
+        // it gives termination a safe, dedicated group to signal. Windows has
+        // different detached-process semantics and uses the direct-child
+        // fallback below even though the current product target is macOS.
+        detached: process.platform !== "win32",
         shell: false,
         stdio: ["pipe", "pipe", "pipe"],
       },
     );
+    const childPid = child.pid;
+    if (
+      process.platform !== "win32"
+      && Number.isSafeInteger(childPid)
+      && (childPid ?? 0) > 1
+      && childPid !== process.pid
+    ) {
+      this.processGroupIds.set(child, childPid as number);
+    }
     this.process = child;
     this.stdoutBuffer = Buffer.alloc(0);
     child.stdout.on("data", (chunk: Buffer) => this.handleStdoutChunk(child, chunk));
     child.stderr.on("data", (chunk: Buffer) => {
       console.error(`[asr-worker] ${chunk.toString("utf8").trimEnd()}`);
     });
-    child.on("error", (error) => this.handleExit(child, error));
+    child.on("error", (error) => {
+      // A spawn error such as ENOENT has no OS process to terminate. Node
+      // leaves pid/exitCode unset in that case, so tracking it as live would
+      // permanently block a later retry. Errors after a pid was assigned do
+      // require the normal whole-tree retirement path.
+      if (child.pid === undefined) this.handleExit(child, error);
+      else this.terminateWorker(child, error);
+    });
     child.on("exit", (code, signal) =>
-      this.handleExit(
+      this.terminateWorker(
         child,
         workerProcessError(`ASR worker exited (${code ?? signal ?? "unknown"})`, "worker_exited"),
       ),
@@ -1223,78 +1264,157 @@ export class WorkerSupervisor {
       await this.waitForRetiringProcesses();
       return;
     }
-    const exited = new Promise<void>((resolve) => {
-      if (child.exitCode !== null || child.signalCode !== null) resolve();
-      else child.once("exit", () => resolve());
-    });
     try {
       await this.request({ type: "shutdown" }, 2_000);
     } catch {
       // The process is force-killed below if it does not acknowledge shutdown.
     }
-    await Promise.race([exited, delay(250)]);
-    if (child.exitCode === null && child.signalCode === null) {
+    if (!(await this.waitForProcessTreeExit(child, 250))) {
       this.terminateWorker(child, new Error("ASR worker did not shut down cleanly"));
     }
-    await Promise.race([exited, delay(2_000)]);
     if (this.process === child) this.resetProcessState();
     await this.waitForRetiringProcesses();
   }
 
   private terminateWorker(child: ChildProcessWithoutNullStreams, error: Error): void {
     this.handleExit(child, error);
-    if (child.exitCode === null && child.signalCode === null) {
+    if (this.isProcessTreeAlive(child)) {
       this.trackRetiringProcess(child);
-      try {
-        child.kill();
-      } catch {
-        // The process remains tracked and blocks replacement until an actual
-        // exit event is observed.
-      }
+    } else {
+      this.completeRetirement(child);
     }
   }
 
   private trackRetiringProcess(child: ChildProcessWithoutNullStreams): void {
     if (this.retiringProcesses.has(child)) return;
-    const exited = new Promise<void>((resolve) => {
-      if (child.exitCode !== null || child.signalCode !== null) {
-        resolve();
-        return;
-      }
-      child.once("exit", () => resolve());
-    }).finally(() => {
-      this.retiringProcesses.delete(child);
+    let resolveCompletion: (() => void) | null = null;
+    const completion = new Promise<void>((resolve) => {
+      resolveCompletion = resolve;
     });
-    this.retiringProcesses.set(child, exited);
+    const retirement: RetiringProcess = {
+      completion,
+      resolve: () => resolveCompletion?.(),
+    };
+    this.retiringProcesses.set(child, retirement);
+
+    void this.retireProcessTree(child, retirement);
   }
 
   private async waitForRetiringProcesses(): Promise<void> {
-    const active = [...this.retiringProcesses.keys()].filter((child) => (
-      child.exitCode === null && child.signalCode === null
-    ));
-    for (const child of active) {
-      try {
-        child.kill();
-      } catch {
-        // Wait for the bounded exit observation below.
-      }
+    for (const child of this.retiringProcesses.keys()) {
+      if (!this.isProcessTreeAlive(child)) this.completeRetirement(child);
     }
+    const active = [...this.retiringProcesses.values()];
     if (active.length > 0) {
       await Promise.race([
-        Promise.all(active.map((child) => this.retiringProcesses.get(child))),
-        delay(2_000),
+        Promise.all(active.map(({ completion }) => completion)),
+        delay(WORKER_TERM_GRACE_MS + WORKER_KILL_GRACE_MS + 100),
       ]);
     }
-    for (const child of [...this.retiringProcesses.keys()]) {
-      if (child.exitCode !== null || child.signalCode !== null) {
-        this.retiringProcesses.delete(child);
-      }
+    for (const child of this.retiringProcesses.keys()) {
+      if (!this.isProcessTreeAlive(child)) this.completeRetirement(child);
     }
     if (this.retiringProcesses.size > 0) {
       throw new Error(
         "The previous ASR worker could not be terminated; refusing to start an overlapping model process",
       );
     }
+  }
+
+  private async retireProcessTree(
+    child: ChildProcessWithoutNullStreams,
+    retirement: RetiringProcess,
+  ): Promise<void> {
+    this.signalProcessTree(child, "SIGTERM");
+    if (!(await this.waitForProcessTreeExit(child, WORKER_TERM_GRACE_MS))) {
+      this.signalProcessTree(child, "SIGKILL");
+      await this.waitForProcessTreeExit(child, WORKER_KILL_GRACE_MS);
+    }
+    if (!this.isProcessTreeAlive(child)) {
+      this.completeRetirement(child, retirement);
+    }
+    // A process tree that survives SIGKILL intentionally remains tracked. A
+    // model replacement is refused instead of overlapping two large runtimes
+    // or pretending shutdown completed.
+  }
+
+  private completeRetirement(
+    child: ChildProcessWithoutNullStreams,
+    expected?: RetiringProcess,
+  ): void {
+    const retirement = this.retiringProcesses.get(child);
+    if (!retirement || (expected && retirement !== expected)) return;
+    this.retiringProcesses.delete(child);
+    retirement.resolve();
+  }
+
+  private async waitForProcessTreeExit(
+    child: ChildProcessWithoutNullStreams,
+    timeoutMs: number,
+  ): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs;
+    while (this.isProcessTreeAlive(child)) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) return false;
+      await delay(Math.min(WORKER_EXIT_POLL_MS, remaining));
+    }
+    return true;
+  }
+
+  private isProcessTreeAlive(child: ChildProcessWithoutNullStreams): boolean {
+    const processGroupId = this.ownedProcessGroupId(child);
+    if (processGroupId !== null) {
+      try {
+        // Signal zero performs existence/permission checking without changing
+        // process state. EPERM still proves that the group exists.
+        process.kill(-processGroupId, 0);
+        return true;
+      } catch (error) {
+        return !isErrnoWithCode(error, "ESRCH");
+      }
+    }
+    return child.exitCode === null && child.signalCode === null;
+  }
+
+  private signalProcessTree(
+    child: ChildProcessWithoutNullStreams,
+    signal: NodeJS.Signals,
+  ): void {
+    const processGroupId = this.ownedProcessGroupId(child);
+    if (processGroupId !== null) {
+      try {
+        process.kill(-processGroupId, signal);
+        return;
+      } catch (error) {
+        if (isErrnoWithCode(error, "ESRCH")) return;
+        // If group delivery itself is denied, still attempt to stop the
+        // direct child. The tracked live-group check prevents replacement
+        // from proceeding while any descendant remains.
+      }
+    }
+    try {
+      child.kill(signal);
+    } catch {
+      // The bounded live-tree check below is authoritative. A failed signal
+      // never gets rounded into a successful shutdown.
+    }
+  }
+
+  private ownedProcessGroupId(child: ChildProcessWithoutNullStreams): number | null {
+    const processGroupId = this.processGroupIds.get(child);
+    // Never derive a negative-pid target from mutable/unvalidated state. Only
+    // the exact positive pid retained from our detached spawn is accepted.
+    if (
+      process.platform === "win32"
+      || processGroupId === undefined
+      || !Number.isSafeInteger(processGroupId)
+      || processGroupId <= 1
+      || processGroupId === process.pid
+      || child.pid !== processGroupId
+    ) {
+      return null;
+    }
+    return processGroupId;
   }
 
   private handleExit(child: ChildProcessWithoutNullStreams, error: Error): void {
@@ -1332,6 +1452,10 @@ function sameSelection(
 
 function modeFor(selection: WorkerModelSelection): AsrMode {
   return selection.asrMode ?? "after-stop";
+}
+
+function isErrnoWithCode(error: unknown, code: string): boolean {
+  return error instanceof Error && "code" in error && error.code === code;
 }
 
 function delay(milliseconds: number): Promise<void> {

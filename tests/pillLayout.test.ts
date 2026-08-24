@@ -6,6 +6,9 @@ import { ERROR_NOTICE_DURATION_MS } from "../src/shared/dictationErrors";
 import type { PillMode } from "../src/shared/contracts";
 import {
   pillErrorCountdownCssProperties,
+  PILL_ERROR_LAYOUT,
+  PILL_ERROR_NOTICE_HEIGHT,
+  PILL_ERROR_STACK_HEIGHT,
   PILL_HOVER_HIT_PADDING,
   PILL_WINDOW_BOTTOM_MARGIN,
   pillHoverModeForPointer,
@@ -34,7 +37,6 @@ describe("pill layout contract", () => {
   it("reserves fixed readable space for revisable Live transcript snapshots", () => {
     // Size is independent of transcript length, so a decoder revision cannot
     // move the transparent native window under a stationary pointer.
-    expect(PILL_LAYOUT.listening.toggle.width).toBe(100);
     expect(PILL_LAYOUT.listening.hold.width).toBe(76);
     expect(pillSizeFor("listening", "collapsed", "toggle", "live"))
       .toEqual(PILL_LAYOUT.liveListening.toggle);
@@ -48,13 +50,32 @@ describe("pill layout contract", () => {
 
   it("exposes the shared renderer dimensions as CSS variables", () => {
     expect(PILL_LAYOUT_CSS_PROPERTIES["--pill-idle-collapsed-width"]).toBe("40px");
-    expect(PILL_LAYOUT_CSS_PROPERTIES["--pill-error-stack-height"]).toBe("100px");
+    expect(PILL_LAYOUT_CSS_PROPERTIES["--pill-error-stack-height"]).toBe("110px");
   });
 
   it("derives the countdown animation duration from the main error timeout", () => {
     const properties = pillErrorCountdownCssProperties() as CSSProperties & Record<string, string>;
     expect(properties[PILL_ERROR_NOTICE_DURATION_CSS_VARIABLE]).toBe(`${ERROR_NOTICE_DURATION_MS}ms`);
     expect(pillErrorCountdownCssProperties(725)[PILL_ERROR_NOTICE_DURATION_CSS_VARIABLE]).toBe("725ms");
+  });
+});
+
+describe("error notice height contract", () => {
+  it("fits the bounded worst-case title, detail, and rail in the native window", () => {
+    const derivedNotice = Math.ceil(
+      PILL_ERROR_LAYOUT.verticalPadding
+      + PILL_ERROR_LAYOUT.titleLineHeight * PILL_ERROR_LAYOUT.titleMaxLines
+      + PILL_ERROR_LAYOUT.copyGap
+      + PILL_ERROR_LAYOUT.detailLineHeight * PILL_ERROR_LAYOUT.detailMaxLines,
+    );
+    expect(PILL_ERROR_NOTICE_HEIGHT).toBe(derivedNotice);
+    expect(PILL_ERROR_STACK_HEIGHT).toBe(
+      derivedNotice + PILL_ERROR_LAYOUT.railGap + PILL_ERROR_LAYOUT.railHeight,
+    );
+    expect(PILL_LAYOUT.error.notice.minHeight).toBe(98);
+    expect(PILL_LAYOUT.error.stack.height).toBe(110);
+    expect(exactCssRule(".pill-error-notice__copy strong")).toContain("-webkit-line-clamp: 2");
+    expect(exactCssRule(".pill-error-notice__copy > span")).toContain("-webkit-line-clamp: 3");
   });
 });
 
@@ -81,7 +102,7 @@ const MEASURED_STATUS_COPY_WIDTHS: Readonly<Record<string, number>> = {
   Inserting: 46,
   Copying: 42,
   Inserted: 43,
-  "Inserted · copied as backup": 139,
+  "Paste sent · copied as backup": 150,
   "Copied to clipboard": 99,
   "Copied — allow Accessibility": 143,
   Done: 27,
@@ -141,6 +162,39 @@ function cssRule(selector: string): string {
   expect(start, `missing stylesheet rule: ${selector}`).toBeGreaterThanOrEqual(0);
   return stylesheet.slice(start, stylesheet.indexOf("}", start));
 }
+
+function exactCssRule(selector: string): string {
+  const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = new RegExp(`^${escaped} \\{([^}]*)\\}`, "m").exec(stylesheet);
+  expect(match, `missing exact stylesheet rule: ${selector}`).not.toBeNull();
+  return match![1]!;
+}
+
+function pixelDeclaration(rule: string, property: string): number {
+  const match = new RegExp(`(?:^|;)\\s*${property}:\\s*(\\d+(?:\\.\\d+)?)px`).exec(rule);
+  expect(match, `missing pixel declaration: ${property}`).not.toBeNull();
+  return Number(match![1]);
+}
+
+describe("listening toggle width contract", () => {
+  it("fits both end controls and the waveform without clipping", () => {
+    const container = exactCssRule(".pill--listening");
+    const padding = /(?:^|;)\s*padding:\s*(?:0|\d+(?:\.\d+)?px)\s+(\d+(?:\.\d+)?)px/.exec(container);
+    expect(padding, "listening pill needs two-value pixel padding").not.toBeNull();
+
+    const horizontalPadding = Number(padding![1]) * 2;
+    const fixedChildren = pixelDeclaration(exactCssRule(".pill__end"), "width") * 2
+      + pixelDeclaration(exactCssRule(".pill-wave"), "width");
+    // Three fixed children make two flex gaps. The Live-only transcript is not
+    // mounted in after-stop mode, so it contributes no width here.
+    const flexGaps = pixelDeclaration(container, "gap") * 2;
+    const noOverflowMinimum = horizontalPadding + fixedChildren + flexGaps;
+
+    expect(PILL_LAYOUT.listening.toggle.width).toBe(noOverflowMinimum);
+    expect(PILL_LAYOUT_CSS_PROPERTIES["--pill-listening-toggle-width"])
+      .toBe(`${noOverflowMinimum}px`);
+  });
+});
 
 /*
  * The pill window is transparent, always-on-top, and mouse-opaque, and nothing
@@ -254,7 +308,12 @@ describe("pill mode reported by main", () => {
       "src/main.ts",
     );
     expect(poller).toContain("pillMode = next;");
-    expectPrecedes(poller, "resizePill();", "send(IPC.windowPillMode", "followPillHover");
+    expectPrecedes(
+      poller,
+      "resizePill();",
+      "sendToLiveRenderers([pillWindow], IPC.windowPillMode",
+      "followPillHover",
+    );
     expect(pillSource).toContain("rendererPillModeForMainMode(visualModeRef.current, mode)");
   });
 });

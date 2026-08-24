@@ -14,6 +14,8 @@ import {
   modelRemoveRequestSchema,
   modelSelectionApplyRequestSchema,
   scratchpadNoteSchema,
+  sessionFailureSchema,
+  snippetSchema,
   transcribeAudioSchema,
 } from "../src/shared/contracts";
 
@@ -194,6 +196,21 @@ describe("IPC contracts", () => {
     ).toThrow();
   });
 
+  it("requires recorder failures to name exactly one bounded dictation session", () => {
+    expect(sessionFailureSchema.parse({
+      sessionId: "00000000-0000-4000-8000-000000000001",
+      message: "Microphone disconnected",
+    })).toEqual({
+      sessionId: "00000000-0000-4000-8000-000000000001",
+      message: "Microphone disconnected",
+    });
+    expect(() => sessionFailureSchema.parse({ message: "late failure" })).toThrow();
+    expect(() => sessionFailureSchema.parse({
+      sessionId: "00000000-0000-4000-8000-000000000001",
+      message: "x".repeat(241),
+    })).toThrow();
+  });
+
   it("requires explicit confirmation and a validated concrete tier for model operations", () => {
     expect(modelInstallRequestSchema.parse({
       confirmed: true,
@@ -346,5 +363,21 @@ describe("IPC contracts", () => {
         updatedAt: 1,
       }),
     ).toMatchObject({ title: "First line" });
+  });
+
+  it("preserves snippet formatting while rejecting an all-whitespace expansion", () => {
+    const expansion = "\n  First line\n    indented line\n";
+    expect(snippetSchema.parse({
+      id: "00000000-0000-4000-8000-000000000001",
+      trigger: "signature",
+      expansion,
+      createdAt: 1,
+    }).expansion).toBe(expansion);
+    expect(() => snippetSchema.parse({
+      id: "00000000-0000-4000-8000-000000000001",
+      trigger: "signature",
+      expansion: " \n\t ",
+      createdAt: 1,
+    })).toThrow();
   });
 });

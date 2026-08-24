@@ -120,6 +120,32 @@ afterEach(() => {
 });
 
 describe("package source provenance", () => {
+  it("binds the Apache-2.0 license and notices into every release", () => {
+    const macInputs = releaseInputCandidates("darwin");
+    expect(macInputs).toEqual(expect.arrayContaining([
+      "LICENSE",
+      "NOTICE",
+      "THIRD_PARTY_NOTICES.md",
+    ]));
+    expect(resourcePolicyFor("darwin", "arm64").legalFiles).toEqual([
+      "LICENSE",
+      "NOTICE",
+      "THIRD_PARTY_NOTICES.md",
+    ]);
+  });
+
+  it("binds every exact packaged FluidAudio and embedded-component notice", () => {
+    const macInputs = releaseInputCandidates("darwin");
+    expect(macInputs).toContain("THIRD_PARTY_NOTICES.md");
+    const provenanceLicenses = macInputs
+      .filter((entry) => entry.startsWith("resources/licenses/"))
+      .sort();
+    const packagedLicenses = resourcePolicyFor("darwin", "arm64").licenseFiles
+      .map((entry) => `resources/${entry}`)
+      .sort();
+    expect(provenanceLicenses).toEqual(packagedLicenses);
+  });
+
   it("binds the exact darwin/arm64 model-manifest allowlist into source provenance", () => {
     const platform = "darwin";
     const arch = "arm64";
@@ -146,6 +172,10 @@ describe("package source provenance", () => {
     const gateScripts = [
       "scripts/generate-runtime-sbom.mjs",
       "scripts/macos-entitlement-policy.mts",
+      "scripts/macos-zip-preflight.mts",
+      "scripts/protected-resource-staging.mts",
+      "scripts/python-build-standalone.json",
+      "scripts/reconcile-python-sbom.py",
       "scripts/smoke-worker.py",
       "scripts/smoke-packaged-macos.sh",
       "scripts/verify-local-macos.sh",

@@ -18,8 +18,13 @@ new version and tag. Verify the downloaded DMG against the matching
 `SHA256SUMS.txt` before opening it:
 
 ```sh
-shasum -a 256 LocalScribe-<version>-arm64.dmg
+cd /path/to/downloaded/assets
+shasum -a 256 -c LocalScribe-<version>-macos-arm64-SHA256SUMS.txt
 ```
+
+The verification is successful only when every listed asset reports `OK`.
+Keep the checksum file and artifacts from the same release; a digest printed by
+`shasum` is not useful unless it is compared with that release's manifest.
 
 If macOS refuses to open a validation build, do not disable system-wide
 security protections. Build from source or use an artifact that has passed the
@@ -77,9 +82,14 @@ The following remain on the Mac:
 - model artifacts under LocalScribe's application-support directory.
 
 Sensitive text is protected with the macOS keystore. Raw audio is held in
-memory, written only to a permission-restricted temporary WAV for inference,
-and deleted afterward. Transcript deletion uses SQLite `secure_delete` so
-freed database pages are overwritten rather than waiting for later reuse.
+memory; after-stop dictation is staged in a user-only temporary WAV for
+inference. LocalScribe attempts to remove each staged file after use, removes
+its process-owned temporary directory on orderly quit, and removes stale
+LocalScribe audio directories at the next launch. A cleanup failure is recorded
+rather than falsely turning a successful dictation into a failure. Transcript
+deletion uses SQLite `secure_delete` so freed database pages are overwritten
+rather than waiting for later reuse. See the [privacy boundary](docs/PRIVACY.md)
+for the exact data and cleanup contract.
 
 LocalScribe accepts only revision-pinned catalog artifacts with declared byte
 sizes and SHA-256 hashes. It does not accept arbitrary model URLs, executable
@@ -92,8 +102,10 @@ Requirements:
 - Apple Silicon Mac;
 - macOS 14 or newer;
 - Xcode command-line tools;
-- the exact Node, npm, `uv`, and Python versions pinned by `.nvmrc`,
-  `package.json`, `.uv-version`, and the committed lockfiles.
+- the exact Node, npm, and `uv` versions pinned by `.nvmrc`, `package.json`,
+  and `.uv-version`. The worker Python version, Python distribution, npm and
+  Python dependency graphs, and FluidAudio release are also pinned in the
+  repository. Xcode and the Swift compiler remain host-toolchain inputs.
 
 Install and run the source gates:
 
@@ -101,6 +113,11 @@ Install and run the source gates:
 npm ci --strict-allow-scripts
 npm run verify:local
 ```
+
+Do not substitute `npm install` or an unlocked `uv sync` when validating a
+candidate. `npm ci` consumes `package-lock.json`; the verification pipeline
+checks the npm and `uv` pins plus both dependency locks before running audits,
+lint, type checking, and tests.
 
 Build and verify the macOS candidate:
 
@@ -129,6 +146,14 @@ shortcuts, third-party focus/paste behavior, clean-account permissions,
 notarization, or public binary distribution. Those require separate acceptance
 evidence on the exact artifact.
 
+LocalScribe is a native macOS desktop application, not a container service.
+Docker Compose cannot run or validate macOS TCC microphone/Accessibility
+consent, global shortcuts, third-party focus and paste, Core ML/ANE execution,
+codesigning, or DMG installation. A container may run some source-only tooling,
+but that output is not a macOS application acceptance result. Use the
+[coworker testing runbook](docs/COWORKER_TESTING.md) for a checksummed native
+candidate and an explicit physical-test boundary.
+
 ## Documentation
 
 | Document | Purpose |
@@ -138,6 +163,8 @@ evidence on the exact artifact.
 | [Release procedure](docs/RELEASING.md) | Local verification, validation builds, and GitHub staging |
 | [Audio protocol](docs/AUDIO_PROTOCOL.md) | Renderer-to-worker audio contract |
 | [Clean-room policy](docs/CLEAN_ROOM.md) | Product independence and dependency provenance |
+| [Privacy boundary](docs/PRIVACY.md) | Local data, network, encryption, audio, and deletion behavior |
+| [Coworker testing](docs/COWORKER_TESTING.md) | Checksummed native install and physical macOS acceptance |
 | [Delivery plan](docs/DELIVERY_PLAN.md) | Remaining macOS implementation and acceptance work |
 
 ## Security status
@@ -154,6 +181,8 @@ evidence on the exact artifact.
 
 ## License
 
-Use of LocalScribe's source and assets is governed by [LICENSE](LICENSE).
+LocalScribe is licensed under the
+[Apache License 2.0](LICENSE). The copyright and attribution notice is in
+[NOTICE](NOTICE).
 Third-party components retain their own licenses; see
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

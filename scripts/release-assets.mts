@@ -89,23 +89,25 @@ function requireArtifact(filePath: string): { path: string; name: string; bytes:
 
 function parseChecksumManifest(
   checksumPath: string,
-): Map<string, { relativePath: string; sha256: string }> {
-  const entries = new Map<string, { relativePath: string; sha256: string }>();
+): Map<string, { assetName: string; sha256: string }> {
+  const entries = new Map<string, { assetName: string; sha256: string }>();
   for (const rawLine of readFileSync(checksumPath, "utf8").split(/\r?\n/u)) {
     if (!rawLine) continue;
     const match = /^([a-f0-9]{64}) [* ](.+)$/u.exec(rawLine);
     if (!match?.[1] || !match[2]) fail(`malformed checksum row: ${rawLine}`);
-    const relativePath = match[2].replaceAll("\\", "/");
+    const assetName = match[2];
     if (
-      relativePath.startsWith("/") ||
-      /^[a-z]:\//iu.test(relativePath) ||
-      relativePath.split("/").some((segment) => segment === "" || segment === "." || segment === "..")
+      assetName === "" ||
+      assetName === "." ||
+      assetName === ".." ||
+      assetName.includes("/") ||
+      assetName.includes("\\")
     ) {
-      fail(`unsafe checksum path: ${relativePath}`);
+      fail(`checksum rows must use flat release asset basenames: ${assetName}`);
     }
-    const canonical = relativePath.toLowerCase();
-    if (entries.has(canonical)) fail(`duplicate checksum path: ${relativePath}`);
-    entries.set(canonical, { relativePath, sha256: match[1] });
+    const canonical = assetName.toLowerCase();
+    if (entries.has(canonical)) fail(`duplicate checksum asset name: ${assetName}`);
+    entries.set(canonical, { assetName, sha256: match[1] });
   }
   return entries;
 }
@@ -202,24 +204,20 @@ export async function verifyReleaseAssets(
   requireCycloneDxSbom(layout.pythonSbomPath);
   const checksum = requireArtifact(layout.checksumPath);
   const checksumRows = parseChecksumManifest(checksum.path);
-  const outRoot = path.resolve(projectPath, "out");
   const expectedRows = new Set<string>();
   const verified: VerifiedReleaseAsset[] = [];
   for (const asset of content) {
-    const relative = path.relative(outRoot, asset.path).split(path.sep).join("/");
-    if (relative.startsWith("../") || path.posix.isAbsolute(relative)) {
-      fail(`asset is outside out/: ${asset.path}`);
-    }
-    const canonical = relative.toLowerCase();
+    const canonical = asset.name.toLowerCase();
+    if (expectedRows.has(canonical)) fail(`release assets collide by basename: ${asset.name}`);
     expectedRows.add(canonical);
     const checksumRow = checksumRows.get(canonical);
     const actualHash = sha256(asset);
     if (
       !checksumRow ||
-      checksumRow.relativePath !== relative ||
+      checksumRow.assetName !== asset.name ||
       checksumRow.sha256 !== actualHash
     ) {
-      fail(`checksum does not match ${relative}`);
+      fail(`checksum does not match ${asset.name}`);
     }
     verified.push({ ...asset, sha256: actualHash });
   }

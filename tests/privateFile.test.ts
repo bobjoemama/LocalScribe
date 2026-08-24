@@ -1,4 +1,14 @@
-import { chmodSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -87,6 +97,48 @@ describe("writing a file only this account can read", () => {
     await writePrivateFile(target, payload);
 
     expect(readFileSync(target, "utf8")).toBe(payload);
+  });
+
+  it("atomically replaces the destination inode", async () => {
+    const target = path.join(workspace(), "history.json");
+    writeFileSync(target, "old\n");
+    const previousInode = statSync(target).ino;
+
+    await writePrivateFile(target, "new\n");
+
+    expect(readFileSync(target, "utf8")).toBe("new\n");
+    expect(statSync(target).ino).not.toBe(previousInode);
+  });
+
+  it("rejects a symlink target without changing its referent", async () => {
+    const directory = workspace();
+    const outside = path.join(directory, "outside.json");
+    const target = path.join(directory, "history.json");
+    writeFileSync(outside, "keep me\n");
+    symlinkSync(outside, target);
+
+    await expect(writePrivateFile(target, "secret\n")).rejects.toThrow(/unsafe private-file target/u);
+    expect(readFileSync(outside, "utf8")).toBe("keep me\n");
+  });
+
+  it("rejects a non-regular target", async () => {
+    const target = path.join(workspace(), "history.json");
+    mkdirSync(target);
+
+    await expect(writePrivateFile(target, "secret\n")).rejects.toThrow(/unsafe private-file target/u);
+  });
+
+  it("preserves the prior export and removes its temp after a pre-rename failure", async () => {
+    const directory = workspace();
+    // The destination name is legal, while adding the private temp suffix
+    // exceeds NAME_MAX and makes temp creation fail deterministically.
+    const target = path.join(directory, `${"a".repeat(220)}.json`);
+    writeFileSync(target, "previous export\n");
+
+    await expect(writePrivateFile(target, "replacement\n")).rejects.toThrow();
+
+    expect(readFileSync(target, "utf8")).toBe("previous export\n");
+    expect(readdirSync(directory)).toEqual([path.basename(target)]);
   });
 
   /*

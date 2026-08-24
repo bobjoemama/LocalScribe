@@ -1,4 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createHash } from "node:crypto";
+import {
+  mkdtempSync,
+  renameSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
 const mocks = vi.hoisted(() => ({
   stdout: "",
@@ -12,8 +22,12 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("node:child_process", () => ({ execFile: mocks.execFile }));
 
-import { NativeExecutableInsertionBridge } from "../src/main/insertion/nativePlatformBridge";
+import {
+  NativeExecutableInsertionBridge,
+  nativeBridgeInternals,
+} from "../src/main/insertion/nativePlatformBridge";
 import type { ActiveTarget } from "../src/main/insertion/types";
+import type { RegularExecutableProof } from "../src/main/insertion/nativeExecutableIntegrity";
 
 const EXPECTED_TARGET: ActiveTarget = {
   platform: "darwin",
@@ -24,10 +38,25 @@ const EXPECTED_TARGET: ActiveTarget = {
   focusedElementFingerprint: "d".repeat(64),
 };
 
+function proofForDigest(digest: string): RegularExecutableProof {
+  return {
+    sha256: digest,
+    device: 1,
+    inode: 2,
+    mode: 0o100700,
+    size: 100,
+    modifiedAtMs: 3,
+    changedAtMs: 4,
+  };
+}
+
 function bridgeWithDigest(
   digest: (executablePath: string) => string | null = () => "a".repeat(64),
 ): NativeExecutableInsertionBridge {
-  return new NativeExecutableInsertionBridge(process.execPath, digest);
+  return new NativeExecutableInsertionBridge(process.execPath, (executablePath) => {
+    const value = digest(executablePath);
+    return value === null ? null : proofForDigest(value);
+  });
 }
 
 describe("native platform bridge execution", () => {
@@ -38,6 +67,67 @@ describe("native platform bridge execution", () => {
 
   afterEach(() => {
     vi.unstubAllEnvs();
+  });
+
+  it("pins only stable regular executable bytes and rejects a symlink", () => {
+    const directory = mkdtempSync(path.join(os.tmpdir(), "localscribe-native-digest-"));
+    try {
+      const executable = path.join(directory, "helper");
+      const linkedExecutable = path.join(directory, "linked-helper");
+      const bytes = Buffer.from("fixed helper bytes");
+      writeFileSync(executable, bytes, { mode: 0o700 });
+      symlinkSync(executable, linkedExecutable);
+
+      expect(nativeBridgeInternals.digestRegularExecutable(executable)).toBe(
+        createHash("sha256").update(bytes).digest("hex"),
+      );
+      expect(nativeBridgeInternals.digestRegularExecutable(linkedExecutable)).toBeNull();
+      expect(nativeBridgeInternals.digestRegularExecutable(directory)).toBeNull();
+
+      const originalProof = nativeBridgeInternals.proveRegularExecutable(executable);
+      const replacement = path.join(directory, "replacement-helper");
+      writeFileSync(replacement, bytes, { mode: 0o700 });
+      renameSync(replacement, executable);
+      const replacementProof = nativeBridgeInternals.proveRegularExecutable(executable);
+      expect(originalProof?.sha256).toBe(replacementProof?.sha256);
+      expect(
+        originalProof && replacementProof
+          ? nativeBridgeInternals.sameRegularExecutableProof(originalProof, replacementProof)
+          : true,
+      ).toBe(false);
+    } finally {
+      rmSync(directory, { recursive: true });
+    }
+  });
+
+  it("refuses an exact-byte helper replacement because its pinned file identity changed", async () => {
+    const directory = mkdtempSync(path.join(os.tmpdir(), "localscribe-native-replace-"));
+    try {
+      const executable = path.join(directory, "helper");
+      const replacement = path.join(directory, "replacement-helper");
+      const bytes = Buffer.from("same signed helper bytes");
+      writeFileSync(executable, bytes, { mode: 0o700 });
+      const bridge = new NativeExecutableInsertionBridge(executable);
+      writeFileSync(replacement, bytes, { mode: 0o700 });
+      renameSync(replacement, executable);
+
+      await expect(bridge.captureActiveTarget()).resolves.toBeNull();
+      expect(mocks.execFile).not.toHaveBeenCalled();
+    } finally {
+      rmSync(directory, { recursive: true });
+    }
+  });
+
+  it("documents the residual pathname-exec race instead of claiming descriptor atomicity", async () => {
+    const source = await import("node:fs/promises").then(({ readFile }) => readFile(
+      path.resolve("src/main/insertion/nativePlatformBridge.ts"),
+      "utf8",
+    ));
+
+    expect(source).toContain("O_NOFOLLOW descriptor");
+    expect(source).toContain("/dev/fd/<n> is rejected with EACCES");
+    expect(source).toContain("do not make");
+    expect(source).toContain("pathname execution atomic");
   });
 
   it("runs only a fixed helper command with no shell, bounded output, and no ambient secrets", async () => {

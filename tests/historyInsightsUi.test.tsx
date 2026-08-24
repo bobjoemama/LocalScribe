@@ -14,6 +14,7 @@ import {
   createLatestRequestGate,
   historyErrorMessage,
   historyFailureNotice,
+  historyIntegrityWarningMessage,
   historySampleLabel,
   historySuccessNotice,
   historyStoragePresentation,
@@ -41,6 +42,12 @@ function transcript(overrides: Partial<Transcription> = {}): Transcription {
 }
 
 describe("History Insights interaction and data presentation", () => {
+  it("keeps partial-history integrity warnings persistent and recovery-safe", () => {
+    expect(historyIntegrityWarningMessage(0)).toBeNull();
+    expect(historyIntegrityWarningMessage(1)).toContain("1 encrypted record was skipped");
+    expect(historyIntegrityWarningMessage(2)).toContain("will not overwrite the unreadable records");
+  });
+
   it("keeps only the newest concurrent history load eligible to update state", () => {
     const gate = createLatestRequestGate();
     const initialLoad = gate.begin();

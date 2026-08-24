@@ -18,6 +18,7 @@ import os
 import select
 import stat
 import subprocess
+import threading
 import time
 import uuid
 import wave
@@ -61,6 +62,7 @@ MAX_SMOKE_AUDIO_BYTES: Final = 16_000 * 2 * MAX_SMOKE_AUDIO_SECONDS
 MAX_PROTOCOL_INTEGER: Final = 2**53 - 1
 MAX_INSTALL_PROGRESS_EVENTS: Final = 1_000_000
 MAX_WORKER_RESPONSE_BYTES: Final = 1024 * 1024
+MAX_WORKER_STDERR_BYTES: Final = 256 * 1024
 WORKER_REQUEST_TIMEOUT_SECONDS: Final = 20 * 60
 WORKER_SHUTDOWN_TIMEOUT_SECONDS: Final = 5
 
@@ -86,10 +88,58 @@ class InstallProgressState:
 
 
 @dataclass
+class WorkerStderrReader:
+    """Drain stderr concurrently and retain only a bounded diagnostic tail."""
+
+    process: subprocess.Popen[bytes]
+    maximum_bytes: int = MAX_WORKER_STDERR_BYTES
+    _buffer: bytearray = field(default_factory=bytearray, init=False)
+    _lock: threading.Lock = field(default_factory=threading.Lock, init=False)
+    _truncated: bool = field(default=False, init=False)
+    _thread: threading.Thread = field(init=False)
+
+    def __post_init__(self) -> None:
+        if self.process.stderr is None:
+            raise RuntimeError("candidate worker stderr is unavailable")
+        self._thread = threading.Thread(
+            target=self._drain,
+            name="localscribe-smoke-stderr",
+            daemon=True,
+        )
+        self._thread.start()
+
+    def _drain(self) -> None:
+        if self.process.stderr is None:
+            return
+        while True:
+            try:
+                chunk = os.read(self.process.stderr.fileno(), 64 * 1024)
+            except OSError:
+                return
+            if not chunk:
+                return
+            with self._lock:
+                self._buffer.extend(chunk)
+                overflow = len(self._buffer) - self.maximum_bytes
+                if overflow > 0:
+                    del self._buffer[:overflow]
+                    self._truncated = True
+
+    def text(self) -> str:
+        with self._lock:
+            content = bytes(self._buffer).decode("utf-8", errors="replace").strip()
+            return f"[earlier stderr truncated]\n{content}" if self._truncated else content
+
+    def join(self) -> None:
+        self._thread.join(timeout=WORKER_SHUTDOWN_TIMEOUT_SECONDS)
+
+
+@dataclass
 class WorkerResponseReader:
     """Read NDJSON without losing lines already buffered after a progress burst."""
 
     process: subprocess.Popen[bytes]
+    stderr: WorkerStderrReader | None = None
     pending: bytearray = field(default_factory=bytearray)
 
     def receive(self, *, timeout_seconds: float) -> dict[str, Any]:
@@ -120,15 +170,9 @@ class WorkerResponseReader:
                 raise RuntimeError("candidate worker request timed out")
             chunk = os.read(self.process.stdout.fileno(), 64 * 1024)
             if not chunk:
-                stderr = worker_stderr(self.process)
+                stderr = self.stderr.text() if self.stderr else ""
                 raise RuntimeError(stderr or "candidate worker exited without a response")
             self.pending.extend(chunk)
-
-
-def worker_stderr(process: subprocess.Popen[bytes]) -> str:
-    if process.stderr is None:
-        return ""
-    return process.stderr.read().decode("utf-8", errors="replace").strip()
 
 
 def require_directory(path: Path, root: Path, label: str) -> Path:
@@ -419,7 +463,7 @@ def require_response_type(response: dict[str, Any], expected: str) -> None:
         raise RuntimeError(f"candidate worker returned {response.get('type')!r}, expected {expected!r}")
 
 
-def wait_for_exit(process: subprocess.Popen[bytes]) -> None:
+def wait_for_exit(process: subprocess.Popen[bytes], stderr: WorkerStderrReader) -> None:
     try:
         exit_code = process.wait(timeout=WORKER_SHUTDOWN_TIMEOUT_SECONDS)
     except subprocess.TimeoutExpired:
@@ -429,8 +473,9 @@ def wait_for_exit(process: subprocess.Popen[bytes]) -> None:
         except subprocess.TimeoutExpired:
             process.kill()
             exit_code = process.wait(timeout=WORKER_SHUTDOWN_TIMEOUT_SECONDS)
+    stderr.join()
     if exit_code != 0:
-        raise RuntimeError(worker_stderr(process) or f"candidate worker exited with {exit_code}")
+        raise RuntimeError(stderr.text() or f"candidate worker exited with {exit_code}")
 
 
 def read_smoke_pcm(audio_path: Path) -> bytes:
@@ -478,7 +523,8 @@ def smoke_mode(
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
-    reader = WorkerResponseReader(process)
+    stderr = WorkerStderrReader(process)
+    reader = WorkerResponseReader(process, stderr)
     try:
         hello = reader.receive(timeout_seconds=WORKER_SHUTDOWN_TIMEOUT_SECONDS)
         require_response_type(hello, "hello")
@@ -564,7 +610,7 @@ def smoke_mode(
             timeout_seconds=WORKER_SHUTDOWN_TIMEOUT_SECONDS,
         )
         require_response_type(shutdown, "shutdown")
-        wait_for_exit(process)
+        wait_for_exit(process, stderr)
         return {
             "mode": mode,
             "finalCount": len(finals),
@@ -579,6 +625,7 @@ def smoke_mode(
             except subprocess.TimeoutExpired:
                 process.kill()
                 process.wait(timeout=WORKER_SHUTDOWN_TIMEOUT_SECONDS)
+        stderr.join()
 
 
 def main() -> int:

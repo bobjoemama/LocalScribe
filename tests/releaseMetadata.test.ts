@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   mkdtempSync,
   readFileSync,
@@ -43,6 +44,25 @@ afterEach(() => {
 });
 
 describe("release metadata", () => {
+  it("ships the canonical Apache-2.0 license and matching package metadata", () => {
+    const packageJson = JSON.parse(readFileSync(path.resolve("package.json"), "utf8")) as {
+      license?: string;
+    };
+    const packageLock = JSON.parse(readFileSync(path.resolve("package-lock.json"), "utf8")) as {
+      packages?: Record<string, { license?: string }>;
+    };
+    const license = readFileSync(path.resolve("LICENSE"));
+    const notice = readFileSync(path.resolve("NOTICE"), "utf8");
+
+    expect(packageJson.license).toBe("Apache-2.0");
+    expect(packageLock.packages?.[""]?.license).toBe("Apache-2.0");
+    expect(createHash("sha256").update(license).digest("hex")).toBe(
+      "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+    );
+    expect(notice).toContain("LocalScribe\nCopyright 2026 Devesh");
+    expect(notice).toContain("THIRD_PARTY_NOTICES.md");
+  });
+
   it("derives versioned target artifacts from package metadata and stable policy", () => {
     const root = project(manifest());
     const metadata = loadReleaseMetadata(root);
@@ -116,7 +136,9 @@ describe("release metadata", () => {
     expect(releasing).toContain("scripts/verify-release-assets.mjs");
     expect(releasing).not.toContain("--platform win32");
     expect(releasing).toContain("--require-prerelease");
-    expect(releasing).toContain("No local command automatically creates a GitHub Release");
+    expect(releasing).toContain(
+      "Neither the source workflow nor any local command automatically creates a",
+    );
     expect(releasing).toMatch(/do not delete or replace a\s+reviewed asset in place\./u);
     expect(readme).not.toContain("/releases/download/v0.1.0");
     expect(readme).not.toContain("LocalScribe-0.1.0-arm64.dmg");

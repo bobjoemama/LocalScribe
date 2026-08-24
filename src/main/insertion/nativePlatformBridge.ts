@@ -1,16 +1,17 @@
 import { execFile } from "node:child_process";
-import { createHash } from "node:crypto";
-import {
-  existsSync,
-  lstatSync,
-  readFileSync,
-} from "node:fs";
 import { promisify } from "node:util";
 import {
   resolveNativeActiveTargetHelperPath,
   type NativeActiveTargetHelperPathOptions,
 } from "../nativeHelperPath";
 import { nativeHelperEnvironment } from "../nativeHelperEnvironment";
+import {
+  digestRegularExecutable,
+  proveRegularExecutable,
+  sameRegularExecutableProof,
+  type ExecutableProofReader,
+  type RegularExecutableProof,
+} from "./nativeExecutableIntegrity";
 import type {
   ActiveTarget,
   PasteFailureReason,
@@ -19,31 +20,6 @@ import type {
 } from "./types";
 
 const execFileAsync = promisify(execFile);
-type ExecutableDigest = (executablePath: string) => string | null;
-
-function digestRegularExecutable(executablePath: string): string | null {
-  try {
-    const before = lstatSync(executablePath);
-    if (!before.isFile() || before.isSymbolicLink()) return null;
-    const bytes = readFileSync(executablePath);
-    const after = lstatSync(executablePath);
-    if (
-      !after.isFile()
-      || after.isSymbolicLink()
-      || before.dev !== after.dev
-      || before.ino !== after.ino
-      || before.size !== after.size
-      || before.mtimeMs !== after.mtimeMs
-      || before.ctimeMs !== after.ctimeMs
-      || bytes.byteLength !== before.size
-    ) {
-      return null;
-    }
-    return createHash("sha256").update(bytes).digest("hex");
-  } catch {
-    return null;
-  }
-}
 
 interface HelperTargetPayload {
   platform?: unknown;
@@ -177,26 +153,23 @@ function pasteArguments(
 
 export class NativeExecutableInsertionBridge implements PlatformInsertionBridge {
   private readiness: Promise<boolean> | null = null;
-  private pinnedDigest: string | null;
+  private pinnedProof: RegularExecutableProof | null;
 
   constructor(
     private readonly executablePath: string,
-    private readonly digestExecutable: ExecutableDigest = digestRegularExecutable,
+    private readonly proveExecutable: ExecutableProofReader = proveRegularExecutable,
   ) {
-    this.pinnedDigest = this.digestExecutable(this.executablePath);
+    this.pinnedProof = this.proveExecutable(this.executablePath);
   }
 
   pinExecutableIntegrity(): boolean {
-    this.pinnedDigest = this.digestExecutable(this.executablePath);
+    this.pinnedProof = this.proveExecutable(this.executablePath);
     this.readiness = null;
-    return this.pinnedDigest !== null;
+    return this.pinnedProof !== null;
   }
 
   ready(): Promise<boolean> {
-    if (
-      this.pinnedDigest === null
-      || this.digestExecutable(this.executablePath) !== this.pinnedDigest
-    ) {
+    if (!this.executableMatchesPin()) {
       this.readiness = Promise.resolve(false);
       return this.readiness;
     }
@@ -277,13 +250,20 @@ export class NativeExecutableInsertionBridge implements PlatformInsertionBridge 
     arguments_: readonly string[],
     timeout = 1_000,
   ): Promise<string | null> {
-    if (
-      !existsSync(this.executablePath)
-      || this.pinnedDigest === null
-      || this.digestExecutable(this.executablePath) !== this.pinnedDigest
-    ) {
+    if (!this.executableMatchesPin()) {
       return null;
     }
+    /*
+     * Node/macOS cannot exec this verified open descriptor: spawning
+     * /dev/fd/<n> is rejected with EACCES, and execFile accepts only a path.
+     * executableMatchesPin therefore proves one O_NOFOLLOW descriptor and is
+     * deliberately the final synchronous operation before execFile. A hostile
+     * same-UID process can still replace the directory entry in that last
+     * interval. In packaged builds the pinned bytes include the helper's code
+     * signature; that proof, the inode pin, TCC boundary, native target
+     * recapture, and clipboard fallback reduce impact. They do not make
+     * pathname execution atomic.
+     */
     try {
       const { stdout } = await execFileAsync(this.executablePath, arguments_, {
         encoding: "utf8",
@@ -297,6 +277,13 @@ export class NativeExecutableInsertionBridge implements PlatformInsertionBridge 
     } catch {
       return null;
     }
+  }
+
+  private executableMatchesPin(): boolean {
+    const currentProof = this.proveExecutable(this.executablePath);
+    return this.pinnedProof !== null
+      && currentProof !== null
+      && sameRegularExecutableProof(this.pinnedProof, currentProof);
   }
 }
 
@@ -331,6 +318,8 @@ export function createDefaultInsertionBridge(
 
 export const nativeBridgeInternals = {
   digestRegularExecutable,
+  proveRegularExecutable,
+  sameRegularExecutableProof,
   parseAccessibility,
   pasteArguments,
   parsePaste,

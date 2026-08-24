@@ -13,7 +13,9 @@
  *
  * and update both the pinned table and `STATUS_COPY_WIDTH`.
  */
-import { app, BrowserWindow } from "electron";
+import electron from "electron";
+
+const { app, BrowserWindow } = electron;
 
 /** Kept in sync with the pinned set in tests/pillLayout.test.ts. */
 const MESSAGES = [
@@ -27,7 +29,7 @@ const MESSAGES = [
   "Inserting",
   "Copying",
   "Inserted",
-  "Inserted · copied as backup",
+  "Paste sent · copied as backup",
   "Copied to clipboard",
   "Copied — allow Accessibility",
   "Done",

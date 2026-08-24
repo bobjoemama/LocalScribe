@@ -194,6 +194,39 @@ describe("HotkeyService capture and validation", () => {
       .toEqual({ shortcut: "Control+Space", available: true });
   });
 
+  it("keeps shortcut values unchanged and surfaces a bounded degraded state after partial teardown", () => {
+    const service = new HotkeyService(vi.fn(), vi.fn(), vi.fn(), null, "Control", "Control+Space");
+    service.start();
+    const teardownFailure = new Error("native teardown details");
+    mocks.uIOhook.stop.mockImplementationOnce(() => {
+      throw teardownFailure;
+    });
+
+    expect(() => service.reconfigure("Alt", "F13")).toThrow(
+      "LocalScribe could not safely restore the previous shortcuts",
+    );
+    expect(service.reconfigureDiagnosticDetail()).toBe("hotkey_reconfigure_degraded");
+    expect(service.isGlobalHoldReady()).toBe(false);
+    // Saving the old pair remains a no-op, proving reconfigure never committed
+    // the candidate values after teardown ownership became uncertain.
+    expect(() => service.reconfigure("Control", "Control+Space")).not.toThrow();
+  });
+
+  it("surfaces degraded state when both candidate registration and rollback registration fail", () => {
+    const service = new HotkeyService(vi.fn(), vi.fn(), vi.fn(), null, "Control", "Control+Space");
+    service.start();
+    mocks.globalShortcut.register
+      .mockReturnValueOnce(true) // candidate preflight
+      .mockReturnValueOnce(false) // candidate final registration
+      .mockReturnValueOnce(false); // previous registration during rollback
+
+    expect(() => service.reconfigure("Alt", "F13")).toThrow(
+      "LocalScribe could not safely restore the previous shortcuts",
+    );
+    expect(service.reconfigureDiagnosticDetail()).toBe("hotkey_reconfigure_degraded");
+    expect(service.isGlobalHoldReady()).toBe(false);
+  });
+
   it("keeps dictation running when a persisted toggle becomes unavailable and does not retry it in fallback", () => {
     const service = new HotkeyService(
       vi.fn(), vi.fn(), vi.fn(), null, "Control", "Control+Space",
@@ -235,6 +268,7 @@ describe("HotkeyService capture and validation", () => {
     const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
 
     expect(service.isToggleReady()).toBe(false);
+    expect(service.toggleRegistrationDiagnosticDetail()).toBeNull();
     service.start();
 
     // `start()` still succeeds, and the hold path still works...
@@ -242,6 +276,7 @@ describe("HotkeyService capture and validation", () => {
     // ...but the toggle is knowably dead, which is what nothing could see.
     expect(service.isToggleReady()).toBe(false);
     expect(service.toggleUnavailableReason()).toMatch(/Control\+Space is already used/u);
+    expect(service.toggleRegistrationDiagnosticDetail()).toBe("toggle_registration_failed");
     warning.mockRestore();
   });
 
@@ -253,6 +288,7 @@ describe("HotkeyService capture and validation", () => {
 
     expect(service.isToggleReady()).toBe(true);
     expect(service.toggleUnavailableReason()).toBeNull();
+    expect(service.toggleRegistrationDiagnosticDetail()).toBeNull();
   });
 
   it("reports the toggle as ready again after a re-save clears the conflict", () => {

@@ -134,7 +134,7 @@ describe("AudioRecorder capture bounds", () => {
     expect(harness.stopTrack).toHaveBeenCalledOnce();
 
     await expect(recorder.stop()).rejects.toThrow(
-      `Recording is too large; please keep dictation under ${audioDurationLimitLabel()}`,
+      `Recording is too long; please keep dictation under ${audioDurationLimitLabel()}`,
     );
     expect(harness.closeContext).toHaveBeenCalledOnce();
   });

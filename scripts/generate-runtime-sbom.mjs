@@ -2,7 +2,7 @@
 
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { lstatSync, readFileSync, realpathSync, statSync } from "node:fs";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
@@ -86,6 +86,89 @@ export function bundledCPythonDistribution({ runtimeRoot, version, readBuildTag,
   return { directory, buildTag, interpreterPath, sha256: digest };
 }
 
+export function resolveCPythonPin(downloads, expectedVersion) {
+  const [expectedMajor, expectedMinor, expectedPatch] = exactVersion(
+    expectedVersion,
+    "expected CPython download",
+  ).split(".").map(Number);
+  const entries = Object.values(downloads ?? {});
+  if (entries.length !== 1) {
+    throw new Error("CPython download metadata must contain exactly one platform artifact.");
+  }
+  const pin = entries[0];
+  if (
+    pin?.name !== "cpython" ||
+    pin?.major !== expectedMajor ||
+    pin?.minor !== expectedMinor ||
+    pin?.patch !== expectedPatch ||
+    pin?.os !== "darwin" ||
+    pin?.arch?.family !== "aarch64" ||
+    !/^\d{8}$/u.test(pin?.build) ||
+    !/^[a-f0-9]{64}$/u.test(pin?.sha256) ||
+    typeof pin?.url !== "string" ||
+    !pin.url.startsWith(
+      `https://github.com/astral-sh/python-build-standalone/releases/download/${pin.build}/`,
+    )
+  ) {
+    throw new Error("CPython download metadata is not an exact Apple Silicon release pin.");
+  }
+  return { buildTag: pin.build, sha256: pin.sha256, url: pin.url };
+}
+
+function ordinaryCandidateFile(filePath, candidateRoot, label) {
+  const metadata = lstatSync(filePath);
+  const resolved = realpathSync(filePath);
+  if (
+    metadata.isSymbolicLink() ||
+    !metadata.isFile() ||
+    (resolved !== candidateRoot && !resolved.startsWith(`${candidateRoot}${path.sep}`))
+  ) {
+    throw new Error(`Runtime SBOM candidate ${label} is not an ordinary in-bundle file.`);
+  }
+  return resolved;
+}
+
+export function packagedRuntimeIdentity({ applicationPath, version, expectedBuildTag }) {
+  const application = realpathSync(applicationPath);
+  if (!statSync(application).isDirectory() || !application.endsWith(".app")) {
+    throw new Error("Runtime SBOM candidate must be a macOS application bundle.");
+  }
+  const resources = realpathSync(path.join(application, "Contents", "Resources"));
+  if (resources !== application && !resources.startsWith(`${application}${path.sep}`)) {
+    throw new Error("Runtime SBOM candidate Resources escaped the application bundle.");
+  }
+  const distribution = `cpython-${version}-macos-aarch64-none`;
+  const [major, minor] = version.split(".");
+  const interpreterPath = ordinaryCandidateFile(
+    path.join(resources, "python-runtime", distribution, "bin", `python${major}.${minor}`),
+    resources,
+    "CPython interpreter",
+  );
+  const helperPath = ordinaryCandidateFile(
+    path.join(resources, "native", "macos", "localscribe-fluidaudio-parakeet"),
+    resources,
+    "FluidAudio helper",
+  );
+  const buildTag = readFileSync(
+    path.join(resources, "python-runtime", distribution, "BUILD"),
+    "utf8",
+  ).trim();
+  if (buildTag !== expectedBuildTag) {
+    throw new Error("Runtime SBOM candidate CPython release does not match its source pin.");
+  }
+  return {
+    cpython: {
+      directory: distribution,
+      buildTag,
+      interpreterPath,
+      sha256: createHash("sha256").update(readFileSync(interpreterPath)).digest("hex"),
+    },
+    fluidAudioHelperSha256: createHash("sha256")
+      .update(readFileSync(helperPath))
+      .digest("hex"),
+  };
+}
+
 function npmPackageLockPath(name) {
   return `node_modules/${name}`;
 }
@@ -139,6 +222,10 @@ const runtimeVersions = resolveRuntimeVersions({
     "utf8",
   ),
 });
+const cpythonPin = resolveCPythonPin(
+  readJson("scripts/python-build-standalone.json"),
+  runtimeVersions.python,
+);
 const npmExecPath = process.env.npm_execpath;
 if (!npmExecPath || !path.isAbsolute(npmExecPath)) {
   throw new Error("Runtime SBOM must run through a pinned npm script.");
@@ -171,6 +258,12 @@ if (productionBom.metadata && typeof productionBom.metadata === "object") {
 const appVersion = runtimeVersions.app;
 const electronLocked = runtimeVersions.electron;
 const macPython = runtimeVersions.python;
+const applicationIndex = process.argv.indexOf("--app");
+const applicationPath = applicationIndex >= 0 ? process.argv[applicationIndex + 1] : undefined;
+const sourceOnly = process.argv.includes("--source-only");
+if ((applicationPath ? 1 : 0) + (sourceOnly ? 1 : 0) !== 1) {
+  throw new Error("Runtime SBOM requires exactly one of --app <candidate.app> or --source-only.");
+}
 const platformName = RELEASE_POLICY.targets[platform].label;
 const fluidAudio = resolveFluidAudioDependency({
   packageSwift: readFileSync(
@@ -182,58 +275,147 @@ const fluidAudio = resolveFluidAudioDependency({
     "utf8",
   ),
 });
-const fluidAudioHelperPath = path.join(
-  projectRoot,
-  "resources/native/macos/localscribe-fluidaudio-parakeet",
+const exactNoticeDigest = (relativePath, expectedDigest, label) => {
+  const digest = createHash("sha256")
+    .update(readFileSync(path.join(projectRoot, relativePath)))
+    .digest("hex");
+  if (digest !== expectedDigest) {
+    throw new Error(`${label} notice does not match the exact pinned FluidAudio source bytes.`);
+  }
+  return digest;
+};
+const fastClusterNoticeDigest = exactNoticeDigest(
+  "resources/licenses/FluidAudio-0.15.5-fastcluster-LICENSE.md",
+  "67594dbe4a7477719c8160373e7767c2c319ef966a6042f76846a18af02cde0a",
+  "FastCluster",
+);
+const vbxNoticeDigest = exactNoticeDigest(
+  "resources/licenses/FluidAudio-0.15.5-vbx-LICENSE.md",
+  "08e57fdb5187c816e937916f1e176aadb400ca76f4b3b493d69730ec8f10dd80",
+  "VBx",
 );
 /*
  * On macOS the bundled interpreter is a release input, so the SBOM names the
  * exact python-build-standalone build and hashes the binary that shipped. The
- * runtime is built by `npm run worker:bundle` before the package gate ever
- * asks for an SBOM; running the generator on a checkout that has not built it
- * yet still produces the version-only component rather than failing, and says
- * so by omitting the distribution properties.
+ * Candidate generation reads only the signed application's copy. Source-only
+ * generation retains the exact source-archive pin but deliberately omits a
+ * shipped-binary digest because no candidate artifact was supplied.
  */
-const cpythonDistribution = existsSync(
-  path.join(projectRoot, "resources/python-runtime", `cpython-${macPython}-macos-aarch64-none`),
-)
-  ? bundledCPythonDistribution({
-    runtimeRoot: path.join(projectRoot, "resources/python-runtime"),
-    version: macPython,
-    readBuildTag: (buildPath) => readFileSync(buildPath, "utf8"),
-    readInterpreter: (interpreterPath) => readFileSync(interpreterPath),
-  })
+const packagedRuntime = applicationPath
+  ? packagedRuntimeIdentity({
+      applicationPath,
+      version: macPython,
+      expectedBuildTag: cpythonPin.buildTag,
+    })
   : null;
-const helperName = "native/macos/active-target";
-const supplementalComponents = [
+const cpythonDistribution = packagedRuntime?.cpython ?? null;
+const activeTargetHelperName = "native/macos/active-target";
+const fluidAudioHelperName = "native/macos/localscribe-fluidaudio-parakeet";
+const fluidAudioReference = `fluidaudio@${fluidAudio.version}+${fluidAudio.revision}`;
+const fluidAudioHelperReference = `${fluidAudioHelperName}@${appVersion}`;
+const fastClusterReference = `fastcluster@embedded-in-fluidaudio-${fluidAudio.revision}`;
+const vbxReference = `vbx@embedded-in-fluidaudio-${fluidAudio.revision}`;
+const electronComponent = {
+  type: "framework",
+  "bom-ref": `electron@${electronLocked}`,
+  name: "electron",
+  version: electronLocked,
+  purl: `pkg:npm/electron@${electronLocked}`,
+  properties: [{ name: "com.localscribe.runtime-role", value: "desktop-shell" }],
+};
+const fluidAudioComponent = {
+  type: "library",
+  "bom-ref": fluidAudioReference,
+  name: "FluidAudio",
+  version: fluidAudio.version,
+  purl: `pkg:github/FluidInference/FluidAudio@${fluidAudio.revision}`,
+  licenses: [{ license: { id: "Apache-2.0" } }],
+  externalReferences: [{
+    type: "vcs",
+    url: `https://github.com/FluidInference/FluidAudio.git@${fluidAudio.revision}`,
+  }],
+  properties: [
+    { name: "com.localscribe.runtime-role", value: "statically-linked-speech-runtime" },
+  ],
+};
+const fluidAudioEmbeddedComponents = [
   {
-    type: "framework",
-    "bom-ref": `electron@${electronLocked}`,
-    name: "electron",
-    version: electronLocked,
-    purl: `pkg:npm/electron@${electronLocked}`,
-    properties: [{ name: "com.localscribe.runtime-role", value: "desktop-shell" }],
+    type: "library",
+    "bom-ref": fastClusterReference,
+    name: "FastCluster",
+    licenses: [{ license: { id: "BSD-2-Clause" } }],
+    externalReferences: [{
+      type: "vcs",
+      url: "https://github.com/fastcluster/fastcluster",
+    }],
+    properties: [
+      { name: "com.localscribe.runtime-role", value: "embedded-native-clustering-source" },
+      { name: "com.localscribe.embedded-by", value: fluidAudioReference },
+      {
+        name: "com.localscribe.implementation-source-path",
+        value: "Sources/FastClusterWrapper/fastcluster_internal.hpp",
+      },
+      {
+        name: "com.localscribe.notice-source-path",
+        value: "ThirdPartyLicenses/fastcluster-LICENSE.md",
+      },
+      {
+        name: "com.localscribe.packaged-notice-path",
+        value: "licenses/FluidAudio-0.15.5-fastcluster-LICENSE.md",
+      },
+      { name: "com.localscribe.packaged-notice-sha256", value: fastClusterNoticeDigest },
+    ],
   },
   {
-        type: "library",
-        "bom-ref": `fluidaudio@${fluidAudio.version}+${fluidAudio.revision}`,
-        name: "FluidAudio",
-        version: fluidAudio.version,
-        purl: `pkg:github/FluidInference/FluidAudio@${fluidAudio.revision}`,
-        externalReferences: [{
-          type: "vcs",
-          url: `https://github.com/FluidInference/FluidAudio.git@${fluidAudio.revision}`,
-        }],
-        properties: [
-          { name: "com.localscribe.runtime-role", value: "parakeet-coreml-ane-engine" },
-          { name: "com.localscribe.helper-protocol", value: "1" },
-          ...(existsSync(fluidAudioHelperPath)
-            ? [{
-                name: "com.localscribe.helper-sha256",
-                value: createHash("sha256").update(readFileSync(fluidAudioHelperPath)).digest("hex"),
-              }]
-            : []),
-        ],
+    type: "library",
+    "bom-ref": vbxReference,
+    name: "VBx",
+    licenses: [{ license: { id: "Apache-2.0" } }],
+    externalReferences: [{
+      type: "vcs",
+      url: "https://github.com/BUTSpeechFIT/VBx",
+    }],
+    properties: [
+      { name: "com.localscribe.runtime-role", value: "embedded-algorithm-implementation" },
+      { name: "com.localscribe.embedded-by", value: fluidAudioReference },
+      {
+        name: "com.localscribe.implementation-kind",
+        value: "FluidAudio Swift implementation based on the upstream VBx algorithm",
+      },
+      {
+        name: "com.localscribe.implementation-source-path",
+        value: "Sources/FluidAudio/Diarizer/Offline/Clustering/VBxClustering.swift",
+      },
+      {
+        name: "com.localscribe.notice-source-path",
+        value: "ThirdPartyLicenses/vbx-LICENSE.md",
+      },
+      {
+        name: "com.localscribe.packaged-notice-path",
+        value: "licenses/FluidAudio-0.15.5-vbx-LICENSE.md",
+      },
+      { name: "com.localscribe.packaged-notice-sha256", value: vbxNoticeDigest },
+    ],
+  },
+];
+const rootSupplementalComponents = [
+  electronComponent,
+  {
+    type: "application",
+    "bom-ref": fluidAudioHelperReference,
+    name: fluidAudioHelperName,
+    version: appVersion,
+    purl: `pkg:generic/localscribe-fluidaudio-parakeet@${appVersion}?platform=${platformName}`,
+    properties: [
+      { name: "com.localscribe.runtime-role", value: "parakeet-coreml-ane-helper" },
+      { name: "com.localscribe.helper-protocol", value: "1" },
+      ...(packagedRuntime
+        ? [{
+            name: "com.localscribe.helper-sha256",
+            value: packagedRuntime.fluidAudioHelperSha256,
+          }]
+        : []),
+    ],
   },
   {
     type: "platform",
@@ -254,19 +436,46 @@ const supplementalComponents = [
               name: "com.localscribe.cpython-build-tag",
               value: cpythonDistribution.buildTag,
             },
+            {
+              name: "com.localscribe.cpython-source-archive-sha256",
+              value: cpythonPin.sha256,
+            },
+            {
+              name: "com.localscribe.cpython-source-url",
+              value: cpythonPin.url,
+            },
           ],
         }
-      : { properties: [{ name: "com.localscribe.runtime-role", value: "worker-interpreter" }] }),
+      : {
+          properties: [
+            { name: "com.localscribe.runtime-role", value: "worker-interpreter" },
+            { name: "com.localscribe.cpython-build-tag", value: cpythonPin.buildTag },
+            {
+              name: "com.localscribe.cpython-source-archive-sha256",
+              value: cpythonPin.sha256,
+            },
+            { name: "com.localscribe.cpython-source-url", value: cpythonPin.url },
+          ],
+        }),
   },
   {
     type: "application",
-    "bom-ref": `${helperName}@${appVersion}`,
-    name: helperName,
+    "bom-ref": `${activeTargetHelperName}@${appVersion}`,
+    name: activeTargetHelperName,
     version: appVersion,
     purl: `pkg:generic/localscribe-active-target@${appVersion}?platform=${platformName}`,
     properties: [{ name: "com.localscribe.runtime-role", value: "target-bound-paste-helper" }],
   },
 ];
+const supplementalComponents = [
+  ...rootSupplementalComponents,
+  fluidAudioComponent,
+  ...fluidAudioEmbeddedComponents,
+];
+const supplementalDependencyEdges = new Map([
+  [fluidAudioHelperReference, [fluidAudioReference]],
+  [fluidAudioReference, [fastClusterReference, vbxReference]],
+]);
 
 // npm can mark a direct production package as `peer: true` when a development
 // tool also peers on the same package. `npm sbom --omit=dev` then omits that
@@ -328,13 +537,14 @@ rootDependency.dependsOn = [
   ...new Set([
     ...rootDependency.dependsOn,
     ...recoveredProductionComponents.map(componentReference),
-    ...supplementalComponents.map(componentReference),
+    ...rootSupplementalComponents.map(componentReference),
   ]),
 ].sort();
 for (const component of [...recoveredProductionComponents, ...supplementalComponents]) {
+  const reference = componentReference(component);
   productionBom.dependencies.push({
-    ref: componentReference(component),
-    dependsOn: [],
+    ref: reference,
+    dependsOn: supplementalDependencyEdges.get(reference) ?? [],
   });
 }
 productionBom.dependencies.sort((left, right) => String(left.ref).localeCompare(String(right.ref)));

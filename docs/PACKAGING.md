@@ -47,7 +47,9 @@ user manifests, custom loaders, or extra manifest paths.
 11. Verify main, preload, renderer assets, identity, and provenance in ASAR.
 12. Verify bundle identity, macOS deployment floor, arm64 slices, Electron
     fuses, ASAR header hash, exact entitlements, and deep signature.
-13. Open the DMG and ZIP and prove each contains the exact staged signed app.
+13. Preflight the ZIP's canonical paths, Unix modes, expansion bounds, and
+    in-bundle relative symlinks before extraction; then open the DMG and ZIP and
+    prove each contains the exact staged signed app.
 14. Require the DMG `/Applications` link.
 15. Generate and verify macOS runtime/Python SBOMs and SHA-256 checksums.
 
@@ -84,6 +86,11 @@ helper builders, entitlements, package inventory, bundle/artifact verifiers,
 SBOM generation, packaged smoke, and the macOS gate itself. A checker change
 therefore invalidates the package it approved.
 
+Native helpers are built under ignored `out/runtime-staging/`. Forge promotes
+them atomically only for signing and copying, then restores and verifies the
+tracked recovery inputs byte-for-byte and mode-for-mode, including failure and
+process-exit paths.
+
 The packaged real-model smoke resolves its interpreter, worker, manifests, and
 FluidAudio helper only from the candidate app. Its default path is offline and
 read-only against the supplied model root. A pending install transaction is
@@ -92,12 +99,21 @@ cache.
 
 ## Entitlements and signing
 
-`resources/entitlements.mac.plist` is an exact allowlist. The gate rejects
-undeclared entitlements and hardened-runtime escapes such as
-`com.apple.security.get-task-allow` and
-`com.apple.security.cs.disable-library-validation`. Standalone helpers use
-narrow role-specific entitlement profiles instead of inheriting the Electron
-main process grants.
+Every signed Mach-O has a role-specific exact entitlement allowlist. The main
+app is compared key-for-key and value-for-value with
+`resources/entitlements.mac.plist`; renderer, GPU, and utility helpers are
+compared with `resources/entitlements.mac.helper.plist`; and standalone native
+helpers and the bundled Python runtime must carry no entitlements.
+
+Electron's Plugin helper is the only exception to the general ban on
+`com.apple.security.cs.allow-unsigned-executable-memory` and
+`com.apple.security.cs.disable-library-validation`. It is compared exactly with
+`resources/entitlements.mac.plugin.plist`, which permits only those two
+capabilities. The exception does not apply to any other process and does not
+permit universally forbidden capabilities such as
+`com.apple.security.get-task-allow`. Any undeclared entitlement, changed value,
+unrecognized nested application, unchecked nested helper Mach-O, or role
+mismatch fails the gate.
 
 Apple Development and ad-hoc signatures establish only local/private
 validation identity. They do not prove Developer ID signing, notarization,
@@ -105,9 +121,16 @@ stapling, or general Gatekeeper acceptance.
 
 ## Runtime SBOM
 
-The CPython component records its exact python-build-standalone distribution,
-release tag, and interpreter SHA-256, not merely the CPython version number.
-Tests re-hash the interpreter and compare it with the generated SBOM.
+The CPython source is pinned to one python-build-standalone release URL and
+archive SHA-256. The core SBOM records that pin and hashes the exact signed
+interpreter and FluidAudio helper inside the candidate app, not restored source
+bytes. The companion Python SBOM is reconciled against packaged `.dist-info`
+metadata and records the one compatible wheel URL and lock SHA-256 selected for
+each installed distribution; non-installed platform alternatives are removed.
+
+`SHA256SUMS.txt` uses flat release asset basenames even though Forge keeps local
+DMG and ZIP outputs in nested build directories. A downloaded set of the five
+release assets can therefore be verified with standard `shasum -a 256 -c`.
 
 Product name, version, repository, bundle identity, supported target, artifact
 filenames, SBOM filenames, and checksum filename come from `package.json` and

@@ -4,6 +4,8 @@ import type {
   ClipboardPort,
   ClipboardSnapshot,
   InsertionOutcome,
+  InsertionReasonCode,
+  InsertionResult,
   PasteInjectionResult,
   PasteInjector,
   PlatformInsertionBridge,
@@ -46,6 +48,51 @@ function clipboardAdvancedExactlyOnce(
 ): boolean {
   if (!Number.isSafeInteger(before) || !Number.isSafeInteger(after)) return false;
   return before >= 0 && after === before + 1;
+}
+
+function initialTargetFailure(target: ActiveTarget): InsertionReasonCode | null {
+  // Check editability before identity availability so a non-editable starting
+  // control is diagnosed accurately even when Accessibility omits fingerprints.
+  if (target.focusedEditable == null) return "initial_target_editability_unavailable";
+  if (!target.focusedEditable) return "initial_target_not_editable";
+  if (target.windowFingerprint === null) return "initial_window_identity_unavailable";
+  if (typeof target.focusedElementFingerprint !== "string") {
+    return "initial_control_identity_unavailable";
+  }
+  return null;
+}
+
+function currentTargetFailure(
+  expected: ActiveTarget,
+  current: ActiveTarget,
+): InsertionReasonCode | null {
+  if (
+    expected.platform !== current.platform
+    || expected.processId !== current.processId
+    || expected.applicationId !== current.applicationId
+  ) {
+    return "app_process_target_changed";
+  }
+  // As above, editability is evidence in its own right and is checked before
+  // opaque identity availability. No target metadata leaves this function.
+  if (current.focusedEditable == null) return "current_target_editability_unavailable";
+  if (!current.focusedEditable) return "current_target_not_editable";
+  if (current.windowFingerprint === null) return "current_window_identity_unavailable";
+  if (expected.windowFingerprint !== current.windowFingerprint) return "current_window_changed";
+  if (typeof current.focusedElementFingerprint !== "string") {
+    return "current_control_identity_unavailable";
+  }
+  if (expected.focusedElementFingerprint !== current.focusedElementFingerprint) {
+    return "current_control_changed";
+  }
+  return null;
+}
+
+function result(
+  outcome: InsertionOutcome,
+  reason?: InsertionReasonCode,
+): InsertionResult {
+  return reason === undefined ? { outcome } : { outcome, reason };
 }
 
 export class SafeInsertionCoordinator {
@@ -127,7 +174,7 @@ export class SafeInsertionCoordinator {
     }
   }
 
-  insert(text: string, autoPaste: boolean): Promise<InsertionOutcome> {
+  insert(text: string, autoPaste: boolean): Promise<InsertionResult> {
     const insertionGeneration = this.activeSessionGeneration;
     const targetAtStart = this.pendingTarget;
     this.pendingTarget = null;
@@ -136,19 +183,24 @@ export class SafeInsertionCoordinator {
       // Queue entries cannot be removed once an earlier insertion is running,
       // so bind every entry to the session that created it. Cancellation or a
       // newer dictation invalidates the entry before it can touch the clipboard.
-      if (!this.isCurrentSession(insertionGeneration)) return "copied";
+      if (!this.isCurrentSession(insertionGeneration)) return result("copied", "session_invalidated");
 
       if (!autoPaste) {
-        if (!this.isCurrentSession(insertionGeneration)) return "copied";
+        if (!this.isCurrentSession(insertionGeneration)) return result("copied", "session_invalidated");
         this.clipboard.writeText(text);
-        return "copied";
+        return result("copied", "automatic_paste_disabled");
       }
 
       const expectedTarget = targetAtStart ? await targetAtStart : null;
-      if (!this.isCurrentSession(insertionGeneration)) return "copied";
+      if (!this.isCurrentSession(insertionGeneration)) return result("copied", "session_invalidated");
       if (!expectedTarget) {
         this.clipboard.writeText(text);
-        return "copied";
+        return result("copied", "initial_target_unavailable");
+      }
+      const initialFailure = initialTargetFailure(expectedTarget);
+      if (initialFailure) {
+        this.clipboard.writeText(text);
+        return result("copied", initialFailure);
       }
 
       // Bracket the snapshot with native sequence reads. If another process
@@ -156,96 +208,88 @@ export class SafeInsertionCoordinator {
       // potentially mixed/stale snapshot and fall back to copy-only.
       let originalClipboard: ClipboardSnapshot;
       const sequenceBeforeSnapshot = await this.platformBridge.clipboardSequence().catch(() => null);
-      if (!this.isCurrentSession(insertionGeneration)) return "copied";
+      if (!this.isCurrentSession(insertionGeneration)) return result("copied", "session_invalidated");
       try {
         originalClipboard = this.clipboard.snapshot();
       } catch {
-        if (!this.isCurrentSession(insertionGeneration)) return "copied";
+        if (!this.isCurrentSession(insertionGeneration)) return result("copied", "session_invalidated");
         this.clipboard.writeText(text);
-        return "copied";
+        return result("copied", "clipboard_snapshot_failed");
       }
       const sequenceAfterSnapshot = await this.platformBridge.clipboardSequence().catch(() => null);
-      if (!this.isCurrentSession(insertionGeneration)) return "copied";
+      if (!this.isCurrentSession(insertionGeneration)) return result("copied", "session_invalidated");
       if (
         sequenceBeforeSnapshot === null ||
-        sequenceAfterSnapshot === null ||
-        sequenceBeforeSnapshot !== sequenceAfterSnapshot
+        sequenceAfterSnapshot === null
       ) {
         this.clipboard.writeText(text);
-        return "copied";
+        return result("copied", "clipboard_sequence_unavailable");
+      }
+      if (sequenceBeforeSnapshot !== sequenceAfterSnapshot) {
+        this.clipboard.writeText(text);
+        return result("copied", "clipboard_changed");
       }
 
       // Always leave the transcription available to the user. Capture the
       // target after the write so the identity check is as close to paste as
       // possible.
-      if (!this.isCurrentSession(insertionGeneration)) return "copied";
+      if (!this.isCurrentSession(insertionGeneration)) return result("copied", "session_invalidated");
       this.clipboard.writeText(text);
       const sequenceAfterWrite = await this.platformBridge.clipboardSequence().catch(() => null);
-      if (!this.isCurrentSession(insertionGeneration)) return "copied";
-      if (
-        sequenceAfterWrite === null ||
-        !clipboardAdvancedExactlyOnce(
-          sequenceAfterSnapshot,
-          sequenceAfterWrite,
-        )
-      ) {
+      if (!this.isCurrentSession(insertionGeneration)) return result("copied", "session_invalidated");
+      if (sequenceAfterWrite === null) {
+        return result("copied", "clipboard_sequence_unavailable");
+      }
+      if (!clipboardAdvancedExactlyOnce(sequenceAfterSnapshot, sequenceAfterWrite)) {
         // Our synchronous clipboard write must be the only change since the
         // stable snapshot boundary. Otherwise a concurrent writer may have
         // replaced the text before this first post-write sequence read.
-        return "copied";
+        return result("copied", "clipboard_changed");
       }
       const currentTarget = await this.platformBridge.captureActiveTarget().catch(() => null);
-      if (!this.isCurrentSession(insertionGeneration)) return "copied";
+      if (!this.isCurrentSession(insertionGeneration)) return result("copied", "session_invalidated");
       const sequenceBeforePaste = await this.platformBridge.clipboardSequence().catch(() => null);
-      if (!this.isCurrentSession(insertionGeneration)) return "copied";
-      if (
-        !currentTarget ||
-        !sameTarget(expectedTarget, currentTarget) ||
-        sequenceAfterWrite === null ||
-        sequenceBeforePaste !== sequenceAfterWrite
-      ) {
-        return "copied";
-      }
-
-      // On macOS, do not send Command-V to a button, browser chrome, the
-      // desktop, or another non-editable control. If Accessibility cannot
-      // identify a writable focused element, retaining the transcription on
-      // the clipboard is the safe and predictable fallback.
-      if (currentTarget.focusedEditable !== true) {
-        return "copied";
-      }
+      if (!this.isCurrentSession(insertionGeneration)) return result("copied", "session_invalidated");
+      if (!currentTarget) return result("copied", "current_target_unavailable");
+      const currentFailure = currentTargetFailure(expectedTarget, currentTarget);
+      if (currentFailure) return result("copied", currentFailure);
+      if (sequenceBeforePaste === null) return result("copied", "clipboard_sequence_unavailable");
+      if (sequenceBeforePaste !== sequenceAfterWrite) return result("copied", "clipboard_changed");
 
       let injection: PasteInjectionResult;
       try {
-        if (!this.isCurrentSession(insertionGeneration)) return "copied";
+        if (!this.isCurrentSession(insertionGeneration)) return result("copied", "session_invalidated");
         // Carry the target captured at dictation start across the final native
         // boundary. The helper recaptures and compares it immediately before
-        // dispatch, closing the focus-change gap after this TypeScript check.
+        // dispatch, shrinking the focus-change interval after this TypeScript
+        // check. macOS provides no atomic compare-and-CGEvent-post operation.
         injection = await this.pasteInjector.paste(
           expectedTarget,
           sequenceBeforePaste,
         );
       } catch {
-        return "copied";
+        return result("copied", "paste_injection_failed");
       }
       // A native paste already dispatched before cancellation cannot be
       // recalled. Do prevent all subsequent acknowledgement/restore work.
-      if (!this.isCurrentSession(insertionGeneration)) return "copied";
+      if (!this.isCurrentSession(insertionGeneration)) return result("copied", "session_invalidated");
 
       // A dispatched key event is not proof that the target has consumed the
       // clipboard. In the absence of a target-consumption acknowledgment, the
       // dictated text deliberately remains available on the clipboard.
       if (injection.status !== "injected" || !injection.consumptionAcknowledgement) {
-        return injection.status === "injected" ? "pasted-with-copy" : "copied";
+        return injection.status === "injected"
+          ? result("pasted-with-copy", "paste_acknowledgement_unavailable")
+          : result("copied", injection.reason ?? "paste_injection_failed");
       }
 
       if (!await this.waitForConsumptionAcknowledgement(injection.consumptionAcknowledgement)) {
-        return "pasted-with-copy";
+        return result("pasted-with-copy", "paste_acknowledgement_failed");
       }
-      if (!this.isCurrentSession(insertionGeneration)) return "pasted-with-copy";
+      if (!this.isCurrentSession(insertionGeneration)) return result("pasted-with-copy", "session_invalidated");
 
       const sequenceBeforeRestore = await this.platformBridge.clipboardSequence().catch(() => null);
-      if (!this.isCurrentSession(insertionGeneration)) return "pasted-with-copy";
+      if (!this.isCurrentSession(insertionGeneration)) return result("pasted-with-copy", "session_invalidated");
 
       // Sequence numbers are deliberately required for restoration. A content
       // comparison cannot distinguish a user copying the same value again.
@@ -259,7 +303,7 @@ export class SafeInsertionCoordinator {
         this.clipboard.restore(originalClipboard);
       }
 
-      return "pasted";
+      return result("pasted");
     });
   }
 }

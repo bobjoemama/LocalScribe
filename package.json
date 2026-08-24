@@ -1,10 +1,10 @@
 {
   "name": "localscribe",
   "productName": "LocalScribe",
-  "version": "0.1.0-dev.9",
+  "version": "0.1.0-dev.12",
   "description": "Private, local-first AI desktop dictation for Apple Silicon Macs.",
   "author": "Devesh",
-  "license": "UNLICENSED",
+  "license": "Apache-2.0",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/bobjoemama/LocalScribe.git"
@@ -51,7 +51,8 @@
     "audit:production": "npm audit --omit=dev --audit-level=high",
     "audit:all": "node scripts/audit-npm-all.mjs",
     "audit:python": "node scripts/audit-python-deps.mjs",
-    "sbom:runtime:macos": "node scripts/generate-runtime-sbom.mjs --platform darwin",
+    "sbom:runtime:macos": "node scripts/generate-runtime-sbom.mjs --platform darwin --source-only",
+    "sbom:runtime:macos:candidate": "node scripts/generate-runtime-sbom.mjs --platform darwin",
     "sbom:python:macos": "uv export --project worker --locked --no-dev --format cyclonedx1.5 --preview-features sbom-export"
   },
   "dependencies": {
@@ -81,7 +82,6 @@
     "electron": "43.2.0",
     "eslint": "10.7.0",
     "eslint-plugin-react-hooks": "7.1.1",
-    "extract-zip": "2.0.1",
     "globals": "17.7.0",
     "typescript": "5.9.3",
     "typescript-eslint": "8.65.0",

@@ -71,6 +71,7 @@ function makeFixture(extraFiles: number, extraDepth = 0): string {
   writeFixtureFile(resourcesPath, policy.runtimeExecutable, "python");
   for (const file of policy.helperFiles) writeFixtureFile(resourcesPath, file);
   for (const file of policy.manifestFiles) writeFixtureFile(resourcesPath, file);
+  for (const file of policy.licenseFiles) writeFixtureFile(resourcesPath, file);
   for (const file of policy.brandingFiles) writeFixtureFile(resourcesPath, file);
 
   const nesting = Array.from({ length: extraDepth }, (_, index) => `deep${index}`).join("/");

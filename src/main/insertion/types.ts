@@ -5,7 +5,11 @@ export interface ActiveTarget {
   windowFingerprint: string | null;
   /** Accessibility can confirm whether the focused control accepts text. */
   focusedEditable?: boolean | null;
-  /** Opaque identity for the exact focused editable control. */
+  /**
+   * Opaque identity for the focused editable control at an observation
+   * boundary. macOS does not make the later Accessibility-check/CGEvent post
+   * atomic, so this supports best-effort paste with copy fallback.
+   */
   focusedElementFingerprint?: string | null;
 }
 
@@ -65,20 +69,60 @@ export interface PasteInjector {
   ): PasteInjectionResult | Promise<PasteInjectionResult>;
 }
 
+/**
+ * `pasted` requires target-consumption acknowledgement. `pasted-with-copy`
+ * means only that macOS accepted the key event; it is not proof that the
+ * intended control consumed it, so dictated text remains copied as fallback.
+ */
 export type InsertionOutcome = "pasted" | "pasted-with-copy" | "copied";
 
-export type PasteFailureReason =
-  | "permission_denied"
-  | "target_unavailable"
-  | "target_changed"
-  | "clipboard_changed"
-  | "event_unavailable"
-  | "helper_unavailable"
-  | "invalid_request"
-  | "invalid_response";
+export const PASTE_FAILURE_REASONS = [
+  "permission_denied",
+  "target_unavailable",
+  "target_changed",
+  "clipboard_changed",
+  "event_unavailable",
+  "helper_unavailable",
+  "invalid_request",
+  "invalid_response",
+] as const;
 
-export type InsertionReasonCode =
-  | "automatic_paste_disabled"
-  | "automatic_paste_unavailable"
-  | "safety_check_declined"
-  | "clipboard_retained";
+export type PasteFailureReason = (typeof PASTE_FAILURE_REASONS)[number];
+
+/**
+ * Closed, privacy-safe insertion classifications. These protocol constants
+ * may be written to diagnostics; they must never contain target identity,
+ * clipboard contents, geometry, window metadata, or dictated text.
+ */
+export const INSERTION_REASON_CODES = [
+  "automatic_paste_disabled",
+  "automatic_paste_unavailable",
+  "session_invalidated",
+  "initial_target_unavailable",
+  "initial_target_editability_unavailable",
+  "initial_target_not_editable",
+  "initial_window_identity_unavailable",
+  "initial_control_identity_unavailable",
+  "current_target_unavailable",
+  "current_target_editability_unavailable",
+  "current_target_not_editable",
+  "current_window_identity_unavailable",
+  "current_window_changed",
+  "current_control_identity_unavailable",
+  "current_control_changed",
+  "app_process_target_changed",
+  "clipboard_snapshot_failed",
+  "clipboard_sequence_unavailable",
+  "paste_injection_failed",
+  "paste_acknowledgement_unavailable",
+  "paste_acknowledgement_failed",
+  ...PASTE_FAILURE_REASONS,
+] as const;
+
+export type InsertionReasonCode = (typeof INSERTION_REASON_CODES)[number];
+
+export interface InsertionResult {
+  readonly outcome: InsertionOutcome;
+  /** Omitted only when the insertion completed without a safety fallback. */
+  readonly reason?: InsertionReasonCode;
+}

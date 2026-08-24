@@ -14,7 +14,10 @@ import { expectPrecedes, requireIndex, sliceBetween, sliceFollowing } from "./su
  */
 
 const modal = readFileSync("src/renderer/settings/screens/StyleSettings.tsx", "utf8");
+const main = readFileSync("src/main.ts", "utf8");
+const preload = readFileSync("src/preload.ts", "utf8");
 const handler = sliceBetween(modal, "const copyDiagnostics = async", "const installModel = async");
+const clearHandler = sliceBetween(modal, "const clearDiagnostics = async", "const copyDiagnostics = async");
 
 describe("what the control tells the user it copied", () => {
   it("says what the trail contains and what it does not", () => {
@@ -122,5 +125,37 @@ describe("the control itself", () => {
     const button = sliceFollowing(actions, "void copyDiagnostics()", "</button>");
 
     expect(button).not.toContain("is-danger");
+  });
+});
+
+describe("clearing the trail", () => {
+  it("routes the API through main instead of exposing a diagnostics path", () => {
+    expect(preload).toContain("ipcRenderer.invoke(IPC.systemClearDiagnostics)");
+    expect(main).toContain("handle(IPC.systemClearDiagnostics, () => diagnostics.clear())");
+    expect(clearHandler).not.toMatch(/node:fs|\b(?:rm|unlink|truncate)\s*\(/u);
+  });
+
+  it("requires confirmation before invoking the Settings-only clear API", () => {
+    expectPrecedes(clearHandler, "window.confirm", "window.localScribe.system.clearDiagnostics()");
+    expect(clearHandler).toContain("if (!window.confirm");
+  });
+
+  it("announces success only after main confirms the clear", () => {
+    expectPrecedes(
+      clearHandler,
+      "await window.localScribe.system.clearDiagnostics()",
+      'setStatus("Diagnostics log cleared")',
+    );
+    expect(clearHandler).toContain("Could not clear the diagnostics log");
+  });
+
+  it("shows the destructive control beside the other diagnostics actions", () => {
+    const actions = sliceFollowing(modal, 'className="ls-data-actions"', "</div>");
+    expect(actions).toContain("Clear diagnostics");
+    expect(actions).toContain("void clearDiagnostics()");
+    expect(sliceFollowing(actions, "void clearDiagnostics()", "</button>"))
+      .toContain("is-danger");
+    expect(sliceFollowing(actions, "void clearDiagnostics()", "</button>"))
+      .not.toMatch(/permanent/iu);
   });
 });

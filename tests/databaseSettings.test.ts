@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import Database from "better-sqlite3";
@@ -22,7 +22,7 @@ import { LocalDatabase } from "../src/main/persistence/database";
 const temporaryDirectories: string[] = [];
 
 function databasePath(): string {
-  const directory = mkdtempSync(path.join(tmpdir(), "localscribe-settings-test-"));
+  const directory = mkdtempSync(path.join(realpathSync(tmpdir()), "localscribe-settings-test-"));
   temporaryDirectories.push(directory);
   return path.join(directory, "test.db");
 }
@@ -192,5 +192,32 @@ describe("model performance settings persistence", () => {
     expect(backupRows).toHaveLength(1);
     expect(backupRows[0]?.value_json).toBe('{"launchAtLogin":true');
     persisted.close();
+  });
+
+  it("fails closed on a future database schema before normalizing stored data", () => {
+    const filePath = databasePath();
+    const initial = new LocalDatabase(filePath);
+    initial.close();
+
+    const future = new Database(filePath);
+    future.prepare(
+      "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)",
+    ).run(999, "future_schema", 1);
+    future.prepare(
+      "INSERT INTO settings (key, value_json, updated_at) VALUES ('app', ?, ?)"
+      + " ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json",
+    ).run("{future-format", 1);
+    future.close();
+
+    expect(() => new LocalDatabase(filePath)).toThrow(/newer than supported/u);
+    const unchanged = new Database(filePath, { readonly: true });
+    const row = unchanged.prepare(
+      "SELECT value_json FROM settings WHERE key = 'app'",
+    ).get() as { value_json: string };
+    expect(row.value_json).toBe("{future-format");
+    expect(unchanged.prepare(
+      "SELECT COUNT(*) AS total FROM settings WHERE key LIKE 'app.corrupt.%'",
+    ).get()).toEqual({ total: 0 });
+    unchanged.close();
   });
 });

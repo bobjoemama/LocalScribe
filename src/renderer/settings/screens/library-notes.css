@@ -226,7 +226,7 @@
 .ln-row--dictionary { grid-template-columns: minmax(150px, .75fr) minmax(190px, 1fr) 36px; }
 .ln-list__heading--snippets,
 .ln-row--snippets { grid-template-columns: minmax(150px, .65fr) minmax(220px, 1.35fr) 36px; }
-.ln-list__heading { min-height: 38px; padding: 0 17px; color: #969087; border-bottom: 1px solid #ebe7e1; background: #f8f6f3; font-size: 10px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; }
+.ln-list__heading { min-height: 38px; padding: 0 17px; color: #68625b; border-bottom: 1px solid #ebe7e1; background: #f8f6f3; font-size: 10px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; }
 .ln-row { min-height: 72px; padding: 13px 17px; border-bottom: 1px solid #ebe7e1; }
 .ln-row:last-child { border-bottom: 0; }
 .ln-row:hover { background: #fcfbf9; }
@@ -244,7 +244,7 @@
 .ln-list-message > span { width: 42px; height: 42px; display: grid; place-items: center; margin-bottom: 14px; color: #7a9189; border-radius: 13px; background: #e9f0ed; }
 .ln-list-message svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round; }
 .ln-list-message strong { color: #34312c; font-size: 14px; }
-.ln-list-message p { margin: 7px 0 0; color: #8a847c; font-size: 12px; }
+.ln-list-message p { margin: 7px 0 0; color: #68625b; font-size: 12px; }
 .ln-error { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0 0 12px; padding: 10px 12px; color: #873f35; border: 1px solid #ebccc6; border-radius: 9px; background: #fff3f1; font-size: 12px; }
 .ln-error > span { min-width: 0; line-height: 1.45; }
 .ln-error .ln-secondary { flex: 0 0 auto; }
@@ -280,7 +280,7 @@
 .ln-modal header p { margin: 8px 0 0; color: #777168; font-size: 13px; line-height: 1.5; }
 .ln-modal__form { display: grid; gap: 18px; margin-top: 25px; }
 .ln-modal__form label { display: grid; gap: 7px; color: #36322e; font-size: 12px; font-weight: 650; }
-.ln-modal__form label small { color: #918b82; font-size: 10px; font-weight: 400; }
+.ln-modal__form label small { color: #68625b; font-size: 10px; font-weight: 400; }
 .ln-modal__form input,
 .ln-modal__form textarea { width: 100%; padding: 11px 12px; color: #24211d; border: 1px solid #d6d0c7; border-radius: 9px; background: #fff; outline: 0; font-size: 13px; }
 .ln-modal__form input:focus,

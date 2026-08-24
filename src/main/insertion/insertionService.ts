@@ -4,6 +4,7 @@ import { SafeInsertionCoordinator } from "./safeInsertion";
 import type {
   ClipboardPort,
   InsertionOutcome,
+  InsertionResult,
   PasteInjector,
   PlatformInsertionBridge,
 } from "./types";
@@ -27,6 +28,7 @@ export class InsertionService {
   private readonly coordinator: SafeInsertionCoordinator;
   private readonly platformBridge: PlatformInsertionBridge;
   private readonly platform: NodeJS.Platform;
+  private helperReadiness: Promise<boolean> | null = null;
 
   constructor(dependencies: InsertionServiceDependencies = {}) {
     this.platform = dependencies.platform ?? process.platform;
@@ -41,7 +43,7 @@ export class InsertionService {
         return this.platformBridge.paste?.(
           expectedTarget,
           expectedClipboardSequence,
-        ) ?? { status: "failed" };
+        ) ?? { status: "failed", reason: "helper_unavailable" };
       },
     };
     this.coordinator = new SafeInsertionCoordinator(
@@ -67,16 +69,29 @@ export class InsertionService {
   }
 
   copyAndPaste(text: string, autoPaste: boolean): Promise<InsertionOutcome> {
+    return this.copyAndPasteDetailed(text, autoPaste).then(({ outcome }) => outcome);
+  }
+
+  /** Detailed result used by privacy-safe diagnostics; public outcome remains unchanged. */
+  copyAndPasteDetailed(text: string, autoPaste: boolean): Promise<InsertionResult> {
     return this.coordinator.insert(text, autoPaste);
   }
 
   pinNativeHelperIntegrity(): boolean {
-    return this.platformBridge.pinExecutableIntegrity?.() ?? false;
+    const pinned = this.platformBridge.pinExecutableIntegrity?.() ?? false;
+    this.helperReadiness = null;
+    return pinned;
   }
 
-  automaticPasteReady(): Promise<boolean> {
-    if (this.platform === "darwin") return this.accessibilityReady();
-    return Promise.resolve(false);
+  async automaticPasteReady(): Promise<boolean> {
+    if (this.platform !== "darwin") return false;
+    this.helperReadiness ??= (this.platformBridge.ready?.() ?? Promise.resolve(false))
+      .catch(() => false);
+    if (!await this.helperReadiness) return false;
+    // Accessibility is intentionally not cached: the user can revoke it while
+    // LocalScribe is running. Both the pinned helper protocol and the current
+    // OS grants must be true at the insertion boundary.
+    return this.accessibilityReady();
   }
 
   accessibilityReady(): Promise<boolean> {

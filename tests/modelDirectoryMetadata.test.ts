@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -179,9 +179,6 @@ describe("the exemption is not a way in", () => {
  * This runs the real Python predicate rather than reading its source.
  */
 describe("both implementations agree", () => {
-  const python = path.resolve("worker/.venv/bin/python");
-  const available = existsSync(python);
-
   const cases: Array<[string, boolean]> = [
     [".DS_Store", true],
     [".localized", true],
@@ -194,28 +191,48 @@ describe("both implementations agree", () => {
     ["._", false],
     ["..", false],
     ["weights.npz.tmp", false],
+    ["encoder/.DS_Store", true],
+    ["encoder/._weights.bin", true],
+    ["encoder/._config.json", false],
   ];
 
-  it.runIf(available).each(cases)("treats %s the same way", (name, expected) => {
-    const expectedNames = new Set(Object.keys(spec.files));
-    expect(isInertDirectoryMetadata(name, expectedNames)).toBe(expected);
+  it("executes the dependency-free Python policy over the same complete case table", () => {
+    const expectedNames = [...Object.keys(spec.files), "encoder/weights.bin"];
+    const typescriptAnswers = cases.map(([name]) =>
+      isInertDirectoryMetadata(name, new Set(expectedNames))
+    );
+    expect(typescriptAnswers).toEqual(cases.map(([, expected]) => expected));
 
-    const answer = execFileSync(
-      python,
+    const pythonAnswers = execFileSync(
+      "uv",
       [
+        "run",
+        "--project",
+        "worker",
+        "--locked",
+        "--only-dev",
+        "python",
+        "-B",
         "-c",
         [
           "import json,sys",
+          "from pathlib import PurePosixPath",
           "sys.path.insert(0, 'worker')",
-          "from localscribe_worker.worker import _is_inert_directory_metadata as f",
-          "print(json.dumps(f(sys.argv[1], frozenset(json.loads(sys.argv[2])))))",
+          "from localscribe_worker.model_metadata import is_inert_model_metadata as f",
+          "cases = json.loads(sys.argv[1])",
+          "expected = frozenset(json.loads(sys.argv[2]))",
+          "print(json.dumps([f(PurePosixPath(name), expected) for name in cases]))",
         ].join("\n"),
-        name,
-        JSON.stringify([...expectedNames]),
+        JSON.stringify(cases.map(([name]) => name)),
+        JSON.stringify(expectedNames),
       ],
-      { encoding: "utf8" },
+      {
+        cwd: path.resolve("."),
+        encoding: "utf8",
+        env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1" },
+      },
     ).trim();
 
-    expect(JSON.parse(answer)).toBe(expected);
+    expect(JSON.parse(pythonAnswers)).toEqual(typescriptAnswers);
   });
 });

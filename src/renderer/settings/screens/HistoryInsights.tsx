@@ -24,6 +24,7 @@ import "./history-insights.css";
 
 type HistoryState = {
   items: Transcription[];
+  skippedUnreadable: number;
   loading: boolean;
   error: string | null;
 };
@@ -138,8 +139,9 @@ const STOP_WORDS = new Set([
 ]);
 
 function useLocalHistory(fallbackError: string): readonly [HistoryState, () => Promise<void>] {
-  const [{ items, loading, error }, setHistory] = useState<HistoryState>({
+  const [{ items, skippedUnreadable, loading, error }, setHistory] = useState<HistoryState>({
     items: [],
+    skippedUnreadable: 0,
     loading: true,
     error: null,
   });
@@ -149,9 +151,14 @@ function useLocalHistory(fallbackError: string): readonly [HistoryState, () => P
     const request = requestGate.current.begin();
     setHistory((current) => ({ ...current, loading: true, error: null }));
     try {
-      const nextItems = await window.localScribe.history.list(MAX_HISTORY_ITEMS);
+      const result = await window.localScribe.history.list(MAX_HISTORY_ITEMS);
       if (!requestGate.current.isLatest(request)) return;
-      setHistory({ items: nextItems, loading: false, error: null });
+      setHistory({
+        items: result.items,
+        skippedUnreadable: result.skippedUnreadable,
+        loading: false,
+        error: null,
+      });
     } catch (loadError) {
       if (!requestGate.current.isLatest(request)) return;
       setHistory((current) => ({
@@ -172,11 +179,30 @@ function useLocalHistory(fallbackError: string): readonly [HistoryState, () => P
     };
   }, [load]);
 
-  return [{ items, loading, error }, load] as const;
+  return [{ items, skippedUnreadable, loading, error }, load] as const;
+}
+
+export function historyIntegrityWarningMessage(skippedUnreadable: number): string | null {
+  if (skippedUnreadable === 0) return null;
+  return `${skippedUnreadable.toLocaleString()} encrypted ${skippedUnreadable === 1 ? "record was" : "records were"} skipped. The readable history below is unchanged; LocalScribe will not overwrite the unreadable records.`;
+}
+
+function HistoryIntegrityWarning({ skippedUnreadable }: { skippedUnreadable: number }) {
+  const message = historyIntegrityWarningMessage(skippedUnreadable);
+  if (!message) return null;
+  return (
+    <div className="hi-integrity-warning" role="alert">
+      <span className="hi-state-icon" aria-hidden="true">!</span>
+      <div>
+        <strong>Some saved history could not be opened</strong>
+        <p>{message}</p>
+      </div>
+    </div>
+  );
 }
 
 export function HistoryScreen() {
-  const [{ items, loading, error }, load] = useLocalHistory("History could not be loaded.");
+  const [{ items, skippedUnreadable, loading, error }, load] = useLocalHistory("History could not be loaded.");
   const [query, setQuery] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
   const [notice, setNotice] = useState<HistoryNotice | null>(null);
@@ -326,6 +352,7 @@ export function HistoryScreen() {
         * happened rather than at the bottom of a scrolled page.
         */}
       <HistoryNoticeSurface notice={notice} onDismiss={() => setNotice(null)} />
+      <HistoryIntegrityWarning skippedUnreadable={skippedUnreadable} />
 
       {searchOpen && (
         <label className="hi-search">
@@ -373,7 +400,7 @@ export function HistoryScreen() {
       </section>
 
       <div className="hi-history-layout">
-        <main className="hi-history-feed">
+        <section className="hi-history-feed" aria-label="Dictation history">
           <div className="hi-section-title">
             <div>
               <h2>{query ? "Search results" : "Recent dictations"}</h2>
@@ -443,7 +470,7 @@ export function HistoryScreen() {
               </div>
             </section>
           ))}
-        </main>
+        </section>
 
         <aside className="hi-history-aside" aria-label="Dictation statistics">
           <section className="hi-aside-card">
@@ -476,7 +503,7 @@ export function HistoryScreen() {
 }
 
 export function InsightsScreen() {
-  const [{ items, loading, error }, load] = useLocalHistory("Insights could not be calculated.");
+  const [{ items, skippedUnreadable, loading, error }, load] = useLocalHistory("Insights could not be calculated.");
   const [tab, setTab] = useState<InsightTab>("usage");
   const [range, setRange] = useState<InsightRange>("30d");
   const [historySavingEnabled, setHistorySavingEnabled] = useState<HistorySavingState>("loading");
@@ -526,6 +553,8 @@ export function InsightsScreen() {
         </div>
         <span className="hi-local-chip"><span /> Calculated locally</span>
       </header>
+
+      <HistoryIntegrityWarning skippedUnreadable={skippedUnreadable} />
 
       <div className="hi-tabs" role="tablist" aria-label="Insight views">
         <button

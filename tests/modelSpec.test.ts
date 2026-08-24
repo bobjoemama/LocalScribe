@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -8,6 +9,8 @@ import {
   loadRuntimeModelCatalog,
   loadRuntimePlatformModelCatalog,
   loadRuntimeModelSpec,
+  manifestForWorkerSelection,
+  MAX_MANIFEST_FILE_ENTRIES,
   modelManifestPath,
   modelSpecSchema,
   runtimeModelTier,
@@ -43,6 +46,39 @@ function sha256(value: string): string {
 }
 
 describe("packaged model specifications", () => {
+  it("uses the same bounded manifest file ceiling as the standalone Python worker", () => {
+    const worker = readFileSync("worker/localscribe_worker/worker.py", "utf8");
+    const match = /MAX_MANIFEST_FILE_ENTRIES = (\d+)/u.exec(worker);
+    expect(MAX_MANIFEST_FILE_ENTRIES).toBe(64);
+    expect(Number(match?.[1])).toBe(MAX_MANIFEST_FILE_ENTRIES);
+  });
+
+  it("resolves worker manifests only for exact model, tier, compute, and declared mode", () => {
+    const catalog = loadRuntimePlatformModelCatalog(
+      path.resolve("resources/model-manifest"),
+      "darwin",
+      "arm64",
+    );
+    const parakeet = catalog.families["parakeet-unified-en-0-6b"]!;
+    const medium = runtimeModelTier(parakeet, "medium");
+    const exact = {
+      modelId: medium.manifest.modelId,
+      tier: medium.tier,
+      computeType: "coreml-int8" as const,
+      asrMode: "live" as const,
+    };
+
+    expect(manifestForWorkerSelection(catalog, exact)).toBe(medium.manifest);
+    expect(manifestForWorkerSelection(catalog, { ...exact, computeType: "int8" })).toBeNull();
+    expect(manifestForWorkerSelection(catalog, { ...exact, tier: "high" })).toBeNull();
+    const whisper = runtimeModelTier(catalog.families["whisper-large-v3"]!, "high");
+    expect(manifestForWorkerSelection(catalog, {
+      modelId: whisper.manifest.modelId,
+      tier: "high",
+      computeType: "float16",
+      asrMode: "live",
+    })).toBeNull();
+  });
   it("chooses the platform recommendation only for fresh runtime defaults", () => {
     const manifests = path.resolve("resources/model-manifest");
     const mac = defaultSettingsForRuntimeCatalog(

@@ -153,3 +153,20 @@ describe("shortcut recorder keyboard focus", () => {
     expectPrecedes(effect, "activeElement: document.activeElement", "buttonRef.current?.focus()");
   });
 });
+
+describe("shortcut recorder failed native capture", () => {
+  const source = readFileSync("src/renderer/settings/components/ShortcutRecorder.tsx", "utf8");
+
+  it("invalidates the rejected attempt before clearing the visible capture state", () => {
+    const rejection = sliceBetween(
+      source,
+      "beginCapture().catch((captureError: unknown)",
+      '"Shortcut recording could not start. Try again.",',
+      "ShortcutRecorder.tsx",
+    );
+
+    expectPrecedes(rejection, "captureId.current += 1", "capturingRef.current = false");
+    expect(rejection).toContain('lastShortcut.current = ""');
+    expect(rejection).toContain('setLiveShortcut("")');
+  });
+});

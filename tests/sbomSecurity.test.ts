@@ -15,6 +15,9 @@ describe("platform SBOM generation", () => {
     };
 
     expect(packageJson.scripts["sbom:runtime:macos"]).toBe(
+      "node scripts/generate-runtime-sbom.mjs --platform darwin --source-only",
+    );
+    expect(packageJson.scripts["sbom:runtime:macos:candidate"]).toBe(
       "node scripts/generate-runtime-sbom.mjs --platform darwin",
     );
     expect(packageJson.scripts["sbom:python:macos"]).toBe(
@@ -26,19 +29,20 @@ describe("platform SBOM generation", () => {
     const localMacVerification = projectFile("scripts/verify-local-macos.sh");
 
     expect(localMacVerification.match(
-      /npm run --silent sbom:runtime:macos/g,
+      /npm run --silent sbom:runtime:macos:candidate/g,
     )).toHaveLength(1);
     expect(localMacVerification.match(
       /npm run --silent sbom:python:macos/g,
     )).toHaveLength(1);
     expect(localMacVerification).toContain("core_sbom");
     expect(localMacVerification).toContain("python_sbom");
+    expect(localMacVerification).toContain("reconcile-python-sbom.py");
+    expect(localMacVerification).toContain('--app "$app_path"');
     expect(localMacVerification).toContain("release-metadata.mjs");
     expect(localMacVerification).toContain("set -euo pipefail");
     expect(localMacVerification).toContain("checksum_path");
-    expect(localMacVerification).toContain(
-      'shasum -a 256 -c "$(basename "$checksum_path")"',
-    );
+    expect(localMacVerification).toContain("asset_name=\"$(basename \"$artifact\")\"");
+    expect(localMacVerification).toContain("verify-release-assets.mjs --platform darwin --candidate");
   });
 
 

@@ -1,9 +1,10 @@
 # macOS local verification and release procedure
 
-LocalScribe's supported release target is Apple Silicon macOS. Verification and
-candidate creation happen locally; there is no hosted CI/CD pipeline. A passing
-command is evidence only for the exact checkout, Mac, macOS version, and
-artifact it exercised.
+LocalScribe's supported release target is Apple Silicon macOS. A read-only
+GitHub Actions workflow runs source verification for non-draft pull requests to
+`main`; candidate creation and all packaged-app verification happen locally. A
+passing command is evidence only for the exact checkout, Mac, macOS version,
+and artifact it exercised.
 
 ## Clean checkout and toolchain
 
@@ -26,18 +27,25 @@ npm run verify:local
 
 The source gate verifies the toolchain, production and complete dependency
 graphs, committed Python locks, dependency audits, ESLint, Ruff, TypeScript,
-worker tests, and Vitest. It is source evidence, not packaged or physical
-workflow evidence.
+and Vitest, including dependency-free cross-language policy checks. Full Python
+worker tests run later against the bundled runtime in the macOS package gate.
+Source verification is not packaged or physical workflow evidence.
 
-`npm run ci` is an alias for the source gates. Install the pre-push hook once
-per clone:
+`npm run ci` is an alias for the source gates and is the exact entry point used
+by hosted pull-request CI. The workflow has read-only repository permission,
+uses SHA-pinned actions, receives no release secrets, uploads no artifacts, and
+does not persist checkout credentials or hosted caches, and never runs on
+`pull_request_target`. Its stable required-check name is `Source verification`,
+and uv is forbidden from downloading an implicit Python runtime. Install the
+pre-push hook once per clone:
 
 ```sh
 npm run hooks:install
 ```
 
-The hook runs source CI. It deliberately does not run the slower macOS package
-gate, which must be run separately before a binary is staged.
+The hook runs the same source CI before a push. Neither source-CI path runs the
+slower macOS package gate, which must be run separately before a binary is
+staged.
 
 ## Complete macOS verification
 
@@ -56,9 +64,11 @@ The command:
 5. inventories ASAR, renderer assets, native modules, and loose resources;
 6. verifies bundle identity, arm64 slices, fuses, exact entitlements, and deep
    signatures;
-7. proves the DMG and ZIP contain the exact staged app;
+7. preflights the ZIP before extraction and proves the DMG and ZIP contain the
+   exact staged app;
 8. runs worker tests with the bundled runtime;
-9. emits CycloneDX runtime and Python SBOMs;
+9. emits CycloneDX runtime and Python SBOMs bound to the exact packaged native
+   binaries, installed Python inventory, and selected locked wheel hashes;
 10. writes and verifies the versioned checksum manifest.
 
 Outputs remain under `out/`. A normal build may use Apple Development or ad-hoc
@@ -133,9 +143,9 @@ Before any GitHub mutation:
 6. create a draft prerelease and review its description and assets before
    publication.
 
-No local command automatically creates a GitHub Release or update feed. If an
-asset name already exists, stop and reconcile it; do not delete or replace a
-reviewed asset in place.
+Neither the source workflow nor any local command automatically creates a
+GitHub Release or update feed. If an asset name already exists, stop and
+reconcile it; do not delete or replace a reviewed asset in place.
 
 ## Binary trust boundary
 

@@ -12,6 +12,8 @@ vi.mock("node:child_process", () => ({
 
 import {
   forgetVerifiedModelDigests,
+  loadRuntimePlatformModelCatalog,
+  manifestForWorkerSelection,
   modelArtifactIsVerifiedNow,
   verifyModelDirectory,
   type ModelSpec,
@@ -245,6 +247,7 @@ describe("the supervisor proves the target before unloading the warm model", () 
                 modelId: request.modelId,
                 tier: request.tier,
                 computeType: request.computeType,
+                asrMode: request.asrMode ?? "after-stop",
                 loadMs: 1,
               });
               break;
@@ -358,6 +361,32 @@ describe("the supervisor proves the target before unloading the warm model", () 
     // Ordering is the whole guarantee: a guard that ran after the unload would
     // report the same failure with the working model already gone.
     expect(lifecycleWhenGuardRan).toEqual([]);
+    await supervisor.shutdown();
+  });
+
+  it("keeps the warm process when target compute or mode does not match a curated manifest", async () => {
+    const catalog = loadRuntimePlatformModelCatalog(
+      path.resolve("resources/model-manifest"),
+      "darwin",
+      "arm64",
+    );
+    const parakeet = catalog.families["parakeet-unified-en-0-6b"]!.tiers.medium!;
+    const supervisor = await warmSupervisor(async (selection) => {
+      if (!manifestForWorkerSelection(catalog, selection)) {
+        throw new Error("model_selection_mismatch");
+      }
+    });
+
+    await expect(supervisor.ensureReady({
+      modelId: parakeet.manifest.modelId,
+      tier: "medium",
+      computeType: "int8",
+      asrMode: "live",
+    })).rejects.toThrow(/model_selection_mismatch/u);
+
+    expect(supervisor.loadedSelection()).toEqual(warm);
+    expect(lifecycle).toEqual([]);
+    expect(requests).toEqual([]);
     await supervisor.shutdown();
   });
 

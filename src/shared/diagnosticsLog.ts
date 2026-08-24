@@ -39,6 +39,35 @@ export type DiagnosticStage = (typeof DIAGNOSTIC_STAGES)[number];
 
 export type DiagnosticOutcome = "ok" | "failed" | "cancelled" | "skipped";
 
+/** Every event name emitted by the current main-process call sites. */
+export const DIAGNOSTIC_EVENTS = [
+  "auto_tier_held",
+  "begin_listening",
+  "copied",
+  "fallback_register",
+  "finalize_watchdog",
+  "global_register",
+  "history_export_partial",
+  "history_retention",
+  "history_save",
+  "install",
+  "pasted",
+  "pasted-with-copy",
+  "renderer_failure",
+  "startup",
+  "shutdown",
+  "switch_refused",
+  "temporary_audio_remove",
+  "toggle_register",
+  "transcribe",
+  "transcribe_admission",
+  "transcribe_payload",
+  "transcribe_prelude",
+  "unknown_event",
+] as const;
+
+export const DIAGNOSTIC_OUTCOMES = ["ok", "failed", "cancelled", "skipped"] as const;
+
 /**
  * One diagnostic record.
  *
@@ -74,34 +103,29 @@ export interface DiagnosticBuildIdentity {
 }
 
 /**
- * The only characters an event name, code, or enum-ish field may contain.
- *
- * Anything outside this set is dropped rather than escaped: a value that needed
- * escaping was not one of the closed-set values this format accepts, and
- * passing it through would be exactly the leak this module exists to prevent.
+ * Strict structural formats for identifiers that cannot come from user text.
+ * Every enum-like event field uses an explicit vocabulary below instead.
  */
-const SAFE_TOKEN = /^[A-Za-z0-9_.:-]{1,64}$/u;
-
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
+const VERSION = /^\d{1,4}\.\d{1,4}\.\d{1,4}(?:-dev\.\d{1,6})?$/u;
+const ELECTRON_VERSION = /^(?:unknown|\d{1,4}\.\d{1,4}\.\d{1,4})$/u;
 
 /**
  * Reduce an arbitrary thrown value to a short, non-identifying code.
  *
  * Error messages in this app carry absolute paths (`/Users/<name>/Library/...`),
  * model URLs, and occasionally the text being inserted. None of that may reach
- * the file, so the message is never used directly: a known error is mapped to
- * its code, and everything else becomes the error's constructor name plus a
- * length, which is enough to distinguish "the same failure every time" from
- * "a different failure each time" without revealing what it said.
+ * the file, so the message is never echoed: a known error is mapped to its
+ * closed code, and everything else becomes the same `unknown_error` token.
  */
 export function normalizeDiagnosticCode(error: unknown): string {
-  if (typeof error === "string" && SAFE_TOKEN.test(error)) return error;
+  if (typeof error === "string" && KNOWN_ERROR_CODES.has(error)) return error;
   const known = knownCodeFor(error);
   if (known !== undefined) return known;
-  if (error instanceof Error) return `${error.name || "Error"}:len${error.message.length}`;
-  if (error === undefined) return "undefined";
-  if (error === null) return "null";
-  return `${typeof error}`;
+  // Do not encode the constructor, type, or message length. All three are
+  // attacker-shaped metadata and a short secret must be indistinguishable
+  // from any other unrecognised failure.
+  return "unknown_error";
 }
 
 /**
@@ -130,6 +154,7 @@ function knownCodeFor(error: unknown): string | undefined {
     seen.add(current);
     const tagged = (current as { code?: unknown }).code;
     if (typeof tagged === "string" && KNOWN_ERROR_CODES.has(tagged)) return tagged;
+    if (current.message === "No speech detected") return "no_speech_detected";
     for (const match of current.message.matchAll(/\b([a-z][a-z0-9_]{2,40})\b/gu)) {
       const token = match[1];
       if (token !== undefined && KNOWN_ERROR_CODES.has(token)) return token;
@@ -147,25 +172,112 @@ function knownCodeFor(error: unknown): string | undefined {
  * already understand while still refusing to echo an arbitrary message.
  */
 export const KNOWN_ERROR_CODES: ReadonlySet<string> = new Set([
+  "allow_download_not_allowed",
+  "allow_download_required",
+  "apple_silicon_only",
+  "audio_path_not_allowed",
+  "device_info_unavailable",
+  "invalid_asr_mode",
+  "invalid_audio_file",
+  "invalid_audio_format",
+  "invalid_audio_path",
+  "invalid_context",
+  "invalid_json",
+  "invalid_language",
+  "invalid_mode",
+  "invalid_model_manifest",
+  "invalid_model_output",
+  "invalid_model_root",
   "model_not_installed",
-  "model_verification_failed",
-  "model_load_failed",
   "internal_error",
   "invalid_request",
-  "unsupported_model",
-  "download_failed",
-  "audio_too_long",
-  "audio_invalid",
+  "invalid_request_id",
+  "live_session_active",
+  "live_session_not_started",
+  "model_activation_failed",
+  "model_checksum_failed",
+  "model_download_failed",
+  "model_load_failed",
+  "model_not_allowed",
+  "model_not_loaded",
+  "model_path_changed",
+  "model_recovery_failed",
+  "model_verification_failed",
+  "parakeet_runtime_failed",
+  "runtime_import_failed",
+  "runtime_protocol_error",
+  "runtime_unavailable",
+  "transcription_failed",
+  "unsafe_model_path",
+  "unsupported_message_type",
   "worker_exited",
   "worker_timeout",
-  "permission_denied",
-  "not_permitted",
   "no_speech_detected",
   "cancelled",
 ]);
 
-function safeToken(value: unknown): string | undefined {
-  return typeof value === "string" && SAFE_TOKEN.test(value) ? value : undefined;
+const INSERTION_DIAGNOSTIC_DETAILS = [
+  "automatic_paste_disabled",
+  "automatic_paste_unavailable",
+  "session_invalidated",
+  "initial_target_unavailable",
+  "initial_target_editability_unavailable",
+  "initial_target_not_editable",
+  "initial_window_identity_unavailable",
+  "initial_control_identity_unavailable",
+  "current_target_unavailable",
+  "current_target_editability_unavailable",
+  "current_target_not_editable",
+  "current_window_identity_unavailable",
+  "current_window_changed",
+  "current_control_identity_unavailable",
+  "current_control_changed",
+  "app_process_target_changed",
+  "clipboard_snapshot_failed",
+  "clipboard_sequence_unavailable",
+  "paste_injection_failed",
+  "paste_acknowledgement_unavailable",
+  "paste_acknowledgement_failed",
+  "target_unavailable",
+  "target_changed",
+  "clipboard_changed",
+  "event_unavailable",
+  "helper_unavailable",
+  "invalid_response",
+] as const;
+
+/** Closed detail vocabulary from normalizers and literal diagnostic call sites. */
+export const DIAGNOSTIC_DETAILS: ReadonlySet<string> = new Set([
+  ...KNOWN_ERROR_CODES,
+  ...INSERTION_DIAGNOSTIC_DETAILS,
+  "model_verification_failed",
+  "permission_denied",
+  "model_selection_mismatch",
+  "renderer_load_failed",
+  "renderer_process_gone",
+  "unknown_error",
+]);
+
+const DIAGNOSTIC_EVENT_SET: ReadonlySet<string> = new Set(DIAGNOSTIC_EVENTS);
+const DIAGNOSTIC_OUTCOME_SET: ReadonlySet<string> = new Set(DIAGNOSTIC_OUTCOMES);
+const MODEL_FAMILIES: ReadonlySet<string> = new Set([
+  "parakeet-unified-en-0-6b",
+  "whisper-large-v3",
+  "qwen3-asr-0-6b",
+  "qwen3-asr-1-7b",
+  "whisper-large-v2",
+]);
+const MODEL_TIERS: ReadonlySet<string> = new Set(["high", "medium", "low"]);
+const HOTKEY_MODES: ReadonlySet<string> = new Set(["hold", "toggle"]);
+const PERMISSIONS: ReadonlySet<string> = new Set([
+  "accessibility_denied",
+  "disabled",
+  "not_ready",
+  "ready",
+]);
+
+function memberOf(value: unknown, vocabulary: ReadonlySet<string>): string | undefined {
+  return typeof value === "string" && vocabulary.has(value) ? value : undefined;
 }
 
 function safeCount(value: unknown): number | undefined {
@@ -187,10 +299,9 @@ export function sanitizeDiagnosticEvent(input: DiagnosticEvent): DiagnosticEvent
   } = {
     at: Number.isFinite(input.at) ? Math.round(input.at) : 0,
     stage: DIAGNOSTIC_STAGES.includes(input.stage) ? input.stage : "lifecycle",
-    event: safeToken(input.event) ?? "unknown",
-    outcome: (["ok", "failed", "cancelled", "skipped"] as const).includes(input.outcome)
-      ? input.outcome
-      : "failed",
+    event: memberOf(input.event, DIAGNOSTIC_EVENT_SET) ?? "unknown_event",
+    outcome: memberOf(input.outcome, DIAGNOSTIC_OUTCOME_SET) as DiagnosticOutcome | undefined
+      ?? "failed",
   };
   // A session id is only kept when it is genuinely a generated UUID. A caller
   // that passed something else was passing something that is not an id.
@@ -201,10 +312,16 @@ export function sanitizeDiagnosticEvent(input: DiagnosticEvent): DiagnosticEvent
   if (durationMs !== undefined) sanitized.durationMs = durationMs;
   const count = safeCount(input.count);
   if (count !== undefined) sanitized.count = count;
-  for (const key of ["detail", "modelFamily", "modelTier", "hotkeyMode", "permission"] as const) {
-    const token = safeToken(input[key]);
-    if (token !== undefined) sanitized[key] = token;
-  }
+  const detail = memberOf(input.detail, DIAGNOSTIC_DETAILS);
+  if (detail !== undefined) sanitized.detail = detail;
+  const modelFamily = memberOf(input.modelFamily, MODEL_FAMILIES);
+  if (modelFamily !== undefined) sanitized.modelFamily = modelFamily;
+  const modelTier = memberOf(input.modelTier, MODEL_TIERS);
+  if (modelTier !== undefined) sanitized.modelTier = modelTier;
+  const hotkeyMode = memberOf(input.hotkeyMode, HOTKEY_MODES);
+  if (hotkeyMode !== undefined) sanitized.hotkeyMode = hotkeyMode;
+  const permission = memberOf(input.permission, PERMISSIONS);
+  if (permission !== undefined) sanitized.permission = permission;
   return sanitized;
 }
 
@@ -217,11 +334,13 @@ export function formatDiagnosticHeader(identity: DiagnosticBuildIdentity): strin
   return `${JSON.stringify({
     kind: "localscribe-diagnostics",
     formatVersion: 1,
-    version: safeToken(identity.version) ?? "unknown",
-    platform: safeToken(identity.platform) ?? "unknown",
-    arch: safeToken(identity.arch) ?? "unknown",
-    electron: safeToken(identity.electron) ?? "unknown",
-    ...(safeToken(identity.sourceRoot) ? { sourceRoot: identity.sourceRoot } : {}),
+    version: VERSION.test(identity.version) ? identity.version : "unknown",
+    platform: memberOf(identity.platform, new Set(["darwin"])) ?? "unknown",
+    arch: memberOf(identity.arch, new Set(["arm64", "x64"])) ?? "unknown",
+    electron: ELECTRON_VERSION.test(identity.electron) ? identity.electron : "unknown",
+    ...(typeof identity.sourceRoot === "string" && /^[0-9a-f]{40}$/u.test(identity.sourceRoot)
+      ? { sourceRoot: identity.sourceRoot }
+      : {}),
   })}\n`;
 }
 

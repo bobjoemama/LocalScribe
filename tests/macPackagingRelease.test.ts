@@ -47,6 +47,10 @@ describe("macOS package release gates", () => {
 
     expect(forge).toContain("macOS make expected one DMG and one ZIP");
     expect(forge).toContain("verify-macos-artifacts.mjs");
+    expect(artifactVerifier).toContain("await preflightMacApplicationZip(");
+    expect(artifactVerifier.indexOf("await preflightMacApplicationZip(")).toBeLessThan(
+      artifactVerifier.indexOf('"ditto", ["-x", "-k"'),
+    );
     expect(artifactVerifier).toContain('"attach"');
     expect(artifactVerifier).toContain('"ditto", ["-x", "-k"');
     expect(artifactVerifier).toContain('readlinkSync(applicationsLink) !== "/Applications"');

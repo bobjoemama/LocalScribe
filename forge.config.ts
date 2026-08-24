@@ -6,17 +6,13 @@ import { FusesPlugin } from "@electron-forge/plugin-fuses";
 import { VitePlugin } from "@electron-forge/plugin-vite";
 import { FuseV1Options, FuseVersion } from "@electron/fuses";
 import {
-  chmodSync,
   closeSync,
   existsSync,
   lstatSync,
+  mkdirSync,
   openSync,
-  readFileSync,
   readSync,
   readdirSync,
-  renameSync,
-  rmSync,
-  writeFileSync,
 } from "node:fs";
 import { execFileSync } from "node:child_process";
 import path from "node:path";
@@ -47,6 +43,10 @@ import {
 } from "./src/main/resourceIntegrity";
 import { assertExpectedMakeResults } from "./scripts/make-result-safety.mts";
 import {
+  promoteProtectedResources,
+  type ProtectedResourcePreparation,
+} from "./scripts/protected-resource-staging.mts";
+import {
   loadReleaseMetadata,
   releaseLayout,
 } from "./scripts/release-metadata.mts";
@@ -65,6 +65,13 @@ const MAC_ACTIVE_TARGET_ENTITLEMENTS = path.resolve(
 const MAC_RUNTIME_ENTITLEMENTS = path.resolve("resources/entitlements.mac.runtime.plist");
 const MAC_FLUID_AUDIO_HELPER = path.resolve(
   "resources/native/macos/localscribe-fluidaudio-parakeet",
+);
+const MAC_ACTIVE_TARGET = path.resolve("resources/native/macos/active-target");
+const MAC_STAGING_ROOT = path.resolve("out/runtime-staging/native/macos");
+const MAC_STAGED_ACTIVE_TARGET = path.join(MAC_STAGING_ROOT, "active-target");
+const MAC_STAGED_FLUID_AUDIO_HELPER = path.join(
+  MAC_STAGING_ROOT,
+  "localscribe-fluidaudio-parakeet",
 );
 const PUBLIC_RELEASE = process.env.LOCALSCRIBE_RELEASE === "1";
 
@@ -95,40 +102,19 @@ const MAC_SIGNING_IDENTITY = resolveSigningIdentity();
 let resourceIntegrityPreparation: PreparedResourceIntegrity | null = null;
 let packageProvenanceExpectation: PackageProvenance | null = null;
 let packageBuildStartedAtMs = 0;
-let originalFluidAudioHelper: { bytes: Buffer; mode: number } | null = null;
+let protectedResourcePreparation: ProtectedResourcePreparation | null = null;
 
-function snapshotTrackedFluidAudioHelper(): void {
-  if (originalFluidAudioHelper) {
-    throw new Error("The tracked FluidAudio helper already has an active packaging snapshot.");
-  }
-  const metadata = lstatSync(MAC_FLUID_AUDIO_HELPER);
-  if (!metadata.isFile() || metadata.isSymbolicLink()) {
-    throw new Error("The tracked FluidAudio helper must be an ordinary file before signing.");
-  }
-  originalFluidAudioHelper = {
-    bytes: readFileSync(MAC_FLUID_AUDIO_HELPER),
-    mode: metadata.mode & 0o777,
-  };
-}
-
-function restoreTrackedFluidAudioHelper(): void {
-  const original = originalFluidAudioHelper;
-  originalFluidAudioHelper = null;
-  if (!original) return;
-  const temporaryPath = `${MAC_FLUID_AUDIO_HELPER}.restore.${process.pid}`;
-  try {
-    writeFileSync(temporaryPath, original.bytes, { flag: "wx", mode: original.mode });
-    renameSync(temporaryPath, MAC_FLUID_AUDIO_HELPER);
-    chmodSync(MAC_FLUID_AUDIO_HELPER, original.mode);
-  } finally {
-    rmSync(temporaryPath, { force: true });
-  }
+function restoreTrackedProtectedResources(): void {
+  const preparation = protectedResourcePreparation;
+  if (!preparation) return;
+  preparation.restore();
+  protectedResourcePreparation = null;
 }
 
 // A failed Forge hook must not strand a signed, timestamped mutation in the
 // tracked source tree. Normal restoration happens in postPackage; this covers
 // an exception or interrupt before Forge reaches that hook.
-process.once("exit", restoreTrackedFluidAudioHelper);
+process.once("exit", restoreTrackedProtectedResources);
 
 function validatePublicReleaseConfiguration(): void {
   if (!PUBLIC_RELEASE) return;
@@ -250,8 +236,7 @@ function collectMachOFiles(directory: string): string[] {
  */
 function signProtectedMacResources(): void {
   const runtimeRoot = path.resolve("resources/python-runtime");
-  const activeTarget = path.resolve("resources/native/macos/active-target");
-  const binaries = [...collectMachOFiles(runtimeRoot), activeTarget, MAC_FLUID_AUDIO_HELPER]
+  const binaries = [...collectMachOFiles(runtimeRoot), MAC_ACTIVE_TARGET, MAC_FLUID_AUDIO_HELPER]
     .sort((left, right) => right.split(path.sep).length - left.split(path.sep).length);
 
   for (const binary of binaries) {
@@ -290,10 +275,16 @@ function removeInfoPlistKeyIfPresent(infoPlist: string, keyPath: string): void {
 
 function platformResources(): string[] {
   return [
+    "LICENSE",
+    "NOTICE",
+    "THIRD_PARTY_NOTICES.md",
     "worker",
     "resources/model-manifest",
     "resources/python-runtime",
     "resources/native",
+    // Copy the curated notice directory as a unit; the platform policy below
+    // requires and prunes it to the exact byte-bound license allowlist.
+    "resources/licenses",
   ];
 }
 
@@ -319,7 +310,9 @@ function assertSourceResources(platform: PackagedPlatform, arch: string): void {
     path.resolve("resources", policy.runtimeExecutable),
     ...policy.helperFiles.map((entry) => path.resolve("resources", entry)),
     ...policy.manifestFiles.map((entry) => path.resolve("resources", entry)),
+    ...policy.licenseFiles.map((entry) => path.resolve("resources", entry)),
     ...policy.brandingFiles.map((entry) => path.resolve("resources", entry)),
+    ...policy.legalFiles.map((entry) => path.resolve(entry)),
   ];
   const missing = required.filter((entry) => !existsSync(entry));
   if (missing.length > 0) {
@@ -444,7 +437,7 @@ const config: ForgeConfig = {
     extraResource: platformResources(),
     appBundleId: APP_BUNDLE_ID,
     appCategoryType: "public.app-category.productivity",
-    appCopyright: "Copyright © 2026 Devesh. All rights reserved.",
+    appCopyright: "Copyright © 2026 Devesh",
     extendInfo: {
       LSMinimumSystemVersion: RELEASE_METADATA.minimumMacOSVersion,
       NSMicrophoneUsageDescription:
@@ -502,31 +495,41 @@ const config: ForgeConfig = {
       const targetArchitecture =
         arch === MAC_RELEASE.target.arch ? MAC_RELEASE.target.arch : null;
       if (!targetArchitecture) throw new Error(`Unsupported macOS helper architecture: ${arch}`);
-      execFileSync("xcrun", [
-        "swiftc",
-        "-O",
-        "-target",
-        `${targetArchitecture}-apple-macos${RELEASE_METADATA.minimumMacOSVersion}`,
-        path.resolve("resources/native/macos/active-target.swift"),
-        "-o",
-        path.resolve("resources/native/macos/active-target"),
-      ], { stdio: "inherit" });
-      snapshotTrackedFluidAudioHelper();
-      signProtectedMacResources();
-      assertSourceResources(platform, arch);
-      packageProvenanceExpectation = buildPackageProvenance({
-        projectPath: path.resolve("."),
-        platform,
-        arch,
-      });
-      resourceIntegrityPreparation?.restore();
-      resourceIntegrityPreparation = prepareGeneratedResourceIntegrity({
-        resourcesPath: path.resolve("resources"),
-        sourceProjectPath: path.resolve("."),
-        platform,
-        arch,
-        generatedModulePath: path.resolve("src/main/generatedResourceIntegrity.ts"),
-      });
+      try {
+        mkdirSync(MAC_STAGING_ROOT, { recursive: true });
+        execFileSync("xcrun", [
+          "swiftc",
+          "-O",
+          "-target",
+          `${targetArchitecture}-apple-macos${RELEASE_METADATA.minimumMacOSVersion}`,
+          path.resolve("resources/native/macos/active-target.swift"),
+          "-o",
+          MAC_STAGED_ACTIVE_TARGET,
+        ], { stdio: "inherit" });
+        restoreTrackedProtectedResources();
+        protectedResourcePreparation = promoteProtectedResources([
+          { sourcePath: MAC_ACTIVE_TARGET, stagedPath: MAC_STAGED_ACTIVE_TARGET },
+          { sourcePath: MAC_FLUID_AUDIO_HELPER, stagedPath: MAC_STAGED_FLUID_AUDIO_HELPER },
+        ]);
+        signProtectedMacResources();
+        assertSourceResources(platform, arch);
+        packageProvenanceExpectation = buildPackageProvenance({
+          projectPath: path.resolve("."),
+          platform,
+          arch,
+        });
+        resourceIntegrityPreparation?.restore();
+        resourceIntegrityPreparation = prepareGeneratedResourceIntegrity({
+          resourcesPath: path.resolve("resources"),
+          sourceProjectPath: path.resolve("."),
+          platform,
+          arch,
+          generatedModulePath: path.resolve("src/main/generatedResourceIntegrity.ts"),
+        });
+      } catch (error) {
+        restoreTrackedProtectedResources();
+        throw error;
+      }
     },
     postPackage: async (_config, result) => {
       try {
@@ -588,7 +591,7 @@ const config: ForgeConfig = {
           }
         }
       } finally {
-        restoreTrackedFluidAudioHelper();
+        restoreTrackedProtectedResources();
         resourceIntegrityPreparation?.restore();
         resourceIntegrityPreparation = null;
         packageProvenanceExpectation = null;
