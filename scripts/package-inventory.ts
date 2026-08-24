@@ -291,7 +291,9 @@ export function assertPlatformResourceEntries(
     policy.runtimeExecutable,
     ...policy.helperFiles,
     ...policy.manifestFiles,
+    ...policy.licenseFiles,
     ...policy.brandingFiles,
+    ...policy.legalFiles,
   ];
   const missingFiles = requiredFiles.filter((required) => !fileEntries.has(required));
   const forbidden = forbiddenPaths(normalizedEntries);
@@ -303,6 +305,16 @@ export function assertPlatformResourceEntries(
   if (JSON.stringify(manifestEntries) !== JSON.stringify(expectedManifests)) {
     forbidden.push(
       `model-manifest inventory expected [${expectedManifests.join(", ")}], received [${manifestEntries.join(", ")}]`,
+    );
+  }
+
+  const licenseEntries = normalizedEntries
+    .filter((entry) => entry.startsWith("licenses/") && !entry.endsWith("/"))
+    .sort();
+  const expectedLicenses = [...policy.licenseFiles].sort();
+  if (JSON.stringify(licenseEntries) !== JSON.stringify(expectedLicenses)) {
+    forbidden.push(
+      `license inventory expected [${expectedLicenses.join(", ")}], received [${licenseEntries.join(", ")}]`,
     );
   }
 
@@ -379,6 +391,10 @@ export function prunePackagedResources(
   retainOnly(
     path.join(resourcesPath, "native"),
     new Set(policy.helperFiles.map((entry) => entry.replace(/^native\//, ""))),
+  );
+  retainOnly(
+    path.join(resourcesPath, "licenses"),
+    new Set(policy.licenseFiles.map((entry) => entry.replace(/^licenses\//, ""))),
   );
   if (policy.brandingFiles.length > 0) {
     retainOnly(

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { SessionSnapshot } from "../src/shared/contracts";
+import type { LiveAudioSink } from "../src/shared/liveAudioTransport";
 import {
   acceptsLivePartial,
   holdShortcutPresentation,
@@ -8,6 +9,7 @@ import {
   livePartialText,
   listeningRecorderStart,
   selectedMicrophoneIsUnavailable,
+  startLiveRecorderForCurrentSession,
   trySelectMicrophone,
 } from "../src/renderer/pill/Pill";
 
@@ -96,6 +98,40 @@ describe("pill recorder lifecycle", () => {
       sessionId: SECOND_SESSION_ID,
       microphoneId: null,
     });
+  });
+
+  it("aborts a deferred Live sink when a newer listening session wins before microphone start", async () => {
+    let resolveSink!: (sink: LiveAudioSink) => void;
+    const abort = vi.fn().mockResolvedValue(undefined);
+    const sinkPromise = new Promise<LiveAudioSink>((resolve) => {
+      resolveSink = resolve;
+    });
+    let current: SessionSnapshot = {
+      state: "listening",
+      sessionId: FIRST_SESSION_ID,
+      activation: "toggle",
+    };
+    let recorderSessionId: string | null = FIRST_SESSION_ID;
+    const startRecorder = vi.fn().mockResolvedValue(undefined);
+
+    const starting = startLiveRecorderForCurrentSession({
+      sessionId: FIRST_SESSION_ID,
+      openSink: () => sinkPromise,
+      currentSnapshot: () => current,
+      currentRecorderSessionId: () => recorderSessionId,
+      startRecorder,
+    });
+    current = {
+      state: "listening",
+      sessionId: SECOND_SESSION_ID,
+      activation: "toggle",
+    };
+    recorderSessionId = SECOND_SESSION_ID;
+    resolveSink({ write: () => undefined, finish: () => undefined, abort });
+
+    await expect(starting).resolves.toBe(false);
+    expect(abort).toHaveBeenCalledOnce();
+    expect(startRecorder).not.toHaveBeenCalled();
   });
 });
 

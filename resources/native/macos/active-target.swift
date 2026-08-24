@@ -276,7 +276,11 @@ private func coreGraphicsWindowFingerprint(for processId: pid_t) -> String? {
     return hashFingerprint("\(processId)\u{0}cg-window:\(windowNumber)")
 }
 
-private func focusedWindowFingerprint(for processId: pid_t) -> String? {
+private func focusedWindowFingerprint(
+    for processId: pid_t,
+    focusedApplication: AXUIElement,
+    focusedElement: AXUIElement?
+) -> String? {
     /*
      * Query the already-confirmed frontmost process directly. On newer macOS
      * builds the system-wide element can report a trusted process while still
@@ -285,11 +289,6 @@ private func focusedWindowFingerprint(for processId: pid_t) -> String? {
      * weaken the identity boundary: captureTarget confirms the frontmost PID
      * immediately before and after these reads.
      */
-    let focusedApplication = AXUIElementCreateApplication(processId)
-    let focusedElement = attributeElement(
-        focusedApplication,
-        kAXFocusedUIElementAttribute as CFString
-    )
     guard let focusedWindow = (
         attributeElement(focusedApplication, kAXFocusedWindowAttribute as CFString)
             ?? attributeElement(focusedApplication, kAXMainWindowAttribute as CFString)
@@ -439,7 +438,9 @@ private func editabilityFromCapabilities(
     role: String?,
     subrole: String?,
     enabled: Bool?,
-    selectedTextSettable: Bool
+    valueSettable: Bool,
+    selectedTextSettable: Bool,
+    selectedTextRangeSettable: Bool
 ) -> Bool {
     if subrole == (kAXSecureTextFieldSubrole as String) { return false }
     if enabled == false { return false }
@@ -454,61 +455,226 @@ private func editabilityFromCapabilities(
     ]
     if let role, knownStaticRoles.contains(role) { return false }
 
-    let knownEditableRoles: Set<String> = [
+    // A role is descriptive, not proof that the current control accepts
+    // mutation. Read-only text controls can retain both their text role and a
+    // settable selection range, so range movement alone is not enough. The T3
+    // Chromium contenteditable observed on macOS exposes AXTextField with a
+    // settable AXValue and settable selection range, but not settable
+    // AXSelectedText. Other native editors may expose selected-text mutation.
+    // Querying settable flags never reads either value or selected content.
+    let valueMutableTextRoles: Set<String> = [
         kAXTextFieldRole as String,
         kAXTextAreaRole as String,
         kAXComboBoxRole as String,
     ]
-    if let role, knownEditableRoles.contains(role) { return true }
-    return selectedTextSettable
+    let textRoleHasMutableValue = role.map(valueMutableTextRoles.contains) == true
+        && valueSettable
+    // Use range mutability only as explicit negative evidence: it cannot turn
+    // a control editable by itself.
+    if selectedTextRangeSettable && !textRoleHasMutableValue && !selectedTextSettable {
+        return false
+    }
+    return textRoleHasMutableValue || selectedTextSettable
 }
 
 private func focusedElementIsEditable(_ element: AXUIElement) -> Bool {
     // Chromium and Electron contenteditable surfaces commonly expose a web
-    // role rather than AXTextArea. A settable selected-text attribute is the
-    // relevant write capability: unlike selection/range support alone, it
-    // means Accessibility can replace the selected text. Static and secure
-    // controls are rejected before these capabilities are considered.
+    // role rather than AXTextArea. Positive value or selected-text mutability
+    // is required; selection/range support alone also exists on read-only
+    // controls. Static, disabled, and secure controls are rejected first.
     return editabilityFromCapabilities(
         role: attributeString(element, kAXRoleAttribute as CFString),
         subrole: attributeString(element, kAXSubroleAttribute as CFString),
         enabled: attributeBool(element, kAXEnabledAttribute as CFString),
+        valueSettable: attributeIsSettable(
+            element,
+            kAXValueAttribute as CFString
+        ),
         selectedTextSettable: attributeIsSettable(
             element,
             kAXSelectedTextAttribute as CFString
+        ),
+        selectedTextRangeSettable: attributeIsSettable(
+            element,
+            kAXSelectedTextRangeAttribute as CFString
         )
     )
 }
 
-private func focusedElementState(
-    for processId: pid_t,
-    windowFingerprint: String?
-) -> FocusedElementState {
-    let focusedApplication = AXUIElementCreateApplication(processId)
-    var focusedElementValue: CFTypeRef?
-    guard AXUIElementCopyAttributeValue(
-        focusedApplication,
-        kAXFocusedUIElementAttribute as CFString,
-        &focusedElementValue
-    ) == .success,
-    let focusedElementValue,
-    CFGetTypeID(focusedElementValue) == AXUIElementGetTypeID() else {
-        return FocusedElementState(editable: nil, fingerprint: nil)
+private let manualAccessibilityAttribute = "AXManualAccessibility" as CFString
+private let editableAncestorAttribute = "AXEditableAncestor" as CFString
+private let focusedElementLookupAttemptCount = 6
+private let focusedElementLookupInterval: TimeInterval = 0.02
+
+private func firstAvailable<T>(
+    attemptCount: Int,
+    lookup: () -> T?,
+    wait: () -> Void
+) -> T? {
+    guard attemptCount > 0 else { return nil }
+    for attempt in 0..<attemptCount {
+        if let value = lookup() { return value }
+        if attempt + 1 < attemptCount { wait() }
+    }
+    return nil
+}
+
+private func copyFocusedUIElement(_ application: AXUIElement) -> AXUIElement? {
+    attributeElement(application, kAXFocusedUIElementAttribute as CFString)
+}
+
+private func manualAccessibilityActivationNeeded(
+    role: String?,
+    valueSettable: Bool,
+    selectedTextSettable: Bool,
+    editableAncestorAvailable: Bool
+) -> Bool {
+    role == "AXWebArea"
+        && !valueSettable
+        && !selectedTextSettable
+        && !editableAncestorAvailable
+}
+
+private func manualAccessibilityActivationNeeded(_ element: AXUIElement) -> Bool {
+    manualAccessibilityActivationNeeded(
+        role: attributeString(element, kAXRoleAttribute as CFString),
+        valueSettable: attributeIsSettable(element, kAXValueAttribute as CFString),
+        selectedTextSettable: attributeIsSettable(
+            element,
+            kAXSelectedTextAttribute as CFString
+        ),
+        editableAncestorAvailable: attributeElement(
+            element,
+            editableAncestorAttribute
+        ) != nil
+    )
+}
+
+private func focusedUIElementEnablingManualAccessibilityIfNeeded(
+    _ application: AXUIElement
+) -> AXUIElement? {
+    let initialFocusedElement = copyFocusedUIElement(application)
+    if let initialFocusedElement,
+       !manualAccessibilityActivationNeeded(initialFocusedElement) {
+        return initialFocusedElement
     }
 
-    let focusedElement = unsafeBitCast(focusedElementValue, to: AXUIElement.self)
+    // Electron documents AXManualAccessibility as the third-party integration
+    // point for enabling Chromium's otherwise lazy accessibility tree. A lazy
+    // tree can return a non-null AXWebArea placeholder with no mutation
+    // capability or editable ancestor, so existence alone cannot skip
+    // activation. Toggle only the documented attribute when focus is missing
+    // or has that exact placeholder shape and the app declares it settable.
+    // Chromium updates asynchronously; retry for at most 100 ms and fail closed.
+    guard
+        attributeIsSettable(application, manualAccessibilityAttribute),
+        AXUIElementSetAttributeValue(
+            application,
+            manualAccessibilityAttribute,
+            kCFBooleanTrue
+        ) == .success
+    else { return nil }
+
+    return firstAvailable(
+        attemptCount: focusedElementLookupAttemptCount,
+        lookup: {
+            guard let candidate = copyFocusedUIElement(application),
+                  !manualAccessibilityActivationNeeded(candidate) else {
+                return nil
+            }
+            return candidate
+        },
+        wait: { Thread.sleep(forTimeInterval: focusedElementLookupInterval) }
+    )
+}
+
+private func elementIsInParentChain(
+    _ candidate: AXUIElement,
+    of descendant: AXUIElement
+) -> Bool {
+    var current = descendant
+    for _ in 0..<32 {
+        if CFEqual(candidate, current) { return true }
+        guard let parent = attributeElement(current, kAXParentAttribute as CFString),
+              !CFEqual(parent, current) else {
+            return false
+        }
+        current = parent
+    }
+    return false
+}
+
+private func elementsShareAccessibilityWindow(
+    _ first: AXUIElement,
+    _ second: AXUIElement
+) -> Bool {
+    guard
+        let firstWindow = attributeElement(first, kAXWindowAttribute as CFString),
+        let secondWindow = attributeElement(second, kAXWindowAttribute as CFString)
+    else { return false }
+    return CFEqual(firstWindow, secondWindow)
+}
+
+private func editableAncestorRelationshipIsAllowed(
+    candidateDiffers: Bool,
+    sameProcess: Bool,
+    inParentChain: Bool,
+    sameWindow: Bool,
+    candidateEditable: Bool
+) -> Bool {
+    candidateDiffers && sameProcess && inParentChain && sameWindow && candidateEditable
+}
+
+private func focusedEditableElement(
+    _ focusedElement: AXUIElement,
+    processId: pid_t
+) -> AXUIElement? {
+    if focusedElementIsEditable(focusedElement) { return focusedElement }
+
+    // Chromium can focus a static descendant (for example a text node inside
+    // a Lexical contenteditable) instead of the editor root. Resolve only its
+    // nearest declared editable ancestor, then prove the relationship, process,
+    // window, and actual write capability before using that stable editor root.
+    guard let editableAncestor = attributeElement(
+        focusedElement,
+        editableAncestorAttribute
+    ) else { return nil }
+
+    var ancestorPid: pid_t = 0
+    guard
+        AXUIElementGetPid(editableAncestor, &ancestorPid) == .success,
+        editableAncestorRelationshipIsAllowed(
+            candidateDiffers: !CFEqual(editableAncestor, focusedElement),
+            sameProcess: ancestorPid == processId,
+            inParentChain: elementIsInParentChain(editableAncestor, of: focusedElement),
+            sameWindow: elementsShareAccessibilityWindow(editableAncestor, focusedElement),
+            candidateEditable: focusedElementIsEditable(editableAncestor)
+        )
+    else { return nil }
+    return editableAncestor
+}
+
+private func focusedElementState(
+    for processId: pid_t,
+    focusedElement: AXUIElement?,
+    windowFingerprint: String?
+) -> FocusedElementState {
+    guard let focusedElement else {
+        return FocusedElementState(editable: nil, fingerprint: nil)
+    }
     var focusedPid: pid_t = 0
     guard AXUIElementGetPid(focusedElement, &focusedPid) == .success,
           focusedPid == processId else {
         return FocusedElementState(editable: nil, fingerprint: nil)
     }
 
-    let editable = focusedElementIsEditable(focusedElement)
+    let editableElement = focusedEditableElement(focusedElement, processId: processId)
+    let editable = editableElement != nil
 
     guard
-        editable,
+        let editableElement,
         let windowFingerprint,
-        let identityDescriptor = focusedElementIdentityDescriptor(focusedElement)
+        let identityDescriptor = focusedElementIdentityDescriptor(editableElement)
     else {
         return FocusedElementState(editable: editable, fingerprint: nil)
     }
@@ -527,11 +693,27 @@ private func captureTarget() throws -> TargetPayload {
     let applicationId = application.bundleIdentifier
         ?? application.executableURL?.path
         ?? "pid:\(application.processIdentifier)"
-    let windowFingerprint = AXIsProcessTrusted()
-        ? focusedWindowFingerprint(for: application.processIdentifier)
+    let accessibilityTrusted = AXIsProcessTrusted()
+    let focusedApplication = AXUIElementCreateApplication(application.processIdentifier)
+    // Chromium may not expose either its focused control or focused window
+    // until AXManualAccessibility activates the tree. Capture/activate focus
+    // first, then derive the window from the now-current tree. The inverse
+    // order degraded a multi-window Electron target to copy-only on its first
+    // dictation even though the exact window became available milliseconds
+    // later.
+    let focusedUIElement = accessibilityTrusted
+        ? focusedUIElementEnablingManualAccessibilityIfNeeded(focusedApplication)
+        : nil
+    let windowFingerprint = accessibilityTrusted
+        ? focusedWindowFingerprint(
+            for: application.processIdentifier,
+            focusedApplication: focusedApplication,
+            focusedElement: focusedUIElement
+        )
         : coreGraphicsWindowFingerprint(for: application.processIdentifier)
     let focusedElement = focusedElementState(
         for: application.processIdentifier,
+        focusedElement: focusedUIElement,
         windowFingerprint: windowFingerprint
     )
     let payload = TargetPayload(
@@ -592,9 +774,6 @@ private func pasteIntoFocusedControl(expectation: PasteExpectation) -> PastePayl
         return PastePayload(injected: false, reason: "clipboard_changed")
     }
 
-    // Focus can still change in the irreducible handoff between this native
-    // recapture and the OS event post. Keep that interval free of asynchronous
-    // work and fail closed on every identity or editability mismatch.
     let source = CGEventSource(stateID: .hidSystemState)
     guard
         let keyDown = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: true),
@@ -604,9 +783,21 @@ private func pasteIntoFocusedControl(expectation: PasteExpectation) -> PastePayl
     }
     keyDown.flags = .maskCommand
     keyUp.flags = .maskCommand
+    // Event construction is small but fallible work. Recheck the complete app,
+    // window, editable-control, and control-fingerprint boundary once more
+    // after it, immediately before the clipboard check and post.
+    guard let finalTarget = try? captureTarget(),
+          targetMatches(finalTarget, expectation: expectation) else {
+        return PastePayload(injected: false, reason: "target_changed")
+    }
     guard NSPasteboard.general.changeCount == expectation.clipboardSequence else {
         return PastePayload(injected: false, reason: "clipboard_changed")
     }
+    // CGEvent offers no compare-and-post transaction with Accessibility or the
+    // pasteboard. Focus or clipboard contents can still change after these
+    // final observations and before macOS consumes Command-V. Keep the residual
+    // interval synchronous and minimal, retain dictated text on the clipboard,
+    // and describe automatic paste as best-effort rather than atomic targeting.
     keyDown.post(tap: .cghidEventTap)
     Thread.sleep(forTimeInterval: 0.012)
     keyUp.post(tap: .cghidEventTap)
@@ -637,6 +828,36 @@ private func selfTest() -> Bool {
         geometry: { nil },
         ancestry: { "0:AXWebArea:" }
     )
+    var immediateLookups = 0
+    var immediateWaits = 0
+    let immediateValue: Int? = firstAvailable(
+        attemptCount: 3,
+        lookup: {
+            immediateLookups += 1
+            return 1
+        },
+        wait: { immediateWaits += 1 }
+    )
+    var delayedLookups = 0
+    var delayedWaits = 0
+    let delayedValue: Int? = firstAvailable(
+        attemptCount: 3,
+        lookup: {
+            delayedLookups += 1
+            return delayedLookups == 3 ? 7 : nil
+        },
+        wait: { delayedWaits += 1 }
+    )
+    var exhaustedLookups = 0
+    var exhaustedWaits = 0
+    let exhaustedValue: Int? = firstAvailable(
+        attemptCount: 3,
+        lookup: {
+            exhaustedLookups += 1
+            return nil
+        },
+        wait: { exhaustedWaits += 1 }
+    )
     guard
         unambiguousWindowNumber([7]) == 7,
         unambiguousWindowNumber([]) == nil,
@@ -648,25 +869,144 @@ private func selfTest() -> Bool {
             role: "AXWebArea",
             subrole: nil,
             enabled: true,
-            selectedTextSettable: true
+            valueSettable: false,
+            selectedTextSettable: true,
+            selectedTextRangeSettable: true
+        ),
+        // Exact metadata-only shape observed for the focused T3 Chromium
+        // composer after its accessibility tree is active.
+        editabilityFromCapabilities(
+            role: kAXTextFieldRole as String,
+            subrole: nil,
+            enabled: true,
+            valueSettable: true,
+            selectedTextSettable: false,
+            selectedTextRangeSettable: true
+        ),
+        // A read-only text control can still move its selection. That is not a
+        // positive mutation capability and must never authorize automatic paste.
+        !editabilityFromCapabilities(
+            role: kAXTextFieldRole as String,
+            subrole: nil,
+            enabled: true,
+            valueSettable: false,
+            selectedTextSettable: false,
+            selectedTextRangeSettable: true
+        ),
+        !editabilityFromCapabilities(
+            role: kAXTextAreaRole as String,
+            subrole: nil,
+            enabled: true,
+            valueSettable: false,
+            selectedTextSettable: false,
+            selectedTextRangeSettable: false
+        ),
+        !editabilityFromCapabilities(
+            role: "AXSlider",
+            subrole: nil,
+            enabled: true,
+            valueSettable: true,
+            selectedTextSettable: false,
+            selectedTextRangeSettable: false
+        ),
+        manualAccessibilityActivationNeeded(
+            role: "AXWebArea",
+            valueSettable: false,
+            selectedTextSettable: false,
+            editableAncestorAvailable: false
+        ),
+        !manualAccessibilityActivationNeeded(
+            role: "AXWebArea",
+            valueSettable: true,
+            selectedTextSettable: false,
+            editableAncestorAvailable: false
+        ),
+        !manualAccessibilityActivationNeeded(
+            role: "AXWebArea",
+            valueSettable: false,
+            selectedTextSettable: false,
+            editableAncestorAvailable: true
+        ),
+        !manualAccessibilityActivationNeeded(
+            role: kAXTextFieldRole as String,
+            valueSettable: false,
+            selectedTextSettable: false,
+            editableAncestorAvailable: false
+        ),
+        immediateValue == 1,
+        immediateLookups == 1,
+        immediateWaits == 0,
+        delayedValue == 7,
+        delayedLookups == 3,
+        delayedWaits == 2,
+        exhaustedValue == nil,
+        exhaustedLookups == 3,
+        exhaustedWaits == 2,
+        editableAncestorRelationshipIsAllowed(
+            candidateDiffers: true,
+            sameProcess: true,
+            inParentChain: true,
+            sameWindow: true,
+            candidateEditable: true
+        ),
+        !editableAncestorRelationshipIsAllowed(
+            candidateDiffers: false,
+            sameProcess: true,
+            inParentChain: true,
+            sameWindow: true,
+            candidateEditable: true
+        ),
+        !editableAncestorRelationshipIsAllowed(
+            candidateDiffers: true,
+            sameProcess: false,
+            inParentChain: true,
+            sameWindow: true,
+            candidateEditable: true
+        ),
+        !editableAncestorRelationshipIsAllowed(
+            candidateDiffers: true,
+            sameProcess: true,
+            inParentChain: false,
+            sameWindow: true,
+            candidateEditable: true
+        ),
+        !editableAncestorRelationshipIsAllowed(
+            candidateDiffers: true,
+            sameProcess: true,
+            inParentChain: true,
+            sameWindow: false,
+            candidateEditable: true
+        ),
+        !editableAncestorRelationshipIsAllowed(
+            candidateDiffers: true,
+            sameProcess: true,
+            inParentChain: true,
+            sameWindow: true,
+            candidateEditable: false
         ),
         !editabilityFromCapabilities(
             role: kAXStaticTextRole as String,
             subrole: nil,
             enabled: true,
-            selectedTextSettable: true
+            valueSettable: true,
+            selectedTextSettable: true,
+            selectedTextRangeSettable: true
         ),
         !editabilityFromCapabilities(
             role: kAXTextFieldRole as String,
             subrole: kAXSecureTextFieldSubrole as String,
             enabled: true,
-            selectedTextSettable: true
+            valueSettable: true,
+            selectedTextSettable: true,
+            selectedTextRangeSettable: true
         ),
         !editabilityFromCapabilities(
             role: kAXTextAreaRole as String,
             subrole: nil,
             enabled: false,
-            selectedTextSettable: true
+            valueSettable: true,
+            selectedTextSettable: true,
+            selectedTextRangeSettable: true
         ),
         let holdShortcut = parseHoldShortcut("Command+Control"),
         holdShortcut.modifierOnly,

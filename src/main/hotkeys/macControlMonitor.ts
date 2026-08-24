@@ -1,5 +1,4 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync } from "node:fs";
 import { z } from "zod";
 import { shortcutTokens, type HoldShortcut } from "../../shared/shortcuts";
 import {
@@ -7,6 +6,12 @@ import {
   type NativeActiveTargetHelperPathOptions,
 } from "../nativeHelperPath";
 import { nativeHelperEnvironment } from "../nativeHelperEnvironment";
+import {
+  proveRegularExecutable,
+  sameRegularExecutableProof,
+  type ExecutableProofReader,
+  type RegularExecutableProof,
+} from "../insertion/nativeExecutableIntegrity";
 
 export const CONTROL_MONITOR_EVENTS = [
   "hold-down",
@@ -65,8 +70,14 @@ export class MacControlMonitor implements ControlMonitor {
   private process: ChildProcess | null = null;
   private buffer = "";
   private onStopped: (() => void) | null = null;
+  private readonly pinnedProof: RegularExecutableProof | null;
 
-  constructor(private readonly executablePath: string) {}
+  constructor(
+    private readonly executablePath: string,
+    private readonly proveExecutable: ExecutableProofReader = proveRegularExecutable,
+  ) {
+    this.pinnedProof = this.proveExecutable(this.executablePath);
+  }
 
   supports(shortcut: HoldShortcut): boolean {
     return nativeMacHoldMonitorSupports(shortcut);
@@ -78,13 +89,32 @@ export class MacControlMonitor implements ControlMonitor {
     onStopped?: () => void,
   ): boolean {
     if (this.process) return true;
-    if (!this.supports(shortcut) || !existsSync(this.executablePath)) return false;
+    if (
+      !this.supports(shortcut)
+      || this.pinnedProof === null
+    ) return false;
+    const currentProof = this.proveExecutable(this.executablePath);
+    if (
+      currentProof === null
+      || !sameRegularExecutableProof(this.pinnedProof, currentProof)
+    ) return false;
 
-    const child = spawn(this.executablePath, ["hold-monitor", shortcut], {
-      env: nativeHelperEnvironment(),
-      shell: false,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
+    // This descriptor-backed proof is the final synchronous operation before
+    // spawn. Node/macOS still executes a pathname (executing /dev/fd is denied),
+    // so a hostile same-UID directory-entry swap remains a bounded residual;
+    // the proof must not be described as an atomic execution guarantee.
+
+    let child: ChildProcess;
+    try {
+      child = spawn(this.executablePath, ["hold-monitor", shortcut], {
+        env: nativeHelperEnvironment(),
+        shell: false,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+    } catch (error) {
+      console.warn("Permission-free hold monitor could not start", error);
+      return false;
+    }
     this.process = child;
     this.onStopped = onStopped ?? null;
     this.buffer = "";

@@ -12,6 +12,7 @@ describe("renderer IPC authorization", () => {
       IPC.systemRemoveModel,
       IPC.systemApplyModelSelection,
       IPC.systemGetLaunchAtLoginStatus,
+      IPC.systemClearDiagnostics,
       IPC.historyClear,
       IPC.dictionaryDelete,
     ]) {

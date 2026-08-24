@@ -152,7 +152,9 @@ export class AudioRecorder {
       const remainingSamples = this.maxCapturedSamples - this.capturedSamples;
       const remainingBytes = this.maxCapturedBytes - this.capturedBytes;
       if (chunk.length > remainingSamples || chunk.byteLength > remainingBytes) {
-        this.captureLimitError = createCaptureLimitError("large");
+        this.captureLimitError = createCaptureLimitError(
+          chunk.length > remainingSamples ? "long" : "large",
+        );
         this.stopCaptureAtLimit();
         return;
       }

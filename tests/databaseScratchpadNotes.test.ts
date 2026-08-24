@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import Database from "better-sqlite3";
@@ -20,7 +20,7 @@ import { LocalDatabase } from "../src/main/persistence/database";
 const temporaryDirectories: string[] = [];
 
 function createDatabasePath(): string {
-  const directory = mkdtempSync(path.join(tmpdir(), "localscribe-scratchpad-test-"));
+  const directory = mkdtempSync(path.join(realpathSync(tmpdir()), "localscribe-scratchpad-test-"));
   temporaryDirectories.push(directory);
   return path.join(directory, "test.db");
 }

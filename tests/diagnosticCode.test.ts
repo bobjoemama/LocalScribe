@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 
 import {
   FORBIDDEN_DIAGNOSTIC_PATTERNS,
+  DIAGNOSTIC_DETAILS,
+  DIAGNOSTIC_EVENTS,
   KNOWN_ERROR_CODES,
   normalizeDiagnosticCode,
 } from "../src/shared/diagnosticsLog";
@@ -59,7 +61,7 @@ describe("codes carried in a wrapped cause", () => {
     const second = new Error("second", { cause: first });
     first.cause = second;
 
-    expect(normalizeDiagnosticCode(first)).toBe("Error:len5");
+    expect(normalizeDiagnosticCode(first)).toBe("unknown_error");
   });
 
   it("stops walking rather than following an unbounded chain", () => {
@@ -67,7 +69,7 @@ describe("codes carried in a wrapped cause", () => {
     for (let depth = 0; depth < 40; depth += 1) error = new Error("wrapped", { cause: error });
 
     // Not found, and — the point of the test — it returns at all.
-    expect(normalizeDiagnosticCode(error)).toBe("Error:len7");
+    expect(normalizeDiagnosticCode(error)).toBe("unknown_error");
   });
 });
 
@@ -94,12 +96,12 @@ describe("codes the supervisor carries as a property", () => {
       { code: "ENOENT" },
     );
 
-    expect(normalizeDiagnosticCode(failure)).toBe(`Error:len${failure.message.length}`);
+    expect(normalizeDiagnosticCode(failure)).toBe("unknown_error");
   });
 
   it("ignores a non-string code", () => {
     expect(normalizeDiagnosticCode(Object.assign(new Error("boom"), { code: 7 })))
-      .toBe("Error:len4");
+      .toBe("unknown_error");
   });
 });
 
@@ -107,28 +109,33 @@ describe("codes appearing anywhere in the message", () => {
   it("finds a code that is not the first word", () => {
     // "ASR worker exited" made the scan stop on `worker`, which is not a code,
     // and it never looked at the rest of the message.
-    expect(normalizeDiagnosticCode(new Error("the worker reported audio_too_long")))
-      .toBe("audio_too_long");
+    expect(normalizeDiagnosticCode(new Error("the worker reported invalid_audio_file")))
+      .toBe("invalid_audio_file");
   });
 
   it("still prefers a real code over a word that merely looks like one", () => {
     expect(normalizeDiagnosticCode(new Error("speech failed: no_speech_detected")))
       .toBe("no_speech_detected");
   });
+
+  it("maps the main-process no-speech sentinel without echoing its message", () => {
+    expect(normalizeDiagnosticCode(new Error("No speech detected")))
+      .toBe("no_speech_detected");
+  });
 });
 
 describe("what is never written", () => {
-  it("reduces an ordinary message to a name and a length", () => {
+  it("reduces every ordinary message to one non-reversible code", () => {
     const failure = new Error("Could not read /Users/devesh/Library/Application Support/LocalScribe");
 
     const code = normalizeDiagnosticCode(failure);
 
-    expect(code).toBe(`Error:len${failure.message.length}`);
+    expect(code).toBe("unknown_error");
     expect(code).not.toContain("devesh");
     expect(code).not.toContain("/");
   });
 
-  it("never returns anything outside the closed set or the name:len shape", () => {
+  it("never returns anything outside the closed detail vocabulary", () => {
     /*
      * The property that makes searching the whole message and the whole cause
      * chain safe. Driven with messages built to look like leaks.
@@ -144,25 +151,56 @@ describe("what is never written", () => {
 
     for (const failure of hostile) {
       const code = normalizeDiagnosticCode(failure);
-      const allowed = KNOWN_ERROR_CODES.has(code) || /^[A-Za-z]+:len\d+$/u.test(code);
-      expect(allowed, `${code} is neither a known code nor a name:len token`).toBe(true);
+      expect(DIAGNOSTIC_DETAILS.has(code), `${code} is not a diagnostic detail`).toBe(true);
       for (const { name, pattern } of FORBIDDEN_DIAGNOSTIC_PATTERNS) {
         expect(pattern.test(code), `the code contains a ${name}`).toBe(false);
       }
     }
   });
 
-  it("keeps its behaviour for values that are not errors at all", () => {
-    expect(normalizeDiagnosticCode(undefined)).toBe("undefined");
-    expect(normalizeDiagnosticCode(null)).toBe("null");
-    expect(normalizeDiagnosticCode(42)).toBe("number");
+  it("does not reveal primitive types or arbitrary short strings", () => {
+    expect(normalizeDiagnosticCode(undefined)).toBe("unknown_error");
+    expect(normalizeDiagnosticCode(null)).toBe("unknown_error");
+    expect(normalizeDiagnosticCode(42)).toBe("unknown_error");
     expect(normalizeDiagnosticCode("cancelled")).toBe("cancelled");
-    // A string that is not a safe token is not echoed.
-    expect(normalizeDiagnosticCode("/Users/devesh/Library")).toBe("string");
+    expect(normalizeDiagnosticCode("pin7")).toBe("unknown_error");
+    expect(normalizeDiagnosticCode("/Users/devesh/Library")).toBe("unknown_error");
   });
 });
 
 describe("the known-code set is reachable", () => {
+  it("covers every literal diagnostic event emitted by current call sites", () => {
+    const sources = [
+      "src/main.ts",
+      "src/main/session/transcribePrelude.ts",
+      "src/main/session/finalizeWatchdog.ts",
+    ].map((file) => readFileSync(file, "utf8")).join("\n");
+    const emitted = new Set(
+      [...sources.matchAll(/event:\s*"([a-z_-]+)"/gu)]
+        .map((match) => match[1])
+        .filter((event): event is string => event !== undefined),
+    );
+
+    for (const event of emitted) {
+      expect(DIAGNOSTIC_EVENTS).toContain(event);
+    }
+  });
+
+  it("covers every literal WorkerError code emitted by the current worker", () => {
+    const worker = readFileSync("worker/localscribe_worker/worker.py", "utf8");
+    const emitted = new Set(
+      [...worker.matchAll(/WorkerError\(\s*"([a-z_]+)"/gu)]
+        .map((match) => match[1])
+        .filter((code): code is string => code !== undefined),
+    );
+    emitted.add("internal_error");
+
+    expect(emitted.size).toBeGreaterThan(20);
+    for (const code of emitted) {
+      expect(KNOWN_ERROR_CODES.has(code), `missing worker diagnostic code ${code}`).toBe(true);
+    }
+  });
+
   /*
    * `worker_exited` and `worker_timeout` were listed here and produced by
    * nothing, which is the failure this test exists to keep from returning: a

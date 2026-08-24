@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   existsSync,
   mkdtempSync,
@@ -65,6 +66,30 @@ afterEach(() => {
 });
 
 describe("packaged dependency inventory", () => {
+  it("ships the byte-exact notices from pinned FluidAudio 0.15.5", () => {
+    const expectedNotices = new Map([
+      [
+        "FluidAudio-0.15.5-LICENSE.txt",
+        "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+      ],
+      [
+        "FluidAudio-0.15.5-fastcluster-LICENSE.md",
+        "67594dbe4a7477719c8160373e7767c2c319ef966a6042f76846a18af02cde0a",
+      ],
+      [
+        "FluidAudio-0.15.5-vbx-LICENSE.md",
+        "08e57fdb5187c816e937916f1e176aadb400ca76f4b3b493d69730ec8f10dd80",
+      ],
+    ]);
+
+    for (const [filename, expectedDigest] of expectedNotices) {
+      const notice = readFileSync(path.resolve("resources/licenses", filename));
+      expect(createHash("sha256").update(notice).digest("hex"), filename).toBe(
+        expectedDigest,
+      );
+    }
+  });
+
   it("keeps only the dependency closure rooted at production dependencies", () => {
     const project = makeTemporaryProject();
     writeJson(path.join(project, "package.json"), {
@@ -156,7 +181,13 @@ describe("packaged dependency inventory", () => {
       "native/macos/active-target",
       "native/macos/localscribe-fluidaudio-parakeet",
     ]);
+    expect(mac.licenseFiles).toEqual([
+      "licenses/FluidAudio-0.15.5-LICENSE.txt",
+      "licenses/FluidAudio-0.15.5-fastcluster-LICENSE.md",
+      "licenses/FluidAudio-0.15.5-vbx-LICENSE.md",
+    ]);
     expect(mac.brandingFiles).toEqual([]);
+    expect(mac.legalFiles).toEqual(["LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.md"]);
   });
 
   it("keeps the source inventory and macOS allowlist to the exact curated manifests", () => {
@@ -177,6 +208,12 @@ describe("packaged dependency inventory", () => {
       "python-runtime/venv/bin/python3",
       "native/macos/active-target",
       "native/macos/localscribe-fluidaudio-parakeet",
+      "licenses/FluidAudio-0.15.5-LICENSE.txt",
+      "licenses/FluidAudio-0.15.5-fastcluster-LICENSE.md",
+      "licenses/FluidAudio-0.15.5-vbx-LICENSE.md",
+      "LICENSE",
+      "NOTICE",
+      "THIRD_PARTY_NOTICES.md",
       ...MAC_MODEL_MANIFESTS.map((filename) => `model-manifest/${filename}`),
     ];
     expect(() => assertPlatformResourceEntries(valid, "darwin", "arm64")).not.toThrow();
@@ -192,6 +229,13 @@ describe("packaged dependency inventory", () => {
         "arm64",
       ),
     ).toThrow(/model-manifest inventory|unsupported-platform/);
+    expect(() =>
+      assertPlatformResourceEntries(
+        [...valid, "licenses/unreviewed-LICENSE.txt"],
+        "darwin",
+        "arm64",
+      ),
+    ).toThrow(/license inventory/);
     expect(() =>
       assertPlatformResourceEntries(
         [...valid, "python-runtime/venv/lib/python3.12/site-packages/model/weights.npz"],
@@ -214,6 +258,10 @@ describe("packaged dependency inventory", () => {
       "native/macos/localscribe-fluidaudio-parakeet",
       "native/macos/active-target.swift",
       "native/windows/active-target.exe",
+      "licenses/FluidAudio-0.15.5-LICENSE.txt",
+      "licenses/FluidAudio-0.15.5-fastcluster-LICENSE.md",
+      "licenses/FluidAudio-0.15.5-vbx-LICENSE.md",
+      "licenses/unreviewed-LICENSE.txt",
       "python-runtime/venv/bin/python3",
       "python-runtime/venv/lib/pkg/tests/test_pkg.py",
       "python-runtime/venv/lib/pkg/cache.pyc",
@@ -235,6 +283,11 @@ describe("packaged dependency inventory", () => {
     expect(existsSync(path.join(resources, "native", "macos", "active-target.swift"))).toBe(false);
     expect(existsSync(path.join(resources, "native", "macos", "localscribe-fluidaudio-parakeet"))).toBe(true);
     expect(existsSync(path.join(resources, "native", "windows"))).toBe(false);
+    expect(readdirSync(path.join(resources, "licenses")).sort()).toEqual([
+      "FluidAudio-0.15.5-LICENSE.txt",
+      "FluidAudio-0.15.5-fastcluster-LICENSE.md",
+      "FluidAudio-0.15.5-vbx-LICENSE.md",
+    ]);
     expect(existsSync(path.join(resources, "python-runtime", "venv", "lib", "pkg", "tests"))).toBe(false);
     expect(existsSync(path.join(resources, "python-runtime-windows"))).toBe(false);
   });

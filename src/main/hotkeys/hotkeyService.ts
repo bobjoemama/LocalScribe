@@ -17,8 +17,13 @@ import { HoldShortcutGesture } from "./holdShortcutGesture";
 import type { ControlMonitor, ControlMonitorEvent } from "./macControlMonitor";
 
 type HotkeyMode = "stopped" | "full" | "fallback";
+export type HotkeyDiagnosticDetail =
+  | "toggle_registration_failed"
+  | "hotkey_reconfigure_degraded";
 
 const CAPTURE_TIMEOUT_MS = 20_000;
+const RECONFIGURE_DEGRADED_MESSAGE =
+  "LocalScribe could not safely restore the previous shortcuts. Restart LocalScribe before using dictation shortcuts.";
 
 const KEY_GROUPS: Record<string, readonly (readonly number[])[]> = {
   Space: [[UiohookKey.Space]],
@@ -126,6 +131,7 @@ export class HotkeyService {
    * the app falls back from Accessibility to the native hold monitor.
    */
   private toggleRegistrationFailure: string | null = null;
+  private reconfigureDegraded = false;
   private toggleLocked = false;
   private toggleTimer: ReturnType<typeof setTimeout> | null = null;
   private fallbackMonitorStarted = false;
@@ -154,9 +160,11 @@ export class HotkeyService {
     if (this.nativeMacMonitorSupports(this.holdShortcut)) {
       if (this.mode === "full") this.stopForReconfigure(true);
       this.startFallbackMode(false);
+      this.reconfigureDegraded = false;
       return;
     }
     this.startFull(false);
+    this.reconfigureDegraded = false;
   }
 
   /**
@@ -195,6 +203,15 @@ export class HotkeyService {
    */
   toggleUnavailableReason(): string | null {
     return this.toggleRegistered ? null : this.toggleRegistrationFailure;
+  }
+
+  /** Closed details suitable for diagnostics; never includes native errors or shortcuts. */
+  toggleRegistrationDiagnosticDetail(): HotkeyDiagnosticDetail | null {
+    return this.toggleRegistrationFailure === null ? null : "toggle_registration_failed";
+  }
+
+  reconfigureDiagnosticDetail(): HotkeyDiagnosticDetail | null {
+    return this.reconfigureDegraded ? "hotkey_reconfigure_degraded" : null;
   }
 
   private startFull(requireToggle: boolean): void {
@@ -247,6 +264,7 @@ export class HotkeyService {
       this.stopForReconfigure(true);
     }
     this.startFallbackMode(false);
+    this.reconfigureDegraded = false;
   }
 
   private startFallbackMode(requireToggle: boolean): void {
@@ -311,22 +329,49 @@ export class HotkeyService {
     // Keeping it registered removes an avoidable race with another app.
     const preserveToggleRegistration = this.toggleRegistered && canonicalToggle === previous.toggleShortcut;
 
-    this.stopForReconfigure(preserveToggleRegistration);
+    try {
+      this.stopForReconfigure(preserveToggleRegistration);
+    } catch (error) {
+      // Teardown continues through every owned registration, but any native
+      // failure leaves listener ownership uncertain. Keep the persisted and
+      // in-memory shortcut values unchanged and require a process restart
+      // instead of risking duplicate callbacks.
+      this.reconfigureDegraded = true;
+      throw new Error(RECONFIGURE_DEGRADED_MESSAGE, { cause: error });
+    }
     this.holdShortcut = canonicalHold;
     this.toggleShortcut = canonicalToggle;
     this.holdMatcher = nextMatcher;
     try {
       this.startMode(previous.mode, true);
+      this.reconfigureDegraded = false;
     } catch (error) {
-      this.stopForReconfigure(preserveToggleRegistration);
+      let rollbackTeardownFailure: unknown;
+      try {
+        this.stopForReconfigure(preserveToggleRegistration);
+      } catch (cleanupError) {
+        rollbackTeardownFailure = cleanupError;
+      }
       this.holdShortcut = previous.holdShortcut;
       this.toggleShortcut = previous.toggleShortcut;
       this.holdMatcher = this.createHoldMatcher(previous.holdShortcut);
+      if (rollbackTeardownFailure) {
+        this.reconfigureDegraded = true;
+        throw new Error(RECONFIGURE_DEGRADED_MESSAGE, {
+          // Preserve the operation failure as the public causal chain. The
+          // separately observed cleanup failure is represented by the closed
+          // degraded state, never by an unbounded native error string.
+          cause: error,
+        });
+      }
       try {
         this.startMode(previous.mode, true);
       } catch (rollbackError) {
+        this.reconfigureDegraded = true;
         console.error("Could not restore the previous LocalScribe shortcuts", rollbackError);
+        throw new Error(RECONFIGURE_DEGRADED_MESSAGE, { cause: rollbackError });
       }
+      this.reconfigureDegraded = false;
       throw error;
     }
   }
@@ -469,6 +514,7 @@ export class HotkeyService {
 
   stop(): void {
     this.stopForReconfigure(false);
+    this.reconfigureDegraded = false;
   }
 
   private stopForReconfigure(preserveToggleRegistration: boolean): void {

@@ -43,6 +43,7 @@ function makeResourceFixture(platform: PackagedPlatform, arch: "arm64" | "x64"):
   writeFixtureFile(resourcesPath, policy.runtimeExecutable, "python");
   for (const file of policy.helperFiles) writeFixtureFile(resourcesPath, file);
   for (const file of policy.manifestFiles) writeFixtureFile(resourcesPath, file);
+  for (const file of policy.licenseFiles) writeFixtureFile(resourcesPath, file);
   for (const file of policy.brandingFiles) writeFixtureFile(resourcesPath, file);
   return resourcesPath;
 }
@@ -61,6 +62,7 @@ function makeSourceProjectFixture(platform: PackagedPlatform, arch: "arm64" | "x
   writeFixtureFile(resourcesPath, policy.runtimeExecutable, "python");
   for (const file of policy.helperFiles) writeFixtureFile(resourcesPath, file);
   for (const file of policy.manifestFiles) writeFixtureFile(resourcesPath, file);
+  for (const file of policy.licenseFiles) writeFixtureFile(resourcesPath, file);
   for (const file of policy.brandingFiles) writeFixtureFile(resourcesPath, file);
   return { projectPath, resourcesPath };
 }
@@ -110,6 +112,24 @@ describe("packaged loose-resource integrity", () => {
     expect(() =>
       assertPackagedResourceIntegrity(resourcesPath, "darwin", "arm64", expected),
     ).toThrow(/missing required loose resource|Resource integrity mismatch/);
+  });
+
+  it.each([
+    "licenses/FluidAudio-0.15.5-LICENSE.txt",
+    "licenses/FluidAudio-0.15.5-fastcluster-LICENSE.md",
+    "licenses/FluidAudio-0.15.5-vbx-LICENSE.md",
+  ])("protects the exact packaged notice bytes for %s", (noticePath) => {
+    const resourcesPath = makeResourceFixture("darwin", "arm64");
+    const expected = buildResourceIntegrityExpectation(resourcesPath, "darwin", "arm64");
+    writeFixtureFile(
+      resourcesPath,
+      noticePath,
+      "not the pinned upstream license",
+    );
+
+    expect(() =>
+      assertPackagedResourceIntegrity(resourcesPath, "darwin", "arm64", expected),
+    ).toThrow(/Resource integrity mismatch/);
   });
 
   it("records symlink targets and rejects a changed target", () => {

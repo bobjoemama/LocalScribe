@@ -60,8 +60,67 @@ describe("release hardening configuration", () => {
     expect(projectFile("scripts/verify-npm-version.mjs")).toContain(
       "actualVersion !== expectedVersion",
     );
-    expect(existsSync(resolve(root, ".github/workflows/ci.yml"))).toBe(false);
+    expect(existsSync(resolve(root, ".github/workflows/ci.yml"))).toBe(true);
     expect(existsSync(resolve(root, ".github/workflows/release.yml"))).toBe(false);
+  });
+
+  it("keeps hosted CI pull-request-only, read-only, pinned, and source-scoped", () => {
+    const workflow = projectFile(".github/workflows/ci.yml");
+
+    expect(workflow).toContain("pull_request:");
+    expect(workflow).toContain("      - main");
+    expect(workflow).not.toContain("pull_request_target:");
+    expect(workflow).not.toMatch(/^\s*(?:push|workflow_dispatch|schedule):/mu);
+    expect(workflow).not.toContain("paths:");
+    expect(workflow).not.toContain("paths-ignore:");
+    expect(workflow).toContain("permissions:\n  contents: read");
+    expect(workflow).not.toMatch(/^\s+[\w-]+: write\s*$/mu);
+    expect(workflow).not.toContain("secrets:");
+    expect(workflow).not.toContain("${{ secrets.");
+    expect(workflow).not.toContain("upload-artifact");
+    expect(workflow).not.toContain("download-artifact");
+    expect(workflow).not.toContain("cache: npm");
+    expect(workflow).toContain("persist-credentials: false");
+    expect(workflow).toContain("enable-cache: false");
+    expect(workflow).toContain(
+      "group: source-ci-${{ github.workflow }}-${{ github.event.pull_request.number }}",
+    );
+    expect(workflow).toContain("cancel-in-progress: true");
+    expect(workflow).toContain('CI: "true"');
+    expect(workflow).toContain('UV_PYTHON_DOWNLOADS: "never"');
+    expect(workflow).toContain("name: Source verification");
+    expect(workflow).toContain("if: ${{ !github.event.pull_request.draft }}");
+    expect(workflow).toContain("runs-on: macos-14");
+    expect(workflow).toContain("timeout-minutes: 30");
+
+    for (const action of [
+      "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1",
+      "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0",
+      "actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0",
+      "astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1",
+    ]) {
+      expect(workflow).toContain(`uses: ${action}`);
+    }
+    expect(workflow.match(/^\s*uses:\s+.+$/gmu)).toHaveLength(4);
+    expect(workflow).not.toMatch(/uses:\s+[^\s@]+@(?:main|master|v?\d+(?:\.\d+)*)\s*$/mu);
+    expect(workflow).toContain("node-version-file: .nvmrc");
+    expect(workflow).toContain("python-version: 3.12.13");
+    expect(workflow).toContain("version-file: .uv-version");
+    expect(workflow).toContain(
+      "npm install --global npm@11.16.0 --ignore-scripts --no-audit --no-fund",
+    );
+    expect(workflow).toContain("run: npm ci --strict-allow-scripts");
+    expect(workflow).toContain("run: npm run ci");
+  });
+
+  it("limits Dependabot to pinned GitHub Actions updates against main", () => {
+    const dependabot = projectFile(".github/dependabot.yml");
+
+    expect(dependabot).toContain("package-ecosystem: github-actions");
+    expect(dependabot.match(/package-ecosystem:/gu)).toHaveLength(1);
+    expect(dependabot).toContain("target-branch: main");
+    expect(dependabot).toContain("interval: weekly");
+    expect(dependabot).not.toMatch(/package-ecosystem:\s+(?:npm|pip|uv|docker)/u);
   });
 
   it("keeps every pinned install-script allowance resolvable to the locked version", () => {
@@ -152,12 +211,14 @@ describe("release hardening configuration", () => {
     expect(forgeConfig).toContain("MAC_ACTIVE_TARGET_ENTITLEMENTS");
     expect(forgeConfig).toContain("MAC_RUNTIME_ENTITLEMENTS");
     expect(forgeConfig).toContain("signProtectedMacResources();");
-    expect(forgeConfig).toContain("snapshotTrackedFluidAudioHelper();");
-    expect(forgeConfig).toContain("restoreTrackedFluidAudioHelper();");
-    expect(forgeConfig).toContain('process.once("exit", restoreTrackedFluidAudioHelper)');
-    expect(forgeConfig.indexOf("snapshotTrackedFluidAudioHelper();")).toBeLessThan(
+    expect(forgeConfig).toContain("promoteProtectedResources([");
+    expect(forgeConfig).toContain("restoreTrackedProtectedResources();");
+    expect(forgeConfig).toContain('process.once("exit", restoreTrackedProtectedResources)');
+    expect(forgeConfig.indexOf("promoteProtectedResources([")).toBeLessThan(
       forgeConfig.indexOf("signProtectedMacResources();"),
     );
+    expect(forgeConfig).toContain("MAC_STAGED_ACTIVE_TARGET");
+    expect(forgeConfig).toContain("MAC_STAGED_FLUID_AUDIO_HELPER");
     expect(forgeConfig).toContain("ignore: isPreSignedProtectedMacResource");
     expect(forgeConfig).toContain("codesign\", [\"--verify\", \"--strict\", binary]");
     expect(forgeConfig).toContain(
@@ -176,10 +237,47 @@ describe("release hardening configuration", () => {
     expect(entitlementVerifier).toContain(
       "for (const binary of runtimeMachOFiles) assertNoEntitlementKeys(binary)",
     );
+    expect(entitlementVerifier).toContain("for (const binary of nestedMachOFiles)");
+    expect(entitlementVerifier).toContain("if (binary !== executable) assertNoEntitlementKeys(binary)");
 
     expect(forgeConfig).toContain('removeInfoPlistKeyIfPresent(infoPlist, "NSAppTransportSecurity.NSAllowsArbitraryLoads")');
     expect(forgeConfig).toContain('removeInfoPlistKeyIfPresent(infoPlist, "NSBluetoothAlwaysUsageDescription")');
     expect(forgeConfig).toContain('removeInfoPlistKeyIfPresent(infoPlist, "NSCameraUsageDescription")');
+  });
+
+  it("enables only Electron's documented accessibility tree and keeps editor resolution fail-closed", () => {
+    const helper = projectFile("resources/native/macos/active-target.swift");
+
+    expect(helper).toContain('"AXManualAccessibility" as CFString');
+    expect(helper).toContain("AXUIElementSetAttributeValue(");
+    expect(helper).toContain("kCFBooleanTrue");
+    expect(helper).toContain("focusedElementLookupAttemptCount = 6");
+    expect(helper).toContain("focusedElementLookupInterval: TimeInterval = 0.02");
+    expect(helper).not.toContain("AXEnhancedUserInterface");
+
+    expect(helper).toContain('"AXEditableAncestor" as CFString');
+    expect(helper).not.toContain("AXHighestEditableAncestor");
+    expect(helper).toContain("elementIsInParentChain(editableAncestor, of: focusedElement)");
+    expect(helper).toContain("elementsShareAccessibilityWindow(editableAncestor, focusedElement)");
+    expect(helper).toContain("candidateEditable: focusedElementIsEditable(editableAncestor)");
+    expect(helper).toContain("let focusedUIElement = accessibilityTrusted");
+    expect(helper).toMatch(
+      /focusedUIElementEnablingManualAccessibilityIfNeeded\(focusedApplication\)[\s\S]*?focusedWindowFingerprint\(/u,
+    );
+    expect(helper).not.toMatch(/knownEditableRoles[\s\S]*?return true/u);
+
+    // Tree activation must not read target content. Value, selected text, and
+    // selected range appear only in settable-capability checks, never in an
+    // attribute-value read or transcript write.
+    expect(helper).not.toContain("kAXTitleAttribute");
+    expect(helper.match(/kAXValueAttribute/gu)).toHaveLength(2);
+    expect(helper.match(/kAXSelectedTextAttribute/gu)).toHaveLength(2);
+    expect(helper.match(/kAXSelectedTextRangeAttribute/gu)).toHaveLength(1);
+    expect(helper).toContain("attributeIsSettable(");
+    expect(helper).toContain("return textRoleHasMutableValue || selectedTextSettable");
+    expect(helper).toContain("kAXComboBoxRole as String");
+    expect(helper).toContain("guard let finalTarget = try? captureTarget()");
+    expect(helper).toContain("CGEvent offers no compare-and-post transaction");
   });
 
   it("hardens the Electron fuse configuration without dropping ASAR protections", () => {
@@ -406,6 +504,21 @@ describe("release hardening configuration", () => {
     expect(macBuild).toContain('"$uv_bin" lock --check');
     expect(macBuild).toContain('"$project_root/.uv-version"');
     expect(macBuild).toContain("--reinstall-package localscribe-worker");
+    expect(macBuild).toContain('python_build_tag="20260504"');
+    expect(macBuild).toContain("--python-downloads-json-url");
+    expect(macBuild).toContain("scripts/python-build-standalone.json");
+    expect(macBuild).toContain("out/runtime-staging/native/macos/localscribe-fluidaudio-parakeet");
+    expect(macBuild).not.toContain(
+      'fluid_audio_helper_output="$project_root/resources/native/macos/localscribe-fluidaudio-parakeet"',
+    );
+  });
+
+  it("always removes the renderer permission probe's private temporary directory", () => {
+    const probe = projectFile("scripts/measure-renderer-permission-names.mjs");
+
+    expect(probe).toContain("const probeRoot = mkdtempSync(");
+    expect(probe).toContain("} finally {");
+    expect(probe).toContain("rmSync(probeRoot, { force: true, recursive: true })");
   });
 
   it("audits every exact worker package with a separately locked pip-audit", () => {
@@ -456,8 +569,9 @@ describe("release hardening configuration", () => {
     expect(localMacVerification).toContain("npm run --silent sbom:runtime:macos");
     expect(localMacVerification).toContain("npm run --silent sbom:python:macos");
     expect(localMacVerification).toContain("checksum_path");
+    expect(localMacVerification).toContain('asset_name="$(basename "$artifact")"');
     expect(localMacVerification).toContain(
-      'shasum -a 256 -c "$(basename "$checksum_path")"',
+      "verify-release-assets.mjs --platform darwin --candidate",
     );
     expect(localMacVerification).toContain(
       "verify-release-assets.mjs --platform darwin",

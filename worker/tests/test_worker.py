@@ -5,6 +5,7 @@ import hashlib
 import io
 import json
 import shutil
+import stat
 import tempfile
 import unittest
 import uuid
@@ -247,6 +248,7 @@ class WorkerProtocolTests(unittest.TestCase):
             # real model archive. Exact file/hash verification is separately
             # covered by ModelInstallationTests and install_model protocol tests.
             actual_validation = worker_module._valid_model_directory
+            actual_identity_capture = worker_module._capture_model_tree_identity
 
             def model_is_available(
                 path: Path,
@@ -257,10 +259,34 @@ class WorkerProtocolTests(unittest.TestCase):
                     return actual_validation(path, manifest, **kwargs)
                 return True
 
-            with patch.object(
-                worker_module,
-                "_valid_model_directory",
-                side_effect=model_is_available,
+            def model_identity(
+                path: Path,
+                root: Path,
+                manifest: ModelManifest,
+            ) -> worker_module.ModelTreeIdentity:
+                if manifest.model_id == "example/whisper":
+                    return actual_identity_capture(path, root, manifest)
+                # These runtime-flow doubles deliberately do not materialize
+                # multi-gigabyte manifests. Identity/race behaviour uses the
+                # real filesystem in the dedicated example/whisper tests.
+                marker = sum(manifest.storage_directory.encode("utf-8"))
+                return worker_module.ModelTreeIdentity(
+                    root=(marker, 1, stat.S_IFDIR, 1, 1),
+                    directory=(marker, 2, stat.S_IFDIR, 1, 1),
+                    files=(),
+                )
+
+            with (
+                patch.object(
+                    worker_module,
+                    "_valid_model_directory",
+                    side_effect=model_is_available,
+                ),
+                patch.object(
+                    worker_module,
+                    "_capture_model_tree_identity",
+                    side_effect=model_identity,
+                ),
             ):
                 exit_code = run_worker(**kwargs)
         return parse_output(output), errors.getvalue(), exit_code
@@ -459,6 +485,7 @@ class WorkerProtocolTests(unittest.TestCase):
                     "tier": "low",
                     "modelId": tier_spec("low").model_id,
                     "computeType": "int4",
+                    "asrMode": "after-stop",
                     "loadMs": messages[1]["loadMs"],
                 },
             )
@@ -636,6 +663,7 @@ class WorkerProtocolTests(unittest.TestCase):
                     "tier": "medium",
                     "modelId": v2_medium.model_id,
                     "computeType": "int8",
+                    "asrMode": "after-stop",
                     "loadMs": messages[1]["loadMs"],
                 },
             )
@@ -725,10 +753,45 @@ class WorkerProtocolTests(unittest.TestCase):
 
             self.assertEqual(exit_code, 0)
             self.assertEqual(errors, "")
-            ensured.assert_called_once_with(model_root.resolve(), manifest, False)
+            ensured.assert_called_once()
+            self.assertEqual(
+                ensured.call_args.args,
+                (model_root.resolve(), manifest, False),
+            )
+            verified_identities = ensured.call_args.kwargs["verified_identity_out"]
+            self.assertEqual(len(verified_identities), 1)
+            self.assertIsInstance(
+                verified_identities[0],
+                worker_module.ModelTreeIdentity,
+            )
             self.assertEqual(messages[1]["type"], "model_ready")
             self.assertEqual(messages[1]["modelId"], spec.model_id)
+            self.assertEqual(messages[1]["asrMode"], "after-stop")
             self.assertTrue(runtime.closed)
+
+    def test_model_ready_reports_mode_for_cold_and_already_warm_loads(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            model_root = Path(temporary) / "models"
+            spec = tier_spec("low")
+            selection = (spec.model_id, spec.tier, spec.compute_type)
+            manifest = tiny_manifest()
+            write_tiny_model(model_root / manifest.storage_directory, manifest)
+            first = load_request("low", model_root, allow_download=False)
+            second = load_request("low", model_root, allow_download=False)
+            runtime = FakeRuntime()
+
+            with patch.dict(worker_module.MODEL_MANIFESTS, {selection: manifest}):
+                messages, errors, exit_code = self.run_protocol(
+                    encode_requests(first, second, request("shutdown")),
+                    factory=lambda _path, _spec: runtime,
+                )
+
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(errors, "")
+            self.assertEqual(messages[1]["asrMode"], "after-stop")
+            self.assertEqual(messages[2]["asrMode"], "after-stop")
+            self.assertGreaterEqual(messages[1]["loadMs"], 0)
+            self.assertEqual(messages[2]["loadMs"], 0)
 
     def test_cold_load_hashes_the_artifact_exactly_once(self) -> None:
         """A cold load used to read every artifact byte through SHA-256 twice.
@@ -746,15 +809,22 @@ class WorkerProtocolTests(unittest.TestCase):
             manifest = tiny_manifest()
             write_tiny_model(model_root / manifest.storage_directory, manifest)
             hashed: list[str] = []
-            real_sha256 = worker_module._sha256
+            real_sha256_with_identity = worker_module._sha256_with_identity
 
-            def counting_sha256(path: Path) -> str:
+            def counting_sha256_with_identity(
+                path: Path,
+                on_chunk: Any = None,
+            ) -> tuple[str, tuple[str, int, int, int, int, int]]:
                 hashed.append(path.name)
-                return real_sha256(path)
+                return real_sha256_with_identity(path, on_chunk)
 
             with (
                 patch.dict(worker_module.MODEL_MANIFESTS, {selection: manifest}),
-                patch.object(worker_module, "_sha256", counting_sha256),
+                patch.object(
+                    worker_module,
+                    "_sha256_with_identity",
+                    counting_sha256_with_identity,
+                ),
             ):
                 messages, errors, exit_code = self.run_protocol(
                     encode_requests(
@@ -816,6 +886,61 @@ class WorkerProtocolTests(unittest.TestCase):
             # issued straight afterwards still runs on it.
             self.assertEqual(messages[3]["type"], "final")
             self.assertEqual(len(warm.calls), 1)
+
+    def test_load_rejects_swap_after_hash_verification_before_loader_recheck(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            model_root = Path(temporary) / "models"
+            spec = tier_spec("low")
+            selection = (spec.model_id, spec.tier, spec.compute_type)
+            manifest = tiny_manifest()
+            model_directory = model_root / manifest.storage_directory
+            write_tiny_model(model_directory, manifest)
+            real_validation = worker_module._valid_model_directory
+            swapped_after_verified_hash = False
+
+            def verify_then_swap(
+                local_model: Path,
+                supplied_manifest: ModelManifest,
+                **kwargs: Any,
+            ) -> bool:
+                nonlocal swapped_after_verified_hash
+                valid = real_validation(local_model, supplied_manifest, **kwargs)
+                if (
+                    valid
+                    and kwargs.get("verified_identity_out") is not None
+                    and not swapped_after_verified_hash
+                ):
+                    weights = model_directory / "weights.npz"
+                    replacement = model_directory / "replacement.bin"
+                    replacement.write_bytes(b"x" * weights.stat().st_size)
+                    replacement.replace(weights)
+                    swapped_after_verified_hash = True
+                return valid
+
+            with (
+                patch.dict(worker_module.MODEL_MANIFESTS, {selection: manifest}),
+                patch.object(
+                    worker_module,
+                    "_valid_model_directory",
+                    side_effect=verify_then_swap,
+                ),
+            ):
+                messages, errors, exit_code = self.run_protocol(
+                    encode_requests(
+                        load_request("low", model_root, allow_download=False),
+                        request("shutdown"),
+                    ),
+                    factory=lambda *_args: self.fail(
+                        "a changed model identity must never reach the native loader"
+                    ),
+                )
+
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(errors, "[mac-asr-worker] model_path_changed\n")
+            self.assertEqual(messages[1]["code"], "model_path_changed")
+            self.assertTrue(swapped_after_verified_hash)
 
     def test_install_model_transactionally_verifies_without_constructing_runtime(
         self,
@@ -1297,9 +1422,33 @@ class WorkerProtocolTests(unittest.TestCase):
                 machine_name="x86_64",
             )
             self.assertEqual(messages[1]["code"], "apple_silicon_only")
+            self.assertEqual(
+                messages[1]["message"],
+                "LocalScribe speech worker requires Apple silicon",
+            )
 
 
 class ModelInstallationTests(unittest.TestCase):
+    def test_digest_identity_is_bound_to_the_exact_open_file_descriptor(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            target = root / "weights.bin"
+            replacement = root / "replacement.bin"
+            contents = b"verified model bytes"
+            target.write_bytes(contents)
+            replacement.write_bytes(b"x" * len(contents))
+            swapped = False
+
+            def swap_path(_size: int) -> None:
+                nonlocal swapped
+                if not swapped:
+                    replacement.replace(target)
+                    swapped = True
+
+            with self.assertRaisesRegex(RuntimeError, "model_file_identity_changed"):
+                worker_module._sha256_with_identity(target, swap_path)
+            self.assertTrue(swapped)
+
     def test_explicit_install_adopts_exact_legacy_huggingface_local_dir(self) -> None:
         manifest = tiny_manifest()
         with tempfile.TemporaryDirectory() as temporary:
@@ -1720,6 +1869,23 @@ class ModelInstallationTests(unittest.TestCase):
         packaged_path = worker_module._manifest_path(spec.manifest_filename)
         raw = json.loads(packaged_path.read_text(encoding="utf-8"))
         raw["modelId"] = "https://untrusted.invalid/model"
+        with tempfile.TemporaryDirectory() as temporary:
+            tampered = Path(temporary) / spec.manifest_filename
+            tampered.write_text(json.dumps(raw), encoding="utf-8")
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "packaged_model_manifest_invalid",
+            ):
+                worker_module._parse_manifest(tampered, spec.tier, "MLX Whisper")
+
+    def test_catalog_manifest_file_entry_ceiling_is_strictly_bounded(self) -> None:
+        spec = tier_spec("low", family="v2")
+        packaged_path = worker_module._manifest_path(spec.manifest_filename)
+        raw = json.loads(packaged_path.read_text(encoding="utf-8"))
+        raw["files"] = {
+            f"artifact-{index}.bin": {"bytes": 1, "sha256": "a" * 64}
+            for index in range(worker_module.MAX_MANIFEST_FILE_ENTRIES + 1)
+        }
         with tempfile.TemporaryDirectory() as temporary:
             tampered = Path(temporary) / spec.manifest_filename
             tampered.write_text(json.dumps(raw), encoding="utf-8")

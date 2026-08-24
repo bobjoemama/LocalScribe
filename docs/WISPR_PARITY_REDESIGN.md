@@ -63,10 +63,12 @@ assets or source code.
 
 ### Transforms
 
-- Local deterministic cards for Polish, Concise, and Structured notes, plus a custom-rule
-  editor surface. Do not claim arbitrary LLM rewriting from the ASR model.
-- Explain that transforms run locally and use deterministic rules unless a future local text
-  model is explicitly installed.
+- Local deterministic controls for Polish and spoken structure, plus a
+  custom-rule editor surface. These perform exact, source-defined transforms.
+- Concise semantic rewriting remains visibly disabled because it requires a
+  separately installed local text-generation model. The ASR model does not
+  provide rewriting, and deterministic cleanup must not be described as an LLM
+  transformation.
 
 ### Scratchpad
 

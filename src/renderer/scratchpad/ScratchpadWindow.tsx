@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   scratchpadNoteSchema,
+  type ScratchpadListResult,
   type ScratchpadNote,
 } from "../../shared/contracts";
 import {
@@ -11,7 +12,7 @@ import { createWordCountCache } from "./wordCounts";
 import "./scratchpad-window.css";
 
 type NoteSaveState = "saved" | "saving" | "save-error";
-type ScratchpadStatus = "loading" | NoteSaveState | "load-error" | "create-error" | "delete-error";
+type ScratchpadStatus = "loading" | NoteSaveState | "load-error" | "create-error" | "delete-error" | "close-error";
 
 function requiredMaxLength(value: number | null): number {
   if (value === null) {
@@ -29,6 +30,7 @@ export function scratchpadStatusLabel(state: ScratchpadStatus): string {
   if (state === "load-error") return "Notes unavailable";
   if (state === "create-error") return "Note creation failed";
   if (state === "delete-error") return "Delete failed";
+  if (state === "close-error") return "Could not close";
   return "Saved";
 }
 
@@ -46,6 +48,18 @@ export function scratchpadHeaderTitle(
 ): string {
   if (activeTitle) return activeTitle;
   return status === "loading" ? "Loading notes…" : "Scratchpad";
+}
+
+export function scratchpadInitialLoadAction(
+  result: Pick<ScratchpadListResult, "items" | "totalStored">,
+): "select" | "create" | "blocked-unreadable" {
+  if (result.items.length > 0) return "select";
+  return result.totalStored > 0 ? "blocked-unreadable" : "create";
+}
+
+export function scratchpadIntegrityWarning(skippedUnreadable: number): string | null {
+  if (skippedUnreadable === 0) return null;
+  return `${skippedUnreadable.toLocaleString()} saved ${skippedUnreadable === 1 ? "note could" : "notes could"} not be opened. LocalScribe preserved the unreadable encrypted data and will not overwrite it.`;
 }
 
 function statusTone(state: ScratchpadStatus): "loading" | "saved" | "saving" | "error" {
@@ -93,13 +107,19 @@ function ExpandIcon() {
   return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5H5v4M15 5h4v4M9 19H5v-4M15 19h4v-4" /></svg>;
 }
 
-export function ScratchpadWindowControls() {
+export function ScratchpadWindowControls({
+  closing = false,
+  onClose,
+}: {
+  closing?: boolean;
+  onClose(): void;
+}) {
   return (
     <>
       <button className="scratchpad-window__window-action" type="button" onClick={() => void window.localScribe.windows.toggleScratchpadSize()} aria-label="Toggle expanded Scratchpad" title="Toggle expanded Scratchpad">
         <ExpandIcon />
       </button>
-      <button className="scratchpad-window__window-action" type="button" onClick={() => void window.localScribe.windows.closeScratchpad()} aria-label="Close Scratchpad" title="Close Scratchpad">
+      <button className="scratchpad-window__window-action" type="button" disabled={closing} onClick={onClose} aria-label="Close Scratchpad" title={closing ? "Saving before close…" : "Close Scratchpad"}>
         <CloseIcon />
       </button>
     </>
@@ -114,6 +134,8 @@ export function ScratchpadWindow() {
   const [status, setStatus] = useState<ScratchpadStatus>("loading");
   const [copyMessage, setCopyMessage] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
+  const [closing, setClosing] = useState(false);
+  const [integrityWarning, setIntegrityWarning] = useState<string | null>(null);
   const [deletingIds, setDeletingIds] = useState<ReadonlySet<string>>(() => new Set());
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const notesRef = useRef<ScratchpadNote[]>([]);
@@ -123,9 +145,11 @@ export function ScratchpadWindow() {
   const saveTimersRef = useRef(new Map<string, number>());
   const saveSequencesRef = useRef(new Map<string, number>());
   const inFlightSequencesRef = useRef(new Map<string, number>());
+  const inFlightSavePromisesRef = useRef(new Map<string, Promise<void>>());
   const noteSaveStatesRef = useRef(new Map<string, NoteSaveState>());
   const deletedIdsRef = useRef(new Set<string>());
   const creatingRef = useRef(false);
+  const closingRef = useRef(false);
   const copyMessageTimerRef = useRef<number | null>(null);
   const flushPendingSavesRef = useRef<() => void>(() => undefined);
   /*
@@ -158,7 +182,7 @@ export function ScratchpadWindow() {
     noteSaveStatesRef.current.set(id, "saving");
     if (selectedIdRef.current === id) setStatus("saving");
 
-    void window.localScribe.scratchpad.update(id, body).then(
+    const operation = window.localScribe.scratchpad.update(id, body).then(
       (saved) => {
         if (inFlightSequencesRef.current.get(id) === sequence) {
           inFlightSequencesRef.current.delete(id);
@@ -185,7 +209,12 @@ export function ScratchpadWindow() {
           noteSaveStatesRef.current.set(id, "save-error");
         }
       },
-    );
+    ).finally(() => {
+      if (inFlightSavePromisesRef.current.get(id) === operation) {
+        inFlightSavePromisesRef.current.delete(id);
+      }
+    });
+    inFlightSavePromisesRef.current.set(id, operation);
   };
 
   const scheduleSave = (id: string, body: string, immediately = false) => {
@@ -243,9 +272,12 @@ export function ScratchpadWindow() {
   useEffect(() => {
     let active = true;
     void window.localScribe.scratchpad.list().then(
-      async (listedNotes) => {
+      async (result) => {
         if (!active) return;
-        if (listedNotes.length) {
+        const listedNotes = result.items;
+        setIntegrityWarning(scratchpadIntegrityWarning(result.skippedUnreadable));
+        const loadAction = scratchpadInitialLoadAction(result);
+        if (loadAction === "select") {
           const initialNote = listedNotes[0];
           if (!initialNote) return;
           for (const note of listedNotes) {
@@ -254,6 +286,13 @@ export function ScratchpadWindow() {
           }
           replaceNotes(listedNotes);
           selectNote(initialNote.id);
+          return;
+        }
+        if (loadAction === "blocked-unreadable") {
+          // Stored notes exist, but none can be read. Creating a replacement
+          // would make the empty screen look authoritative and risks hiding a
+          // recovery problem behind new data.
+          setStatus("load-error");
           return;
         }
         await addNewNote();
@@ -280,6 +319,49 @@ export function ScratchpadWindow() {
       const sequence = saveSequencesRef.current.get(id);
       if (sequence === undefined || inFlightSequencesRef.current.get(id) === sequence) continue;
       persistNote(id, body, sequence);
+    }
+  };
+
+  const drainPendingSaves = async (): Promise<boolean> => {
+    flushPendingSavesRef.current();
+    await Promise.allSettled([...inFlightSavePromisesRef.current.values()]);
+
+    // An older write may have been in flight while a newer body was pending.
+    // Start that newer sequence now, but do not automatically retry a failed
+    // sequence forever; a failed close remains open with an explicit Retry.
+    for (const [id, body] of pendingBodiesRef.current) {
+      if (noteSaveStatesRef.current.get(id) === "save-error") continue;
+      const sequence = saveSequencesRef.current.get(id);
+      if (
+        sequence !== undefined
+        && !deletedIdsRef.current.has(id)
+        && !inFlightSavePromisesRef.current.has(id)
+      ) {
+        persistNote(id, body, sequence);
+      }
+    }
+    await Promise.allSettled([...inFlightSavePromisesRef.current.values()]);
+    return pendingBodiesRef.current.size === 0 && inFlightSavePromisesRef.current.size === 0;
+  };
+
+  const closeScratchpad = async () => {
+    if (closingRef.current) return;
+    closingRef.current = true;
+    setClosing(true);
+    if (pendingBodiesRef.current.size > 0 || inFlightSavePromisesRef.current.size > 0) {
+      setStatus("saving");
+    }
+    try {
+      if (!await drainPendingSaves()) {
+        setStatus("save-error");
+        return;
+      }
+      await window.localScribe.windows.closeScratchpad();
+    } catch {
+      setStatus("close-error");
+    } finally {
+      closingRef.current = false;
+      setClosing(false);
     }
   };
 
@@ -379,7 +461,7 @@ export function ScratchpadWindow() {
 
   return (
     <main
-      className={`scratchpad-window${notesCollapsed ? " scratchpad-window--notes-collapsed" : ""}`}
+      className={`scratchpad-window${notesCollapsed ? " scratchpad-window--notes-collapsed" : ""}${integrityWarning ? " scratchpad-window--integrity-warning" : ""}`}
       data-window-controls={windowControlMode}
       aria-busy={status === "loading"}
       aria-label="Scratchpad"
@@ -402,8 +484,14 @@ export function ScratchpadWindow() {
           <PlusIcon />
         </button>
         <span className="scratchpad-window__title-spacer" />
-        <ScratchpadWindowControls />
+        <ScratchpadWindowControls closing={closing} onClose={() => void closeScratchpad()} />
       </header>
+
+      {integrityWarning && (
+        <div className="scratchpad-window__integrity-warning" role="alert">
+          <strong>Some saved notes are unavailable.</strong> {integrityWarning}
+        </div>
+      )}
 
       <div className="scratchpad-window__workspace">
         <aside className="scratchpad-window__notes" aria-label="Notes">

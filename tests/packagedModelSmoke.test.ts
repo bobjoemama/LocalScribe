@@ -111,6 +111,33 @@ describe("packaged macOS real-model smoke", () => {
     });
   });
 
+  it("drains noisy worker stderr concurrently without retaining an unbounded log", () => {
+    const probe = [
+      "import importlib.util, json, subprocess, sys",
+      "spec = importlib.util.spec_from_file_location('smoke', sys.argv[1])",
+      "module = importlib.util.module_from_spec(spec)",
+      "sys.modules[spec.name] = module",
+      "spec.loader.exec_module(module)",
+      "child = 'import json, sys\\nsys.stderr.write(\"x\" * (2 * 1024 * 1024))\\nsys.stderr.flush()\\nprint(json.dumps({\"type\": \"hello\"}), flush=True)'",
+      "process = subprocess.Popen([sys.executable, '-u', '-c', child], stdout=subprocess.PIPE, stderr=subprocess.PIPE)",
+      "stderr = module.WorkerStderrReader(process)",
+      "reader = module.WorkerResponseReader(process, stderr)",
+      "response = reader.receive(timeout_seconds=3)",
+      "process.wait(timeout=3)",
+      "stderr.join()",
+      "print(json.dumps({'type': response['type'], 'retained': len(stderr.text().encode()), 'limit': module.MAX_WORKER_STDERR_BYTES}))",
+    ].join("\n");
+
+    const answer = execFileSync(
+      "python3",
+      ["-B", "-c", probe, resolve("scripts/smoke-worker.py")],
+      { encoding: "utf8", timeout: 5_000 },
+    );
+    const result = JSON.parse(answer) as { type: string; retained: number; limit: number };
+    expect(result.type).toBe("hello");
+    expect(result.retained).toBeLessThanOrEqual(result.limit + 32);
+  });
+
   it("starts only the candidate bundle's interpreter, worker, helper, and manifests", () => {
     const smoke = projectFile("scripts/smoke-worker.py");
 

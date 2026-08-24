@@ -23,6 +23,8 @@ from importlib.metadata import version as package_version
 from pathlib import Path, PurePosixPath
 from typing import Any, BinaryIO, Protocol, TextIO
 
+from .model_metadata import is_inert_model_metadata as _is_inert_model_metadata
+
 PROTOCOL_VERSION = 1
 BACKEND_NAME = "localscribe-mlx-asr"
 # Handshake both installed inference engines. The supervisor retains the exact
@@ -48,6 +50,7 @@ MAX_CONTEXT_CHARS = 4_000
 MAX_LANGUAGE_CHARS = 80
 MAX_PATH_CHARS = 2_048
 MAX_RESULT_CHARS = 100_000
+MAX_MANIFEST_FILE_ENTRIES = 64
 MAX_HELPER_FRAME_BYTES = 256 * 1024
 # Live audio travels over the existing line-delimited worker protocol. Keeping
 # chunks at 8 KiB means strict base64 remains comfortably below the 16 KiB
@@ -127,6 +130,21 @@ class TierSpec:
 
 
 CatalogSelection = tuple[str, str, str]
+
+
+@dataclass(frozen=True)
+class ModelTreeIdentity:
+    """No-follow identity of the exact manifest-owned tree about to be loaded."""
+
+    root: tuple[int, int, int, int, int]
+    directory: tuple[int, int, int, int, int]
+    files: tuple[tuple[str, int, int, int, int, int], ...]
+
+
+@dataclass(frozen=True)
+class VerifiedModelArtifact:
+    path: Path
+    identity: ModelTreeIdentity
 
 
 def _catalog_selection(spec: TierSpec) -> CatalogSelection:
@@ -444,7 +462,11 @@ def _parse_manifest(path: Path, tier: str, expected_backend: str) -> ModelManife
     ):
         raise RuntimeError("packaged_model_manifest_invalid")
     files = raw.get("files")
-    if not isinstance(files, dict) or not files or len(files) > 64:
+    if (
+        not isinstance(files, dict)
+        or not files
+        or len(files) > MAX_MANIFEST_FILE_ENTRIES
+    ):
         raise RuntimeError("packaged_model_manifest_invalid")
     parsed_files: dict[str, ModelFile] = {}
     for filename, file_raw in files.items():
@@ -632,30 +654,56 @@ def _sha256(path: Path) -> str:
     return _sha256_with_progress(path)
 
 
-def _is_inert_directory_metadata(name: str, expected: frozenset[str]) -> bool:
-    """Is this an entry macOS deposited, rather than part of the artifact?
-
-    The exact-entry-set rule below is deliberately strict, and it was too strict
-    to survive contact with the Finder: opening the models folder writes a
-    ``.DS_Store`` into it, and copying through a non-HFS volume or a zip leaves
-    AppleDouble ``._name`` sidecars. Either made a model whose every pinned file
-    was digest-identical report as ``model_not_installed``, and the only remedy
-    the app offered was re-downloading up to 3.4 GB.
-
-    The exemption is narrow: two exact names, plus an AppleDouble sidecar only
-    for a filename the manifest actually declares. The caller additionally
-    requires each to be a regular file, because a directory or symlink wearing
-    one of these names is not something the OS produces. Nothing reads them —
-    the loaders address model files by manifest name — and their bytes are
-    never counted or hashed.
-
-    Kept byte-for-byte in step with ``isInertDirectoryMetadata`` in
-    src/main/modelSpec.ts; tests/modelDirectoryMetadata.test.ts runs both
-    implementations over the same cases.
-    """
-    if name in (".DS_Store", ".localized"):
-        return True
-    return name.startswith("._") and name[2:] in expected
+def _sha256_with_identity(
+    path: Path,
+    on_chunk: Callable[[int], None] | None = None,
+) -> tuple[str, tuple[str, int, int, int, int, int]]:
+    """Hash bytes from one fd and bind the digest to that fd's identity."""
+    before_path = path.lstat()
+    if path.is_symlink() or not stat.S_ISREG(before_path.st_mode):
+        raise RuntimeError("model_file_identity_changed")
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        before_fd = os.fstat(handle.fileno())
+        if (
+            not stat.S_ISREG(before_fd.st_mode)
+            or before_fd.st_dev != before_path.st_dev
+            or before_fd.st_ino != before_path.st_ino
+        ):
+            raise RuntimeError("model_file_identity_changed")
+        for chunk in iter(lambda: handle.read(16 * 1024 * 1024), b""):
+            digest.update(chunk)
+            if on_chunk is not None:
+                on_chunk(len(chunk))
+        after_fd = os.fstat(handle.fileno())
+    after_path = path.lstat()
+    fd_identity = (
+        before_fd.st_dev,
+        before_fd.st_ino,
+        before_fd.st_size,
+        before_fd.st_mtime_ns,
+        before_fd.st_ctime_ns,
+    )
+    if (
+        fd_identity
+        != (
+            after_fd.st_dev,
+            after_fd.st_ino,
+            after_fd.st_size,
+            after_fd.st_mtime_ns,
+            after_fd.st_ctime_ns,
+        )
+        or fd_identity
+        != (
+            after_path.st_dev,
+            after_path.st_ino,
+            after_path.st_size,
+            after_path.st_mtime_ns,
+            after_path.st_ctime_ns,
+        )
+    ):
+        raise RuntimeError("model_file_identity_changed")
+    return digest.hexdigest(), (path.name, *fd_identity)
 
 
 def _manifest_file_path(root: Path, filename: str) -> Path:
@@ -669,20 +717,6 @@ def _manifest_file_path(root: Path, filename: str) -> Path:
     if relative.is_absolute() or any(part in {"", ".", ".."} for part in relative.parts):
         raise WorkerError("unsafe_model_path", "model manifest path is invalid")
     return root.joinpath(*relative.parts)
-
-
-def _is_inert_model_metadata(
-    relative: PurePosixPath,
-    expected_names: frozenset[str],
-) -> bool:
-    """Allow only Finder/AppleDouble metadata adjacent to declared files."""
-    name = relative.name
-    if name in (".DS_Store", ".localized"):
-        return True
-    if not name.startswith("._"):
-        return False
-    sibling = relative.parent / name[2:]
-    return sibling.as_posix() in expected_names
 
 
 def _exact_model_file_set(
@@ -741,6 +775,7 @@ def _valid_model_directory(
     *,
     verify_digests: bool = True,
     on_verified_bytes: Callable[[int], None] | None = None,
+    verified_identity_out: list[ModelTreeIdentity] | None = None,
 ) -> bool:
     """Check an installed artifact against its pinned manifest.
 
@@ -752,26 +787,54 @@ def _valid_model_directory(
     artifact may be loaded.
     """
     try:
+        if verified_identity_out is not None:
+            verified_identity_out.clear()
+            if not verify_digests:
+                return False
+        root_metadata = model_directory.parent.lstat()
+        directory_metadata = model_directory.lstat()
         if not _exact_model_file_set(model_directory, manifest):
             return False
-        for filename, expected in manifest.files.items():
+        file_identities: list[tuple[str, int, int, int, int, int]] = []
+        for filename, expected in sorted(manifest.files.items()):
             candidate = _manifest_file_path(model_directory, filename)
             metadata = candidate.lstat()
             if candidate.is_symlink() or not stat.S_ISREG(metadata.st_mode):
                 return False
             if metadata.st_size != expected.bytes:
                 return False
-            if verify_digests and (
-                (
-                    _sha256_with_progress(candidate, on_verified_bytes)
-                    if on_verified_bytes is not None
-                    else _sha256(candidate)
-                )
-                != expected.sha256
+            if verify_digests:
+                if verified_identity_out is not None:
+                    digest, opened_identity = _sha256_with_identity(
+                        candidate,
+                        on_verified_bytes,
+                    )
+                    file_identities.append((filename, *opened_identity[1:]))
+                else:
+                    digest = (
+                        _sha256_with_progress(candidate, on_verified_bytes)
+                        if on_verified_bytes is not None
+                        else _sha256(candidate)
+                    )
+                if digest != expected.sha256:
+                    return False
+        if verified_identity_out is not None:
+            final_root_metadata = model_directory.parent.lstat()
+            final_directory_metadata = model_directory.lstat()
+            if (
+                _path_identity(root_metadata) != _path_identity(final_root_metadata)
+                or _path_identity(directory_metadata)
+                != _path_identity(final_directory_metadata)
+                or not _exact_model_file_set(model_directory, manifest)
             ):
                 return False
+            verified_identity_out.append(ModelTreeIdentity(
+                root=_path_identity(final_root_metadata),
+                directory=_path_identity(final_directory_metadata),
+                files=tuple(file_identities),
+            ))
         return True
-    except OSError:
+    except (OSError, RuntimeError):
         return False
 
 
@@ -780,6 +843,7 @@ def _remove_verified_huggingface_metadata(
     manifest: ModelManifest,
     *,
     on_verified_bytes: Callable[[int], None] | None = None,
+    verified_identity_out: list[ModelTreeIdentity] | None = None,
 ) -> bool:
     """Adopt an exact legacy local_dir download without re-downloading weights.
 
@@ -826,6 +890,7 @@ def _remove_verified_huggingface_metadata(
             model_directory,
             manifest,
             on_verified_bytes=on_verified_bytes,
+            verified_identity_out=verified_identity_out,
         )
     except OSError:
         return False
@@ -1087,6 +1152,7 @@ def ensure_model(
     *,
     snapshot_downloader: SnapshotDownloader | None = None,
     progress: ModelInstallProgress | None = None,
+    verified_identity_out: list[ModelTreeIdentity] | None = None,
 ) -> Path:
     model_root = _bounded_absolute_directory(str(model_root), create=True)
     final_directory = model_root / manifest.storage_directory
@@ -1097,6 +1163,7 @@ def ensure_model(
         final_directory,
         manifest,
         on_verified_bytes=progress.advance if progress is not None else None,
+        verified_identity_out=verified_identity_out,
     ):
         return final_directory
     if not allow_download:
@@ -1108,6 +1175,7 @@ def ensure_model(
         final_directory,
         manifest,
         on_verified_bytes=progress.advance if progress is not None else None,
+        verified_identity_out=verified_identity_out,
     ):
         return final_directory
 
@@ -1180,7 +1248,11 @@ def ensure_model(
                 backup.replace(final_directory)
                 _sync_directory(model_root)
             raise
-        if not _valid_model_directory(final_directory, manifest):
+        if not _valid_model_directory(
+            final_directory,
+            manifest,
+            verified_identity_out=verified_identity_out,
+        ):
             raise WorkerError(
                 "model_activation_failed",
                 "activated model verification failed",
@@ -1917,6 +1989,26 @@ def _default_model_installer(
     return ensure_model(model_root, manifest, allow_download, progress=progress)
 
 
+def _verified_model_for_load(
+    model_root: Path,
+    manifest: ModelManifest,
+    allow_download: bool,
+) -> VerifiedModelArtifact:
+    identities: list[ModelTreeIdentity] = []
+    path = ensure_model(
+        model_root,
+        manifest,
+        allow_download,
+        verified_identity_out=identities,
+    )
+    if len(identities) != 1:
+        raise WorkerError(
+            "model_verification_failed",
+            "verified model identity was unavailable",
+        )
+    return VerifiedModelArtifact(path=path, identity=identities[0])
+
+
 def _install_model(
     installer: ModelInstaller,
     model_root: Path,
@@ -1959,7 +2051,7 @@ def _parse_model_request(
     if platform_name != "darwin" or machine_name != "arm64":
         raise WorkerError(
             "apple_silicon_only",
-            "MLX Whisper worker requires Apple silicon",
+            "LocalScribe speech worker requires Apple silicon",
         )
     tier = _string_field(message, "tier", max_chars=16)
     model_id = _string_field(message, "modelId", max_chars=200)
@@ -2009,6 +2101,90 @@ def _approved_installed_model_path(
             "model installer returned an unapproved path",
         )
     return local_model
+
+
+def _path_identity(metadata: os.stat_result) -> tuple[int, int, int, int, int]:
+    return (
+        metadata.st_dev,
+        metadata.st_ino,
+        metadata.st_mode,
+        metadata.st_mtime_ns,
+        metadata.st_ctime_ns,
+    )
+
+
+def _capture_model_tree_identity(
+    local_model: Path,
+    model_root: Path,
+    manifest: ModelManifest,
+) -> ModelTreeIdentity:
+    """Capture the bounded tree without following links or reading model data.
+
+    The digest-verifying installer remains the content authority. This second,
+    immediate boundary binds native runtime construction to the same root,
+    directory, and regular-file identities that were present just before the
+    loader call. A same-UID process can still race after this final check because
+    third-party native loaders accept paths rather than already-open file
+    descriptors; eliminating that residual requires loader APIs with fd/handle
+    ownership. The narrow recheck closes deterministic swaps before load without
+    adding a second multi-gigabyte digest pass to every cold start.
+    """
+    try:
+        root_metadata = model_root.lstat()
+        model_metadata = local_model.lstat()
+        if (
+            model_root.is_symlink()
+            or not stat.S_ISDIR(root_metadata.st_mode)
+            or local_model.is_symlink()
+            or not stat.S_ISDIR(model_metadata.st_mode)
+            or model_root.resolve(strict=True) != model_root
+            or local_model.resolve(strict=True)
+            != model_root / manifest.storage_directory
+            or not _exact_model_file_set(local_model, manifest)
+        ):
+            raise WorkerError("unsafe_model_path", "model path changed before loading")
+        file_identities: list[tuple[str, int, int, int, int, int]] = []
+        for filename, expected in sorted(manifest.files.items()):
+            candidate = _manifest_file_path(local_model, filename)
+            metadata = candidate.lstat()
+            if (
+                candidate.is_symlink()
+                or not stat.S_ISREG(metadata.st_mode)
+                or metadata.st_size != expected.bytes
+            ):
+                raise WorkerError("unsafe_model_path", "model path changed before loading")
+            file_identities.append(
+                (
+                    filename,
+                    metadata.st_dev,
+                    metadata.st_ino,
+                    metadata.st_size,
+                    metadata.st_mtime_ns,
+                    metadata.st_ctime_ns,
+                )
+            )
+        return ModelTreeIdentity(
+            root=_path_identity(root_metadata),
+            directory=_path_identity(model_metadata),
+            files=tuple(file_identities),
+        )
+    except WorkerError:
+        raise
+    except (OSError, RuntimeError, ValueError) as error:
+        raise WorkerError(
+            "unsafe_model_path",
+            "model path changed before loading",
+        ) from error
+
+
+def _assert_model_tree_identity(
+    expected: ModelTreeIdentity,
+    local_model: Path,
+    model_root: Path,
+    manifest: ModelManifest,
+) -> None:
+    if _capture_model_tree_identity(local_model, model_root, manifest) != expected:
+        raise WorkerError("model_path_changed", "model path changed before loading")
 
 
 def _live_runtime(runtime: InferenceRuntime | None) -> FluidAudioParakeetRuntime:
@@ -2113,6 +2289,7 @@ def run_worker(
                                 "tier": spec.tier,
                                 "modelId": spec.model_id,
                                 "computeType": spec.compute_type,
+                                "asrMode": spec.asr_mode,
                                 "loadMs": 0,
                             },
                         )
@@ -2140,12 +2317,37 @@ def run_worker(
                     active_model_root = None
                     live_started_at = None
                     started = time.perf_counter()
-                    local_model = model_installer(
+                    if model_installer is _default_model_installer:
+                        verified_model = _verified_model_for_load(
+                            model_root,
+                            manifest,
+                            allow_download,
+                        )
+                        local_model = verified_model.path
+                        verified_identity = verified_model.identity
+                    else:
+                        local_model = model_installer(
+                            model_root,
+                            manifest,
+                            allow_download,
+                        )
+                        verified_identity = None
+                    local_model = _approved_installed_model_path(
+                        local_model,
                         model_root,
                         manifest,
-                        allow_download,
                     )
-                    local_model = _approved_installed_model_path(
+                    if verified_identity is None:
+                        # Test/runtime injection remains supported. Production
+                        # always receives identity from the exact fds whose
+                        # bytes matched the manifest in the branch above.
+                        verified_identity = _capture_model_tree_identity(
+                            local_model,
+                            model_root,
+                            manifest,
+                        )
+                    _assert_model_tree_identity(
+                        verified_identity,
                         local_model,
                         model_root,
                         manifest,
@@ -2161,6 +2363,7 @@ def run_worker(
                             "tier": spec.tier,
                             "modelId": spec.model_id,
                             "computeType": spec.compute_type,
+                            "asrMode": spec.asr_mode,
                             "loadMs": round((time.perf_counter() - started) * 1000),
                         },
                     )
@@ -2244,7 +2447,7 @@ def run_worker(
                     if platform_name != "darwin" or machine_name != "arm64":
                         raise WorkerError(
                             "apple_silicon_only",
-                            "MLX Whisper worker requires Apple silicon",
+                            "LocalScribe speech worker requires Apple silicon",
                         )
                     hardware = hardware_probe()
                     if (

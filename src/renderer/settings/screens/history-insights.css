@@ -7,7 +7,7 @@
   --hi-border-strong: #d8d3ca;
   --hi-ink: #171715;
   --hi-muted: #77736c;
-  --hi-faint: #aaa59d;
+  --hi-faint: #68635d;
   --hi-teal: #2e7568;
   --hi-teal-soft: #e6f0ec;
   --hi-danger: #a34439;
@@ -327,9 +327,13 @@
 .hi-privacy-note svg { flex: 0 0 auto; width: 16px; height: 16px; }
 .hi-privacy-note div { display: grid; gap: 3px; }
 .hi-privacy-note strong { font-size: 10px; }
-.hi-privacy-note p { margin: 0; color: #5e837a; font-size: 10px; line-height: 1.45; }
+.hi-privacy-note p { margin: 0; color: #3f6e63; font-size: 10px; line-height: 1.45; }
 
 .hi-state-card { display: flex; align-items: center; gap: 12px; padding: 17px; border: 1px solid #ebd0cc; border-radius: 13px; background: #fff9f8; }
+.hi-integrity-warning { display: flex; align-items: flex-start; gap: 12px; margin: 0 0 20px; padding: 13px 15px; border: 1px solid #e5c9a2; border-radius: 12px; background: #fff8ed; color: #5e4628; }
+.hi-integrity-warning > div { display: grid; gap: 3px; }
+.hi-integrity-warning strong { font-size: 12px; }
+.hi-integrity-warning p { margin: 0; color: #665037; font-size: 11px; line-height: 1.45; }
 .hi-state-card--wide { margin-top: 28px; }
 .hi-state-icon { display: grid; flex: 0 0 auto; width: 27px; height: 27px; place-items: center; border-radius: 50%; background: #f4dedb; color: var(--hi-danger); font-size: 12px; font-weight: 800; }
 .hi-state-card div { margin-right: auto; }

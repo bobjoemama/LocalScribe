@@ -9,6 +9,7 @@ import {
   dictionaryEntrySchema,
   cancelLiveAudioSchema,
   finishLiveAudioSchema,
+  historyListResultSchema,
   IPC,
   liveAudioFrameSchema,
   liveAudioSessionSchema,
@@ -25,6 +26,8 @@ import {
   permissionSnapshotSchema,
   pillModeSchema,
   scratchpadNoteSchema,
+  scratchpadListResultSchema,
+  sessionFailureSchema,
   sessionSnapshotSchema,
   snippetSchema,
   transcribeAudioSchema,
@@ -43,8 +46,10 @@ const api: LocalScribeApi = {
     get: async () => sessionSnapshotSchema.parse(await ipcRenderer.invoke(IPC.sessionGet)),
     toggle: async () => sessionSnapshotSchema.parse(await ipcRenderer.invoke(IPC.sessionToggle)),
     cancel: async () => sessionSnapshotSchema.parse(await ipcRenderer.invoke(IPC.sessionCancel)),
-    fail: async (message) =>
-      sessionSnapshotSchema.parse(await ipcRenderer.invoke(IPC.sessionFail, message)),
+    fail: async (failure) => {
+      const input = sessionFailureSchema.parse(failure);
+      return sessionSnapshotSchema.parse(await ipcRenderer.invoke(IPC.sessionFail, input));
+    },
     transcribe: async (request) => {
       transcribeAudioSchema.parse(request);
       return transcriptionSchema.parse(await ipcRenderer.invoke(IPC.sessionTranscribe, request));
@@ -79,7 +84,9 @@ const api: LocalScribeApi = {
     },
   },
   history: {
-    list: async (limit) => transcriptionSchema.array().parse(await ipcRenderer.invoke(IPC.historyList, limit)),
+    list: async (limit) => historyListResultSchema.parse(
+      await ipcRenderer.invoke(IPC.historyList, limit),
+    ),
     delete: async (id) => ipcRenderer.invoke(IPC.historyDelete, id),
     clear: async () => ipcRenderer.invoke(IPC.historyClear),
     export: async () => ipcRenderer.invoke(IPC.historyExport),
@@ -105,7 +112,9 @@ const api: LocalScribeApi = {
     delete: async (id) => ipcRenderer.invoke(IPC.profilesDelete, id),
   },
   scratchpad: {
-    list: async () => scratchpadNoteSchema.array().parse(await ipcRenderer.invoke(IPC.scratchpadList)),
+    list: async () => scratchpadListResultSchema.parse(
+      await ipcRenderer.invoke(IPC.scratchpadList),
+    ),
     create: async () => scratchpadNoteSchema.parse(await ipcRenderer.invoke(IPC.scratchpadCreate)),
     update: async (id, body) =>
       scratchpadNoteSchema.parse(await ipcRenderer.invoke(IPC.scratchpadUpdate, id, body)),
@@ -172,6 +181,9 @@ const api: LocalScribeApi = {
     appInfo: async () => appInfoSchema.parse(await ipcRenderer.invoke(IPC.systemAppInfo)),
     diagnostics: async () => diagnosticsSchema.parse(await ipcRenderer.invoke(IPC.systemDiagnostics)),
     diagnosticsLog: async () => z.string().parse(await ipcRenderer.invoke(IPC.systemDiagnosticsLog)),
+    clearDiagnostics: async () => {
+      await ipcRenderer.invoke(IPC.systemClearDiagnostics);
+    },
     modelCatalog: async () => modelCatalogSchema.parse(await ipcRenderer.invoke(IPC.systemModelCatalog)),
     addModelFamily: async (request) => {
       const input = modelFamilyLibraryRequestSchema.parse(request);

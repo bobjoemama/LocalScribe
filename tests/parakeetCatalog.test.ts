@@ -178,11 +178,11 @@ describe("nested CoreML manifest boundaries", () => {
     expect(() => modelSpecSchema.parse({ ...nestedSpec, files: {
       [tooLong]: { bytes: 1, sha256: digest("x") },
     } })).toThrow();
-    const files = Object.fromEntries(Array.from({ length: 513 }, (_, index) => [
+    const files = Object.fromEntries(Array.from({ length: 65 }, (_, index) => [
       `bundle-${index}.bin`,
       { bytes: 1, sha256: digest(String(index)) },
     ]));
-    expect(() => modelSpecSchema.parse({ ...nestedSpec, files })).toThrow(/at most 512/u);
+    expect(() => modelSpecSchema.parse({ ...nestedSpec, files })).toThrow(/at most 64/u);
   });
 
   it("rejects an injected nested file and a nested symlink", async () => {

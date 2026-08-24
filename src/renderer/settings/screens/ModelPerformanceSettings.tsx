@@ -212,6 +212,9 @@ export interface ModelPerformanceSettingsProps {
   action: ModelActionState;
   feedback: { message: string; isError: boolean } | null;
   applying: boolean;
+  refreshing: boolean;
+  /** Exact worker-reported warm runtime, independent of the saved selection. */
+  residentRuntimeLabel: string | null;
   /** The currently staged General-language value, used to prevent an invalid model switch. */
   selectedLanguage?: string;
   languageHasUnsavedChange?: boolean;
@@ -255,6 +258,7 @@ export function modelApplyEligibility({
   memoryRequirement,
   action,
   applying,
+  refreshing,
   selectedLanguage,
   languageHasUnsavedChange,
 }: Pick<ModelPerformanceSettingsProps,
@@ -269,6 +273,7 @@ export function modelApplyEligibility({
   | "memoryRequirement"
   | "action"
   | "applying"
+  | "refreshing"
   | "selectedLanguage"
   | "languageHasUnsavedChange"
 >): ModelApplyEligibility {
@@ -279,6 +284,7 @@ export function modelApplyEligibility({
   ): ModelApplyEligibility => ({ enabled: false, reason, targetTier, targetVerification });
 
   if (applying) return unavailable("Applying the selected model…");
+  if (refreshing) return unavailable("Refreshing model status…");
   if (action) return unavailable("Finish the current model-library action first.");
   if (catalogError) return unavailable("Refresh the model catalog before applying.");
   if (!catalog) return unavailable("The model catalog is still loading.");
@@ -528,6 +534,8 @@ export function ModelPerformanceSettings({
   action,
   feedback,
   applying,
+  refreshing,
+  residentRuntimeLabel,
   selectedLanguage,
   languageHasUnsavedChange,
   recognitionExperience,
@@ -577,6 +585,7 @@ export function ModelPerformanceSettings({
     memoryRequirement,
     action,
     applying,
+    refreshing,
     selectedLanguage,
     languageHasUnsavedChange,
   });
@@ -617,19 +626,21 @@ export function ModelPerformanceSettings({
           </h2>
           <dl className="ls-model-selection-summary">
             <div>
-              <dt>Currently using</dt>
+              <dt>Saved selection</dt>
               <dd>{currentFamily?.displayName ?? currentSelection.familyId} · {currentSelection.asrMode === "live" ? "Live" : "After I stop"} · {currentModeLabel}</dd>
             </div>
             <div>
-              <dt>After applying</dt>
-              <dd>{pendingFamily?.displayName ?? pendingSelection.familyId} · {pendingSelection.asrMode === "live" ? "Live" : "After I stop"} · {pendingModeLabel}</dd>
+              <dt>{selectionChanged ? "After applying" : "Resident runtime"}</dt>
+              <dd>{selectionChanged
+                ? `${pendingFamily?.displayName ?? pendingSelection.familyId} · ${pendingSelection.asrMode === "live" ? "Live" : "After I stop"} · ${pendingModeLabel}`
+                : residentRuntimeLabel ?? "No model runtime is loaded"}</dd>
             </div>
           </dl>
           <p id="model-apply-status">{applyStatus} {applyEligibility.reason}</p>
         </div>
         <div className="ls-model-apply-actions">
-          <button type="button" className="ls-secondary-button" disabled={applying || action !== null} onClick={onRefresh}>
-            Refresh status
+          <button type="button" className="ls-secondary-button" disabled={applying || refreshing || action !== null} onClick={onRefresh}>
+            {refreshing ? "Refreshing…" : "Refresh status"}
           </button>
           <button
             type="button"
@@ -660,7 +671,7 @@ export function ModelPerformanceSettings({
             type="button"
             className={browsingExperience === "after-stop" ? "is-selected" : ""}
             aria-pressed={browsingExperience === "after-stop"}
-            disabled={applying || action !== null}
+            disabled={applying || refreshing || action !== null}
             onClick={() => chooseExperience("after-stop")}
           >
             <strong>After I stop</strong>
@@ -670,7 +681,7 @@ export function ModelPerformanceSettings({
             type="button"
             className={browsingExperience === "live" ? "is-selected" : ""}
             aria-pressed={browsingExperience === "live"}
-            disabled={applying || action !== null || !liveFamiliesAvailable}
+            disabled={applying || refreshing || action !== null || !liveFamiliesAvailable}
             onClick={() => chooseExperience("live")}
           >
             <strong>Live</strong>
@@ -701,7 +712,7 @@ export function ModelPerformanceSettings({
         </div>
       </section>
 
-      <fieldset className="ls-model-mode-picker" disabled={applying || action !== null || Boolean(catalogError) || !catalog}>
+      <fieldset className="ls-model-mode-picker" disabled={applying || refreshing || action !== null || Boolean(catalogError) || !catalog}>
         <legend>Performance mode</legend>
         <p>Choose Auto or one concrete quality and memory profile for the active speech-model family.</p>
         <div>
@@ -798,7 +809,7 @@ export function ModelPerformanceSettings({
                   onRemove={onRemove}
                   onAddFamily={onAddFamily}
                   onFamilyChange={onFamilyChange}
-                  selectionDisabled={applying || action !== null}
+                  selectionDisabled={applying || refreshing || action !== null}
                 />
               ))}
             </div>
@@ -973,7 +984,7 @@ function ModelFamilyCard({
             {presentation.recommendation === "legacy" && <span className="ls-model-family-badge">Legacy</span>}
             {presentation.recommendation === "live" && <span className="ls-model-family-badge is-live">Live</span>}
             {isDefault && <span className="ls-model-family-badge">Built-in default</span>}
-            {isCurrent && <span className="ls-model-family-badge is-active">Currently active</span>}
+            {isCurrent && <span className="ls-model-family-badge is-active">Saved selection</span>}
             {isPending && !isCurrent && <span className="ls-model-family-badge is-pending">Selected to apply</span>}
             {!isCurrent && family.inLibrary && <span className="ls-model-family-badge">Added to library</span>}
             {!family.inLibrary && <span className="ls-model-family-badge">Available to add</span>}

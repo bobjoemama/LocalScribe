@@ -1,4 +1,10 @@
-import { appendFile, mkdir, readFile, rename, rm, stat } from "node:fs/promises";
+import { constants, type Stats } from "node:fs";
+import {
+  lstat,
+  mkdir,
+  open,
+  type FileHandle,
+} from "node:fs/promises";
 import path from "node:path";
 import {
   assertRedacted,
@@ -8,33 +14,36 @@ import {
   type DiagnosticEvent,
 } from "../../shared/diagnosticsLog";
 
-/**
- * Bounded, rotating, privacy-checked failure trail.
- *
- * The packaged app's stdout and stderr go to /dev/null, so a dictation that
- * failed left no evidence anywhere: not in the app, not in Console.app, not in
- * `log show`. Diagnosing it meant rebuilding with a console attached, which
- * replaces the build being diagnosed.
- *
- * Three properties matter more than completeness here:
- *
- *  - It must never grow without bound. Two files of 512KiB each is enough to
- *    hold several thousand events, which is many sessions, and is small enough
- *    to paste into a bug report.
- *  - It must never become the reason dictation fails. Every write is
- *    fire-and-forget through a serialized queue, and every error inside this
- *    module is swallowed. A logger that can throw into the session path would
- *    be a worse bug than the one it was added to diagnose.
- *  - It must never contain user content. `formatDiagnosticLine` applies the
- *    field allowlist and `assertRedacted` re-checks the rendered bytes, so a
- *    field that somehow carried a transcript is dropped at the door rather
- *    than written and regretted.
- */
-
 const MAX_FILE_BYTES = 512 * 1024;
 const CURRENT = "diagnostics.log";
 const PREVIOUS = "diagnostics.1.log";
+const DIRECTORY_MODE = 0o700;
+const FILE_MODE = 0o600;
 
+function entryError(entryPath: string, expected: "directory" | "regular file"): Error {
+  return new Error(`Unsafe diagnostics entry ${path.basename(entryPath)}: expected ${expected}`);
+}
+
+function isMissing(error: unknown): boolean {
+  return (error as NodeJS.ErrnoException).code === "ENOENT";
+}
+
+async function lstatIfPresent(entryPath: string): Promise<Stats | null> {
+  try {
+    return await lstat(entryPath);
+  } catch (error) {
+    if (isMissing(error)) return null;
+    throw error;
+  }
+}
+
+/**
+ * Bounded, rotating, privacy-checked failure trail.
+ *
+ * Recording is deliberately best-effort. Explicit management operations are
+ * different: clear() rejects if the trail could not actually be removed, so
+ * Settings can report the truth instead of claiming data was cleared.
+ */
 export class DiagnosticsRecorder {
   private queue: Promise<void> = Promise.resolve();
   private bytes = 0;
@@ -53,111 +62,300 @@ export class DiagnosticsRecorder {
     return path.join(this.directory, PREVIOUS);
   }
 
-  /**
-   * Queue one event.
-   *
-   * Deliberately returns void rather than a promise: no caller should be able
-   * to await diagnostics, because a caller that awaited would be able to be
-   * delayed by them. Ordering is still guaranteed by the queue.
-   */
   record(event: Omit<DiagnosticEvent, "at"> & { at?: number }): void {
     const line = formatDiagnosticLine({ ...event, at: event.at ?? Date.now() });
-    this.enqueue(async () => {
-      // The allowlist already dropped anything unexpected; this asserts the
-      // rendered bytes, which is what actually reaches disk.
+    this.enqueueBestEffort(async () => {
       assertRedacted(line);
       await this.ensureStarted();
-      await this.rotateIfNeeded(line.length);
-      await appendFile(this.currentPath, line, { mode: 0o600 });
-      this.bytes += line.length;
+      await this.rotateIfNeeded(Buffer.byteLength(line));
+      await this.appendSecure(this.currentPath, line);
+      this.bytes += Buffer.byteLength(line);
     });
   }
 
-  /** Everything queued so far has reached disk. Used by shutdown and by tests. */
+  /** Everything queued so far has either reached disk or safely degraded. */
   async flush(): Promise<void> {
-    await this.queue.catch(() => undefined);
+    await this.queue;
   }
 
-  /**
-   * The redacted trail, newest file last, for "Copy diagnostics".
-   *
-   * Reads through the same rotation the writer uses, and re-asserts redaction
-   * on the way out: a file that predates a redaction fix must not be handed to
-   * the clipboard just because it is already on disk.
-   */
   async read(): Promise<string> {
     await this.flush();
-    const parts: string[] = [];
-    for (const candidate of [this.previousPath, this.currentPath]) {
-      try {
-        parts.push(await readFile(candidate, "utf8"));
-      } catch {
-        // A missing rotation file simply contributes nothing.
-      }
-    }
-    const content = parts.join("");
     try {
+      const directory = await this.openDirectory(false);
+      if (directory === null) return "";
+      const parts: string[] = [];
+      try {
+        for (const candidate of [this.previousPath, this.currentPath]) {
+          const content = await this.readSecure(candidate, directory);
+          if (content !== null) parts.push(content);
+        }
+        await this.assertDirectoryStillMatches(directory);
+      } finally {
+        await directory.close();
+      }
+      const content = parts.join("");
       assertRedacted(content);
+      return content;
     } catch {
-      return "LocalScribe withheld the diagnostics file because it failed its own redaction check.\n";
+      return "LocalScribe withheld the diagnostics file because it failed its safety check.\n";
     }
-    return content;
   }
 
-  /** Removes the trail entirely. */
+  /** Clears every trail byte, rejecting if any verified descriptor cannot be truncated. */
   async clear(): Promise<void> {
-    this.enqueue(async () => {
-      await rm(this.currentPath, { force: true });
-      await rm(this.previousPath, { force: true });
+    const operation = this.queue.then(async () => {
+      const directory = await this.openDirectory(false);
+      if (directory !== null) {
+        const handles: FileHandle[] = [];
+        try {
+          for (const candidate of [this.currentPath, this.previousPath]) {
+            const handle = await this.openRegularFile(
+              candidate,
+              constants.O_RDWR,
+              false,
+              directory,
+            );
+            if (handle !== null) handles.push(handle);
+          }
+          await this.assertDirectoryStillMatches(directory);
+          // Truncate only already-verified descriptors. Node does not expose
+          // openat/unlinkat; descriptor truncation therefore avoids ever
+          // deleting through a swapped parent-directory symlink.
+          for (const handle of handles) {
+            await handle.truncate(0);
+            await handle.sync();
+          }
+          await this.assertDirectoryStillMatches(directory);
+        } finally {
+          await Promise.allSettled(handles.map((handle) => handle.close()));
+          await directory.close();
+        }
+      }
       this.bytes = 0;
       this.started = false;
     });
-    await this.flush();
+    // Keep later best-effort records usable even when the explicit clear
+    // operation rejects, while returning the real failure to this caller.
+    this.queue = operation.catch(() => undefined);
+    await operation;
   }
 
-  private enqueue(operation: () => Promise<void>): void {
+  private enqueueBestEffort(operation: () => Promise<void>): void {
     this.queue = this.queue.then(operation).catch(() => {
-      // Diagnostics must never surface as an application failure. A recorder
-      // that cannot write (full disk, revoked permission) degrades to silence.
+      // A full disk, revoked permission, or unsafe filesystem entry must not
+      // change the outcome of dictation.
     });
+  }
+
+  private async openDirectory(create: boolean): Promise<FileHandle | null> {
+    if (create) await mkdir(this.directory, { recursive: true, mode: DIRECTORY_MODE });
+    const pathInfo = await lstatIfPresent(this.directory);
+    if (pathInfo === null) return null;
+    if (pathInfo.isSymbolicLink() || !pathInfo.isDirectory()) {
+      throw entryError(this.directory, "directory");
+    }
+    let handle: FileHandle;
+    try {
+      handle = await open(this.directory, constants.O_RDONLY | constants.O_NOFOLLOW);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ELOOP") {
+        throw entryError(this.directory, "directory");
+      }
+      throw error;
+    }
+    try {
+      const descriptorInfo = await handle.stat();
+      if (
+        !descriptorInfo.isDirectory()
+        || descriptorInfo.dev !== pathInfo.dev
+        || descriptorInfo.ino !== pathInfo.ino
+      ) {
+        throw entryError(this.directory, "directory");
+      }
+      await handle.chmod(DIRECTORY_MODE);
+      return handle;
+    } catch (error) {
+      await handle.close().catch(() => undefined);
+      throw error;
+    }
+  }
+
+  private async openRegularFile(
+    filePath: string,
+    flags: number,
+    create: boolean,
+    directory?: FileHandle,
+  ): Promise<FileHandle | null> {
+    if (directory !== undefined) await this.assertDirectoryStillMatches(directory);
+    const pathInfo = await lstatIfPresent(filePath);
+    if (pathInfo !== null && (pathInfo.isSymbolicLink() || !pathInfo.isFile())) {
+      throw entryError(filePath, "regular file");
+    }
+    if (pathInfo === null && !create) return null;
+
+    let handle: FileHandle;
+    try {
+      handle = await open(
+        filePath,
+        flags | constants.O_NOFOLLOW | constants.O_NONBLOCK | (create ? constants.O_CREAT : 0),
+        FILE_MODE,
+      );
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ELOOP") {
+        throw entryError(filePath, "regular file");
+      }
+      throw error;
+    }
+    try {
+      const descriptorInfo = await handle.stat();
+      if (
+        !descriptorInfo.isFile()
+        || (pathInfo !== null && (
+          descriptorInfo.dev !== pathInfo.dev
+          || descriptorInfo.ino !== pathInfo.ino
+        ))
+      ) {
+        throw entryError(filePath, "regular file");
+      }
+      if (directory !== undefined) await this.assertDirectoryStillMatches(directory);
+      await handle.chmod(FILE_MODE);
+      return handle;
+    } catch (error) {
+      await handle.close().catch(() => undefined);
+      throw error;
+    }
+  }
+
+  private async appendSecure(
+    filePath: string,
+    content: string,
+    retainedDirectory?: FileHandle,
+  ): Promise<number> {
+    const directory = retainedDirectory ?? await this.openDirectory(true);
+    if (directory === null) throw entryError(this.directory, "directory");
+    try {
+      const handle = await this.openRegularFile(
+        filePath,
+        constants.O_WRONLY | constants.O_APPEND,
+        true,
+        directory,
+      );
+      if (handle === null) throw entryError(filePath, "regular file");
+      try {
+        const before = (await handle.stat()).size;
+        await handle.writeFile(content);
+        await this.assertDirectoryStillMatches(directory);
+        return before;
+      } finally {
+        await handle.close();
+      }
+    } finally {
+      if (retainedDirectory === undefined) await directory.close();
+    }
+  }
+
+  private async readSecure(filePath: string, directory: FileHandle): Promise<string | null> {
+    const handle = await this.openRegularFile(filePath, constants.O_RDONLY, false, directory);
+    if (handle === null) return null;
+    try {
+      return await handle.readFile("utf8");
+    } finally {
+      await handle.close();
+    }
+  }
+
+  private async assertDirectoryStillMatches(handle: FileHandle): Promise<void> {
+    /*
+     * Node does not expose openat(2), so pathname opens cannot be made fully
+     * descriptor-relative here. Retaining the verified directory descriptor
+     * and comparing its device/inode before and after each file open closes
+     * ordinary replacement races and all cross-account attacks (the directory
+     * is 0700). A malicious process already running as this same account could
+     * theoretically swap the path away and back between those checks; clear()
+     * still truncates only the verified file descriptors and never path-unlinks,
+     * so that residual race cannot delete or truncate a substituted target.
+     */
+    const [descriptorInfo, pathInfo] = await Promise.all([
+      handle.stat(),
+      lstatIfPresent(this.directory),
+    ]);
+    if (
+      pathInfo === null
+      || pathInfo.isSymbolicLink()
+      || !pathInfo.isDirectory()
+      || descriptorInfo.dev !== pathInfo.dev
+      || descriptorInfo.ino !== pathInfo.ino
+    ) {
+      throw entryError(this.directory, "directory");
+    }
   }
 
   private async ensureStarted(): Promise<void> {
     if (this.started) return;
-    await mkdir(this.directory, { recursive: true, mode: 0o700 });
+    const directory = await this.openDirectory(true);
+    if (directory === null) throw entryError(this.directory, "directory");
     try {
-      this.bytes = (await stat(this.currentPath)).size;
-    } catch {
-      this.bytes = 0;
+      const header = formatDiagnosticHeader(this.identity);
+      assertRedacted(header);
+      this.bytes = await this.appendSecure(this.currentPath, header, directory);
+      this.bytes += Buffer.byteLength(header);
+      this.started = true;
+    } finally {
+      await directory.close();
     }
-    // Each run stamps its own build identity, so a trail that spans an update
-    // says which build produced which lines — the exact question that could not
-    // be answered when a running app was overwritten by a new build.
-    const header = formatDiagnosticHeader(this.identity);
-    assertRedacted(header);
-    await appendFile(this.currentPath, header, { mode: 0o600 });
-    this.bytes += header.length;
-    this.started = true;
   }
 
   private async rotateIfNeeded(incoming: number): Promise<void> {
     if (this.bytes + incoming <= MAX_FILE_BYTES) return;
-    await rm(this.previousPath, { force: true });
-    await rename(this.currentPath, this.previousPath);
-    this.bytes = 0;
-    const header = formatDiagnosticHeader(this.identity);
-    await appendFile(this.currentPath, header, { mode: 0o600 });
-    this.bytes += header.length;
+    const directory = await this.openDirectory(false);
+    if (directory === null) throw entryError(this.directory, "directory");
+    const handles: FileHandle[] = [];
+    try {
+      const current = await this.openRegularFile(
+        this.currentPath,
+        constants.O_RDWR,
+        false,
+        directory,
+      );
+      if (current === null) throw entryError(this.currentPath, "regular file");
+      handles.push(current);
+      const previous = await this.openRegularFile(
+        this.previousPath,
+        constants.O_RDWR,
+        true,
+        directory,
+      );
+      if (previous === null) throw entryError(this.previousPath, "regular file");
+      handles.push(previous);
+
+      const priorTrail = await current.readFile("utf8");
+      assertRedacted(priorTrail);
+      const priorBytes = Buffer.from(priorTrail);
+      const header = formatDiagnosticHeader(this.identity);
+      assertRedacted(header);
+      const headerBytes = Buffer.from(header);
+      await this.assertDirectoryStillMatches(directory);
+
+      // Rotate through already-verified descriptors. This deliberately avoids
+      // rm/rename path operations, so a parent-directory swap cannot redirect
+      // deletion or replacement into another directory.
+      await previous.truncate(0);
+      if (priorBytes.length > 0) {
+        await previous.write(priorBytes, 0, priorBytes.length, 0);
+      }
+      await previous.sync();
+      await current.truncate(0);
+      await current.write(headerBytes, 0, headerBytes.length, 0);
+      await current.sync();
+      await this.assertDirectoryStillMatches(directory);
+      this.bytes = headerBytes.length;
+    } finally {
+      await Promise.allSettled(handles.map((handle) => handle.close()));
+      await directory.close();
+    }
   }
 }
 
-/**
- * A recorder that drops everything.
- *
- * Lets the session path call `diagnostics.record(...)` unconditionally instead
- * of guarding every call site with a null check — a guard that would eventually
- * be forgotten at the one call site that mattered.
- */
 export const nullDiagnosticsRecorder = {
   record(): void {},
   async flush(): Promise<void> {},

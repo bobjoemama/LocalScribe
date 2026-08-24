@@ -50,10 +50,10 @@ describe("native window visibility drives the permission poll", () => {
     const main = source("src/main.ts");
     const reporter = main.slice(
       main.indexOf("function reportWindowVisibility(window: BrowserWindow): void"),
-      main.indexOf("function createSettingsWindow()"),
+      main.indexOf("function createSettingsWindow("),
     );
 
-    expect(reporter).toContain("window.webContents.send(IPC.windowVisibility, visible)");
+    expect(reporter).toContain("sendToLiveRenderers([window], IPC.windowVisibility, visible");
     for (const [event, visible] of [
       ["show", "true"],
       ["restore", "true"],
@@ -64,8 +64,12 @@ describe("native window visibility drives the permission poll", () => {
     }
     // A window that loads while already hidden must not be told it is visible.
     expect(reporter).toContain('window.webContents.on("did-finish-load", () => send(window.isVisible()));');
-    // Sending to a torn-down window throws; the guard is what makes quit safe.
-    expect(reporter).toContain("if (window.isDestroyed() || window.webContents.isDestroyed()) return;");
+    // Sending to a torn-down window throws; the shared broadcaster owns both
+    // checks and the teardown race for every renderer notification.
+    const delivery = source("src/main/session/rendererResilience.ts");
+    expect(delivery).toContain("if (window.isDestroyed()) continue;");
+    expect(delivery).toContain("if (contents.isDestroyed()) continue;");
+    expect(delivery).toContain("} catch (error) {");
   });
 
   it("validates the pushed value in preload and hands back an unsubscribe", () => {

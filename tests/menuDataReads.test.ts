@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -44,7 +44,7 @@ const { LocalDatabase } = await import("../src/main/persistence/database");
 const directories: string[] = [];
 
 function database() {
-  const directory = mkdtempSync(path.join(tmpdir(), "localscribe-menu-reads-"));
+  const directory = mkdtempSync(path.join(realpathSync(tmpdir()), "localscribe-menu-reads-"));
   directories.push(directory);
   const db = new LocalDatabase(path.join(directory, "test.db"));
   for (let index = 0; index < 12; index += 1) {
@@ -100,7 +100,7 @@ describe("reading what the menu displays", () => {
   });
 
   it("reports no transcripts on a fresh install", () => {
-    const directory = mkdtempSync(path.join(tmpdir(), "localscribe-menu-reads-"));
+    const directory = mkdtempSync(path.join(realpathSync(tmpdir()), "localscribe-menu-reads-"));
     directories.push(directory);
     const db = new LocalDatabase(path.join(directory, "empty.db"));
 
@@ -132,8 +132,8 @@ describe("reading what the menu displays", () => {
 
     // Corrupt one stored blob directly, the way a rotated key presents.
     (db as unknown as { db: { prepare(sql: string): { run(...args: unknown[]): unknown } } }).db
-      .prepare("UPDATE snippets SET expansion_encrypted = ? WHERE trigger = ?")
-      .run(Buffer.from("not-decryptable"), "trigger0");
+      .prepare("UPDATE snippets SET expansion_encrypted = ? WHERE id = (SELECT id FROM snippets LIMIT 1)")
+      .run(Buffer.from("not-decryptable"));
 
     expect(db.countSnippets()).toBe(before);
     db.close();

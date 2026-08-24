@@ -2,6 +2,7 @@ import {
   chmodSync,
   existsSync,
   mkdtempSync,
+  realpathSync,
   rmSync,
   statSync,
   symlinkSync,
@@ -25,7 +26,7 @@ const openDatabases: LocalDatabase[] = [];
 const posixIt = process.platform === "win32" ? it.skip : it;
 
 function createTemporaryDirectory(prefix: string): string {
-  const directory = mkdtempSync(path.join(tmpdir(), prefix));
+  const directory = mkdtempSync(path.join(realpathSync(tmpdir()), prefix));
   temporaryDirectories.push(directory);
   return directory;
 }
@@ -57,17 +58,43 @@ describe("database filesystem permission hardening", () => {
     }
   });
 
-  posixIt("does not follow a symlink to chmod an unsafe parent directory", () => {
+  posixIt("rejects a pre-created intermediate directory symlink before SQLite opens", () => {
     const container = createTemporaryDirectory("localscribe-permissions-link-test-");
     const targetDirectory = createTemporaryDirectory("localscribe-permissions-target-test-");
     chmodSync(targetDirectory, 0o777);
     const linkedDirectory = path.join(container, "database-parent");
     symlinkSync(targetDirectory, linkedDirectory, "dir");
 
-    const database = new LocalDatabase(path.join(linkedDirectory, "test.db"));
-    openDatabases.push(database);
+    expect(() => new LocalDatabase(path.join(linkedDirectory, "test.db")))
+      .toThrow(/parent component is a symbolic link/u);
 
     expect(mode(targetDirectory)).toBe(0o777);
+    expect(existsSync(path.join(targetDirectory, "test.db"))).toBe(false);
+  });
+
+  posixIt("rejects a pre-created final database symlink before SQLite opens", () => {
+    const container = createTemporaryDirectory("localscribe-permissions-file-link-test-");
+    const targetDirectory = createTemporaryDirectory("localscribe-permissions-file-target-test-");
+    const targetPath = path.join(targetDirectory, "target.db");
+    const target = new LocalDatabase(targetPath);
+    target.close();
+    chmodSync(targetPath, 0o644);
+    const linkedDatabase = path.join(container, "test.db");
+    symlinkSync(targetPath, linkedDatabase, "file");
+
+    expect(() => new LocalDatabase(linkedDatabase))
+      .toThrow(/database file is a symbolic link/u);
+    expect(mode(targetPath)).toBe(0o644);
+  });
+
+  posixIt("creates only the missing direct parent with a private mode", () => {
+    const container = createTemporaryDirectory("localscribe-permissions-create-parent-test-");
+    const parent = path.join(container, "database-parent");
+    const database = new LocalDatabase(path.join(parent, "test.db"));
+    openDatabases.push(database);
+
+    expect(mode(parent)).toBe(0o700);
+    expect(database.integrityCheck()).toBe("ok");
   });
 
   posixIt("preserves in-memory first-run behavior without touching a filesystem parent", () => {

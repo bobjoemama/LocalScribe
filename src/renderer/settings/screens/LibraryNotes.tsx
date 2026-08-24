@@ -133,23 +133,37 @@ export function DictionaryScreen() {
   const [error, setError] = useState<LibraryError | null>(null);
   const [deletingIds, setDeletingIds] = useState<ReadonlySet<string>>(() => new Set());
   const [heroDismissed, dismissHero] = useLibraryHeroDismissal("dictionary");
+  const loadSequence = useRef(0);
+  const mounted = useRef(false);
 
   const load = useCallback(async () => {
+    const sequence = ++loadSequence.current;
+    if (!mounted.current) return;
     setLoading(true);
     try {
       setError(null);
-      setItems(await window.localScribe.dictionary.list());
+      const next = await window.localScribe.dictionary.list();
+      if (mounted.current && sequence === loadSequence.current) setItems(next);
     } catch (loadError) {
-      setError({
-        message: libraryErrorMessage(loadError, "Your local dictionary could not be loaded."),
-        canReload: true,
-      });
+      if (mounted.current && sequence === loadSequence.current) {
+        setError({
+          message: libraryErrorMessage(loadError, "Your local dictionary could not be loaded."),
+          canReload: true,
+        });
+      }
     } finally {
-      setLoading(false);
+      if (mounted.current && sequence === loadSequence.current) setLoading(false);
     }
   }, []);
 
-  useEffect(() => void load(), [load]);
+  useEffect(() => {
+    mounted.current = true;
+    void load();
+    return () => {
+      mounted.current = false;
+      loadSequence.current += 1;
+    };
+  }, [load]);
 
   const filtered = useMemo(() => {
     const needle = query.trim().toLocaleLowerCase();
@@ -195,13 +209,14 @@ export function DictionaryScreen() {
 
   return (
     <>
-      <LibraryPage
-        title="Dictionary"
-        subtitle="Help LocalScribe recognize names, products, and specialized language the way you write them."
-        actionLabel="Add new"
-        actionDisabled={loading || unavailable}
-        onAction={() => setShowAdd(true)}
-      >
+      <div inert={showAdd}>
+        <LibraryPage
+          title="Dictionary"
+          subtitle="Help LocalScribe recognize names, products, and specialized language the way you write them."
+          actionLabel="Add new"
+          actionDisabled={loading || unavailable}
+          onAction={() => setShowAdd(true)}
+        >
         {showHero && (
           <OnboardingHero
             eyebrow="A vocabulary that stays yours"
@@ -264,14 +279,15 @@ export function DictionaryScreen() {
             ))
           )}
         </section>
-      </LibraryPage>
+        </LibraryPage>
+      </div>
 
       {showAdd && (
         <DictionaryModal
           onClose={() => setShowAdd(false)}
           onSaved={async () => {
-            setShowAdd(false);
             await load();
+            setShowAdd(false);
           }}
         />
       )}
@@ -287,23 +303,37 @@ export function SnippetsScreen() {
   const [error, setError] = useState<LibraryError | null>(null);
   const [deletingIds, setDeletingIds] = useState<ReadonlySet<string>>(() => new Set());
   const [heroDismissed, dismissHero] = useLibraryHeroDismissal("snippets");
+  const loadSequence = useRef(0);
+  const mounted = useRef(false);
 
   const load = useCallback(async () => {
+    const sequence = ++loadSequence.current;
+    if (!mounted.current) return;
     setLoading(true);
     try {
       setError(null);
-      setItems(await window.localScribe.snippets.list());
+      const next = await window.localScribe.snippets.list();
+      if (mounted.current && sequence === loadSequence.current) setItems(next);
     } catch (loadError) {
-      setError({
-        message: libraryErrorMessage(loadError, "Your local snippets could not be loaded."),
-        canReload: true,
-      });
+      if (mounted.current && sequence === loadSequence.current) {
+        setError({
+          message: libraryErrorMessage(loadError, "Your local snippets could not be loaded."),
+          canReload: true,
+        });
+      }
     } finally {
-      setLoading(false);
+      if (mounted.current && sequence === loadSequence.current) setLoading(false);
     }
   }, []);
 
-  useEffect(() => void load(), [load]);
+  useEffect(() => {
+    mounted.current = true;
+    void load();
+    return () => {
+      mounted.current = false;
+      loadSequence.current += 1;
+    };
+  }, [load]);
 
   const filtered = useMemo(() => {
     const needle = query.trim().toLocaleLowerCase();
@@ -349,13 +379,14 @@ export function SnippetsScreen() {
 
   return (
     <>
-      <LibraryPage
-        title="Snippets"
-        subtitle="Turn short spoken cues into text you use often, without sending the cue or expansion anywhere."
-        actionLabel="Add new"
-        actionDisabled={loading || unavailable}
-        onAction={() => setShowAdd(true)}
-      >
+      <div inert={showAdd}>
+        <LibraryPage
+          title="Snippets"
+          subtitle="Turn short spoken cues into text you use often, without sending the cue or expansion anywhere."
+          actionLabel="Add new"
+          actionDisabled={loading || unavailable}
+          onAction={() => setShowAdd(true)}
+        >
         {showHero && (
           <OnboardingHero
             eyebrow="A shorter route to repeatable writing"
@@ -418,14 +449,15 @@ export function SnippetsScreen() {
             ))
           )}
         </section>
-      </LibraryPage>
+        </LibraryPage>
+      </div>
 
       {showAdd && (
         <SnippetModal
           onClose={() => setShowAdd(false)}
           onSaved={async () => {
-            setShowAdd(false);
             await load();
+            setShowAdd(false);
           }}
         />
       )}
@@ -540,9 +572,15 @@ export function DictionaryModal({ onClose, onSaved }: { onClose(): void; onSaved
   const [replacement, setReplacement] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const saveInFlight = useRef(false);
+  const requestClose = () => {
+    if (!saveInFlight.current) onClose();
+  };
 
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (saveInFlight.current) return;
+    saveInFlight.current = true;
     setSaving(true);
     setError(null);
     try {
@@ -553,12 +591,14 @@ export function DictionaryModal({ onClose, onSaved }: { onClose(): void; onSaved
         saveError,
         "LocalScribe could not save this term. Check both fields and try again.",
       ));
+    } finally {
+      saveInFlight.current = false;
       setSaving(false);
     }
   };
 
   return (
-    <LibraryModal title="Add a dictionary term" description="Choose what LocalScribe should write when it recognizes this phrase." onClose={onClose}>
+    <LibraryModal title="Add a dictionary term" description="Choose what LocalScribe should write when it recognizes this phrase." onClose={requestClose} busy={saving}>
       <form className="ln-modal__form" onSubmit={(event) => void submit(event)}>
         <label>
           <span>Phrase it may hear</span>
@@ -585,7 +625,7 @@ export function DictionaryModal({ onClose, onSaved }: { onClose(): void; onSaved
         </label>
         {error && <InlineError>{error}</InlineError>}
         <div className="ln-modal__actions">
-          <button className="ln-secondary" type="button" onClick={onClose}>Cancel</button>
+          <button className="ln-secondary" type="button" disabled={saving} onClick={requestClose}>Cancel</button>
           <button className="ln-primary" type="submit" disabled={saving || !phrase.trim() || !replacement.trim()}>
             {saving ? "Saving…" : "Add term"}
           </button>
@@ -600,9 +640,15 @@ export function SnippetModal({ onClose, onSaved }: { onClose(): void; onSaved():
   const [expansion, setExpansion] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const saveInFlight = useRef(false);
+  const requestClose = () => {
+    if (!saveInFlight.current) onClose();
+  };
 
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (saveInFlight.current) return;
+    saveInFlight.current = true;
     setSaving(true);
     setError(null);
     try {
@@ -613,12 +659,14 @@ export function SnippetModal({ onClose, onSaved }: { onClose(): void; onSaved():
         saveError,
         "LocalScribe could not save this snippet. Check both fields and try again.",
       ));
+    } finally {
+      saveInFlight.current = false;
       setSaving(false);
     }
   };
 
   return (
-    <LibraryModal title="Create a snippet" description="Pair a memorable spoken cue with the complete text you want inserted." onClose={onClose}>
+    <LibraryModal title="Create a snippet" description="Pair a memorable spoken cue with the complete text you want inserted." onClose={requestClose} busy={saving}>
       <form className="ln-modal__form" onSubmit={(event) => void submit(event)}>
         <label>
           <span>Spoken trigger</span>
@@ -645,7 +693,7 @@ export function SnippetModal({ onClose, onSaved }: { onClose(): void; onSaved():
         </label>
         {error && <InlineError>{error}</InlineError>}
         <div className="ln-modal__actions">
-          <button className="ln-secondary" type="button" onClick={onClose}>Cancel</button>
+          <button className="ln-secondary" type="button" disabled={saving} onClick={requestClose}>Cancel</button>
           <button className="ln-primary" type="submit" disabled={saving || !trigger.trim() || !expansion.trim()}>
             {saving ? "Saving…" : "Add snippet"}
           </button>
@@ -659,11 +707,13 @@ export function LibraryModal({
   title,
   description,
   onClose,
+  busy = false,
   children,
 }: {
   title: string;
   description: string;
   onClose(): void;
+  busy?: boolean;
   children: ReactNode;
 }) {
   const dialogRef = useRef<HTMLElement>(null);
@@ -717,10 +767,11 @@ export function LibraryModal({
         aria-modal="true"
         aria-labelledby={titleId}
         aria-describedby={descriptionId}
+        aria-busy={busy || undefined}
         tabIndex={-1}
         onKeyDown={handleKeyDown}
       >
-        <button className="ln-modal__close" type="button" aria-label="Close dialog" onClick={onClose}>
+        <button className="ln-modal__close" type="button" aria-label="Close dialog" disabled={busy} onClick={onClose}>
           <CloseIcon />
         </button>
         <header>

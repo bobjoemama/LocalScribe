@@ -134,6 +134,7 @@ it("matches readiness only for the exact warm model, tier, and compute type", ()
 class FakeWorkerProcess extends EventEmitter {
   readonly stdout = new EventEmitter();
   readonly stderr = new EventEmitter();
+  readonly pid: number | undefined;
   exitCode: number | null = null;
   signalCode: NodeJS.Signals | null = null;
   readonly stdin = {
@@ -146,6 +147,15 @@ class FakeWorkerProcess extends EventEmitter {
       queueMicrotask(() => {
         switch (request.type) {
           case "install_model":
+            if (failingInstallModelIds.has(String(request.modelId))) {
+              this.respond({
+                type: "error",
+                id: request.id,
+                code: "model_install_failed",
+                message: "fixture rejected the requested model install",
+              });
+              break;
+            }
             if (workerEmitsInstallProgress) {
               this.respond({
                 type: "model_install_progress",
@@ -187,6 +197,7 @@ class FakeWorkerProcess extends EventEmitter {
               modelId: request.modelId,
               tier: request.tier,
               computeType: request.computeType,
+              asrMode: request.asrMode,
               loadMs: 1,
             });
             break;
@@ -246,6 +257,11 @@ class FakeWorkerProcess extends EventEmitter {
     },
   };
 
+  constructor(pid?: number) {
+    super();
+    this.pid = pid;
+  }
+
   start(): void {
     queueMicrotask(() => this.respond({
       type: "hello",
@@ -273,6 +289,8 @@ class FakeWorkerProcess extends EventEmitter {
 
 /** Model ids whose `load_model` the fake worker rejects. */
 const failingModelIds = new Set<string>();
+/** Model ids whose `install_model` the fake worker rejects without exiting. */
+const failingInstallModelIds = new Set<string>();
 
 const medium: WorkerModelSelection = {
   modelId: "example/medium",
@@ -293,6 +311,7 @@ function supervisor(): WorkerSupervisor {
 beforeEach(() => {
   requests.length = 0;
   failingModelIds.clear();
+  failingInstallModelIds.clear();
   deferredWorkerRequests.clear();
   workerEmitsInstallProgress = true;
   onWorkerRequest = null;
@@ -790,6 +809,26 @@ describe("WorkerSupervisor model lifecycle", () => {
     expect(requests.filter((request) => request.type === "load_model")).toHaveLength(1);
   });
 
+  it("does not track a failed spawn with no pid as a live process tree", async () => {
+    let workerNumber = 0;
+    spawnMock.mockImplementation(() => {
+      workerNumber += 1;
+      const process = new FakeWorkerProcess();
+      if (workerNumber === 1) {
+        queueMicrotask(() => process.emit("error", new Error("spawn uv ENOENT")));
+      } else {
+        process.start();
+      }
+      return process as never;
+    });
+    const worker = supervisor();
+
+    await expect(worker.ensureReady(medium)).rejects.toThrow("spawn uv ENOENT");
+    await worker.ensureReady(medium);
+
+    expect(spawnMock).toHaveBeenCalledTimes(2);
+  });
+
   it("terminates a worker after mismatched model acknowledgement before reuse", async () => {
     let workerNumber = 0;
     spawnMock.mockImplementation(() => {
@@ -808,6 +847,7 @@ describe("WorkerSupervisor model lifecycle", () => {
               modelId: "unexpected/model",
               tier: request.tier,
               computeType: request.computeType,
+              asrMode: request.asrMode,
               loadMs: 1,
             })}\n`, "utf8"));
           });
@@ -824,6 +864,46 @@ describe("WorkerSupervisor model lifecycle", () => {
       "acknowledged a model selection other than",
     );
     await worker.ensureReady(medium);
+
+    expect(spawnMock).toHaveBeenCalledTimes(2);
+    expect(requests.filter((request) => request.type === "load_model")).toHaveLength(2);
+  });
+
+  it("terminates a worker after mismatched ASR-mode acknowledgement before reuse", async () => {
+    let workerNumber = 0;
+    spawnMock.mockImplementation(() => {
+      workerNumber += 1;
+      const process = new FakeWorkerProcess();
+      if (workerNumber === 1) {
+        const originalWrite = process.stdin.write;
+        process.stdin.write = (line, callback) => {
+          const request = JSON.parse(line) as Record<string, unknown>;
+          if (request.type !== "load_model") return originalWrite(line, callback);
+          requests.push(request);
+          queueMicrotask(() => {
+            process.stdout.emit("data", Buffer.from(`${JSON.stringify({
+              type: "model_ready",
+              id: request.id,
+              modelId: request.modelId,
+              tier: request.tier,
+              computeType: request.computeType,
+              asrMode: "after-stop",
+              loadMs: 1,
+            })}\n`, "utf8"));
+          });
+          callback?.(null);
+          return true;
+        };
+      }
+      process.start();
+      return process as never;
+    });
+    const worker = supervisor();
+
+    await expect(worker.ensureReady({ ...medium, asrMode: "live" })).rejects.toThrow(
+      "acknowledged a model selection other than",
+    );
+    await worker.ensureReady({ ...medium, asrMode: "live" });
 
     expect(spawnMock).toHaveBeenCalledTimes(2);
     expect(requests.filter((request) => request.type === "load_model")).toHaveLength(2);
@@ -882,14 +962,91 @@ describe("WorkerSupervisor model lifecycle", () => {
       ).terminateWorker(child, new Error("simulated protocol failure"));
 
       const replacement = worker.ensureReady(medium);
-      await vi.advanceTimersByTimeAsync(2_001);
+      await vi.advanceTimersByTimeAsync(2_101);
       await expect(replacement).rejects.toThrow(
         "refusing to start an overlapping model process",
       );
       expect(spawnMock).toHaveBeenCalledOnce();
+
+      child.exitCode = 0;
+      child.emit("exit", 0, null);
+      await worker.ensureReady(medium);
+      expect(spawnMock).toHaveBeenCalledTimes(2);
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("spawns the worker in a dedicated POSIX process group", async () => {
+    const worker = supervisor();
+
+    await worker.ensureReady(medium);
+
+    expect(spawnMock).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.any(Array),
+      expect.objectContaining({ detached: process.platform !== "win32" }),
+    );
+    await worker.shutdown();
+  });
+
+  it.runIf(process.platform !== "win32")(
+    "signals the owned process group and escalates from SIGTERM to SIGKILL",
+    async () => {
+      vi.useFakeTimers();
+      const processGroupId = 424_242;
+      let groupAlive = true;
+      const killSpy = vi.spyOn(process, "kill").mockImplementation((pid, signal) => {
+        if (pid !== -processGroupId) {
+          throw new Error(`unexpected pid ${pid}`);
+        }
+        if (signal === 0) {
+          if (groupAlive) return true;
+          throw Object.assign(new Error("no such process group"), { code: "ESRCH" });
+        }
+        if (signal === "SIGKILL") groupAlive = false;
+        return true;
+      });
+      spawnMock.mockImplementation(() => {
+        const process = new FakeWorkerProcess(processGroupId);
+        process.start();
+        return process as never;
+      });
+
+      try {
+        const worker = supervisor();
+        await worker.ensureReady(medium);
+
+        worker.abort("process-tree test");
+        expect(killSpy).toHaveBeenCalledWith(-processGroupId, "SIGTERM");
+
+        await vi.advanceTimersByTimeAsync(1_001);
+        expect(killSpy).toHaveBeenCalledWith(-processGroupId, "SIGKILL");
+
+        await vi.advanceTimersByTimeAsync(25);
+        const retiring = (
+          worker as unknown as { retiringProcesses: Map<unknown, unknown> }
+        ).retiringProcesses;
+        expect(retiring.size).toBe(0);
+      } finally {
+        killSpy.mockRestore();
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it("never derives a negative-pid signal from a child without an owned group", async () => {
+    const killSpy = vi.spyOn(process, "kill");
+    const worker = supervisor();
+    await worker.ensureReady(medium);
+    const child = spawnMock.mock.results[0]?.value as FakeWorkerProcess;
+    const directKill = vi.spyOn(child, "kill");
+
+    worker.abort("direct-child fallback test");
+
+    expect(killSpy).not.toHaveBeenCalled();
+    expect(directKill).toHaveBeenCalledWith("SIGTERM");
+    killSpy.mockRestore();
   });
 
   it("installs through the data-only protocol without loading a runtime", async () => {
@@ -977,6 +1134,55 @@ describe("WorkerSupervisor model lifecycle", () => {
       request.type === "load_model" && request.modelId === high.modelId
     ))).toBe(false);
     expect(worker.loadedSelection()).toEqual(medium);
+    expect(spawnMock).toHaveBeenCalledOnce();
+  });
+
+  it("preserves an unrelated warm runtime after a structured install rejection", async () => {
+    const worker = supervisor();
+    await worker.ensureReady(medium);
+    failingInstallModelIds.add(high.modelId);
+
+    await expect(worker.installModel(high)).rejects.toThrow(
+      "model_install_failed: fixture rejected the requested model install",
+    );
+
+    expect(worker.loadedSelection()).toEqual(medium);
+    expect(spawnMock).toHaveBeenCalledOnce();
+    expect(requests.map((request) => request.type)).toEqual([
+      "load_model",
+      "install_model",
+    ]);
+
+    await worker.transcribe({
+      model: medium,
+      audioPath: "/audio/request.wav",
+      allowedRoot: "/audio",
+      language: "auto",
+      context: "",
+      durationMs: 1_000,
+    });
+    expect(requests.filter((request) => request.type === "load_model")).toHaveLength(1);
+  });
+
+  it("clears the warm selection when an unrelated install violates the protocol", async () => {
+    const worker = supervisor();
+    await worker.ensureReady(medium);
+    onWorkerRequest = (request) => {
+      if (request.type !== "install_model") return;
+      const child = spawnMock.mock.results[0]?.value as FakeWorkerProcess;
+      (child as unknown as { respond(message: unknown): void }).respond({
+        type: "health",
+        id: "00000000-0000-4000-8000-000000000099",
+        ready: false,
+      });
+    };
+
+    await expect(worker.installModel(high)).rejects.toThrow(/unknown request/u);
+
+    // A protocol failure retires the process as untrustworthy. The higher
+    // model-apply transaction owns restoration; the supervisor must not claim
+    // a runtime survived when it deliberately terminated that runtime.
+    expect(worker.loadedSelection()).toBeNull();
     expect(spawnMock).toHaveBeenCalledOnce();
   });
 

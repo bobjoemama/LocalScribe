@@ -38,9 +38,10 @@ const temporaryDirectories: string[] = [];
  * scheme must update this deliberately — and must rebuild every artifact whose
  * embedded expectation was computed under the old scheme.
  */
-// Deliberately regenerated when the signed FluidAudio helper joined the
-// required macOS resource inventory; the hashing algorithm itself is unchanged.
-const GOLDEN_ROOT = "2339c0eaf5cbb8b8a0cda049a0833c10d4d215f74ee08bbed1f457ed65c73a48";
+// Deliberately regenerated when FluidAudio's exact pinned FastCluster and VBx
+// notices joined the required macOS inventory; the hashing algorithm itself is
+// unchanged.
+const GOLDEN_ROOT = "d3625ce388f53a9024ce94e854a8cadfdf348f584143009aa8dad59510605dbd";
 
 function fixture(): string {
   const resourcesPath = mkdtempSync(path.join(tmpdir(), "localscribe-root-"));
@@ -58,6 +59,7 @@ function fixture(): string {
   write(policy.runtimeExecutable, "python");
   for (const file of policy.helperFiles) write(file, file);
   for (const file of policy.manifestFiles) write(file, file);
+  for (const file of policy.licenseFiles) write(file, file);
   for (const file of policy.brandingFiles) write(file, file);
 
   /*
@@ -158,6 +160,7 @@ describe("packaged resource tree root", () => {
       write(policy.runtimeExecutable, "python");
       for (const file of policy.helperFiles) write(file, file);
       for (const file of policy.manifestFiles) write(file, file);
+      for (const file of policy.licenseFiles) write(file, file);
       for (const file of policy.brandingFiles) write(file, file);
       const runtimeRoot = path.posix.dirname(policy.runtimeExecutable);
       for (let branch = 0; branch < branches; branch += 1) {

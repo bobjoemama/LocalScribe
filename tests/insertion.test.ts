@@ -4,12 +4,13 @@ import {
   SafeInsertionCoordinator,
   sameTarget,
 } from "../src/main/insertion/safeInsertion";
-import type {
-  ActiveTarget,
-  ClipboardPort,
-  ClipboardSnapshot,
-  PasteInjectionResult,
-  PlatformInsertionBridge,
+import {
+  PASTE_FAILURE_REASONS,
+  type ActiveTarget,
+  type ClipboardPort,
+  type ClipboardSnapshot,
+  type PasteInjectionResult,
+  type PlatformInsertionBridge,
 } from "../src/main/insertion/types";
 
 const electronMocks = vi.hoisted(() => ({
@@ -72,7 +73,7 @@ class FakeBridge implements PlatformInsertionBridge {
     return await (this.targets.shift() ?? null);
   }
 
-  async clipboardSequence(): Promise<number> {
+  async clipboardSequence(): Promise<number | null> {
     this.sequenceReads += 1;
     this.onSequenceRead?.(this.sequenceReads, this);
     return this.sequence;
@@ -117,6 +118,18 @@ function coordinator(
 }
 
 describe("safe insertion", () => {
+  it("reports the intentional copy-only path without weakening outcome semantics", async () => {
+    const bridge = new FakeBridge([]);
+    const clipboard = new FakeClipboard(bridge);
+    const insertion = coordinator(bridge, clipboard);
+
+    await expect(insertion.insert("dictated", false)).resolves.toEqual({
+      outcome: "copied",
+      reason: "automatic_paste_disabled",
+    });
+    expect(clipboard.currentText).toBe("dictated");
+  });
+
   it("rechecks the captured target and restores only after target consumption is acknowledged", async () => {
     const bridge = new FakeBridge([TARGET_A, TARGET_A]);
     const clipboard = new FakeClipboard(bridge, {
@@ -133,7 +146,7 @@ describe("safe insertion", () => {
     const insertion = coordinator(bridge, clipboard, paste);
 
     insertion.beginSession();
-    await expect(insertion.insert("dictated", true)).resolves.toBe("pasted");
+    await expect(insertion.insert("dictated", true)).resolves.toEqual({ outcome: "pasted" });
 
     expect(paste).toHaveBeenCalledOnce();
     expect(paste).toHaveBeenCalledWith(TARGET_A, 101);
@@ -147,7 +160,10 @@ describe("safe insertion", () => {
     const insertion = coordinator(bridge, clipboard, paste);
 
     insertion.beginSession();
-    await expect(insertion.insert("dictated", true)).resolves.toBe("pasted-with-copy");
+    await expect(insertion.insert("dictated", true)).resolves.toEqual({
+      outcome: "pasted-with-copy",
+      reason: "paste_acknowledgement_unavailable",
+    });
 
     expect(paste).toHaveBeenCalledOnce();
     expect(clipboard.currentText).toBe("dictated");
@@ -216,7 +232,10 @@ describe("safe insertion", () => {
     insertion.cancelSession();
     releasePasteTarget(TARGET_A);
 
-    await expect(pendingInsertion).resolves.toBe("copied");
+    await expect(pendingInsertion).resolves.toEqual({
+      outcome: "copied",
+      reason: "session_invalidated",
+    });
     expect(paste).not.toHaveBeenCalled();
     expect(clipboard.restoreCalls).toHaveLength(0);
   });
@@ -231,7 +250,10 @@ describe("safe insertion", () => {
     insertion.beginSession();
     insertion.cancelSession();
 
-    await expect(insertion.insert("late transcription", true)).resolves.toBe("copied");
+    await expect(insertion.insert("late transcription", true)).resolves.toEqual({
+      outcome: "copied",
+      reason: "session_invalidated",
+    });
     expect(writeText).not.toHaveBeenCalled();
     expect(paste).not.toHaveBeenCalled();
     expect(clipboard.currentText).toBe("old clipboard");
@@ -260,8 +282,11 @@ describe("safe insertion", () => {
     insertion.cancelSession();
     releaseFirstPaste();
 
-    await expect(first).resolves.toBe("copied");
-    await expect(cancelledWhileQueued).resolves.toBe("copied");
+    await expect(first).resolves.toEqual({ outcome: "copied", reason: "session_invalidated" });
+    await expect(cancelledWhileQueued).resolves.toEqual({
+      outcome: "copied",
+      reason: "session_invalidated",
+    });
     expect(writeText).toHaveBeenCalledTimes(1);
     expect(writeText).toHaveBeenCalledWith("first");
     expect(paste).toHaveBeenCalledTimes(1);
@@ -275,7 +300,10 @@ describe("safe insertion", () => {
     const insertion = coordinator(bridge, clipboard, paste);
 
     insertion.beginSession();
-    await expect(insertion.insert("dictated", true)).resolves.toBe("copied");
+    await expect(insertion.insert("dictated", true)).resolves.toEqual({
+      outcome: "copied",
+      reason: "current_window_changed",
+    });
 
     expect(paste).not.toHaveBeenCalled();
     expect(clipboard.currentText).toBe("dictated");
@@ -288,10 +316,182 @@ describe("safe insertion", () => {
     const paste = vi.fn();
     const insertion = coordinator(bridge, clipboard, paste);
 
-    await expect(insertion.insert("dictated", true)).resolves.toBe("copied");
+    await expect(insertion.insert("dictated", true)).resolves.toEqual({
+      outcome: "copied",
+      reason: "initial_target_unavailable",
+    });
 
     expect(paste).not.toHaveBeenCalled();
     expect(clipboard.currentText).toBe("dictated");
+  });
+
+  it("reports when the target disappears before paste", async () => {
+    const bridge = new FakeBridge([TARGET_A, null]);
+    const clipboard = new FakeClipboard(bridge);
+    const paste = vi.fn();
+    const insertion = coordinator(bridge, clipboard, paste);
+
+    insertion.beginSession();
+    await expect(insertion.insert("dictated", true)).resolves.toEqual({
+      outcome: "copied",
+      reason: "current_target_unavailable",
+    });
+    expect(paste).not.toHaveBeenCalled();
+  });
+
+  it("reports initial non-editability before missing identity metadata", async () => {
+    const initialTarget: ActiveTarget = {
+      ...TARGET_A,
+      focusedEditable: false,
+      windowFingerprint: null,
+      focusedElementFingerprint: null,
+    };
+    const bridge = new FakeBridge([initialTarget]);
+    const clipboard = new FakeClipboard(bridge);
+    const insertion = coordinator(bridge, clipboard);
+
+    insertion.beginSession();
+    await expect(insertion.insert("dictated", true)).resolves.toEqual({
+      outcome: "copied",
+      reason: "initial_target_not_editable",
+    });
+  });
+
+  it("distinguishes unavailable initial editability from a confirmed non-editable target", async () => {
+    const initialTarget: ActiveTarget = {
+      ...TARGET_A,
+      focusedEditable: null,
+      windowFingerprint: null,
+      focusedElementFingerprint: null,
+    };
+    const bridge = new FakeBridge([initialTarget]);
+    const clipboard = new FakeClipboard(bridge);
+    const insertion = coordinator(bridge, clipboard);
+
+    insertion.beginSession();
+    await expect(insertion.insert("dictated", true)).resolves.toEqual({
+      outcome: "copied",
+      reason: "initial_target_editability_unavailable",
+    });
+  });
+
+  it("distinguishes unavailable initial window and control identity", async () => {
+    const cases = [
+      {
+        target: { ...TARGET_A, windowFingerprint: null },
+        reason: "initial_window_identity_unavailable",
+      },
+      {
+        target: { ...TARGET_A, focusedElementFingerprint: null },
+        reason: "initial_control_identity_unavailable",
+      },
+    ] as const;
+
+    for (const testCase of cases) {
+      const bridge = new FakeBridge([testCase.target]);
+      const clipboard = new FakeClipboard(bridge);
+      const insertion = coordinator(bridge, clipboard);
+      insertion.beginSession();
+      await expect(insertion.insert("dictated", true)).resolves.toEqual({
+        outcome: "copied",
+        reason: testCase.reason,
+      });
+    }
+  });
+
+  it("distinguishes current target identity and editability failures", async () => {
+    const cases: ReadonlyArray<{
+      current: ActiveTarget;
+      reason:
+        | "app_process_target_changed"
+        | "current_target_editability_unavailable"
+        | "current_target_not_editable"
+        | "current_window_identity_unavailable"
+        | "current_window_changed"
+        | "current_control_identity_unavailable"
+        | "current_control_changed";
+    }> = [
+      {
+        current: { ...TARGET_A, processId: TARGET_A.processId + 1 },
+        reason: "app_process_target_changed",
+      },
+      {
+        current: {
+          ...TARGET_A,
+          focusedEditable: false,
+          windowFingerprint: null,
+          focusedElementFingerprint: null,
+        },
+        reason: "current_target_not_editable",
+      },
+      {
+        current: {
+          ...TARGET_A,
+          focusedEditable: null,
+          windowFingerprint: null,
+          focusedElementFingerprint: null,
+        },
+        reason: "current_target_editability_unavailable",
+      },
+      {
+        current: { ...TARGET_A, windowFingerprint: null },
+        reason: "current_window_identity_unavailable",
+      },
+      {
+        current: TARGET_B,
+        reason: "current_window_changed",
+      },
+      {
+        current: { ...TARGET_A, focusedElementFingerprint: null },
+        reason: "current_control_identity_unavailable",
+      },
+      {
+        current: { ...TARGET_A, focusedElementFingerprint: "e".repeat(64) },
+        reason: "current_control_changed",
+      },
+    ];
+
+    for (const testCase of cases) {
+      const bridge = new FakeBridge([TARGET_A, testCase.current]);
+      const clipboard = new FakeClipboard(bridge);
+      const paste = vi.fn();
+      const insertion = coordinator(bridge, clipboard, paste);
+      insertion.beginSession();
+      await expect(insertion.insert("dictated", true)).resolves.toEqual({
+        outcome: "copied",
+        reason: testCase.reason,
+      });
+      expect(paste).not.toHaveBeenCalled();
+    }
+  });
+
+  it("reports a clipboard snapshot failure without exposing clipboard data", async () => {
+    const bridge = new FakeBridge([TARGET_A]);
+    const clipboard = new FakeClipboard(bridge);
+    vi.spyOn(clipboard, "snapshot").mockImplementation(() => {
+      throw new Error("private clipboard contents");
+    });
+    const insertion = coordinator(bridge, clipboard);
+
+    insertion.beginSession();
+    await expect(insertion.insert("dictated", true)).resolves.toEqual({
+      outcome: "copied",
+      reason: "clipboard_snapshot_failed",
+    });
+    expect(clipboard.currentText).toBe("dictated");
+  });
+
+  it("reports unavailable clipboard sequencing", async () => {
+    const bridge = new FakeBridge([TARGET_A]);
+    vi.spyOn(bridge, "clipboardSequence").mockResolvedValue(null);
+    const clipboard = new FakeClipboard(bridge);
+    const insertion = coordinator(bridge, clipboard);
+
+    insertion.beginSession();
+    await expect(insertion.insert("dictated", true)).resolves.toEqual({
+      outcome: "copied",
+      reason: "clipboard_sequence_unavailable",
+    });
   });
 
   it("falls back to copy-only when macOS has no editable control focused", async () => {
@@ -302,7 +502,10 @@ describe("safe insertion", () => {
     const insertion = coordinator(bridge, clipboard, paste);
 
     insertion.beginSession();
-    await expect(insertion.insert("dictated", true)).resolves.toBe("copied");
+    await expect(insertion.insert("dictated", true)).resolves.toEqual({
+      outcome: "copied",
+      reason: "current_target_not_editable",
+    });
 
     expect(paste).not.toHaveBeenCalled();
     expect(clipboard.currentText).toBe("dictated");
@@ -316,7 +519,10 @@ describe("safe insertion", () => {
     const insertion = coordinator(bridge, clipboard, paste);
 
     insertion.beginSession();
-    await expect(insertion.insert("dictated", true)).resolves.toBe("copied");
+    await expect(insertion.insert("dictated", true)).resolves.toEqual({
+      outcome: "copied",
+      reason: "current_target_editability_unavailable",
+    });
 
     expect(paste).not.toHaveBeenCalled();
     expect(clipboard.currentText).toBe("dictated");
@@ -335,7 +541,7 @@ describe("safe insertion", () => {
     });
 
     insertion.beginSession();
-    await expect(insertion.insert("dictated", true)).resolves.toBe("pasted");
+    await expect(insertion.insert("dictated", true)).resolves.toEqual({ outcome: "pasted" });
 
     expect(clipboard.currentText).toBe("user copied this");
     expect(clipboard.restoreCalls).toHaveLength(0);
@@ -353,7 +559,10 @@ describe("safe insertion", () => {
     const insertion = coordinator(bridge, clipboard, paste);
 
     insertion.beginSession();
-    await expect(insertion.insert("dictated", true)).resolves.toBe("copied");
+    await expect(insertion.insert("dictated", true)).resolves.toEqual({
+      outcome: "copied",
+      reason: "clipboard_changed",
+    });
 
     expect(paste).not.toHaveBeenCalled();
     expect(clipboard.currentText).toBe("new user clipboard");
@@ -372,7 +581,10 @@ describe("safe insertion", () => {
     const insertion = coordinator(bridge, clipboard, paste);
 
     insertion.beginSession();
-    await expect(insertion.insert("dictated", true)).resolves.toBe("copied");
+    await expect(insertion.insert("dictated", true)).resolves.toEqual({
+      outcome: "copied",
+      reason: "clipboard_changed",
+    });
 
     expect(paste).not.toHaveBeenCalled();
     expect(clipboard.currentText).toBe("external clipboard");
@@ -386,11 +598,41 @@ describe("safe insertion", () => {
     const insertion = coordinator(bridge, clipboard, paste);
 
     insertion.beginSession();
-    await expect(insertion.insert("dictated", true)).resolves.toBe("copied");
+    await expect(insertion.insert("dictated", true)).resolves.toEqual({
+      outcome: "copied",
+      reason: "paste_injection_failed",
+    });
 
     expect(paste).toHaveBeenCalledOnce();
     expect(clipboard.currentText).toBe("dictated");
     expect(clipboard.restoreCalls).toHaveLength(0);
+  });
+
+  it("reports a thrown paste injector as a bounded failure", async () => {
+    const bridge = new FakeBridge([TARGET_A, TARGET_A]);
+    const clipboard = new FakeClipboard(bridge);
+    const insertion = coordinator(bridge, clipboard, async () => {
+      throw new Error("private native error");
+    });
+
+    insertion.beginSession();
+    await expect(insertion.insert("dictated", true)).resolves.toEqual({
+      outcome: "copied",
+      reason: "paste_injection_failed",
+    });
+  });
+
+  it("propagates every bounded native helper failure reason", async () => {
+    for (const reason of PASTE_FAILURE_REASONS) {
+      const bridge = new FakeBridge([TARGET_A, TARGET_A]);
+      const clipboard = new FakeClipboard(bridge);
+      const insertion = coordinator(bridge, clipboard, () => ({ status: "failed", reason }));
+      insertion.beginSession();
+      await expect(insertion.insert("dictated", true)).resolves.toEqual({
+        outcome: "copied",
+        reason,
+      });
+    }
   });
 
   it("retains dictated text when a consumption acknowledgment times out", async () => {
@@ -409,7 +651,10 @@ describe("safe insertion", () => {
     );
 
     insertion.beginSession();
-    await expect(insertion.insert("dictated", true)).resolves.toBe("pasted-with-copy");
+    await expect(insertion.insert("dictated", true)).resolves.toEqual({
+      outcome: "pasted-with-copy",
+      reason: "paste_acknowledgement_failed",
+    });
 
     expect(sleep).toHaveBeenCalledWith(123);
     expect(clipboard.currentText).toBe("dictated");
@@ -520,6 +765,21 @@ describe("Electron rich clipboard adapter", () => {
     expect(electronMocks.write).not.toHaveBeenCalled();
     expect(electronMocks.clear).not.toHaveBeenCalled();
   });
+
+  it("marks flat RTFD and semantic pasteboard markers non-restorable", async () => {
+    const { ElectronClipboardPort } = await import("../src/main/insertion/electronClipboard");
+    const port = new ElectronClipboardPort();
+
+    for (const uncapturedFormat of [
+      "com.apple.flat-rtfd",
+      "org.nspasteboard.TransientType",
+      "org.nspasteboard.ConcealedType",
+      "org.nspasteboard.AutoGeneratedType",
+    ]) {
+      electronMocks.availableFormats.mockReturnValue(["text/plain", uncapturedFormat]);
+      expect(port.snapshot().restorable, uncapturedFormat).toBe(false);
+    }
+  });
 });
 
 describe("native helper boundary", () => {
@@ -585,6 +845,69 @@ describe("native helper boundary", () => {
 });
 
 describe("macOS insertion service", () => {
+  it("requires both cached helper-protocol readiness and current Accessibility grants", async () => {
+    const { InsertionService } = await import("../src/main/insertion/insertionService");
+    const bridge = new FakeBridge([]);
+    const ready = vi.fn(async () => true);
+    const accessibilityReady = vi.fn()
+      .mockResolvedValueOnce(true)
+      .mockResolvedValueOnce(false);
+    Object.assign(bridge, { ready, accessibilityReady });
+    const insertion = new InsertionService({
+      clipboard: new FakeClipboard(bridge),
+      platformBridge: bridge,
+      platform: "darwin",
+    });
+
+    await expect(insertion.automaticPasteReady()).resolves.toBe(true);
+    await expect(insertion.automaticPasteReady()).resolves.toBe(false);
+    expect(ready).toHaveBeenCalledOnce();
+    expect(accessibilityReady).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not query Accessibility or enable automatic paste when helper self-test fails", async () => {
+    const { InsertionService } = await import("../src/main/insertion/insertionService");
+    const bridge = new FakeBridge([]);
+    const accessibilityReady = vi.fn(async () => true);
+    Object.assign(bridge, {
+      ready: vi.fn(async () => false),
+      accessibilityReady,
+    });
+    const insertion = new InsertionService({
+      clipboard: new FakeClipboard(bridge),
+      platformBridge: bridge,
+      platform: "darwin",
+    });
+
+    await expect(insertion.automaticPasteReady()).resolves.toBe(false);
+    expect(accessibilityReady).not.toHaveBeenCalled();
+  });
+
+  it("invalidates cached helper readiness when executable integrity is repinned", async () => {
+    const { InsertionService } = await import("../src/main/insertion/insertionService");
+    const bridge = new FakeBridge([]);
+    const ready = vi.fn()
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(true);
+    const pinExecutableIntegrity = vi.fn(() => true);
+    Object.assign(bridge, {
+      ready,
+      pinExecutableIntegrity,
+      accessibilityReady: vi.fn(async () => true),
+    });
+    const insertion = new InsertionService({
+      clipboard: new FakeClipboard(bridge),
+      platformBridge: bridge,
+      platform: "darwin",
+    });
+
+    await expect(insertion.automaticPasteReady()).resolves.toBe(false);
+    expect(insertion.pinNativeHelperIntegrity()).toBe(true);
+    await expect(insertion.automaticPasteReady()).resolves.toBe(true);
+    expect(ready).toHaveBeenCalledTimes(2);
+  });
+
+
   it("degrades to copy-only instead of using a uiohook paste when the helper is unavailable", async () => {
     const { InsertionService } = await import("../src/main/insertion/insertionService");
     const bridge = new FakeBridge([TARGET_A, TARGET_A]);
@@ -600,5 +923,23 @@ describe("macOS insertion service", () => {
     await expect(insertion.copyAndPaste("dictated", true)).resolves.toBe("copied");
     expect(inputMocks.keyTap).not.toHaveBeenCalled();
     expect(clipboard.currentText).toBe("dictated");
+  });
+
+  it("reports the missing native helper without exposing target details", async () => {
+    const { InsertionService } = await import("../src/main/insertion/insertionService");
+    const bridge = new FakeBridge([TARGET_A, TARGET_A]);
+    const clipboard = new FakeClipboard(bridge);
+    const insertion = new InsertionService({
+      clipboard,
+      platformBridge: bridge,
+      platform: "darwin",
+      pasteSettleMs: 0,
+    });
+
+    insertion.beginSession();
+    await expect(insertion.copyAndPasteDetailed("dictated", true)).resolves.toEqual({
+      outcome: "copied",
+      reason: "helper_unavailable",
+    });
   });
 });

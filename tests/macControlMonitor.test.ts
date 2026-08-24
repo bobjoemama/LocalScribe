@@ -13,6 +13,19 @@ import {
   parseControlMonitorLine,
 } from "../src/main/hotkeys/macControlMonitor";
 import { resolveNativeActiveTargetHelperPath } from "../src/main/nativeHelperPath";
+import type { RegularExecutableProof } from "../src/main/insertion/nativeExecutableIntegrity";
+
+function proofForDigest(digest: string): RegularExecutableProof {
+  return {
+    sha256: digest,
+    device: 1,
+    inode: 2,
+    mode: 0o100700,
+    size: 100,
+    modifiedAtMs: 3,
+    changedAtMs: 4,
+  };
+}
 
 class FakeMonitorProcess extends EventEmitter {
   readonly stdout = Object.assign(new EventEmitter(), { setEncoding: vi.fn() });
@@ -77,6 +90,46 @@ describe("macOS hold monitor protocol", () => {
 
     expect(monitor.start("Alt+Space", vi.fn(), stopped)).toBe(true);
     expect(spawn).toHaveBeenCalledTimes(2);
+    warning.mockRestore();
+  });
+
+  it("pins regular helper bytes at startup and verifies them before every spawn", () => {
+    const first = new FakeMonitorProcess();
+    vi.mocked(spawn).mockReturnValue(first as never);
+    let proof: RegularExecutableProof | null = proofForDigest("a".repeat(64));
+    const proveExecutable = vi.fn(() => proof);
+    const monitor = new MacControlMonitor(process.execPath, proveExecutable);
+
+    expect(monitor.start("Command+Control", vi.fn())).toBe(true);
+    monitor.stop();
+    proof = proofForDigest("b".repeat(64));
+    expect(monitor.start("Command+Control", vi.fn())).toBe(false);
+    expect(spawn).toHaveBeenCalledOnce();
+    expect(proveExecutable).toHaveBeenCalledTimes(3);
+  });
+
+  it("never spawns a helper that could not be pinned as a stable regular file", () => {
+    const monitor = new MacControlMonitor(process.execPath, () => null);
+
+    expect(monitor.start("Command+Control", vi.fn())).toBe(false);
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it("reports a synchronous spawn failure without claiming the monitor started", () => {
+    vi.mocked(spawn).mockImplementationOnce(() => {
+      throw new Error("spawn failed");
+    });
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const monitor = new MacControlMonitor(
+      process.execPath,
+      () => proofForDigest("a".repeat(64)),
+    );
+
+    expect(monitor.start("Command+Control", vi.fn())).toBe(false);
+    expect(warning).toHaveBeenCalledWith(
+      "Permission-free hold monitor could not start",
+      expect.any(Error),
+    );
     warning.mockRestore();
   });
 });

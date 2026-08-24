@@ -63,10 +63,8 @@ function writeReleaseFixture(root: string, platform: ReleasePlatform): {
         : `release-asset-${index}\n`,
     );
   }
-  const outRoot = path.join(root, "out");
   const rows = contentPaths.map((filePath) => {
-    const relative = path.relative(outRoot, filePath).split(path.sep).join("/");
-    return `${hash(filePath)} *${relative}`;
+    return `${hash(filePath)} *${path.basename(filePath)}`;
   });
   writeFileSync(layout.checksumPath, `${rows.join("\n")}\n`);
 
@@ -138,15 +136,26 @@ describe("release asset verification", () => {
       entry.endsWith("core-runtime.sbom.cdx.json")
     )!;
     writeFileSync(coreSbom, "{}");
-    const outRoot = path.join(root, "out");
     const rows = contentPaths.map((filePath) => {
-      const relative = path.relative(outRoot, filePath).split(path.sep).join("/");
-      return `${hash(filePath)} *${relative}`;
+      return `${hash(filePath)} *${path.basename(filePath)}`;
     });
     writeFileSync(checksumPath, `${rows.join("\n")}\n`);
 
     await expect(verifyReleaseAssets("darwin", root)).rejects.toThrow(
       /supported CycloneDX/u,
+    );
+  });
+
+  it("rejects nested local build paths that would fail after flat asset download", async () => {
+    const root = makeProject();
+    const { checksumPath } = writeReleaseFixture(root, "darwin");
+    writeFileSync(
+      checksumPath,
+      readFileSync(checksumPath, "utf8").replace("*LocalScribe-", "*make/LocalScribe-"),
+    );
+
+    await expect(verifyReleaseAssets("darwin", root)).rejects.toThrow(
+      /flat release asset basenames/u,
     );
   });
 

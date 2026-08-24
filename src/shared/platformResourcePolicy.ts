@@ -10,7 +10,9 @@ export interface PlatformResourcePolicy {
   runtimeExecutable: string;
   helperFiles: readonly string[];
   manifestFiles: readonly string[];
+  licenseFiles: readonly string[];
   brandingFiles: readonly string[];
+  legalFiles: readonly string[];
 }
 
 const MAC_MANIFESTS = [
@@ -69,7 +71,13 @@ export function resourcePolicyFor(
         "native/macos/localscribe-fluidaudio-parakeet",
       ],
       manifestFiles: MAC_MANIFESTS.map((filename) => `model-manifest/${filename}`),
+      licenseFiles: [
+        "licenses/FluidAudio-0.15.5-LICENSE.txt",
+        "licenses/FluidAudio-0.15.5-fastcluster-LICENSE.md",
+        "licenses/FluidAudio-0.15.5-vbx-LICENSE.md",
+      ],
       brandingFiles: [],
+      legalFiles: ["LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.md"],
     };
   }
   throw new Error(`LocalScribe has no release resource policy for ${platform}/${arch}`);

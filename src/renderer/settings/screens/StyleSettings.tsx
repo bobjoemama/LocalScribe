@@ -191,7 +191,7 @@ export function automaticPasteSettingsPresentation(
   }
   return {
     editable: true,
-    detail: "Paste only when the app active at start is still the target; otherwise copy.",
+    detail: "Best-effort paste rechecks the app and editor immediately before sending Command-V. If macOS changes focus at the final handoff, the dictated text remains copied as a fallback.",
     value: null,
   };
 }
@@ -406,7 +406,9 @@ export function StyleScreen() {
   const [profileMessage, setProfileMessage] = useState("");
   const [profileMessageIsError, setProfileMessageIsError] = useState(false);
   const [profileBusy, setProfileBusy] = useState(false);
+  const [cleanupSaving, setCleanupSaving] = useState(false);
   const cleanupDraft = useRef<AppSettingsPatch>({});
+  const cleanupSaveInFlight = useRef(false);
 
   const loadProfiles = useCallback(() => window.localScribe.profiles.list().then(setProfiles), []);
 
@@ -451,12 +453,14 @@ export function StyleScreen() {
   };
 
   const saveCleanup = async () => {
-    if (!settings) return;
+    if (!settings || cleanupSaveInFlight.current) return;
     const patch: AppSettingsPatch = {
       removeFillers: settings.removeFillers,
       spokenCommands: settings.spokenCommands,
       smartPunctuation: settings.smartPunctuation,
     };
+    cleanupSaveInFlight.current = true;
+    setCleanupSaving(true);
     try {
       const saved = await window.localScribe.settings.patch(patch);
       const remaining = pendingSettingsAfterSave(cleanupDraft.current, patch);
@@ -469,6 +473,9 @@ export function StyleScreen() {
     } catch (error) {
       setMessageIsError(true);
       setMessage(`Could not save cleanup: ${errorDetail(error)}`);
+    } finally {
+      cleanupSaveInFlight.current = false;
+      setCleanupSaving(false);
     }
   };
 
@@ -527,6 +534,7 @@ export function StyleScreen() {
             type="button"
             key={item.id}
             className={tab === item.id ? "is-active" : ""}
+            aria-current={tab === item.id ? "page" : undefined}
             onClick={() => setTab(item.id)}
           >
             {item.label}
@@ -604,7 +612,7 @@ export function StyleScreen() {
           {cleanupLevel === "custom" && (
             <p className="ls-honesty-note"><InfoIcon /> Individual cleanup switches are using a custom combination. Choose a level to replace it.</p>
           )}
-          <button type="button" className="ls-primary-button" disabled={!cleanupControls.enabled} onClick={() => void saveCleanup()}>Save cleanup</button>
+          <button type="button" className="ls-primary-button" disabled={!cleanupControls.enabled || cleanupSaving} onClick={() => void saveCleanup()}>{cleanupSaving ? "Saving…" : "Save cleanup"}</button>
         </section>
       )}
 
@@ -900,7 +908,8 @@ export function SettingsModal({ onClose, registerDismissalGate }: {
   const [modelAction, setModelAction] = useState<ModelActionState>(null);
   const [pendingModelSelection, setPendingModelSelection] = useState<ModelSelectionDraft | null>(null);
   const [modelApplying, setModelApplying] = useState(false);
-  const modelApplyInFlight = useRef(false);
+  const [modelRefreshing, setModelRefreshing] = useState(false);
+  const settingsSaveInFlight = useRef(false);
   /*
    * `modelAction` disables the library buttons, but only after React commits
    * the render that carries it. Two dispatches in the same tick — a double
@@ -909,7 +918,7 @@ export function SettingsModal({ onClose, registerDismissalGate }: {
    * and re-enables every button while the other is still downloading. This
    * ref closes that window the way `applyModelSelection` already does.
    */
-  const modelLibraryActionInFlight = useRef(false);
+  const modelOperationInFlight = useRef(false);
   const [modelFeedback, setModelFeedback] = useState<{ message: string; isError: boolean } | null>(null);
   const dialogRef = useRef<HTMLElement>(null);
   /*
@@ -944,8 +953,8 @@ export function SettingsModal({ onClose, registerDismissalGate }: {
    */
   const attemptDismissal = useCallback((): boolean => {
     const decision = decideSettingsDismissal({
-      applyInFlight: modelApplyInFlight.current,
-      libraryActionInFlight: modelLibraryActionInFlight.current,
+      modelOperationInFlight: modelOperationInFlight.current,
+      settingsSaveInFlight: settingsSaveInFlight.current,
     });
     if (!decision.dismiss) {
       setStatus(decision.message);
@@ -1138,14 +1147,17 @@ export function SettingsModal({ onClose, registerDismissalGate }: {
     kind: "hold" | "toggle",
     shortcut: string,
   ): Promise<ShortcutValidationOutcome> => {
-    if (!settings) {
+    if (!settings || settingsSaveInFlight.current) {
       return {
         accepted: false,
-        error: settingsLoadError
+        error: settingsSaveInFlight.current
+          ? "Another settings save is still finishing. Try again in a moment."
+          : settingsLoadError
           ? "Settings are unavailable. Reopen Settings and try again."
           : "Settings are still loading. Try again when they are ready.",
       };
     }
+    settingsSaveInFlight.current = true;
     try {
       const saved = await window.localScribe.shortcuts.update({ kind, shortcut });
       const field = kind === "hold" ? "holdShortcut" : "toggleShortcut";
@@ -1161,17 +1173,20 @@ export function SettingsModal({ onClose, registerDismissalGate }: {
         accepted: false,
         error: shortcutCommitErrorMessage(),
       };
+    } finally {
+      settingsSaveInFlight.current = false;
     }
   };
 
   const save = async () => {
-    if (!settings) return;
+    if (!settings || settingsSaveInFlight.current) return;
     const patch = settingsPatchWithoutModelSelection(dirtySettings.current);
     dirtySettings.current = patch;
     if (Object.keys(patch).length === 0) {
       setStatus("No settings changes to save");
       return;
     }
+    settingsSaveInFlight.current = true;
     setBusy(true);
     try {
       const saved = await window.localScribe.settings.patch(patch);
@@ -1192,6 +1207,7 @@ export function SettingsModal({ onClose, registerDismissalGate }: {
     } catch (error) {
       setStatus(`Could not save settings: ${errorDetail(error)}`);
     } finally {
+      settingsSaveInFlight.current = false;
       setBusy(false);
     }
   };
@@ -1206,12 +1222,22 @@ export function SettingsModal({ onClose, registerDismissalGate }: {
   };
 
   const clearHistory = async () => {
-    if (!window.confirm("Permanently delete all encrypted transcript history?")) return;
+    if (!window.confirm("Delete all encrypted transcript history from LocalScribe?")) return;
     try {
       await window.localScribe.history.clear();
       setStatus("Transcript history deleted");
     } catch (error) {
       setStatus(`Could not clear history: ${errorDetail(error)}`);
+    }
+  };
+
+  const clearDiagnostics = async () => {
+    if (!window.confirm("Clear the local redacted diagnostics trail?")) return;
+    try {
+      await window.localScribe.system.clearDiagnostics();
+      setStatus("Diagnostics log cleared");
+    } catch (error) {
+      setStatus(`Could not clear the diagnostics log: ${errorDetail(error)}`);
     }
   };
 
@@ -1253,7 +1279,7 @@ export function SettingsModal({ onClose, registerDismissalGate }: {
     tier: ModelPerformanceTier,
     replaceExisting: boolean,
   ) => {
-    if (modelLibraryActionInFlight.current) return;
+    if (modelOperationInFlight.current) return;
     const model = catalogModelProfile(modelCatalog, familyId, tier);
     if (!model) {
       setModelFeedback({ message: "Curated model details are not available yet. Refresh model status and try again.", isError: true });
@@ -1266,7 +1292,7 @@ export function SettingsModal({ onClose, registerDismissalGate }: {
       `${replaceExisting ? "Repair" : "Download"} ${scope.confirmationTarget}? `
       + `LocalScribe will use its fixed local runtime to download and verify ${expectedSize} of curated model data.`,
     )) return;
-    modelLibraryActionInFlight.current = true;
+    modelOperationInFlight.current = true;
     setModelAction({
       action: replaceExisting ? "repairing" : "installing",
       familyId,
@@ -1274,7 +1300,7 @@ export function SettingsModal({ onClose, registerDismissalGate }: {
       progress: { phase: "preparing" },
     });
     setModelFeedback({
-      message: `${replaceExisting ? "Repairing" : "Downloading"} ${scope.progressTarget} and verifying ${expectedSize}…`,
+      message: `Preparing ${scope.progressTarget} for a verified ${expectedSize} ${replaceExisting ? "repair" : "download"}…`,
       isError: false,
     });
     try {
@@ -1300,13 +1326,13 @@ export function SettingsModal({ onClose, registerDismissalGate }: {
         isError: true,
       });
     } finally {
-      modelLibraryActionInFlight.current = false;
+      modelOperationInFlight.current = false;
       setModelAction(null);
     }
   };
 
   const removeModel = async (familyId: ModelFamilyId, tier: ModelPerformanceTier) => {
-    if (modelLibraryActionInFlight.current) return;
+    if (modelOperationInFlight.current) return;
     const model = catalogModelProfile(modelCatalog, familyId, tier);
     if (!model) {
       setModelFeedback({ message: "Curated model details are not available yet. Refresh model status and try again.", isError: true });
@@ -1314,7 +1340,7 @@ export function SettingsModal({ onClose, registerDismissalGate }: {
     }
     const scope = modelArtifactScopePresentation(modelCatalog, familyId, tier);
     if (!window.confirm(`Remove ${scope.removalTarget} from this computer?`)) return;
-    modelLibraryActionInFlight.current = true;
+    modelOperationInFlight.current = true;
     setModelAction({ action: "removing", familyId, tier });
     setModelFeedback({ message: `Removing ${scope.progressTarget}…`, isError: false });
     try {
@@ -1335,32 +1361,40 @@ export function SettingsModal({ onClose, registerDismissalGate }: {
         isError: true,
       });
     } finally {
-      modelLibraryActionInFlight.current = false;
+      modelOperationInFlight.current = false;
       setModelAction(null);
     }
   };
 
   const refreshModelStatus = async () => {
+    if (modelOperationInFlight.current) return;
+    modelOperationInFlight.current = true;
+    setModelRefreshing(true);
     setModelFeedback({ message: "Rechecking unified memory and local models…", isError: false });
-    const [systemResult, catalogResult] = await Promise.allSettled([refresh(), refreshModelCatalog()]);
-    if (systemResult.status === "fulfilled" && catalogResult.status === "fulfilled") {
-      setModelFeedback({ message: "Platform memory and curated model status refreshed.", isError: false });
-    } else {
-      setModelFeedback({
-        message: "Some model information could not be refreshed. The catalog and memory status are reported independently; try again after resolving the listed issue.",
-        isError: true,
-      });
+    try {
+      const [systemResult, catalogResult] = await Promise.allSettled([refresh(), refreshModelCatalog()]);
+      if (systemResult.status === "fulfilled" && catalogResult.status === "fulfilled") {
+        setModelFeedback({ message: "Platform memory and curated model status refreshed.", isError: false });
+      } else {
+        setModelFeedback({
+          message: "Some model information could not be refreshed. The catalog and memory status are reported independently; try again after resolving the listed issue.",
+          isError: true,
+        });
+      }
+    } finally {
+      modelOperationInFlight.current = false;
+      setModelRefreshing(false);
     }
   };
 
   const addModelFamily = async (familyId: ModelFamilyId) => {
-    if (modelLibraryActionInFlight.current) return;
+    if (modelOperationInFlight.current) return;
     const family = modelCatalog?.families.find((candidate) => candidate.familyId === familyId);
     if (!family) {
       setModelFeedback({ message: "The curated model catalog is unavailable. Refresh model status and try again.", isError: true });
       return;
     }
-    modelLibraryActionInFlight.current = true;
+    modelOperationInFlight.current = true;
     setModelAction({ action: "adding", familyId });
     setModelFeedback({ message: `Adding ${family.displayName} to your local model library…`, isError: false });
     try {
@@ -1371,19 +1405,19 @@ export function SettingsModal({ onClose, registerDismissalGate }: {
     } catch (error) {
       setModelFeedback({ message: `Could not add ${family.displayName}: ${errorDetail(error)}`, isError: true });
     } finally {
-      modelLibraryActionInFlight.current = false;
+      modelOperationInFlight.current = false;
       setModelAction(null);
     }
   };
 
   const applyModelSelection = async () => {
-    if (!settings || modelApplyInFlight.current) return;
+    if (!settings || modelOperationInFlight.current) return;
     const selection = pendingModelSelection ?? {
       familyId: settings.activeModelFamilyId,
       asrMode: settings.asrMode,
       performanceMode: settings.modelPerformanceMode,
     };
-    modelApplyInFlight.current = true;
+    modelOperationInFlight.current = true;
     setModelApplying(true);
     setModelFeedback({ message: "Unloading the current model and loading your selected model…", isError: false });
     try {
@@ -1407,7 +1441,7 @@ export function SettingsModal({ onClose, registerDismissalGate }: {
         isError: true,
       });
     } finally {
-      modelApplyInFlight.current = false;
+      modelOperationInFlight.current = false;
       setModelApplying(false);
     }
   };
@@ -1445,6 +1479,12 @@ export function SettingsModal({ onClose, registerDismissalGate }: {
   const displayedModelFamily = modelCatalog?.families.find((family) => (
     family.familyId === displayedModelSelection?.familyId
   ));
+  const currentModelLoaded = settings && diagnostics && modelCatalog
+    ? residentModelMatchesSavedSelection(settings, diagnostics, modelCatalog)
+    : false;
+  const residentRuntimeLabel = diagnostics?.model.loaded
+    ? `${diagnostics.model.displayName} · ${diagnostics.performance.resolvedTier ? tierLabel(diagnostics.performance.resolvedTier) : diagnostics.model.profileId}`
+    : null;
   const languagePresentation = dictationLanguagePresentation(
     settings?.language ?? "auto",
     displayedModelFamily?.capabilities,
@@ -1468,7 +1508,7 @@ export function SettingsModal({ onClose, registerDismissalGate }: {
           <div className="ls-settings-brand"><span>L</span><strong>Settings</strong></div>
           <nav aria-label="Settings categories">
             {SETTINGS_TABS.map((item) => (
-              <button type="button" key={item.id} className={tab === item.id ? "is-active" : ""} onClick={() => { setTab(item.id); setStatus(""); }}>
+              <button type="button" key={item.id} className={tab === item.id ? "is-active" : ""} aria-current={tab === item.id ? "page" : undefined} onClick={() => { setTab(item.id); setStatus(""); }}>
                 {item.icon}<span>{item.label}</span>
               </button>
             ))}
@@ -1479,7 +1519,7 @@ export function SettingsModal({ onClose, registerDismissalGate }: {
         <div className="ls-settings-main">
           <header className="ls-settings-header">
             <div><span>LocalScribe</span><h1 id="settings-title">{SETTINGS_TABS.find((item) => item.id === tab)?.label}</h1></div>
-            <button type="button" className="ls-close-button" disabled={modelApplying} onClick={closeSettings} aria-label="Close settings"><CloseIcon /></button>
+            <button type="button" className="ls-close-button" disabled={busy || modelApplying || modelRefreshing || modelAction !== null} onClick={closeSettings} aria-label="Close settings"><CloseIcon /></button>
           </header>
 
           <div
@@ -1586,7 +1626,7 @@ export function SettingsModal({ onClose, registerDismissalGate }: {
             {tab === "model" && (
               <ModelPerformanceSettings
                 currentSelection={currentModelSelection!}
-                currentModelLoaded={diagnostics?.model.loaded ?? false}
+                currentModelLoaded={currentModelLoaded}
                 pendingSelection={displayedModelSelection!}
                 mode={displayedModelSelection!.performanceMode}
                 resolvedTier={diagnostics?.performance.preference === settings.modelPerformanceMode
@@ -1615,6 +1655,8 @@ export function SettingsModal({ onClose, registerDismissalGate }: {
                 action={modelAction}
                 feedback={modelFeedback}
                 applying={modelApplying}
+                refreshing={modelRefreshing}
+                residentRuntimeLabel={residentRuntimeLabel}
                 selectedLanguage={settings.language}
                 languageHasUnsavedChange={Object.prototype.hasOwnProperty.call(dirtySettings.current, "language")}
                 recognitionExperience={displayedModelSelection!.asrMode}
@@ -1718,9 +1760,10 @@ export function SettingsModal({ onClose, registerDismissalGate }: {
                 </SettingsGroup>
                 <div className="ls-data-actions">
                   <button type="button" onClick={() => void exportHistory()}><DownloadIcon /><span><strong>Export history</strong><small>Save a local copy of your transcripts.</small></span></button>
-                  <button type="button" onClick={() => void clearHistory()} className="is-danger"><TrashIcon /><span><strong>Clear history</strong><small>Permanently delete encrypted transcripts.</small></span></button>
+                  <button type="button" onClick={() => void clearHistory()} className="is-danger"><TrashIcon /><span><strong>Clear history</strong><small>Delete encrypted transcripts from LocalScribe history.</small></span></button>
                   <button type="button" onClick={() => void refreshWithStatus()}><RefreshIcon /><span><strong>Refresh diagnostics</strong><small>Recheck permissions, storage, and model.</small></span></button>
                   <button type="button" onClick={() => void copyDiagnostics()}><CopyIcon /><span><strong>Copy diagnostics</strong><small>Redacted failure log — no transcripts or paths.</small></span></button>
+                  <button type="button" onClick={() => void clearDiagnostics()} className="is-danger"><TrashIcon /><span><strong>Clear diagnostics</strong><small>Delete the current local redacted failure log.</small></span></button>
                 </div>
                 <div className="ls-settings-note"><InfoIcon /><span>Automatic paste reads the active app identity and hashes limited focused-window metadata to confirm the dictation target. LocalScribe does not read field or document contents from other applications.</span></div>
               </>
@@ -1748,7 +1791,7 @@ export function SettingsModal({ onClose, registerDismissalGate }: {
               the longest operation in the app, and Cancel sat fully enabled
               throughout it — the button offered an exit it would not honour.
             */}
-            <button type="button" className="ls-secondary-button" disabled={modelApplying || modelAction !== null} onClick={closeSettings}>Cancel</button>
+            <button type="button" className="ls-secondary-button" disabled={busy || modelApplying || modelRefreshing || modelAction !== null} onClick={closeSettings}>Cancel</button>
             {tab !== "model" && (
               <button type="button" className="ls-primary-button" disabled={busy || !settings} onClick={() => void save()}>{busy ? "Saving…" : "Save changes"}</button>
             )}
@@ -1825,6 +1868,31 @@ function PermissionRow({ label, detail, ready, value, onOpen }: { label: string;
 function formatBytes(bytes: number) {
   if (bytes <= 0) return "0 GB";
   return `${(bytes / 1_000_000_000).toFixed(2)} GB`;
+}
+
+/**
+ * A saved preference is not proof that its runtime is resident. Match the
+ * worker's exact family, profile, artifact, and resolved preference before the
+ * renderer calls the saved selection loaded.
+ */
+export function residentModelMatchesSavedSelection(
+  settings: Pick<AppSettings, "activeModelFamilyId" | "modelPerformanceMode">,
+  diagnostics: Diagnostics,
+  catalog: ModelCatalog,
+): boolean {
+  if (!diagnostics.model.loaded) return false;
+  if (diagnostics.model.familyId !== settings.activeModelFamilyId) return false;
+  if (diagnostics.performance.preference !== settings.modelPerformanceMode) return false;
+  const tier = diagnostics.performance.resolvedTier;
+  if (!tier) return false;
+  const profile = catalog.families
+    .find((family) => family.familyId === settings.activeModelFamilyId)
+    ?.profiles.find((candidate) => candidate.tier === tier);
+  return Boolean(
+    profile
+    && profile.profileId === diagnostics.model.profileId
+    && profile.artifactId === diagnostics.model.artifactId,
+  );
 }
 
 export function modelRuntimeTierStatuses(

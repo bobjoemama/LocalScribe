@@ -144,8 +144,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .local-status__dot { width: 7px; height: 7px; flex: 0 0 auto; border-radius: 50%; background: var(--local); box-shadow: 0 0 0 3px #cfe7df; }
 .local-status span:last-child { display: grid; gap: 1px; }
 .local-status strong { color: #285f57; font-size: 11px; }
-.local-status small { color: #66867c; font-size: 11px; }
-.hub-version { margin: 8px 10px 0; color: #928d85; font-size: 11px; }
+.local-status small { color: #476d64; font-size: 11px; }
+.hub-version { margin: 8px 10px 0; color: #68635d; font-size: 11px; }
 
 .hub-content {
   min-width: 0;
@@ -156,12 +156,6 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   border-radius: 24px;
   background: var(--surface);
 }
-
-.screen-page { width: min(100%, 980px); min-height: 100%; margin: 0 auto; padding: 34px 38px 56px; }
-.screen-heading { display: flex; align-items: center; gap: 12px; margin-bottom: 28px; }
-.screen-heading h1 { margin: 0; color: var(--ink); font-size: 27px; line-height: 1.1; letter-spacing: -.035em; }
-.screen-heading p { margin: 5px 0 0; color: var(--muted); font-size: 13px; }
-.screen-heading__action { margin-left: auto; }
 
 .primary-button, .secondary-button, .icon-button {
   min-height: 34px;
@@ -175,8 +169,6 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .secondary-button { padding: 8px 12px; color: #47443f; font-size: 12px; }
 .secondary-button:hover, .icon-button:hover { background: #ece9e3; }
 .icon-button { display: grid; width: 34px; place-items: center; padding: 0; color: #77736c; }
-.danger-button { color: var(--danger); }
-
 input, textarea, select {
   border: 1px solid var(--line-strong);
   border-radius: 8px;
@@ -184,7 +176,7 @@ input, textarea, select {
   color: var(--ink);
   padding: 10px 11px;
 }
-input::placeholder, textarea::placeholder { color: #aaa69d; }
+input::placeholder, textarea::placeholder { color: #6f6a64; }
 
 html[data-surface="pill"], html[data-surface="pill"] body, html[data-surface="pill"] #root {
   min-height: 100%;
@@ -409,7 +401,17 @@ html[data-surface="pill"], html[data-surface="pill"] body, html[data-surface="pi
   font-weight: 800;
 }
 .pill-error-notice__copy { display: grid; min-width: 0; gap: 3px; padding-top: 1px; }
-.pill-error-notice__copy strong { color: white; font-size: 12px; font-weight: 700; letter-spacing: -.08px; line-height: 1.25; }
+.pill-error-notice__copy strong {
+  display: -webkit-box;
+  overflow: hidden;
+  color: white;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: -.08px;
+  line-height: 1.25;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
 .pill-error-notice__copy > span {
   display: -webkit-box;
   overflow: hidden;
@@ -472,5 +474,4 @@ html[data-surface="pill"], html[data-surface="pill"] body, html[data-surface="pi
   .hub-shell { grid-template-columns: 168px minmax(0, 1fr); }
   .local-brand__name { font-size: 13px; }
   .local-brand__local { display: none; }
-  .screen-page { padding-inline: 24px; }
 }

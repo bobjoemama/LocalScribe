@@ -193,6 +193,8 @@ function renderModelSettings(overrides: Partial<ModelPerformanceSettingsProps> =
     action: null,
     feedback: null,
     applying: false,
+    refreshing: false,
+    residentRuntimeLabel: "Whisper large-v3 medium",
     onModeChange: vi.fn(),
     onFamilyChange: vi.fn(),
     onApply: vi.fn(),
@@ -313,6 +315,26 @@ describe("ModelPerformanceSettings", () => {
     const ready = renderModelSettings({ currentModelLoaded: true });
     expect(ready).toContain("Applied and ready");
     expect(ready).toContain("This selection is loaded and ready for dictation.");
+    expect(ready).toContain("Saved selection");
+    expect(ready).toContain("Resident runtime");
+    expect(ready).toContain("Whisper large-v3 medium");
+
+    const mismatchedResident = renderModelSettings({
+      currentModelLoaded: false,
+      residentRuntimeLabel: "Different resident runtime",
+    });
+    expect(mismatchedResident).toContain("Selected model is not loaded");
+    expect(mismatchedResident).toContain("Saved selection");
+    expect(mismatchedResident).toContain("Different resident runtime");
+  });
+
+  it("takes every model control out of service during an explicit refresh", () => {
+    const html = renderModelSettings({ refreshing: true });
+
+    expect(html).toContain("Refreshing…");
+    expect(html).toContain("Refreshing model status…");
+    expect(applyButtonTag(html)).toContain('disabled=""');
+    expect(storageButtonTags(html).every((tag) => tag.includes('disabled=""'))).toBe(true);
   });
 
   it("renders byte progress only when runtime reports real byte counts", () => {
@@ -370,6 +392,7 @@ describe("ModelPerformanceSettings", () => {
       memoryRequirement: { requiredFreeMemoryBytes: null, reservedHeadroomBytes: 2 * GIBIBYTE },
       action: null,
       applying: false,
+      refreshing: false,
     });
 
     expect(eligibility).toMatchObject({ enabled: true, targetTier: "high", targetVerification: "verified" });
@@ -451,6 +474,7 @@ describe("ModelPerformanceSettings", () => {
       memoryRequirement: { requiredFreeMemoryBytes: null, reservedHeadroomBytes: 2 * GIBIBYTE },
       action: null,
       applying: false,
+      refreshing: false,
     });
 
     expect(eligibility).toMatchObject({
@@ -487,6 +511,7 @@ describe("ModelPerformanceSettings", () => {
       },
       action: null,
       applying: false,
+      refreshing: false,
     });
 
     // The raw reading is only 2 GiB, but unloading the current High profile
@@ -517,7 +542,7 @@ describe("ModelPerformanceSettings", () => {
       mode: "low",
     });
 
-    expect(html).toContain("Currently using</dt><dd>Whisper large-v3 · After I stop · Auto");
+    expect(html).toContain("Saved selection</dt><dd>Whisper large-v3 · After I stop · Auto");
     expect(html).toContain("After applying</dt><dd>Whisper large-v2 · After I stop · Low");
     expect(html).toContain("Selected to apply");
   });
@@ -531,8 +556,8 @@ describe("ModelPerformanceSettings", () => {
     expect(html).toContain('value="medium"');
     expect(html).toContain('value="low"');
     expect(html).toContain("Changing these controls only stages a choice");
-    expect(html).toContain("Currently using");
-    expect(html).toContain("After applying");
+    expect(html).toContain("Saved selection");
+    expect(html).toContain("Resident runtime");
     expect(html).toContain("Apply model");
     expect(html).toContain("Whisper large-v3");
     expect(html).toContain("Recommended");

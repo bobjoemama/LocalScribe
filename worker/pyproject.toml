@@ -1,7 +1,7 @@
 [project]
 name = "localscribe-worker"
 version = "0.1.0"
-description = "Local MLX speech-recognition worker for LocalScribe"
+description = "Local Apple Silicon speech-recognition worker for LocalScribe"
 requires-python = ">=3.12,<3.13"
 dependencies = [
   "mlx==0.32.0",

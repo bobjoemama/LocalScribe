@@ -135,6 +135,7 @@ function descriptorFor(platform: PackagedPlatform, arch: string): IntegrityDescr
   const includedFiles = new Set([
     ...policy.helperFiles,
     ...policy.manifestFiles,
+    ...policy.licenseFiles,
     ...policy.brandingFiles,
   ]);
   const coveredRoots = [
@@ -176,6 +177,7 @@ function isCandidateResourcePath(relativePath: string): boolean {
     "python-runtime",
     "native",
     "model-manifest",
+    "licenses",
     "branding",
   ].some((root) => isWithin(relativePath, root));
 }
@@ -330,6 +332,7 @@ function scanResourceTree(
     "python-runtime",
     "native",
     "model-manifest",
+    "licenses",
     "branding",
   ]) {
     const candidate = absolutePathFor(root);

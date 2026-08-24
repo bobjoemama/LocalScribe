@@ -57,4 +57,8 @@ describe("settings dialog keyboard containment", () => {
     // tabIndex={-1} is what makes .focus() work without adding a tab stop.
     expect(tag).toContain("tabIndex={-1}");
   });
+
+  it("exposes the active settings destination semantically", () => {
+    expect(modal).toContain('aria-current={tab === item.id ? "page" : undefined}');
+  });
 });

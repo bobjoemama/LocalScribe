@@ -19,6 +19,7 @@ import {
   loadReleaseMetadata,
   releaseLayout,
 } from "./release-metadata.mts";
+import { preflightMacApplicationZip } from "./macos-zip-preflight.mts";
 
 const RELEASE_METADATA = loadReleaseMetadata();
 const RELEASE_LAYOUT = releaseLayout(RELEASE_METADATA, "darwin");
@@ -190,6 +191,7 @@ try {
   execFileSync("hdiutil", ["detach", mountPath], { stdio: "inherit" });
   mounted = false;
 
+  await preflightMacApplicationZip(zipPath, RELEASE_LAYOUT.applicationName);
   execFileSync("ditto", ["-x", "-k", zipPath, zipExtractPath], {
     stdio: "inherit",
   });

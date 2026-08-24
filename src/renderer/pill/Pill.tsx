@@ -20,7 +20,7 @@ import {
   shortcutCompactLabel,
 } from "../../shared/shortcuts";
 import { AudioRecorder, RecorderCancelledError } from "../audioRecorder";
-import { openLiveAudioIpcSink } from "../../shared/liveAudioTransport";
+import { openLiveAudioIpcSink, type LiveAudioSink } from "../../shared/liveAudioTransport";
 
 const WAVE_SAMPLE_COUNT = 15;
 const MICROPHONE_PICKER_ID = "pill-microphone-picker";
@@ -105,6 +105,41 @@ export function isCurrentFinalization(
   return snapshot.state === "finalizing" && snapshot.sessionId === sessionId;
 }
 
+export interface LiveRecorderStartup {
+  readonly sessionId: string;
+  readonly openSink: () => Promise<LiveAudioSink>;
+  readonly currentSnapshot: () => SessionSnapshot;
+  readonly currentRecorderSessionId: () => string | null;
+  readonly startRecorder: (sink: LiveAudioSink) => Promise<void>;
+}
+
+/**
+ * Opening the main-process Live sink can take long enough for cancellation or
+ * a later dictation to win. Recheck both authorities after that await and
+ * close the stale sink before any microphone API can be reached.
+ */
+export async function startLiveRecorderForCurrentSession(
+  startup: LiveRecorderStartup,
+): Promise<boolean> {
+  const sink = await startup.openSink();
+  const current = startup.currentSnapshot();
+  if (
+    current.state !== "listening"
+    || current.sessionId !== startup.sessionId
+    || startup.currentRecorderSessionId() !== startup.sessionId
+  ) {
+    try {
+      await sink.abort?.(new RecorderCancelledError());
+    } catch {
+      // Main may already have cancelled the same sink. It is still stale and
+      // must never be allowed to proceed to microphone capture.
+    }
+    return false;
+  }
+  await startup.startRecorder(sink);
+  return true;
+}
+
 /**
  * Live decoder updates are replacement snapshots, not append-only tokens.
  * Reject stale, cancelled, and wrong-session updates before they reach the
@@ -150,10 +185,10 @@ export function Pill() {
       setWaveform((current) => [...current.slice(1), level]);
     });
     let sawLiveEvent = false;
-    const handleFailure = async (error: unknown) => {
+    const handleFailure = async (sessionId: string, error: unknown) => {
       if (error instanceof RecorderCancelledError) return;
       const message = error instanceof Error ? error.message : "Microphone recording failed";
-      await window.localScribe.session.fail(message);
+      await window.localScribe.session.fail({ sessionId, message });
     };
     const startListeningRecorder = async () => {
       const start = listeningRecorderStart(
@@ -167,23 +202,31 @@ export function Pill() {
       setWaveform(quietWave());
       try {
         if (asrModeRef.current === "live") {
-          const sink = await openLiveAudioIpcSink({
-            beginLiveAudio: (session) => window.localScribe.session.beginLive(session),
-            pushLiveAudio: (frame) => window.localScribe.session.pushLive(frame),
-            finishLiveAudio: (request) => window.localScribe.session.finishLive(request).then(() => undefined),
-            cancelLiveAudio: (request) => window.localScribe.session.cancelLive(request),
-          }, {
+          await startLiveRecorderForCurrentSession({
             sessionId: start.sessionId,
-            protocolVersion: 1,
-            sampleRateHz: 16_000,
-            channels: 1,
+            openSink: () => openLiveAudioIpcSink({
+              beginLiveAudio: (session) => window.localScribe.session.beginLive(session),
+              pushLiveAudio: (frame) => window.localScribe.session.pushLive(frame),
+              finishLiveAudio: (request) => window.localScribe.session.finishLive(request).then(() => undefined),
+              cancelLiveAudio: (request) => window.localScribe.session.cancelLive(request),
+            }, {
+              sessionId: start.sessionId,
+              protocolVersion: 1,
+              sampleRateHz: 16_000,
+              channels: 1,
+            }),
+            currentSnapshot: () => latestSnapshot.current,
+            currentRecorderSessionId: () => recorderSessionId.current,
+            startRecorder: (sink) => recorder.current.start(
+              start.microphoneId,
+              { transport: "live", liveSink: sink },
+            ),
           });
-          await recorder.current.start(start.microphoneId, { transport: "live", liveSink: sink });
         } else {
           await recorder.current.start(start.microphoneId);
         }
       } catch (error) {
-        await handleFailure(error);
+        await handleFailure(start.sessionId, error);
       }
     };
     const applySnapshot = (next: SessionSnapshot) => {
@@ -222,7 +265,7 @@ export function Pill() {
           })
           .catch((error: unknown) => {
             if (isCurrentFinalization(latestSnapshot.current, sessionId)) {
-              void handleFailure(error);
+              if (sessionId) void handleFailure(sessionId, error);
             }
           });
       } else if (

@@ -55,6 +55,13 @@ export const sessionSnapshotSchema = z.object({
 }).strict();
 export type SessionSnapshot = z.infer<typeof sessionSnapshotSchema>;
 
+/** A renderer recorder failure is valid only for the session that produced it. */
+export const sessionFailureSchema = z.object({
+  sessionId: z.string().uuid(),
+  message: z.string().trim().min(1).max(240),
+}).strict();
+export type SessionFailure = z.infer<typeof sessionFailureSchema>;
+
 /**
  * A provisional Live transcript snapshot. It replaces the previous preview
  * rather than appending to it: streaming decoders may revise earlier words.
@@ -80,6 +87,14 @@ export const transcriptionSchema = z.object({
 });
 export type Transcription = z.infer<typeof transcriptionSchema>;
 
+export const historyListResultSchema = z.object({
+  items: z.array(transcriptionSchema),
+  totalStored: z.number().int().nonnegative(),
+  skippedUnreadable: z.number().int().nonnegative(),
+  complete: z.boolean(),
+}).strict();
+export type HistoryListResult = z.infer<typeof historyListResultSchema>;
+
 export const dictionaryEntrySchema = z.object({
   id: z.string().uuid(),
   phrase: z.string().trim().min(1).max(200),
@@ -91,7 +106,9 @@ export type DictionaryEntry = z.infer<typeof dictionaryEntrySchema>;
 export const snippetSchema = z.object({
   id: z.string().uuid(),
   trigger: z.string().trim().min(1).max(80),
-  expansion: z.string().trim().min(1).max(10_000),
+  // Keep intentional indentation and leading/trailing newlines in expansions.
+  // A regular-expression constraint rejects blank input without transforming it.
+  expansion: z.string().min(1).max(10_000).regex(/\S/u, "Expansion must contain non-whitespace"),
   createdAt: z.number().int().positive(),
 });
 export type Snippet = z.infer<typeof snippetSchema>;
@@ -104,6 +121,14 @@ export const scratchpadNoteSchema = z.object({
   updatedAt: z.number().int().positive(),
 });
 export type ScratchpadNote = z.infer<typeof scratchpadNoteSchema>;
+
+export const scratchpadListResultSchema = z.object({
+  items: z.array(scratchpadNoteSchema),
+  totalStored: z.number().int().nonnegative(),
+  skippedUnreadable: z.number().int().nonnegative(),
+  complete: z.boolean(),
+}).strict();
+export type ScratchpadListResult = z.infer<typeof scratchpadListResultSchema>;
 
 export const appProfileSchema = z.object({
   id: z.string().uuid(),
@@ -333,9 +358,9 @@ export const diagnosticsSchema = z.object({
   backend: z.string(),
   databaseIntegrity: z.string(),
   /*
-   * Stored records this run could not decrypt. Non-zero means history,
-   * snippets, scratchpad, and export are all partial, which the user must be
-   * able to see rather than infer from a list that quietly got shorter.
+   * Stored records this run could not decrypt or validate. Non-zero means at
+   * least one history, dictionary, snippet, scratchpad, profile, or export read
+   * was partial, which the user must see rather than infer from a shorter list.
    */
   unreadableRecords: z.number().int().nonnegative(),
   model: modelDiagnosticsSchema,
@@ -925,6 +950,7 @@ export const IPC = {
   systemAppInfo: "system:app-info",
   systemDiagnostics: "system:diagnostics",
   systemDiagnosticsLog: "system:diagnostics-log",
+  systemClearDiagnostics: "system:clear-diagnostics",
   systemModelCatalog: "system:model-catalog",
   systemAddModelFamily: "system:add-model-family",
   systemApplyModelSelection: "system:apply-model-selection",
@@ -938,7 +964,7 @@ export interface LocalScribeApi {
     get(): Promise<SessionSnapshot>;
     toggle(): Promise<SessionSnapshot>;
     cancel(): Promise<SessionSnapshot>;
-    fail(message: string): Promise<SessionSnapshot>;
+    fail(failure: SessionFailure): Promise<SessionSnapshot>;
     transcribe(request: TranscribeAudioRequest): Promise<Transcription>;
     beginLive(session: LiveAudioSession): Promise<void>;
     pushLive(frame: LiveAudioFrame): Promise<void>;
@@ -948,7 +974,7 @@ export interface LocalScribeApi {
     onLivePartial(listener: (partial: LivePartialTranscript) => void): () => void;
   };
   history: {
-    list(limit?: number): Promise<Transcription[]>;
+    list(limit?: number): Promise<HistoryListResult>;
     delete(id: string): Promise<void>;
     clear(): Promise<void>;
     export(): Promise<string | null>;
@@ -970,7 +996,7 @@ export interface LocalScribeApi {
     delete(id: string): Promise<void>;
   };
   scratchpad: {
-    list(): Promise<ScratchpadNote[]>;
+    list(): Promise<ScratchpadListResult>;
     create(): Promise<ScratchpadNote>;
     update(id: string, body: string): Promise<ScratchpadNote>;
     delete(id: string): Promise<void>;
@@ -1021,6 +1047,8 @@ export interface LocalScribeApi {
     diagnostics(): Promise<Diagnostics>;
     /** Redacted rotating failure trail, for "Copy diagnostics". */
     diagnosticsLog(): Promise<string>;
+    /** Clear the local diagnostics trail. Available only to Settings. */
+    clearDiagnostics(): Promise<void>;
     modelCatalog(): Promise<ModelCatalog>;
     addModelFamily(request: ModelFamilyLibraryRequest): Promise<ModelCatalog>;
     applyModelSelection(request: ModelSelectionApplyRequest): Promise<ModelSelectionApplyResult>;

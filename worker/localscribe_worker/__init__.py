@@ -1,1 +1,1 @@
-"""LocalScribe's private MLX Whisper worker."""
+"""LocalScribe's local Apple Silicon speech-recognition worker."""

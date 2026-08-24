@@ -28,13 +28,13 @@
  * be pinned to it.
  */
 
-export type SettingsBusyKind = "apply" | "library";
+export type SettingsBusyKind = "model" | "save";
 
 export interface SettingsActivity {
-  /** A model selection is being unloaded and reloaded right now. */
-  applyInFlight: boolean;
-  /** A model is being installed, repaired, removed, or added right now. */
-  libraryActionInFlight: boolean;
+  /** Any model apply, install, repair, removal, addition, or explicit refresh. */
+  modelOperationInFlight: boolean;
+  /** An ordinary settings or shortcut save is awaiting main. */
+  settingsSaveInFlight: boolean;
 }
 
 export type DismissalDecision =
@@ -47,22 +47,19 @@ export type DismissalDecision =
  * force-quit an app mid-model-write. Neither names a model, a path, a URL, or
  * anything else the diagnostics redaction rules keep out of the UI.
  */
-export const APPLY_BUSY_MESSAGE =
-  "LocalScribe is still switching models. Settings stays open until that finishes, which happens on its own.";
+export const MODEL_BUSY_MESSAGE =
+  "LocalScribe is still completing a model operation. Settings stays open until that finishes, which happens on its own.";
 
-export const LIBRARY_BUSY_MESSAGE =
-  "LocalScribe is still working on your model library. Settings stays open until that finishes, which happens on its own.";
+export const SETTINGS_SAVE_BUSY_MESSAGE =
+  "LocalScribe is still saving your settings. Settings stays open until that finishes, which happens on its own.";
 
-/**
- * Apply is reported ahead of library work when both are somehow live: it is the
- * one that changes which runtime is loaded, so it is the one worth naming.
- */
+/** Model work takes precedence if inconsistent caller state reports both. */
 export function decideSettingsDismissal(activity: SettingsActivity): DismissalDecision {
-  if (activity.applyInFlight) {
-    return { dismiss: false, blockedBy: "apply", message: APPLY_BUSY_MESSAGE };
+  if (activity.modelOperationInFlight) {
+    return { dismiss: false, blockedBy: "model", message: MODEL_BUSY_MESSAGE };
   }
-  if (activity.libraryActionInFlight) {
-    return { dismiss: false, blockedBy: "library", message: LIBRARY_BUSY_MESSAGE };
+  if (activity.settingsSaveInFlight) {
+    return { dismiss: false, blockedBy: "save", message: SETTINGS_SAVE_BUSY_MESSAGE };
   }
   return { dismiss: true };
 }

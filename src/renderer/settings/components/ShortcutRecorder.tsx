@@ -287,8 +287,15 @@ export function ShortcutRecorder({
     const attempt = captureId.current;
     startPromise.current = window.localScribe.shortcuts.beginCapture().catch((captureError: unknown) => {
       if (captureId.current !== attempt) return;
+      // Invalidate every key event already queued for this attempt before the
+      // rejected promise reaches React's next render. Otherwise a keyup from
+      // the failed native capture can still enter finishCapture with the same
+      // attempt id and apply a shortcut that was never captured exclusively.
+      captureId.current += 1;
       capturingRef.current = false;
+      lastShortcut.current = "";
       setCapturing(false);
+      setLiveShortcut("");
       setError(shortcutRecorderErrorMessage(
         captureError,
         "Shortcut recording could not start. Try again.",

@@ -1,6 +1,7 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 /*
@@ -51,7 +52,7 @@ const { LocalDatabase } = await import("../src/main/persistence/database");
 const temporaryDirectories: string[] = [];
 
 function createDatabasePath(): string {
-  const directory = mkdtempSync(path.join(tmpdir(), "localscribe-partial-data-"));
+  const directory = mkdtempSync(path.join(realpathSync(tmpdir()), "localscribe-partial-data-"));
   temporaryDirectories.push(directory);
   return path.join(directory, "test.db");
 }
@@ -163,6 +164,84 @@ describe("the unreadable-record signal", () => {
     database.listTranscriptions();
 
     expect(database.unreadableRecordCount()).toBe(2);
+    database.close();
+  });
+
+  it("fills the readable LIMIT and reports skipped and total stored rows", () => {
+    const database = new LocalDatabase(createDatabasePath());
+    database.saveTranscription(transcriptionInput("readable one"));
+    database.saveTranscription(transcriptionInput(UNREADABLE));
+    database.saveTranscription(transcriptionInput("readable two"));
+
+    expect(database.listTranscriptions(2).map((item) => item.text).sort()).toEqual([
+      "readable one",
+      "readable two",
+    ]);
+    const result = database.listTranscriptionsWithIntegrity(2);
+    expect(result.items.map((item) => item.text).sort()).toEqual([
+      "readable one",
+      "readable two",
+    ]);
+    expect(result).toMatchObject({
+      totalStored: 3,
+      skippedUnreadable: 1,
+      complete: false,
+    });
+    database.close();
+  });
+
+  it("isolates malformed and oversized history rows without hiding valid siblings", () => {
+    const filePath = createDatabasePath();
+    const database = new LocalDatabase(filePath);
+    const first = database.saveTranscription(transcriptionInput("readable one"));
+    database.saveTranscription(transcriptionInput("readable two"));
+    const raw = new Database(filePath);
+    const encrypted = raw.prepare(
+      "SELECT text_encrypted FROM transcriptions WHERE id = ?",
+    ).get(first.id) as { text_encrypted: Buffer };
+    const insert = raw.prepare(
+      `INSERT INTO transcriptions
+         (id, created_at, duration_ms, text_encrypted, language, model_id, status, source_app_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    );
+    insert.run("malformed-id", Date.now(), -1, encrypted.text_encrypted, "en", "model", "complete", null);
+    insert.run(
+      "00000000-0000-4000-8000-000000000099",
+      Date.now(),
+      1,
+      Buffer.alloc(2 * 1024 * 1024 + 1),
+      "en",
+      "model",
+      "complete",
+      null,
+    );
+    raw.close();
+
+    const result = database.listTranscriptionsWithIntegrity(10);
+    expect(result.items.map((item) => item.text).sort()).toEqual([
+      "readable one",
+      "readable two",
+    ]);
+    expect(result).toMatchObject({ totalStored: 4, skippedUnreadable: 2, complete: false });
+    database.close();
+  });
+
+  it("refuses to materialize an excessive export collection", () => {
+    const filePath = createDatabasePath();
+    const database = new LocalDatabase(filePath);
+    const raw = new Database(filePath);
+    raw.prepare(
+      `WITH RECURSIVE sequence(value) AS (
+         SELECT 1 UNION ALL SELECT value + 1 FROM sequence WHERE value < 10001
+       )
+       INSERT INTO transcriptions
+         (id, created_at, duration_ms, text_encrypted, language, model_id, status, source_app_id)
+       SELECT 'excess-' || value, value, 1, ?, 'en', 'model', 'complete', NULL
+       FROM sequence`,
+    ).run(Buffer.from("cipher:cmVhZGFibGU=", "utf8"));
+    raw.close();
+
+    expect(() => database.exportTranscriptionsWithIntegrity()).toThrow(/safe row limit/u);
     database.close();
   });
 });

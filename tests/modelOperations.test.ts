@@ -1,5 +1,5 @@
 import path from "node:path";
-import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, readdir, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -7,6 +7,7 @@ import {
   assertModelInstallIntentMatchesVerification,
   installVerifiedModelArtifact,
   modelArtifactDirectory,
+  quarantineAndRemoveModelArtifact,
 } from "../src/main/modelOperations";
 import {
   loadRuntimeModelCatalog,
@@ -165,6 +166,54 @@ describe("main-process model operations", () => {
       await expect(readFile(externalSentinel, "utf8")).resolves.toBe("external model data");
     } finally {
       await rm(modelRoot, { recursive: true, force: true });
+      await rm(external, { recursive: true, force: true });
+    }
+  });
+
+  it("atomically quarantines the exact artifact before recursive removal", async () => {
+    const userData = await realpath(await mkdtemp(path.join(os.tmpdir(), "localscribe-user-data-")));
+    const modelRoot = path.join(userData, "models");
+    const artifact = path.join(modelRoot, model.storageDirectory);
+    await mkdir(artifact, { recursive: true });
+    await writeFile(path.join(artifact, "local-only.bin"), "local model");
+
+    try {
+      await expect(quarantineAndRemoveModelArtifact(modelRoot, model)).resolves.toBe("removed");
+      await expect(readFile(path.join(artifact, "local-only.bin"), "utf8")).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+      expect((await readdir(userData)).some((name) =>
+        name.startsWith(".localscribe-model-quarantine-"))).toBe(false);
+    } finally {
+      await rm(userData, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed when the artifact is swapped before its quarantine rename", async () => {
+    const userData = await realpath(await mkdtemp(path.join(os.tmpdir(), "localscribe-user-data-")));
+    const external = await mkdtemp(path.join(os.tmpdir(), "localscribe-external-model-"));
+    const modelRoot = path.join(userData, "models");
+    const artifact = path.join(modelRoot, model.storageDirectory);
+    const displaced = path.join(modelRoot, `${model.storageDirectory}-displaced`);
+    const sentinel = path.join(external, "do-not-remove.txt");
+    await mkdir(artifact, { recursive: true });
+    await writeFile(path.join(artifact, "local-only.bin"), "local model");
+    await writeFile(sentinel, "external");
+
+    try {
+      await expect(quarantineAndRemoveModelArtifact(modelRoot, model, {
+        beforeRename: async () => {
+          await rename(artifact, displaced);
+          await symlink(external, artifact, "dir");
+        },
+      })).rejects.toThrow("changed");
+      await expect(readFile(sentinel, "utf8")).resolves.toBe("external");
+      await expect(readFile(path.join(displaced, "local-only.bin"), "utf8"))
+        .resolves.toBe("local model");
+      expect((await readdir(userData)).some((name) =>
+        name.startsWith(".localscribe-model-quarantine-"))).toBe(false);
+    } finally {
+      await rm(userData, { recursive: true, force: true });
       await rm(external, { recursive: true, force: true });
     }
   });

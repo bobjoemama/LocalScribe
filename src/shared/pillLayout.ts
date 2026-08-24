@@ -10,8 +10,39 @@ export interface PillSize {
  * Widest measured status string, and the fixed chrome around it. Produced by
  * `scripts/measure-pill-status-widths.mjs`; see `PILL_LAYOUT.status`.
  */
-export const STATUS_COPY_WIDTH = 143;
+export const STATUS_COPY_WIDTH = 150;
 export const STATUS_CHROME_WIDTH = 8 + 6 + 22 + 22 + 7 + 7;
+
+/**
+ * Closed error-copy layout at the shipped English typography.
+ *
+ * The notice permits a two-line title and a three-line detail. Its border-box
+ * therefore needs 22px vertical padding + 2×15px title lines + a 3px gap +
+ * 3×14.175px detail lines = 97.525px, rounded up. The native stack then needs
+ * the notice plus the 5px rail gap and 7px rail. Keeping the arithmetic here
+ * prevents a CSS line-height change from silently clipping the top of an
+ * otherwise valid error inside the transparent BrowserWindow.
+ */
+export const PILL_ERROR_LAYOUT = {
+  verticalPadding: 22,
+  titleLineHeight: 15,
+  titleMaxLines: 2,
+  copyGap: 3,
+  detailLineHeight: 14.175,
+  detailMaxLines: 3,
+  railGap: 5,
+  railHeight: 7,
+} as const;
+
+export const PILL_ERROR_NOTICE_HEIGHT = Math.ceil(
+  PILL_ERROR_LAYOUT.verticalPadding
+  + PILL_ERROR_LAYOUT.titleLineHeight * PILL_ERROR_LAYOUT.titleMaxLines
+  + PILL_ERROR_LAYOUT.copyGap
+  + PILL_ERROR_LAYOUT.detailLineHeight * PILL_ERROR_LAYOUT.detailMaxLines,
+);
+export const PILL_ERROR_STACK_HEIGHT = PILL_ERROR_NOTICE_HEIGHT
+  + PILL_ERROR_LAYOUT.railGap
+  + PILL_ERROR_LAYOUT.railHeight;
 
 /**
  * The transparent native window and the renderer must agree on these bounds.
@@ -45,7 +76,14 @@ export const PILL_LAYOUT = {
   },
   listening: {
     hold: { width: 76, height: 26 },
-    toggle: { width: 100, height: 32 },
+    /*
+     * The after-stop toggle has three fixed flex items: two 22px end buttons
+     * and a 48px waveform. Its two 6px gaps and 5px padding on each side bring
+     * the border-box minimum to 114px. A 100px native window clipped the right
+     * edge of the finish check even though the renderer laid out the complete
+     * control.
+     */
+    toggle: { width: 114, height: 32 },
   },
   /*
    * Live recognizers publish a revisable transcript while recording. The
@@ -74,8 +112,8 @@ export const PILL_LAYOUT = {
    */
   status: { width: STATUS_COPY_WIDTH + STATUS_CHROME_WIDTH, height: 32 },
   error: {
-    stack: { width: 336, height: 100 },
-    notice: { width: 328, minHeight: 82 },
+    stack: { width: 336, height: PILL_ERROR_STACK_HEIGHT },
+    notice: { width: 328, minHeight: PILL_ERROR_NOTICE_HEIGHT },
   },
   rail: { width: 39, height: 7 },
   pickerMenuHeight: 210,

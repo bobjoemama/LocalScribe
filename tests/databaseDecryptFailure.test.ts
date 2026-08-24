@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -32,7 +32,7 @@ import { LocalDatabase } from "../src/main/persistence/database";
 const temporaryDirectories: string[] = [];
 
 function createDatabasePath(): string {
-  const directory = mkdtempSync(path.join(tmpdir(), "localscribe-decrypt-test-"));
+  const directory = mkdtempSync(path.join(realpathSync(tmpdir()), "localscribe-decrypt-test-"));
   temporaryDirectories.push(directory);
   return path.join(directory, "test.db");
 }
@@ -97,6 +97,16 @@ describe("undecryptable rows are isolated instead of failing the whole query", (
     reopened.close();
   });
 
+  it("refuses to create a potentially duplicate snippet while a rule is unreadable", () => {
+    const database = new LocalDatabase(createDatabasePath());
+    database.saveSnippet({ trigger: "zzz", expansion: UNREADABLE });
+
+    expect(() => database.saveSnippet({ trigger: "new trigger", expansion: "new value" }))
+      .toThrow(/potentially duplicate/u);
+    expect(database.countSnippets()).toBe(1);
+    database.close();
+  });
+
   it("lists and exports the readable transcriptions when one blob cannot be decrypted", () => {
     const database = new LocalDatabase(createDatabasePath());
     database.saveTranscription(transcriptionInput("readable one"));
@@ -125,6 +135,20 @@ describe("undecryptable rows are isolated instead of failing the whole query", (
 
     expect(notes.map((note) => note.id)).toEqual([readable.id]);
     expect(notes[0]?.title).toBe("Project plan");
+    database.close();
+  });
+
+  it("distinguishes an all-unreadable scratchpad from an empty scratchpad", () => {
+    const database = new LocalDatabase(createDatabasePath());
+    const poisoned = database.createScratchpadNote();
+    database.updateScratchpadNote(poisoned.id, UNREADABLE);
+
+    expect(database.listScratchpadNotesWithIntegrity()).toMatchObject({
+      items: [],
+      totalStored: 1,
+      skippedUnreadable: 1,
+      complete: false,
+    });
     database.close();
   });
 });
