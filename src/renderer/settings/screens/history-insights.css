@@ -292,7 +292,8 @@
 .hi-transcript-time time { color: #59554f; font-size: 10px; font-weight: 650; }
 .hi-transcript-time span { color: var(--hi-faint); font-size: 10px; }
 .hi-transcript-body { min-width: 0; }
-.hi-transcript-body > p { display: -webkit-box; margin: 0; overflow: hidden; color: #35322e; font-size: 12px; line-height: 1.5; -webkit-box-orient: vertical; -webkit-line-clamp: 3; }
+.hi-transcript-text { display: block; width: 100%; height: 72px; box-sizing: border-box; overflow-x: hidden; overflow-y: auto; resize: none; padding: 7px 9px; border: 1px solid #ded9d2; border-radius: 8px; background: #fbfaf8; color: #35322e; font-family: inherit; font-size: 12px; line-height: 1.5; scrollbar-gutter: stable; white-space: pre-wrap; }
+.hi-transcript-text:focus-visible { border-color: var(--hi-teal); outline: 2px solid #c9ddd6; outline-offset: 1px; }
 .hi-transcript-meta { display: flex; gap: 5px; align-items: center; margin-top: 8px; color: var(--hi-faint); font-size: 10px; }
 .hi-row-action,
 .hi-overflow--row summary { width: 29px; height: 29px; border-color: transparent; color: #8b857d; opacity: 0; }

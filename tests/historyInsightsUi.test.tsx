@@ -2,18 +2,20 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { MAX_HISTORY_ITEMS, type Transcription } from "../src/shared/contracts";
 import {
   ActivityChart,
   CategoryList,
   HistoryNoticeSurface,
   HistoryScreen,
+  HistoryTranscriptText,
   InsightsScreen,
   activityBarHeightPercent,
   createLatestRequestGate,
   historyErrorMessage,
   historyFailureNotice,
+  installHistoryFocusRefresh,
   historyIntegrityWarningMessage,
   historySampleLabel,
   historySuccessNotice,
@@ -60,6 +62,29 @@ describe("History Insights interaction and data presentation", () => {
     expect(gate.isLatest(changedLoad)).toBe(false);
   });
 
+  it("refreshes durable history when the user returns to the window", () => {
+    const listeners = new Set<EventListenerOrEventListenerObject>();
+    const target = {
+      addEventListener: (_type: string, listener: EventListenerOrEventListenerObject) => {
+        listeners.add(listener);
+      },
+      removeEventListener: (_type: string, listener: EventListenerOrEventListenerObject) => {
+        listeners.delete(listener);
+      },
+    };
+    const refresh = vi.fn();
+    const remove = installHistoryFocusRefresh(target as never, refresh);
+
+    for (const listener of listeners) {
+      if (typeof listener === "function") listener(new Event("focus"));
+      else listener.handleEvent(new Event("focus"));
+    }
+    expect(refresh).toHaveBeenCalledOnce();
+
+    remove();
+    expect(listeners).toHaveLength(0);
+  });
+
   it("implements the expected arrow, Home, and End tab navigation", () => {
     expect(insightTabForKey("usage", "ArrowRight")).toBe("voice");
     expect(insightTabForKey("usage", "ArrowLeft")).toBe("voice");
@@ -84,6 +109,28 @@ describe("History Insights interaction and data presentation", () => {
     expect(html).toContain('class="hi-shortcut-status" role="status"');
     expect(html).toContain("Shortcut settings are loading");
     expect(html).not.toContain("<kbd>Shortcut settings are loading</kbd>");
+  });
+
+  it("keeps complete recent transcripts in a scrollable read-only text box", () => {
+    const text = "This transcript is deliberately longer than the visible three-line viewport so every saved word remains available by scrolling.";
+    const html = renderToStaticMarkup(createElement(HistoryTranscriptText, {
+      label: "Transcript from 12:17 PM",
+      text,
+    }));
+    const ruleStart = insightsCss.indexOf(".hi-transcript-text {");
+    const rule = insightsCss.slice(ruleStart, insightsCss.indexOf("}", ruleStart));
+
+    expect(html).toContain("<textarea");
+    expect(html).toContain('aria-label="Transcript from 12:17 PM"');
+    expect(html).toContain('readOnly=""');
+    expect(html).toContain(text);
+    expect(rule).toContain("height: 72px");
+    expect(rule).toContain("overflow-y: auto");
+    expect(rule).toContain("resize: none");
+    expect(rule).toContain("scrollbar-gutter: stable");
+    expect(rule).not.toContain("overflow: hidden");
+    expect(rule).not.toContain("-webkit-line-clamp");
+    expect(insightsCss).not.toContain(".hi-transcript-body > p");
   });
 
   it("connects each keyboard-focusable chart point to its tooltip without drawing activity for zero words", () => {

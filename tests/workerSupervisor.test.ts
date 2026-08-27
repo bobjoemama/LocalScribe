@@ -10,6 +10,7 @@ vi.mock("node:child_process", () => ({
 }));
 
 import {
+  completedLiveText,
   INSTALL_MAX_ARTIFACT_BYTES,
   INSTALL_MIN_BYTES_PER_SECOND,
   MEASURED_WORST_REALTIME_FACTOR,
@@ -31,6 +32,7 @@ let onWorkerRequest: ((request: Record<string, unknown>) => void) | null = null;
 const temporaryDirectories: string[] = [];
 const deferredWorkerRequests = new Set<string>();
 let workerEmitsInstallProgress = true;
+let workerLiveFinalText = "live final";
 
 describe("transcribe request budget", () => {
   /*
@@ -221,7 +223,7 @@ class FakeWorkerProcess extends EventEmitter {
             this.respond({
               type: "final",
               id: request.id,
-              text: "live final",
+              text: workerLiveFinalText,
               language: "en",
               inferenceMs: 4,
             });
@@ -314,6 +316,7 @@ beforeEach(() => {
   failingInstallModelIds.clear();
   deferredWorkerRequests.clear();
   workerEmitsInstallProgress = true;
+  workerLiveFinalText = "live final";
   onWorkerRequest = null;
   spawnMock.mockReset();
   spawnMock.mockImplementation(() => {
@@ -331,6 +334,35 @@ afterEach(() => {
 });
 
 describe("WorkerSupervisor model lifecycle", () => {
+  it("keeps a non-empty Live partial when the runtime final flush is empty", async () => {
+    expect(completedLiveText("authoritative final", "earlier partial"))
+      .toBe("authoritative final");
+    expect(completedLiveText("   ", "same-model partial"))
+      .toBe("same-model partial");
+
+    workerLiveFinalText = "";
+    const worker = supervisor();
+    const sessionId = "00000000-0000-4000-8000-000000000032";
+    const sink = await worker.beginLive({
+      session: { sessionId, protocolVersion: 1, sampleRateHz: 16_000, channels: 1 },
+      model: { ...medium, asrMode: "live" },
+      language: "en",
+      context: "",
+    });
+    for (let sequence = 0; sequence < 13; sequence += 1) {
+      await sink.write({
+        sequence,
+        sampleRateHz: 16_000,
+        channels: 1,
+        sampleCount: 320,
+        pcm: new ArrayBuffer(640),
+      }, new AbortController().signal);
+    }
+
+    await expect(worker.finishLiveWithResult(sessionId)).resolves.toMatchObject({ text: "partial" });
+    await worker.shutdown();
+  });
+
   it("uses the exact bounded Live worker protocol and rejects sequence gaps", async () => {
     const worker = supervisor();
     const sink = await worker.beginLive({

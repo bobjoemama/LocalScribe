@@ -126,6 +126,32 @@ export function createLatestRequestGate() {
   };
 }
 
+export function installHistoryFocusRefresh(
+  target: Pick<Window, "addEventListener" | "removeEventListener">,
+  refresh: () => void,
+): () => void {
+  target.addEventListener("focus", refresh);
+  return () => target.removeEventListener("focus", refresh);
+}
+
+export function HistoryTranscriptText({
+  label,
+  text,
+}: {
+  label: string;
+  text: string;
+}) {
+  return (
+    <textarea
+      aria-label={label}
+      className="hi-transcript-text"
+      readOnly
+      spellCheck={false}
+      value={text}
+    />
+  );
+}
+
 const SENTENCE_PATTERN = /[^.!?]+[.!?]+|[^.!?]+$/g;
 const WORD_PATTERN = /[\p{L}\p{N}]+(?:['’][\p{L}\p{N}]+)*/gu;
 
@@ -173,9 +199,14 @@ function useLocalHistory(fallbackError: string): readonly [HistoryState, () => P
     const gate = requestGate.current;
     void load();
     const unsubscribe = window.localScribe.history.onChanged(() => void load());
+    // The durable database is authoritative. If the history window was being
+    // created, reloaded, or torn down during the one-shot main-process event,
+    // refresh when the user returns instead of leaving Recent dictations stale.
+    const removeFocusRefresh = installHistoryFocusRefresh(window, () => void load());
     return () => {
       gate.invalidate();
       unsubscribe();
+      removeFocusRefresh();
     };
   }, [load]);
 
@@ -443,7 +474,10 @@ export function HistoryScreen() {
                       <span>{formatDuration(item.durationMs)}</span>
                     </div>
                     <div className="hi-transcript-body">
-                      <p>{item.text}</p>
+                      <HistoryTranscriptText
+                        label={`Transcript from ${formatTime(item.createdAt)}`}
+                        text={item.text}
+                      />
                       <div className="hi-transcript-meta">
                         <span>{countWords(item.text)} words</span>
                         <span aria-hidden="true">·</span>
