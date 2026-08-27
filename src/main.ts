@@ -1829,6 +1829,16 @@ function registerIpc(): void {
       return record;
     } catch (error) {
       if (activeSessionId === request.sessionId) failSession(error);
+      diagnostics.record({
+        stage: "worker",
+        event: "transcribe",
+        outcome: "failed",
+        sessionId: request.sessionId,
+        durationMs: Math.max(1, Date.now() - live.startedAt),
+        detail: normalizeDiagnosticCode(error),
+        modelFamily: database.getSettings().activeModelFamilyId,
+        modelTier: live.resolution.effectiveTier,
+      });
       throw error;
     } finally {
       if (activeLiveSession?.sessionId === request.sessionId) activeLiveSession = null;

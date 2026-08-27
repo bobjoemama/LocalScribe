@@ -347,6 +347,7 @@ interface ActiveLiveSession {
   phase: "open" | "finishing" | "cancelled";
   nextSequence: number;
   nextPartialSequence: number;
+  latestPartialText: string;
   chunks: Buffer[];
   chunkBytes: number;
   onPartial?: (partial: WorkerLivePartial) => void;
@@ -357,6 +358,17 @@ export interface WorkerLivePartial {
   sessionId: string;
   sequence: number;
   text: string;
+}
+
+/**
+ * A streaming decoder's final flush is authoritative when it contains text.
+ * If a runtime has already emitted a non-empty cumulative transcript but its
+ * final flush unexpectedly returns empty, retain that same decoder result so
+ * the completed Live dictation can still follow the normal insertion/history
+ * path. This never substitutes a model or invents text.
+ */
+export function completedLiveText(finalText: string, latestPartialText: string): string {
+  return finalText.trim() ? finalText : latestPartialText;
 }
 
 export const WORKER_RUNTIME_IDENTITIES = {
@@ -617,6 +629,7 @@ export class WorkerSupervisor {
         phase: "open",
         nextSequence: 0,
         nextPartialSequence: 0,
+        latestPartialText: "",
         chunks: [],
         chunkBytes: 0,
         onPartial: input.onPartial,
@@ -692,7 +705,11 @@ export class WorkerSupervisor {
         throw new Error(`Unexpected worker response: ${response.type}`);
       }
       this.liveSession = null;
-      return { text: response.text, language: response.language ?? null, inferenceMs: response.inferenceMs };
+      return {
+        text: completedLiveText(response.text, active.latestPartialText),
+        language: response.language ?? null,
+        inferenceMs: response.inferenceMs,
+      };
     });
   }
 
@@ -742,6 +759,7 @@ export class WorkerSupervisor {
       this.abort("ASR worker returned an invalid live partial response");
       throw new Error(`Unexpected worker response: ${response.type}`);
     }
+    if (partial.data.text.trim()) active.latestPartialText = partial.data.text;
     // Partial transcripts are decoder snapshots, not append-only deltas. They
     // are emitted only while this exact live session remains open; the partial
     // returned while flushing during finalization is intentionally discarded
