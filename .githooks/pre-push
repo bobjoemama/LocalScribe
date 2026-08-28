@@ -2,9 +2,9 @@
 #
 # Runs the source-level gate suite before anything reaches the remote.
 #
-# LocalScribe also runs this source pipeline in read-only pull-request CI. The
-# local hook catches failures before network publication; hosted CI independently
-# checks the reviewed PR commit. Both invoke the same entry point — toolchain
+# LocalScribe also runs this source pipeline in read-only pull-request and main
+# branch CI. The local hook catches failures before network publication; hosted
+# CI independently checks the reviewed or pushed commit. Both invoke the same entry point — toolchain
 # pins, both npm audits, dependency locks, lint, typecheck, and the full test
 # suite — so the two paths cannot intentionally drift.
 #

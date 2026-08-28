@@ -1,10 +1,10 @@
 # macOS local verification and release procedure
 
 LocalScribe's supported release target is Apple Silicon macOS. A read-only
-GitHub Actions workflow runs source verification for non-draft pull requests to
-`main`; candidate creation and all packaged-app verification happen locally. A
-passing command is evidence only for the exact checkout, Mac, macOS version,
-and artifact it exercised.
+GitHub Actions workflow runs source verification for non-draft pull requests
+and direct pushes to `main`; candidate creation and all packaged-app
+verification happen locally. A passing command is evidence only for the exact
+checkout, Mac, macOS version, and artifact it exercised.
 
 ## Clean checkout and toolchain
 
@@ -138,10 +138,15 @@ Before any GitHub mutation:
      --require-prerelease
    ```
 
-5. verify the README checksum, SBOMs, and `SHA256SUMS.txt` match the exact
-   upload bytes;
+5. verify the README explains manifest verification and confirm the SBOMs and
+   `SHA256SUMS.txt` match the exact upload bytes;
 6. create a draft prerelease and review its description and assets before
    publication.
+
+The checksum manifest is the authoritative digest inventory. Release notes may
+repeat the exact DMG and ZIP digests for convenience, but README prose must not
+embed a candidate hash: changing the README after building would change the
+source commit and break exact source/tag/artifact provenance.
 
 Neither the source workflow nor any local command automatically creates a
 GitHub Release or update feed. If an asset name already exists, stop and

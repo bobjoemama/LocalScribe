@@ -132,6 +132,13 @@ describe("local ci pipeline", () => {
 describe("hosted ci pipeline", () => {
   const workflowPath = path.join(REPOSITORY_ROOT, ".github", "workflows", "ci.yml");
 
+  it("checks non-draft pull requests and every direct push to main", () => {
+    const workflow = readFileSync(workflowPath, "utf8");
+    expect(workflow).toMatch(/push:\s+branches:\s+- main/u);
+    expect(workflow).toMatch(/pull_request:\s+branches:\s+- main/u);
+    expect(workflow).toContain("github.event_name == 'push'");
+  });
+
   it("uses a strict clean install and the shared source-gate entry point", () => {
     const workflow = readFileSync(workflowPath, "utf8");
     expect(workflow).toContain("run: npm ci --strict-allow-scripts");

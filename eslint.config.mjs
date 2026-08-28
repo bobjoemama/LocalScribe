@@ -26,6 +26,8 @@ export default defineConfig(
     "out/**",
     "resources/python-runtime/**",
     "src/main/generatedResourceIntegrity.ts",
+    "temp/**",
+    "tmp/**",
   ]),
   {
     files: ["**/*.{js,cjs,mjs}"],

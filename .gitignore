@@ -7,9 +7,15 @@
 /coverage/
 /main.js
 *.tsbuildinfo
+.eslintcache
+/tmp/
+/temp/
 
 # Python environments, caches, and generated bundled runtimes
 /.worker-venv/
+/.venv/
+/venv/
+/env/
 /worker/.venv/
 /tools/python-audit/.venv/
 /audit-results/
@@ -33,7 +39,11 @@
 # Local configuration, credentials, certificates, and signing material
 .env
 .env.*
+*.env
 !.env.example
+!.env.*.example
+.direnv/
+*.local
 *.key
 *.p12
 *.pfx
@@ -46,3 +56,11 @@ secrets/
 .DS_Store
 .idea/
 .vscode/
+*.swp
+*~
+
+# Release artifacts are generated under /out and published through GitHub
+*.dmg
+*.zip
+*.sbom.cdx.json
+*SHA256SUMS.txt
