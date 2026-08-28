@@ -136,54 +136,19 @@ function requireCycloneDxSbom(filePath: string): void {
 }
 
 /**
- * Checks the SHA-256 the README tells people to compare against.
- *
- * That line is the only integrity check a downloader is ever asked to perform,
- * and nothing verified it. Bumping the version rewrote the artifact filename in
- * the README and left the *previous* release's hash sitting under it, with
- * every gate green — which is worse than publishing no hash at all: it teaches
- * whoever does check that a mismatch is normal.
- *
- * The README is prose, so this is anchored to the exact `shasum -a 256 <name>`
- * command it documents rather than to any hash-shaped text elsewhere in it.
+ * The versioned checksum manifest is the authoritative artifact inventory.
+ * Requiring a built DMG hash inside tracked README prose creates a provenance
+ * cycle: writing the hash changes the source commit after the artifact was
+ * built. The README must instead teach downloaders to verify the complete
+ * release manifest, while this verifier binds every manifest row to the exact
+ * upload bytes above.
  */
-function requireDocumentedChecksums(
-  projectPath: string,
-  verified: readonly VerifiedReleaseAsset[],
-): void {
+function requireReadmeVerificationInstructions(projectPath: string): void {
   const readmePath = path.join(projectPath, "README.md");
   if (!existsSync(readmePath)) fail("README.md is missing");
   const readme = readFileSync(readmePath, "utf8");
-
-  let documented = 0;
-  for (const asset of verified) {
-    /*
-     * The filename carries a version with dots, so it has to be escaped before
-     * it goes anywhere near a pattern.
-     */
-    const escaped = asset.name.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
-    const command = new RegExp(
-      `shasum\\s+-a\\s+256\\s+${escaped}\\s*\\n\\s*#\\s*([0-9a-f]{64})\\b`,
-      "u",
-    );
-    const match = command.exec(readme);
-    if (!match?.[1]) continue;
-    documented += 1;
-    if (match[1] !== asset.sha256) {
-      fail(
-        `README documents the wrong SHA-256 for ${asset.name}: ` +
-        `it says ${match[1]}, the artifact is ${asset.sha256}`,
-      );
-    }
-  }
-
-  /*
-   * Without this the check passes by matching nothing — exactly what happens if
-   * the README stops naming the artifact, which is the same silent failure in a
-   * different costume.
-   */
-  if (documented === 0) {
-    fail("README documents no verifiable SHA-256 for any release artifact");
+  if (!/SHA256SUMS\.txt/u.test(readme) || !/shasum\s+-a\s+256\s+-c\s+/u.test(readme)) {
+    fail("README does not explain verification with the release SHA256SUMS manifest");
   }
 }
 
@@ -234,10 +199,10 @@ export async function verifyReleaseAssets(
    * filesystem and signing metadata and are not byte-reproducible, so a fresh
    * build cannot honestly be required to equal the checksum of an older,
    * already-published artifact from the same commit. Publication verification
-   * is the separate boundary that proves the README names the exact bytes a
-   * downloader receives.
+   * is the separate boundary that proves the README documents the manifest
+   * workflow used to verify the exact bytes a downloader receives.
    */
-  if (purpose === "publication") requireDocumentedChecksums(projectPath, verified);
+  if (purpose === "publication") requireReadmeVerificationInstructions(projectPath);
   verified.push({
     ...checksum,
     sha256: sha256(checksum),

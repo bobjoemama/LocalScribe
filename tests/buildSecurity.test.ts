@@ -64,13 +64,14 @@ describe("release hardening configuration", () => {
     expect(existsSync(resolve(root, ".github/workflows/release.yml"))).toBe(false);
   });
 
-  it("keeps hosted CI pull-request-only, read-only, pinned, and source-scoped", () => {
+  it("keeps hosted CI read-only, pinned, source-scoped, and active on main", () => {
     const workflow = projectFile(".github/workflows/ci.yml");
 
+    expect(workflow).toContain("push:");
     expect(workflow).toContain("pull_request:");
     expect(workflow).toContain("      - main");
     expect(workflow).not.toContain("pull_request_target:");
-    expect(workflow).not.toMatch(/^\s*(?:push|workflow_dispatch|schedule):/mu);
+    expect(workflow).not.toMatch(/^\s*(?:workflow_dispatch|schedule):/mu);
     expect(workflow).not.toContain("paths:");
     expect(workflow).not.toContain("paths-ignore:");
     expect(workflow).toContain("permissions:\n  contents: read");
@@ -83,13 +84,13 @@ describe("release hardening configuration", () => {
     expect(workflow).toContain("persist-credentials: false");
     expect(workflow).toContain("enable-cache: false");
     expect(workflow).toContain(
-      "group: source-ci-${{ github.workflow }}-${{ github.event.pull_request.number }}",
+      "group: source-ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}",
     );
     expect(workflow).toContain("cancel-in-progress: true");
     expect(workflow).toContain('CI: "true"');
     expect(workflow).toContain('UV_PYTHON_DOWNLOADS: "never"');
     expect(workflow).toContain("name: Source verification");
-    expect(workflow).toContain("if: ${{ !github.event.pull_request.draft }}");
+    expect(workflow).toContain("if: ${{ github.event_name == 'push' || !github.event.pull_request.draft }}");
     expect(workflow).toContain("runs-on: macos-14");
     expect(workflow).toContain("timeout-minutes: 30");
 

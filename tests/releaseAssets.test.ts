@@ -68,19 +68,12 @@ function writeReleaseFixture(root: string, platform: ReleasePlatform): {
   });
   writeFileSync(layout.checksumPath, `${rows.join("\n")}\n`);
 
-  /*
-   * The real README tells downloaders to run exactly this command, and that
-   * line is the only integrity check they are ever asked to perform. The
-   * fixture has to carry it too, or the verification of it is never exercised.
-   */
   const readmePath = path.join(root, "README.md");
-  const sections = layout.primaryArtifactPaths.map((filePath) => [
-    "```sh",
-    `shasum -a 256 ${path.basename(filePath)}`,
-    `# ${hash(filePath)}`,
-    "```",
-  ].join("\n"));
-  writeFileSync(readmePath, `# LocalScribe\n\n${sections.join("\n\n")}\n`);
+  writeFileSync(
+    readmePath,
+    "# LocalScribe\n\nDownload SHA256SUMS.txt and run:\n\n" +
+      "```sh\nshasum -a 256 -c LocalScribe-<version>-macos-arm64-SHA256SUMS.txt\n```\n",
+  );
 
   return { checksumPath: layout.checksumPath, contentPaths, readmePath };
 }
@@ -159,49 +152,25 @@ describe("release asset verification", () => {
     );
   });
 
-  /*
-   * The README's `shasum -a 256` line is the only integrity check a downloader
-   * is ever asked to run. Bumping the version once rewrote the artifact
-   * filename and left the previous release's hash under it with every gate
-   * green — worse than publishing no hash, because it teaches whoever does
-   * check that a mismatch is normal.
-   */
-  it("rejects a README that documents the previous release's checksum", async () => {
-    const root = makeProject();
-    const { readmePath } = writeReleaseFixture(root, "darwin");
-    const stale = "a".repeat(64);
-    const readme = readFileSync(readmePath, "utf8");
-    writeFileSync(readmePath, readme.replace(/# [0-9a-f]{64}/u, `# ${stale}`));
-
-    await expect(verifyReleaseAssets("darwin", root)).rejects.toThrow(
-      /README documents the wrong SHA-256/u,
-    );
-  });
-
-  it("lets a local candidate differ from a previously published README hash", async () => {
-    const root = makeProject();
-    const { readmePath } = writeReleaseFixture(root, "darwin");
-    const readme = readFileSync(readmePath, "utf8");
-    writeFileSync(readmePath, readme.replace(/# [0-9a-f]{64}/u, `# ${"a".repeat(64)}`));
-
-    const result = await verifyReleaseAssets("darwin", root, "candidate");
-
-    expect(result.platform).toBe("darwin");
-    expect(result.assets).toHaveLength(5);
-  });
-
-  /*
-   * Without this the check passes by matching nothing, which is the same
-   * silent failure wearing a different costume.
-   */
-  it("rejects a README that documents no checksum at all", async () => {
+  it("rejects a README that does not explain checksum-manifest verification", async () => {
     const root = makeProject();
     const { readmePath } = writeReleaseFixture(root, "darwin");
     writeFileSync(readmePath, "# LocalScribe\n\nDownload it and trust us.\n");
 
     await expect(verifyReleaseAssets("darwin", root)).rejects.toThrow(
-      /documents no verifiable SHA-256/u,
+      /README does not explain verification/u,
     );
+  });
+
+  it("does not require README publication instructions for a local candidate", async () => {
+    const root = makeProject();
+    const { readmePath } = writeReleaseFixture(root, "darwin");
+    rmSync(readmePath);
+
+    const result = await verifyReleaseAssets("darwin", root, "candidate");
+
+    expect(result.platform).toBe("darwin");
+    expect(result.assets).toHaveLength(5);
   });
 
   it("rejects a missing README", async () => {
@@ -214,21 +183,14 @@ describe("release asset verification", () => {
     );
   });
 
-  /*
-   * The artifact name contains dots, which are pattern metacharacters. An
-   * unescaped name would let `LocalScribe-3.4.5-rc.2-arm64.dmg` match a README
-   * naming `LocalScribe-3X4X5-rcX2-arm64Xdmg`, so a genuinely wrong filename
-   * would still be accepted.
-   */
-  it("does not treat dots in the artifact name as wildcards", async () => {
+  it("requires the checksum command to use manifest-check mode", async () => {
     const root = makeProject();
     const { readmePath } = writeReleaseFixture(root, "darwin");
     const readme = readFileSync(readmePath, "utf8");
-    writeFileSync(readmePath, readme.replace(/shasum -a 256 (\S+)/gu, (_line, name: string) =>
-      `shasum -a 256 ${name.replace(/\./gu, "X")}`));
+    writeFileSync(readmePath, readme.replace("shasum -a 256 -c", "shasum -a 256"));
 
     await expect(verifyReleaseAssets("darwin", root)).rejects.toThrow(
-      /documents no verifiable SHA-256/u,
+      /README does not explain verification/u,
     );
   });
 });

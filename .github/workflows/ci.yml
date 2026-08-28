@@ -1,6 +1,9 @@
 name: Source CI
 
 on:
+  push:
+    branches:
+      - main
   pull_request:
     branches:
       - main
@@ -18,13 +21,13 @@ env:
   UV_PYTHON_DOWNLOADS: "never"
 
 concurrency:
-  group: source-ci-${{ github.workflow }}-${{ github.event.pull_request.number }}
+  group: source-ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
   source:
     name: Source verification
-    if: ${{ !github.event.pull_request.draft }}
+    if: ${{ github.event_name == 'push' || !github.event.pull_request.draft }}
     runs-on: macos-14
     timeout-minutes: 30
     steps:
