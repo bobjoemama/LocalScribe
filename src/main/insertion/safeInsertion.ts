@@ -62,6 +62,17 @@ function initialTargetFailure(target: ActiveTarget): InsertionReasonCode | null 
   return null;
 }
 
+function shouldRetryColdAccessibilityCapture(target: ActiveTarget): boolean {
+  return target.accessibilityActivation === "resolved"
+    || target.accessibilityActivation === "timed_out";
+}
+
+function sameApplicationProcess(expected: ActiveTarget, current: ActiveTarget): boolean {
+  return expected.platform === current.platform
+    && expected.processId === current.processId
+    && expected.applicationId === current.applicationId;
+}
+
 function currentTargetFailure(
   expected: ActiveTarget,
   current: ActiveTarget,
@@ -139,15 +150,34 @@ export class SafeInsertionCoordinator {
     const generation = ++this.captureGeneration;
     this.activeSessionGeneration = generation;
     this.capturedTargetAppId = null;
-    this.pendingTarget = this.platformBridge.captureActiveTarget()
+    this.pendingTarget = (async (): Promise<ActiveTarget | null> => {
+      const firstTarget = await this.platformBridge.captureActiveTarget().catch(() => null);
+      if (!this.isCurrentSession(generation)) return null;
+      if (!firstTarget || !shouldRetryColdAccessibilityCapture(firstTarget)) {
+        return firstTarget;
+      }
+
+      // AXManualAccessibility can make the target application's focused
+      // control visible only after the first helper process has returned. Give
+      // that one cold-start boundary exactly one fresh observation. This is
+      // deliberately not a general target retry: the first observation must
+      // report a completed/bounded activation attempt, and the second may only
+      // replace it when application and process identity remain pinned.
+      const secondTarget = await this.platformBridge.captureActiveTarget().catch(() => null);
+      if (!this.isCurrentSession(generation)) return null;
+      if (!secondTarget || !sameApplicationProcess(firstTarget, secondTarget)) {
+        return firstTarget;
+      }
+      return secondTarget;
+    })()
       .then((target) => {
-        if (generation === this.captureGeneration) {
+        if (this.isCurrentSession(generation)) {
           this.capturedTargetAppId = target?.applicationId ?? null;
         }
         return target;
       })
       .catch(() => {
-        if (generation === this.captureGeneration) this.capturedTargetAppId = null;
+        if (this.isCurrentSession(generation)) this.capturedTargetAppId = null;
         return null;
       });
   }

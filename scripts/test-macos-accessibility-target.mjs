@@ -2,11 +2,13 @@
 /**
  * Scripted macOS integration test for a cold Electron editor.
  *
- * The fixture starts with focus on a non-editable Chromium control and turns
- * that same control into an editor while the native helper performs its
- * bounded recovery. This deterministically tests rediscovery and fail-closed
- * editability proof; physical targets remain the proof for whether another
- * application's AXManualAccessibility implementation activates its tree.
+ * The fixture starts with an already-focused editable Chromium control while
+ * Electron's accessibility tree remains cold. The packaged helper alone must
+ * activate the tree, return no paste authority from that mutation boundary,
+ * and establish authority only through a second fresh target invocation.
+ * A DOM paste event proves that the verified control consumed Command-V while
+ * preserving arbitrary clipboard data; actual text mutation remains a
+ * physical workflow acceptance requirement.
  *
  * TCC cannot be granted by an unattended test. Without an existing grant this
  * script prints an explicit skip; pass --require-permission when a positive
@@ -79,10 +81,15 @@ const { app, BrowserWindow } = electron;
 
 app.setPath("userData", process.env.LOCALSCRIBE_ACCESSIBILITY_FIXTURE_PROFILE);
 app.whenReady().then(async () => {
+  // Electron requires this API after ready. Make the precondition explicit:
+  // only the packaged helper's external AXManualAccessibility set may activate
+  // Chromium's accessibility tree after the fixture announces readiness.
+  app.setAccessibilitySupportEnabled(false);
   const window = new BrowserWindow({ width: 520, height: 240, show: false });
   await window.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(\`
     <!doctype html><html><body>
-      <div id="editor" tabindex="0" style="width:420px;height:120px;border:1px solid black"></div>
+      <div id="editor" contenteditable="true" role="textbox" aria-multiline="true"
+        tabindex="0" style="width:420px;height:120px;border:1px solid black"></div>
     </body></html>
   \`));
   window.show();
@@ -91,26 +98,26 @@ app.whenReady().then(async () => {
   await window.webContents.executeJavaScript(\`
     (() => {
       const editor = document.getElementById("editor");
-      globalThis.__localscribeInputObserved = false;
-      editor.addEventListener("input", () => {
-        globalThis.__localscribeInputObserved = true;
+      globalThis.__localscribePasteObserved = false;
+      editor.addEventListener("paste", () => {
+        globalThis.__localscribePasteObserved = true;
       });
       editor.focus();
       return document.activeElement === editor;
     })()
   \`);
-  let inputSignalEmitted = false;
-  const inputObservationTimer = setInterval(() => {
+  let pasteSignalEmitted = false;
+  const pasteObservationTimer = setInterval(() => {
     void window.webContents.executeJavaScript(
-      "globalThis.__localscribeInputObserved === true",
+      "globalThis.__localscribePasteObserved === true",
     ).then((observed) => {
-      if (observed === true && !inputSignalEmitted) {
-        inputSignalEmitted = true;
-        process.stdout.write("localscribe-accessibility-input-observed\\n");
+      if (observed === true && !pasteSignalEmitted) {
+        pasteSignalEmitted = true;
+        process.stdout.write("localscribe-accessibility-paste-observed\\n");
       }
     }, () => undefined);
   }, 50);
-  window.once("closed", () => clearInterval(inputObservationTimer));
+  window.once("closed", () => clearInterval(pasteObservationTimer));
   // Do not announce readiness until AppKit confirms this window is focused.
   // Repeated activation avoids unrelated apps winning the launch-time race.
   let focusAttempts = 0;
@@ -128,21 +135,6 @@ app.whenReady().then(async () => {
       return;
     }
     process.stdout.write("localscribe-accessibility-fixture-ready\\n");
-    setTimeout(() => {
-      app.setAccessibilitySupportEnabled(true);
-      void window.webContents.executeJavaScript(\`
-        (() => {
-          const editor = document.getElementById("editor");
-          editor.setAttribute("contenteditable", "true");
-          editor.setAttribute("role", "textbox");
-          editor.setAttribute("aria-multiline", "true");
-          editor.focus();
-        })()
-      \`).then(
-        () => process.stdout.write("localscribe-accessibility-editor-ready\\n"),
-        (error) => process.stderr.write(\`fixture-editor-transition-failed: \${error.message}\\n\`),
-      );
-    }, 100);
   };
   setTimeout(prepareFixture, 150);
 });
@@ -198,49 +190,45 @@ try {
   });
   if (ready !== true) throw new Error("Electron accessibility fixture readiness was not confirmed.");
 
+  const firstTargetResult = await execFileAsync(helperPath, ["target"], {
+    encoding: "utf8",
+    timeout: 5_000,
+    maxBuffer: 16 * 1024,
+  });
+  const firstTarget = parseJSON(firstTargetResult.stdout, "First accessibility target");
+  if (
+    firstTarget.applicationId !== "com.github.Electron"
+    || firstTarget.processId !== child.pid
+    || firstTarget.windowFingerprint !== null
+    || firstTarget.focusedEditable !== null
+    || firstTarget.focusedElementFingerprint !== null
+    || firstTarget.accessibilityActivation !== "resolved"
+    || firstTarget.accessibilityElement !== "text_control"
+    || !Number.isInteger(firstTarget.accessibilityLookupAttempts)
+    || firstTarget.accessibilityLookupAttempts < 1
+    || firstTarget.accessibilityLookupAttempts > 81
+  ) {
+    throw new Error("Packaged helper did not activate the cold Electron tree without granting paste authority.");
+  }
+
   const targetResult = await execFileAsync(helperPath, ["target"], {
     encoding: "utf8",
     timeout: 5_000,
     maxBuffer: 16 * 1024,
   });
-  const target = parseJSON(targetResult.stdout, "Accessibility target");
-  const editorTransitionCompleted = await new Promise((resolve) => {
-    if (stdout.includes("localscribe-accessibility-editor-ready")) {
-      resolve(true);
-      return;
-    }
-    const poll = setInterval(() => {
-      if (stdout.includes("localscribe-accessibility-editor-ready")) {
-        clearInterval(poll);
-        clearTimeout(timeout);
-        resolve(true);
-      } else if (stderr.includes("fixture-editor-transition-failed")) {
-        clearInterval(poll);
-        clearTimeout(timeout);
-        resolve(false);
-      }
-    }, 10);
-    const timeout = setTimeout(() => {
-      clearInterval(poll);
-      resolve(false);
-    }, 1_000);
-  });
+  const target = parseJSON(targetResult.stdout, "Second accessibility target");
   if (
-    target.applicationId !== "com.github.Electron"
-    || target.processId !== child.pid
+    target.applicationId !== firstTarget.applicationId
+    || target.processId !== firstTarget.processId
     || target.focusedEditable !== true
     || !/^[a-f0-9]{64}$/u.test(target.windowFingerprint)
     || !/^[a-f0-9]{64}$/u.test(target.focusedElementFingerprint)
-    || target.accessibilityActivation !== "resolved"
+    || target.accessibilityActivation !== "not_needed"
     || target.accessibilityElement !== "text_control"
-    || !Number.isInteger(target.accessibilityLookupAttempts)
-    || target.accessibilityLookupAttempts < 2
-    || target.accessibilityLookupAttempts > 81
-    || editorTransitionCompleted !== true
+    || target.accessibilityLookupAttempts !== 1
   ) {
-    throw new Error("Packaged helper did not resolve the cold Electron editor within the closed identity boundary.");
+    throw new Error("Packaged helper did not establish a fresh target after cold-tree activation.");
   }
-
 
   const sequenceResult = await execFileAsync(helperPath, ["clipboard-sequence"], {
     encoding: "utf8",
@@ -261,12 +249,12 @@ try {
     String(sequence),
   ];
 
-  // Exercise rejection without modifying the pasteboard: an adjacent expected
-  // sequence is stale by construction, while the existing clipboard contents
-  // and real current sequence remain untouched.
+  // Exercise rejection without modifying the pasteboard. Zero is used for
+  // every nonzero current sequence; one is used only when the current sequence
+  // is zero, so the stale expectation is always different and representable.
   const staleSequence = sequencePayload.sequence === 0
     ? 1
-    : sequencePayload.sequence - 1;
+    : 0;
   const stalePasteResult = await execFileAsync(
     helperPath,
     pasteArgumentsFor(staleSequence),
@@ -276,10 +264,17 @@ try {
   if (stalePaste.injected !== false || stalePaste.reason !== "clipboard_changed") {
     throw new Error("Packaged helper did not reject a stale clipboard sequence.");
   }
+  // The renderer reports paste consumption on a 50 ms privacy-safe poll. Wait
+  // across several polls before asserting the negative stale-dispatch result.
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  if (stdout.includes("localscribe-accessibility-paste-observed")) {
+    throw new Error("Fixture observed a paste event before authorized native dispatch.");
+  }
 
   // Dispatch the user's existing clipboard contents without reading, logging,
-  // clearing, or rewriting them. The fixture observes only whether an input
-  // event occurred; it never reads the editor value or pasted data.
+  // clearing, or rewriting them. The fixture observes only whether the target
+  // consumed Command-V as a DOM paste event; it never reads editor or clipboard
+  // content and therefore does not claim that text was inserted.
   const pasteResult = await execFileAsync(
     helperPath,
     pasteArgumentsFor(sequencePayload.sequence),
@@ -289,8 +284,26 @@ try {
   if (paste.injected !== true) {
     throw new Error("Packaged helper did not dispatch paste into the verified fixture target.");
   }
-  await new Promise((resolve) => setTimeout(resolve, 300));
-  const inputObserved = stdout.includes("localscribe-accessibility-input-observed");
+  const pasteEventObserved = await new Promise((resolve) => {
+    if (stdout.includes("localscribe-accessibility-paste-observed")) {
+      resolve(true);
+      return;
+    }
+    const poll = setInterval(() => {
+      if (stdout.includes("localscribe-accessibility-paste-observed")) {
+        clearInterval(poll);
+        clearTimeout(timeout);
+        resolve(true);
+      }
+    }, 10);
+    const timeout = setTimeout(() => {
+      clearInterval(poll);
+      resolve(false);
+    }, 2_000);
+  });
+  if (pasteEventObserved !== true) {
+    throw new Error("Fixture did not consume native Command-V as a DOM paste event.");
+  }
 
   const finalSequenceResult = await execFileAsync(helperPath, ["clipboard-sequence"], {
     encoding: "utf8",
@@ -302,7 +315,7 @@ try {
     throw new Error("Clipboard changed while testing native paste dispatch.");
   }
   process.stdout.write(
-    `Packaged helper resolved a cold Electron editor after ${target.accessibilityLookupAttempts} observations; native paste dispatched with clipboard preserved; fixture input event ${inputObserved ? "observed" : "not observed"}.\n`,
+    `Packaged helper activated a cold Electron editor after ${firstTarget.accessibilityLookupAttempts} observations; a fresh call established authority; the target consumed native Command-V with clipboard preserved. Physical acceptance must prove text insertion.\n`,
   );
 } finally {
   if (child && child.exitCode === null && child.signalCode === null) {
