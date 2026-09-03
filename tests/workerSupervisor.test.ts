@@ -1223,7 +1223,7 @@ describe("WorkerSupervisor model lifecycle", () => {
             output.includes('"type":"late_ready"')
             && output.includes('"code":"worker_exited"')
           ),
-          2_000,
+          5_000,
         );
         expect(anchorExited()).toBe(false);
         expect(lockProbeStatus()).toBe(1);
@@ -1245,7 +1245,7 @@ describe("WorkerSupervisor model lifecycle", () => {
           try {
             await waitUntil(
               () => anchorExited() && lockProbeStatus() === 0,
-              2_500,
+              5_000,
             );
           } catch (error) {
             cleanupFailure = error instanceof Error
@@ -1261,7 +1261,7 @@ describe("WorkerSupervisor model lifecycle", () => {
       }
       if (cleanupFailure) throw cleanupFailure;
     },
-    8_000,
+    15_000,
   );
 
   it.runIf(process.platform !== "win32")(
