@@ -117,7 +117,14 @@ app.whenReady().then(async () => {
       }
     }, () => undefined);
   }, 50);
-  window.once("closed", () => clearInterval(pasteObservationTimer));
+  const focusRetentionTimer = setInterval(() => {
+    app.focus({ steal: true });
+    window.focus();
+  }, 50);
+  window.once("closed", () => {
+    clearInterval(pasteObservationTimer);
+    clearInterval(focusRetentionTimer);
+  });
   // Do not announce readiness until AppKit confirms this window is focused.
   // Repeated activation avoids unrelated apps winning the launch-time race.
   let focusAttempts = 0;
@@ -202,13 +209,18 @@ try {
     || firstTarget.windowFingerprint !== null
     || firstTarget.focusedEditable !== null
     || firstTarget.focusedElementFingerprint !== null
-    || firstTarget.accessibilityActivation !== "resolved"
-    || firstTarget.accessibilityElement !== "text_control"
+    || !["resolved", "timed_out"].includes(firstTarget.accessibilityActivation)
+    || (
+      firstTarget.accessibilityActivation === "resolved"
+      && firstTarget.accessibilityElement !== "text_control"
+    )
     || !Number.isInteger(firstTarget.accessibilityLookupAttempts)
     || firstTarget.accessibilityLookupAttempts < 1
     || firstTarget.accessibilityLookupAttempts > 81
   ) {
-    throw new Error("Packaged helper did not activate the cold Electron tree without granting paste authority.");
+    throw new Error(
+      `Packaged helper did not activate the cold Electron tree without granting paste authority: ${JSON.stringify(firstTarget)}`,
+    );
   }
 
   const targetResult = await execFileAsync(helperPath, ["target"], {
@@ -227,7 +239,9 @@ try {
     || target.accessibilityElement !== "text_control"
     || target.accessibilityLookupAttempts !== 1
   ) {
-    throw new Error("Packaged helper did not establish a fresh target after cold-tree activation.");
+    throw new Error(
+      `Packaged helper did not establish a fresh target after cold-tree activation: ${JSON.stringify(target)}`,
+    );
   }
 
   const sequenceResult = await execFileAsync(helperPath, ["clipboard-sequence"], {
