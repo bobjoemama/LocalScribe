@@ -5,6 +5,16 @@ coworker without confusing source checks with native desktop acceptance. Use a
 DMG or ZIP and checksum manifest produced together by
 `npm run verify:local:macos`.
 
+## Access and scope
+
+- The repository and validation releases are currently private. Invite the
+  tester to the repository before sharing the GitHub Release URL.
+- The supported target is an Apple Silicon Mac running macOS 14 or newer.
+- This is a native macOS validation build, not a Docker service and not a
+  notarized public release.
+- The tester should use a non-critical macOS account or back up existing
+  LocalScribe data before testing rollback or migration behavior.
+
 ## What to send
 
 Send these files from the same versioned build:
@@ -15,11 +25,11 @@ LocalScribe-darwin-arm64-<version>.zip
 LocalScribe-<version>-macos-arm64-SHA256SUMS.txt
 ```
 
-The checksum manifest also names the runtime SBOM files produced by the full
-gate. Send those SBOMs too when requiring the complete manifest to verify in a
-single command. Do not rename individual assets, combine files from different
-builds, overwrite an older release asset, or reuse a version for different
-bytes.
+The checksum manifest also names the two runtime SBOM files produced by the
+full gate. Download those SBOMs too: all five release assets must be in one
+directory for the manifest command to succeed. Do not rename individual
+assets, combine files from different builds, overwrite an older release asset,
+or reuse a version for different bytes.
 
 Record alongside the files:
 
@@ -55,6 +65,13 @@ rejects duplicate names, so no directory reconstruction is required.
    resulting `LocalScribe.app` to `/Applications`.
 4. Launch the installed application and record the displayed version before
    testing.
+
+Model weights are intentionally not included in the application or DMG. On the
+first run, explicitly add Parakeet Unified EN 0.6B in **Settings -> Model &
+Performance**, choose High FP16 or Medium INT8, and press **Apply model**. That
+installation requires network access. Once the model is installed and ready,
+normal dictation must work offline and must not download or substitute another
+model.
 
 Private validation builds may be Apple Development- or ad-hoc-signed and may
 not satisfy public Gatekeeper policy. If macOS blocks the candidate, stop and
@@ -98,6 +115,36 @@ is not required and does not substitute for the observations below.
 Record the target application, shortcut mode, model family/profile, dictation
 mode, result, and exact failure text for every row. Do not mark an unobserved
 row as passed.
+
+## Results to return
+
+Copy this template into the test report:
+
+```text
+LocalScribe version:
+Git commit:
+macOS version:
+Mac model / memory:
+Install result:
+Signing or Gatekeeper message, if any:
+Microphone permission: PASS / FAIL / NOT TESTED
+Accessibility permission: PASS / FAIL / NOT TESTED
+Hold shortcut: PASS / FAIL / NOT TESTED
+Toggle shortcut: PASS / FAIL / NOT TESTED
+After-stop insertion + Dictionary + history: PASS / FAIL / NOT TESTED
+Live partials + final insertion + history: PASS / FAIL / NOT TESTED
+Live cancellation and next-session reset: PASS / FAIL / NOT TESTED
+Copy-only fallback: PASS / FAIL / NOT TESTED
+Warm quit process cleanup: PASS / FAIL / NOT TESTED
+Relaunch and offline lazy load: PASS / FAIL / NOT TESTED
+Target application(s):
+Exact failure text and reproduction steps:
+```
+
+Do not include dictated text, clipboard contents, recordings, model files,
+database files, credentials, or unredacted private paths in the report. Use
+LocalScribe's redacted diagnostics action when diagnostic evidence is needed,
+and review the result before sharing it.
 
 ## Evidence boundary
 
