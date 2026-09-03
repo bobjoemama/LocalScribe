@@ -225,6 +225,7 @@ class WorkerProtocolTests(unittest.TestCase):
         hardware_probe=None,
         platform_name: str = "darwin",
         machine_name: str = "arm64",
+        worker_role: str = "inference",
     ) -> tuple[list[dict[str, Any]], str, int]:
         output = io.StringIO()
         errors = io.StringIO()
@@ -234,6 +235,7 @@ class WorkerProtocolTests(unittest.TestCase):
             "error_stream": errors,
             "platform_name": platform_name,
             "machine_name": machine_name,
+            "worker_role": worker_role,
         }
         if installer is not None:
             kwargs["model_installer"] = installer
@@ -951,7 +953,6 @@ class WorkerProtocolTests(unittest.TestCase):
             selection = (spec.model_id, spec.tier, spec.compute_type)
             manifest = tiny_manifest()
             install = install_request("low", model_root)
-            health = request("health")
             downloaded: list[dict[str, Any]] = []
             runtime_factory_calls: list[tuple[Path, TierSpec]] = []
 
@@ -987,8 +988,9 @@ class WorkerProtocolTests(unittest.TestCase):
                 ) as ensured,
             ):
                 messages, errors, exit_code = self.run_protocol(
-                    encode_requests(install, health, request("shutdown")),
+                    encode_requests(install, request("shutdown")),
                     factory=factory,
+                    worker_role="installer",
                 )
 
             self.assertEqual(exit_code, 0)
@@ -1016,10 +1018,6 @@ class WorkerProtocolTests(unittest.TestCase):
             )
             self.assertIsInstance(installed_message["installMs"], int)
             self.assertGreaterEqual(installed_message["installMs"], 0)
-            self.assertIn(
-                {"type": "health", "id": health["id"], "ready": False},
-                messages,
-            )
             self.assertEqual(runtime_factory_calls, [])
             self.assertTrue(
                 worker_module._valid_model_directory(
@@ -1065,6 +1063,7 @@ class WorkerProtocolTests(unittest.TestCase):
                         install_request("low", model_root),
                         request("shutdown"),
                     ),
+                    worker_role="installer",
                 )
 
         self.assertEqual(exit_code, 0)
@@ -1144,6 +1143,7 @@ class WorkerProtocolTests(unittest.TestCase):
                 ),
                 installer=lambda *_args: self.fail("invalid installs must not run"),
                 factory=lambda *_args: self.fail("invalid installs must not load"),
+                worker_role="installer",
             )
 
             self.assertEqual(exit_code, 0)
@@ -1157,7 +1157,9 @@ class WorkerProtocolTests(unittest.TestCase):
                 ],
             )
 
-    def test_install_model_preserves_the_active_runtime(self) -> None:
+    def test_inference_role_rejects_install_without_disturbing_the_active_runtime(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             model_root = root / "models"
@@ -1166,33 +1168,16 @@ class WorkerProtocolTests(unittest.TestCase):
             audio_path = audio_root / "utterance.wav"
             write_wav(audio_path)
             active_spec = tier_spec("low")
-            install_spec = tier_spec("medium")
-            install_selection = (
-                install_spec.model_id,
-                install_spec.tier,
-                install_spec.compute_type,
-            )
-            install_manifest = tiny_manifest()
             active_runtime = FakeRuntime("active")
             factory_calls: list[TierSpec] = []
-            active_during_install: list[bool] = []
-
-            def downloader(**kwargs: Any) -> None:
-                write_tiny_model(Path(kwargs["local_dir"]), install_manifest)
+            installer_calls: list[bool] = []
 
             def installer(
                 path: Path,
                 manifest: ModelManifest,
                 allow_download: bool,
             ) -> Path:
-                if manifest is install_manifest:
-                    active_during_install.append(not active_runtime.closed)
-                    return ensure_model(
-                        path,
-                        manifest,
-                        allow_download,
-                        snapshot_downloader=downloader,
-                    )
+                installer_calls.append(allow_download)
                 installed = path / manifest.storage_directory
                 installed.mkdir(parents=True, exist_ok=True)
                 return installed
@@ -1212,25 +1197,54 @@ class WorkerProtocolTests(unittest.TestCase):
                 language="auto",
                 context="",
             )
-            with patch.dict(
-                worker_module.MODEL_MANIFESTS,
-                {install_selection: install_manifest},
-            ):
-                messages, errors, exit_code = self.run_protocol(
-                    encode_requests(load, install, health, transcribe, request("shutdown")),
-                    installer=installer,
-                    factory=factory,
-                )
+            messages, errors, exit_code = self.run_protocol(
+                encode_requests(load, install, health, transcribe, request("shutdown")),
+                installer=installer,
+                factory=factory,
+            )
 
             self.assertEqual(exit_code, 0)
-            self.assertEqual(errors, "")
+            self.assertEqual(errors, "[mac-asr-worker] operation_not_allowed\n")
             self.assertEqual(factory_calls, [active_spec])
-            self.assertEqual(active_during_install, [True])
-            self.assertEqual(messages[2]["type"], "model_installed")
-            self.assertEqual(messages[2]["modelId"], install_spec.model_id)
+            self.assertEqual(installer_calls, [False])
+            self.assertEqual(messages[2]["code"], "operation_not_allowed")
             self.assertEqual(messages[3], {"type": "health", "id": health["id"], "ready": True})
             self.assertEqual(messages[4]["text"], "Hello from active.")
             self.assertTrue(active_runtime.closed)
+
+    def test_installer_role_rejects_every_inference_capability(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            model_root = Path(temporary) / "models"
+            requests = (
+                load_request("low", model_root),
+                request("health"),
+                request("device_info"),
+                request(
+                    "transcribe",
+                    audioPath=str(Path(temporary) / "private.wav"),
+                    allowedRoot=temporary,
+                    language="auto",
+                    context="private transcript",
+                ),
+            )
+            messages, errors, exit_code = self.run_protocol(
+                encode_requests(*requests, request("shutdown")),
+                installer=lambda *_args: self.fail("inference requests must not install"),
+                factory=lambda *_args: self.fail("installer worker must not load a runtime"),
+                hardware_probe=lambda: self.fail("installer worker must not inspect hardware"),
+                worker_role="installer",
+            )
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(
+            errors,
+            "[mac-asr-worker] operation_not_allowed\n" * len(requests),
+        )
+        self.assertEqual(
+            [message["code"] for message in messages[1:-1]],
+            ["operation_not_allowed"] * len(requests),
+        )
+        self.assertEqual(messages[-1]["type"], "shutdown")
 
     def test_transcribe_rejects_symlink_and_outside_root(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

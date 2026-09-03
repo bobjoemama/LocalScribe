@@ -105,6 +105,17 @@ export function isCurrentFinalization(
   return snapshot.state === "finalizing" && snapshot.sessionId === sessionId;
 }
 
+/** A recorder callback may fail only the listening session that installed it. */
+export function isCurrentRecorderFailure(
+  snapshot: SessionSnapshot,
+  recorderSessionId: string | null,
+  sessionId: string,
+): boolean {
+  return snapshot.state === "listening"
+    && snapshot.sessionId === sessionId
+    && recorderSessionId === sessionId;
+}
+
 export interface LiveRecorderStartup {
   readonly sessionId: string;
   readonly openSink: () => Promise<LiveAudioSink>;
@@ -163,11 +174,24 @@ export function livePartialText(
   return partial.text.trim() || null;
 }
 
-/** Keep the newest words visible as a replacement-style Live snapshot grows. */
+type LiveTranscriptViewport = Pick<HTMLElement, "clientHeight" | "scrollHeight" | "scrollTop">;
+
+const LIVE_TRANSCRIPT_BOTTOM_TOLERANCE_PX = 24;
+
+/** Treat small rounding and line-height differences at the end as still following. */
+export function isLiveTranscriptNearBottom(
+  viewport: LiveTranscriptViewport,
+  tolerance = LIVE_TRANSCRIPT_BOTTOM_TOLERANCE_PX,
+): boolean {
+  return viewport.scrollHeight - viewport.clientHeight - viewport.scrollTop <= tolerance;
+}
+
+/** Keep the newest words visible only while the user has not scrolled back. */
 export function scrollLiveTranscriptToEnd(
-  viewport: { scrollHeight: number; scrollTop: number } | null,
+  viewport: Pick<LiveTranscriptViewport, "scrollHeight" | "scrollTop"> | null,
+  shouldFollow = true,
 ): void {
-  if (viewport) viewport.scrollTop = viewport.scrollHeight;
+  if (viewport && shouldFollow) viewport.scrollTop = viewport.scrollHeight;
 }
 
 export function Pill() {
@@ -186,6 +210,7 @@ export function Pill() {
   const settingsStatusRef = useRef<ShortcutSettingsStatus>("loading");
   const recorderSessionId = useRef<string | null>(null);
   const livePartialRef = useRef<LivePartialTranscript | null>(null);
+  const failedRecorderSessionId = useRef<string | null>(null);
 
   useEffect(() => {
     recorder.current.setLevelListener((level) => {
@@ -194,8 +219,27 @@ export function Pill() {
     let sawLiveEvent = false;
     const handleFailure = async (sessionId: string, error: unknown) => {
       if (error instanceof RecorderCancelledError) return;
+      if (failedRecorderSessionId.current === sessionId) return;
+      failedRecorderSessionId.current = sessionId;
       const message = error instanceof Error ? error.message : "Microphone recording failed";
-      await window.localScribe.session.fail({ sessionId, message });
+      try {
+        await window.localScribe.session.fail({ sessionId, message });
+      } catch {
+        // If even the scoped failure IPC is unavailable, do not leave an
+        // already-closed microphone session visually stuck in Listening.
+        if (isCurrentRecorderFailure(
+          latestSnapshot.current,
+          recorderSessionId.current,
+          sessionId,
+        )) {
+          try {
+            await window.localScribe.session.cancel();
+          } catch {
+            // Main remains the session authority; renderer cleanup is already
+            // complete and there is no safe local state transition to invent.
+          }
+        }
+      }
     };
     const startListeningRecorder = async () => {
       const start = listeningRecorderStart(
@@ -207,6 +251,14 @@ export function Pill() {
       if (!start) return;
       recorderSessionId.current = start.sessionId;
       setWaveform(quietWave());
+      const onFailure = (error: Error) => {
+        if (!isCurrentRecorderFailure(
+          latestSnapshot.current,
+          recorderSessionId.current,
+          start.sessionId,
+        )) return;
+        void handleFailure(start.sessionId, error);
+      };
       try {
         if (asrModeRef.current === "live") {
           await startLiveRecorderForCurrentSession({
@@ -226,11 +278,11 @@ export function Pill() {
             currentRecorderSessionId: () => recorderSessionId.current,
             startRecorder: (sink) => recorder.current.start(
               start.microphoneId,
-              { transport: "live", liveSink: sink },
+              { transport: "live", liveSink: sink, onFailure },
             ),
           });
         } else {
-          await recorder.current.start(start.microphoneId);
+          await recorder.current.start(start.microphoneId, { onFailure });
         }
       } catch (error) {
         await handleFailure(start.sessionId, error);
@@ -681,10 +733,11 @@ function LiveListeningPill({
   waveform: number[];
 }) {
   const transcriptViewport = useRef<HTMLDivElement>(null);
+  const followsLiveTranscript = useRef(true);
   const isHold = activation === "hold";
 
   useLayoutEffect(() => {
-    scrollLiveTranscriptToEnd(transcriptViewport.current);
+    scrollLiveTranscriptToEnd(transcriptViewport.current, followsLiveTranscript.current);
   }, [transcript]);
 
   return (
@@ -692,6 +745,12 @@ function LiveListeningPill({
       <div
         className="pill__live-transcript"
         ref={transcriptViewport}
+        role="region"
+        aria-label="Live transcript. Scroll to review earlier words."
+        tabIndex={0}
+        onScroll={(event) => {
+          followsLiveTranscript.current = isLiveTranscriptNearBottom(event.currentTarget);
+        }}
         title={transcript ?? undefined}
       >
         <span>{transcript ?? "Listening…"}</span>

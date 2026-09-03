@@ -4,6 +4,9 @@ import { spawnSync } from "node:child_process";
 import path, { isAbsolute } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
+import { assertReleaseInputsGitTracked } from "./package-provenance.mts";
+
+export const RELEASE_CANDIDATE_ARGUMENT = "--release-candidate";
 
 /**
  * The platform-independent gate suite, in the order it runs. This is what
@@ -25,11 +28,48 @@ export const SOURCE_VERIFICATION_CHECKS = Object.freeze([
   Object.freeze(["test", "--", "--reporter=dot"]),
 ]);
 
-function runSourceVerification() {
+export function releaseCandidateModeFromArguments(arguments_) {
+  if (arguments_.length === 0) return false;
+  if (arguments_.length === 1 && arguments_[0] === RELEASE_CANDIDATE_ARGUMENT) return true;
+  throw new Error(
+    `Unknown local source verification argument(s): ${arguments_.join(" ")}`,
+  );
+}
+
+export function assertReleaseCandidateGitState(
+  projectPath = process.cwd(),
+  inputCandidates,
+) {
+  assertReleaseInputsGitTracked({
+    projectPath,
+    platform: "darwin",
+    inputCandidates,
+  });
+
+  const status = spawnSync(
+    "git",
+    ["-C", projectPath, "status", "--porcelain=v1", "-z", "--untracked-files=all"],
+    { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
+  );
+  if (status.error) throw status.error;
+  if (status.status !== 0) {
+    throw new Error("Release-candidate verification could not inspect Git worktree state.");
+  }
+  const changedPathCount = status.stdout.split("\0").filter(Boolean).length;
+  if (changedPathCount > 0) {
+    throw new Error(
+      `Release-candidate verification requires a clean Git worktree; found ${changedPathCount} changed or untracked path(s).`,
+    );
+  }
+}
+
+function runSourceVerification({ releaseCandidate = false } = {}) {
   const npmExecPath = process.env.npm_execpath;
   if (!npmExecPath || !isAbsolute(npmExecPath)) {
     throw new Error("Local source verification must run through a pinned npm script.");
   }
+
+  if (releaseCandidate) assertReleaseCandidateGitState();
 
   for (const arguments_ of SOURCE_VERIFICATION_CHECKS) {
     const result = spawnSync(process.execPath, [npmExecPath, ...arguments_], {
@@ -50,4 +90,8 @@ function runSourceVerification() {
  * entire suite recursively.
  */
 const invokedPath = process.argv[1] ? path.resolve(process.argv[1]) : null;
-if (invokedPath === fileURLToPath(import.meta.url)) runSourceVerification();
+if (invokedPath === fileURLToPath(import.meta.url)) {
+  runSourceVerification({
+    releaseCandidate: releaseCandidateModeFromArguments(process.argv.slice(2)),
+  });
+}

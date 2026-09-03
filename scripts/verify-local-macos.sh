@@ -10,6 +10,8 @@ smoke_mode="both"
 smoke_repeat="1"
 smoke_requested="0"
 smoke_allow_download="0"
+require_accessibility="0"
+release_candidate="${LOCALSCRIBE_RELEASE:-0}"
 while (($#)); do
   case "$1" in
     --smoke-model-root) smoke_requested="1"; smoke_model_root="${2:?missing value for --smoke-model-root}"; shift 2 ;;
@@ -19,6 +21,8 @@ while (($#)); do
     --smoke-mode) smoke_requested="1"; smoke_mode="${2:?missing value for --smoke-mode}"; shift 2 ;;
     --smoke-repeat) smoke_requested="1"; smoke_repeat="${2:?missing value for --smoke-repeat}"; shift 2 ;;
     --smoke-allow-download) smoke_requested="1"; smoke_allow_download="1"; shift ;;
+    --require-accessibility) require_accessibility="1"; shift ;;
+    --release-candidate) release_candidate="1"; shift ;;
     *) echo "Unknown macOS verification argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -47,8 +51,18 @@ if [[ "$target_arch" != "$(uname -m)" ]]; then
   exit 1
 fi
 
-npm run verify:local
+if [[ "$release_candidate" == "1" ]]; then
+  npm run verify:local -- --release-candidate
+else
+  npm run verify:local
+fi
+npm run test:settings-layout
 npm run make:mac
+accessibility_arguments=(--app "$app_path")
+if [[ "$require_accessibility" == "1" ]]; then
+  accessibility_arguments+=(--require-permission)
+fi
+npm run test:macos-accessibility-target -- "${accessibility_arguments[@]}"
 LOCALSCRIBE_REQUIRE_BUNDLED_CPYTHON=1 \
   npm test -- --reporter=dot tests/runtimeSbomSecurity.test.ts
 npm run smoke:packaged:macos

@@ -66,7 +66,7 @@ files and tests are not.
 
 ```sh
 npm run test:packaging
-npm run verify:local:macos
+npm run verify:local:macos -- --release-candidate --require-accessibility
 node scripts/release-metadata.mjs --platform darwin --format json
 node scripts/verify-release-assets.mjs --platform darwin --candidate
 ```
@@ -81,10 +81,17 @@ current source rather than the copy installed by the previous bundle.
 
 ## Provenance boundary
 
-The macOS release-input set covers application source, manifests, runtime and
-helper builders, entitlements, package inventory, bundle/artifact verifiers,
-SBOM generation, packaged smoke, and the macOS gate itself. A checker change
-therefore invalidates the package it approved.
+The macOS release-input set covers application source, source tests, CI/hook,
+lint, typecheck, audit and test-runner policy, the native UI fixtures,
+manifests, runtime and helper builders, entitlements, package inventory,
+bundle/artifact verifiers, SBOM generation, packaged smoke, and the macOS gate
+itself. A checker change therefore invalidates the package it approved.
+
+Release-candidate mode additionally requires every recursively selected input
+to be Git-tracked and the worktree to contain no tracked or non-ignored
+untracked changes. Ordinary source and package verification does not impose
+that clean-tree rule, so pre-commit validation can exercise intended edits and
+ignored build output remains harmless.
 
 Native helpers are built under ignored `out/runtime-staging/`. Forge promotes
 them atomically only for signing and copying, then restores and verifies the

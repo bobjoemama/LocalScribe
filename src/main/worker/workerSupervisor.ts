@@ -323,19 +323,203 @@ export interface WorkerAcceleratorSnapshot {
 // escaping can expand one character to six bytes, so the supervisor's byte
 // boundary must exceed that valid worker output while remaining bounded.
 const MAX_WORKER_STDOUT_LINE_BYTES = 1024 * 1024;
+export const WORKER_STDERR_SUPPRESSED_NOTICE =
+  "LocalScribe suppressed ASR worker diagnostic output for privacy.";
 /** Runtime worker rejects larger base64-decoded Live audio payloads. */
 export const LIVE_WORKER_MAX_CHUNK_BYTES = 8 * 1024;
 
+type WorkerProcessRole = "inference" | "installer";
+
 /*
- * A worker may have both a launcher (`uv`) and native-runtime descendants.
- * Killing only the direct child can therefore leave Python or FluidAudio
- * resident after a model replacement or application quit. On POSIX, a
- * detached spawn makes the child the leader of a new process group; retaining
- * that exact leader pid lets shutdown address the whole app-owned tree.
+ * A worker may have both a launcher (`uv`) and native-runtime descendants. A
+ * detached worker used to be its own process-group leader, but that identity
+ * stopped being trustworthy as soon as the leader exited: its numeric PGID
+ * could later be reused by an unrelated process group while LocalScribe still
+ * retained the old number.
+ *
+ * The detached child is now a tiny runtime anchor instead (bundled Python in a
+ * packaged build, Node in development). It owns the group, proxies the
+ * worker's three standard streams, and deliberately remains alive after the
+ * worker exits. SIGUSR2 asks the still-live anchor to terminate its own group;
+ * SIGWINCH is the force-escalation request. Only the anchor ever turns its own
+ * live pid into a negative process-group target, so the Electron parent never
+ * signals a stored/reusable PGID. Closing the parent-side stdin also starts
+ * teardown, which covers an abrupt Electron exit.
  */
 const WORKER_TERM_GRACE_MS = 1_000;
 const WORKER_KILL_GRACE_MS = 1_000;
 const WORKER_EXIT_POLL_MS = 25;
+
+const WORKER_NODE_PROCESS_ANCHOR_SOURCE = String.raw`
+"use strict";
+const { spawn } = require("node:child_process");
+const [command, ...args] = process.argv.slice(1);
+let terminating = false;
+let reportedExit = false;
+
+function forceTermination() {
+  try { process.kill(-process.pid, "SIGKILL"); } catch {}
+}
+
+function beginTermination() {
+  if (terminating) return;
+  terminating = true;
+  try { process.kill(-process.pid, "SIGTERM"); } catch {}
+  setTimeout(forceTermination, ${WORKER_TERM_GRACE_MS});
+}
+
+function reportWorkerExit() {
+  if (reportedExit || terminating) return;
+  reportedExit = true;
+  process.stdout.write(
+    '{"type":"error","id":null,"code":"worker_exited","message":"ASR worker exited"}\\n',
+  );
+}
+
+process.on("SIGTERM", beginTermination);
+process.on("SIGUSR2", beginTermination);
+process.on("SIGWINCH", forceTermination);
+process.stdin.on("end", beginTermination);
+process.stdin.on("close", beginTermination);
+process.stdin.on("error", beginTermination);
+process.stdout.on("error", beginTermination);
+
+if (!command) {
+  reportWorkerExit();
+} else {
+  const environment = { ...process.env };
+  delete environment.ELECTRON_RUN_AS_NODE;
+  const worker = spawn(command, args, {
+    cwd: process.cwd(),
+    env: environment,
+    detached: false,
+    shell: false,
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  process.stdin.pipe(worker.stdin);
+  worker.stdout.pipe(process.stdout);
+  worker.stderr.pipe(process.stderr);
+  worker.stdin.on("error", reportWorkerExit);
+  worker.stdout.on("error", reportWorkerExit);
+  worker.stderr.on("error", reportWorkerExit);
+  worker.once("error", reportWorkerExit);
+  worker.once("exit", reportWorkerExit);
+}
+
+setInterval(() => {}, 2 ** 30);
+`;
+
+export const WORKER_PROCESS_ANCHOR_SOURCE = String.raw`
+import os
+import signal
+import subprocess
+import sys
+import threading
+
+terminating = threading.Event()
+reported_exit = threading.Event()
+
+def force_termination(*_args):
+    try:
+        os.killpg(os.getpgrp(), signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+
+def begin_termination(*_args):
+    if terminating.is_set():
+        return
+    terminating.set()
+    try:
+        os.killpg(os.getpgrp(), signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    timer = threading.Timer(${WORKER_TERM_GRACE_MS / 1000}, force_termination)
+    timer.daemon = False
+    timer.start()
+
+def report_worker_exit():
+    if reported_exit.is_set() or terminating.is_set():
+        return
+    reported_exit.set()
+    try:
+        os.write(
+            sys.stdout.fileno(),
+            b'{"type":"error","id":null,"code":"worker_exited","message":"ASR worker exited"}\\n',
+        )
+    except OSError:
+        begin_termination()
+
+def copy_stream(source, destination, terminate_on_eof=False):
+    stream_failed = False
+    try:
+        while True:
+            chunk = os.read(source.fileno(), 65536)
+            if not chunk:
+                break
+            remaining = memoryview(chunk)
+            while remaining:
+                written = os.write(destination.fileno(), remaining)
+                remaining = remaining[written:]
+    except (BrokenPipeError, OSError):
+        stream_failed = True
+    finally:
+        if terminate_on_eof:
+            try:
+                destination.close()
+            except OSError:
+                pass
+            begin_termination()
+        elif stream_failed:
+            begin_termination()
+
+signal.signal(signal.SIGTERM, begin_termination)
+signal.signal(signal.SIGUSR2, begin_termination)
+signal.signal(signal.SIGWINCH, force_termination)
+
+command = sys.argv[1:]
+worker = None
+if command:
+    try:
+        worker = subprocess.Popen(
+            command,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=False,
+            close_fds=True,
+        )
+    except OSError:
+        report_worker_exit()
+else:
+    report_worker_exit()
+
+if worker is not None:
+    stdin_thread = threading.Thread(
+        target=copy_stream,
+        args=(sys.stdin.buffer, worker.stdin, True),
+        daemon=True,
+    )
+    stdout_thread = threading.Thread(
+        target=copy_stream,
+        args=(worker.stdout, sys.stdout.buffer),
+        daemon=True,
+    )
+    stderr_thread = threading.Thread(
+        target=copy_stream,
+        args=(worker.stderr, sys.stderr.buffer),
+        daemon=True,
+    )
+    stdin_thread.start()
+    stdout_thread.start()
+    stderr_thread.start()
+    worker.wait()
+    stdout_thread.join()
+    stderr_thread.join()
+    report_worker_exit()
+
+while True:
+    signal.pause()
+`;
 
 interface RetiringProcess {
   completion: Promise<void>;
@@ -400,6 +584,8 @@ export class WorkerSupervisor {
     RetiringProcess
   >();
   private readonly processGroupIds = new WeakMap<ChildProcessWithoutNullStreams, number>();
+  private readonly processTreeTerminationRequested = new WeakSet<ChildProcessWithoutNullStreams>();
+  private readonly stderrNotified = new WeakSet<ChildProcessWithoutNullStreams>();
   private readonly pending = new Map<string, PendingRequest>();
   private hello: Promise<void> | null = null;
   private resolveHello: (() => void) | null = null;
@@ -408,6 +594,7 @@ export class WorkerSupervisor {
   private activeModel: WorkerModelSelection | null = null;
   private liveSession: ActiveLiveSession | null = null;
   private operationTail: Promise<void> = Promise.resolve();
+  private activeInstaller: WorkerSupervisor | null = null;
   private retired = false;
 
   constructor(
@@ -433,6 +620,7 @@ export class WorkerSupervisor {
      * every single model load without a cache and 0.70-0.87s with a warm one.
      */
     private readonly bytecodeCacheDirectory: string | null = null,
+    private readonly processRole: WorkerProcessRole = "inference",
   ) {
     if (temporaryDirectory !== null && !path.isAbsolute(temporaryDirectory)) {
       throw new Error("ASR worker temporary storage must be an absolute path");
@@ -499,12 +687,11 @@ export class WorkerSupervisor {
    * repair that replaces the warm artifact must explicitly request an unload;
    * after the transaction the prior selection is loaded again.
    *
-   * There is intentionally no public cancel operation. This isolated worker
-   * owns both the installer and any warm native runtime, so the only reliable
-   * interruption is process termination, which would evict an unrelated warm
-   * model. The worker's atomic staging/recovery protocol makes an interrupted
-   * install safe to retry; exposing a "Cancel" button here would falsely
-   * promise that it could preserve the warm runtime.
+   * The network-capable installer is a separate transient process. The normal
+   * inference process stays dependency-level offline for its entire lifetime,
+   * and an unrelated warm runtime remains resident while storage is installed.
+   * A repair of the loaded artifact still unloads first so no process reads a
+   * tree while the installer atomically replaces it.
    */
   installModel(
     selection: WorkerModelSelection,
@@ -515,44 +702,28 @@ export class WorkerSupervisor {
     } = {},
   ): Promise<void> {
     return this.serialize(async () => {
+      if (this.retired) throw new Error("LocalScribe is shutting down");
       const previousSelection = this.activeModel ? { ...this.activeModel } : null;
       const mustUnload = previousSelection !== null
         && (options.replacesLoadedArtifact === true || sameSelection(previousSelection, selection));
       if (mustUnload) await this.stopProcessUnlocked();
+      // Quit can land while the awaited warm-runtime shutdown is in progress.
+      // Recheck before constructing the only network-capable child so a model
+      // repair can never start an installer after application retirement.
+      if (this.retired) throw new Error("LocalScribe is shutting down");
+      const installer = this.createInstallerSupervisor();
+      this.activeInstaller = installer;
       try {
-        await this.ensureStarted();
-        const response = await this.request(
-          {
-            type: "install_model",
-            modelId: selection.modelId,
-            tier: selection.tier,
-            computeType: selection.computeType,
-            modelRoot: this.modelRoot,
-            allowDownload: true,
-          },
-          installTimeoutMs(options.artifactBytes ?? INSTALL_MAX_ARTIFACT_BYTES),
-          options.onProgress,
-        );
-        const installed = modelInstalledMessageSchema.safeParse(response);
-        if (!installed.success) {
-          throw new Error(`Unexpected worker response: ${response.type}`);
-        }
-        if (
-          installed.data.modelId !== selection.modelId
-          || installed.data.tier !== selection.tier
-          || installed.data.computeType !== selection.computeType
-        ) {
-          throw new Error("ASR worker acknowledged installation for a model selection other than the validated catalog tier");
-        }
+        await installer.installWithCurrentProcess(selection, options);
       } finally {
-        if (!previousSelection) {
-          // A data-only installer process must not become an accidental warm
-          // runtime when the application was cold before the operation.
-          await this.stopProcessUnlocked();
-        } else if (mustUnload) {
-          // Finish the installer process before reconstructing the exact prior
-          // selection, so replacement never overlaps the old native runtime.
-          await this.stopProcessUnlocked();
+        try {
+          await installer.stopProcessUnlocked();
+        } finally {
+          if (this.activeInstaller === installer) this.activeInstaller = null;
+        }
+        if (mustUnload) {
+          // Reconstruct the exact prior selection only after the installer has
+          // exited, so replacement never overlaps the old native runtime.
           // Never rebuild a runtime the application is in the middle of
           // discarding: Quit during a repair would otherwise wait out a full
           // multi-gigabyte load before the process could exit.
@@ -560,6 +731,57 @@ export class WorkerSupervisor {
         }
       }
     });
+  }
+
+  private createInstallerSupervisor(): WorkerSupervisor {
+    return new WorkerSupervisor(
+      this.workerDirectory,
+      this.modelRoot,
+      this.environmentDirectory,
+      this.bundledRuntimeDirectory,
+      this.workerModule,
+      this.temporaryDirectory,
+      this.bytecodeCacheDirectory,
+      "installer",
+    );
+  }
+
+  private async installWithCurrentProcess(
+    selection: WorkerModelSelection,
+    options: {
+      artifactBytes?: number;
+      onProgress?: (progress: WorkerModelInstallProgress) => void;
+    },
+  ): Promise<void> {
+    if (this.processRole !== "installer") {
+      throw new Error("Model installation requires a dedicated installer worker");
+    }
+    await this.ensureStarted();
+    const response = await this.request(
+      {
+        type: "install_model",
+        modelId: selection.modelId,
+        tier: selection.tier,
+        computeType: selection.computeType,
+        modelRoot: this.modelRoot,
+        allowDownload: true,
+      },
+      installTimeoutMs(options.artifactBytes ?? INSTALL_MAX_ARTIFACT_BYTES),
+      options.onProgress,
+    );
+    const installed = modelInstalledMessageSchema.safeParse(response);
+    if (!installed.success) {
+      throw new Error(`Unexpected worker response: ${response.type}`);
+    }
+    if (
+      installed.data.modelId !== selection.modelId
+      || installed.data.tier !== selection.tier
+      || installed.data.computeType !== selection.computeType
+    ) {
+      throw new Error(
+        "ASR worker acknowledged installation for a model selection other than the validated catalog tier",
+      );
+    }
   }
 
   transcribe(input: {
@@ -831,6 +1053,11 @@ export class WorkerSupervisor {
    */
   retire(): void {
     this.retired = true;
+    const installer = this.activeInstaller;
+    if (installer) {
+      installer.retire();
+      installer.abort("LocalScribe is shutting down");
+    }
   }
 
   /**
@@ -954,12 +1181,26 @@ export class WorkerSupervisor {
     const args = bundledPython
       ? [...noBytecode, "-m", this.workerModule]
       : ["run", "--project", this.workerDirectory, "python", ...noBytecode, "-m", this.workerModule];
+    const anchorCommand = bundledPython ?? process.execPath;
+    const anchorArgs = bundledPython
+      ? [...noBytecode, "-c", WORKER_PROCESS_ANCHOR_SOURCE, command, ...args]
+      : ["-e", WORKER_NODE_PROCESS_ANCHOR_SOURCE, "--", command, ...args];
     const child = spawn(
-      command,
-      args,
+      anchorCommand,
+      anchorArgs,
       {
         cwd: this.workerDirectory,
-        env: this.workerEnvironment(Boolean(bundledPython)),
+        env: {
+          ...this.workerEnvironment(Boolean(bundledPython)),
+          ...(!bundledPython
+            ? {
+                // Development Electron has not had the production RunAsNode
+                // fuse flipped. Packaged builds use the bundled, pinned Python
+                // runtime above and never depend on this capability.
+                ELECTRON_RUN_AS_NODE: "1",
+              }
+            : {}),
+        },
         // POSIX `detached` creates a new session and process group. The pipes
         // remain referenced, so this does not let the worker outlive Electron;
         // it gives termination a safe, dedicated group to signal. Windows has
@@ -982,9 +1223,7 @@ export class WorkerSupervisor {
     this.process = child;
     this.stdoutBuffer = Buffer.alloc(0);
     child.stdout.on("data", (chunk: Buffer) => this.handleStdoutChunk(child, chunk));
-    child.stderr.on("data", (chunk: Buffer) => {
-      console.error(`[asr-worker] ${chunk.toString("utf8").trimEnd()}`);
-    });
+    child.stderr.on("data", (chunk: Buffer) => this.handleStderrChunk(child, chunk));
     child.on("error", (error) => {
       // A spawn error such as ENOENT has no OS process to terminate. Node
       // leaves pid/exitCode unset in that case, so tracking it as live would
@@ -1025,8 +1264,20 @@ export class WorkerSupervisor {
       // Keep the local worker's text protocol explicitly UTF-8.
       PYTHONUTF8: "1",
       PYTHONIOENCODING: "utf-8:strict",
+      LOCALSCRIBE_WORKER_ROLE: this.processRole,
       HF_HUB_DISABLE_TELEMETRY: "1",
       HF_HUB_DISABLE_IMPLICIT_TOKEN: "1",
+      ...(this.processRole === "inference"
+        ? {
+            // Hugging Face clients snapshot this setting when imported, so an
+            // inference process must be born offline rather than toggled per
+            // request. Transformers and the development `uv` launcher receive
+            // matching negative capabilities at the same process boundary.
+            HF_HUB_OFFLINE: "1",
+            TRANSFORMERS_OFFLINE: "1",
+            UV_OFFLINE: "1",
+          }
+        : {}),
       UV_PROJECT_ENVIRONMENT: this.environmentDirectory,
       PYTHONPATH: this.workerDirectory,
     };
@@ -1148,6 +1399,17 @@ export class WorkerSupervisor {
     if (this.stdoutBuffer.byteLength > MAX_WORKER_STDOUT_LINE_BYTES) {
       this.terminateWorker(child, new Error("ASR worker stdout line exceeded the protocol limit"));
     }
+  }
+
+  private handleStderrChunk(child: ChildProcessWithoutNullStreams, chunk: Buffer): void {
+    if (this.process !== child || chunk.byteLength === 0 || this.stderrNotified.has(child)) return;
+    // Dependency stderr may contain paths, URLs, tokens, transcripts, ANSI
+    // controls, or an arbitrarily large byte stream. Always drain the pipe but
+    // never decode or forward worker-controlled bytes into production logs.
+    // One constant-size notice per child keeps both disclosure and log growth
+    // bounded even when a dependency emits many multi-megabyte chunks.
+    this.stderrNotified.add(child);
+    console.error(WORKER_STDERR_SUPPRESSED_NOTICE);
   }
 
   private handleLine(child: ChildProcessWithoutNullStreams, line: string): void {
@@ -1380,16 +1642,20 @@ export class WorkerSupervisor {
   }
 
   private isProcessTreeAlive(child: ChildProcessWithoutNullStreams): boolean {
-    const processGroupId = this.ownedProcessGroupId(child);
-    if (processGroupId !== null) {
-      try {
-        // Signal zero performs existence/permission checking without changing
-        // process state. EPERM still proves that the group exists.
-        process.kill(-processGroupId, 0);
-        return true;
-      } catch (error) {
-        return !isErrnoWithCode(error, "ESRCH");
-      }
+    const recordedProcessGroupId = this.processGroupIds.get(child);
+    if (recordedProcessGroupId !== undefined) {
+      if (child.exitCode === null && child.signalCode === null) return true;
+      /*
+       * An anchor that exits before LocalScribe asked it to tear down its group
+       * has destroyed the only non-reusable ownership proof. Treat that tree
+       * as live forever and refuse replacement. The expected terminal state is
+       * specifically SIGKILL after a delivered anchor teardown command; a
+       * normal exit or another signal remains fail-closed.
+       */
+      return !(
+        this.processTreeTerminationRequested.has(child)
+        && child.signalCode === "SIGKILL"
+      );
     }
     return child.exitCode === null && child.signalCode === null;
   }
@@ -1401,15 +1667,20 @@ export class WorkerSupervisor {
     const processGroupId = this.ownedProcessGroupId(child);
     if (processGroupId !== null) {
       try {
-        process.kill(-processGroupId, signal);
+        // Control the live anchor by its unreaped direct-child identity. The
+        // anchor performs the group signal using its own current pid, never a
+        // number retained by this process after the leader has exited.
+        const delivered = child.kill(signal === "SIGTERM" ? "SIGUSR2" : "SIGWINCH");
+        if (delivered) this.processTreeTerminationRequested.add(child);
         return;
-      } catch (error) {
-        if (isErrnoWithCode(error, "ESRCH")) return;
-        // If group delivery itself is denied, still attempt to stop the
-        // direct child. The tracked live-group check prevents replacement
-        // from proceeding while any descendant remains.
+      } catch {
+        // Preserve fail-closed ownership: without a responding live anchor we
+        // cannot prove which descendants remain, so retirement stays tracked
+        // and a replacement worker is refused.
+        return;
       }
     }
+    if (child.exitCode !== null || child.signalCode !== null) return;
     try {
       child.kill(signal);
     } catch {
@@ -1429,6 +1700,8 @@ export class WorkerSupervisor {
       || processGroupId <= 1
       || processGroupId === process.pid
       || child.pid !== processGroupId
+      || child.exitCode !== null
+      || child.signalCode !== null
     ) {
       return null;
     }
@@ -1470,10 +1743,6 @@ function sameSelection(
 
 function modeFor(selection: WorkerModelSelection): AsrMode {
   return selection.asrMode ?? "after-stop";
-}
-
-function isErrnoWithCode(error: unknown, code: string): boolean {
-  return error instanceof Error && "code" in error && error.code === code;
 }
 
 function delay(milliseconds: number): Promise<void> {

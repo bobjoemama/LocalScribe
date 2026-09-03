@@ -24,6 +24,25 @@ describe("pill accessibility", () => {
     expect(reducedMotion).toContain(".pill-error-notice__countdown-progress");
   });
 
+  it("makes the Live transcript keyboard-reviewable with a visible scrollbar", () => {
+    const source = readFileSync(resolve(process.cwd(), "src/renderer/pill/Pill.tsx"), "utf8");
+    const css = readFileSync(resolve(process.cwd(), "src/renderer/styles.css"), "utf8");
+    const liveTranscript = source.slice(
+      source.indexOf('className="pill__live-transcript"'),
+      source.indexOf("<span>{transcript", source.indexOf('className="pill__live-transcript"')),
+    );
+    const transcriptRule = css.match(/\.pill__live-transcript\s*\{([\s\S]*?)\n\}/)?.[1];
+
+    expect(liveTranscript).toContain('role="region"');
+    expect(liveTranscript).toContain('aria-label="Live transcript. Scroll to review earlier words."');
+    expect(liveTranscript).toContain("tabIndex={0}");
+    expect(liveTranscript).toContain("isLiveTranscriptNearBottom(event.currentTarget)");
+    expect(transcriptRule).toContain("scrollbar-width: thin");
+    expect(css).toContain(".pill__live-transcript::-webkit-scrollbar { width: 7px; }");
+    expect(css).toContain(".pill__live-transcript:focus-visible");
+    expect(css).not.toContain(".pill__live-transcript::-webkit-scrollbar { display: none; }");
+  });
+
   it("uses the native macOS UI font before the generic fallback", () => {
     const css = readFileSync(resolve(process.cwd(), "src/renderer/styles.css"), "utf8");
 

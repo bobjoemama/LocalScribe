@@ -253,33 +253,63 @@ describe("release hardening configuration", () => {
     expect(helper).toContain('"AXManualAccessibility" as CFString');
     expect(helper).toContain("AXUIElementSetAttributeValue(");
     expect(helper).toContain("kCFBooleanTrue");
-    expect(helper).toContain("focusedElementLookupAttemptCount = 6");
-    expect(helper).toContain("focusedElementLookupInterval: TimeInterval = 0.02");
+    expect(helper).toContain("focusedElementLookupAttemptCount = 81");
+    expect(helper).toContain("focusedElementLookupInterval: TimeInterval = 0.025");
     expect(helper).not.toContain("AXEnhancedUserInterface");
+    expect(helper).toContain("editableElementAvailable: initialEditableElement != nil");
+    expect(helper).not.toMatch(/manualAccessibilityActivationNeeded\([\s\S]{0,300}role\s*==/u);
+    expect(helper).toContain('activation: resolvedElement == nil ? "timed_out" : "resolved"');
 
     expect(helper).toContain('"AXEditableAncestor" as CFString');
     expect(helper).not.toContain("AXHighestEditableAncestor");
     expect(helper).toContain("elementIsInParentChain(editableAncestor, of: focusedElement)");
     expect(helper).toContain("elementsShareAccessibilityWindow(editableAncestor, focusedElement)");
     expect(helper).toContain("candidateEditable: focusedElementIsEditable(editableAncestor)");
-    expect(helper).toContain("let focusedUIElement = accessibilityTrusted");
+    expect(helper).toContain("let initialWindowFingerprint = accessibilityTrusted");
     expect(helper).toMatch(
-      /focusedUIElementEnablingManualAccessibilityIfNeeded\(focusedApplication\)[\s\S]*?focusedWindowFingerprint\(/u,
+      /let initialWindowFingerprint[\s\S]*?focusedWindowFingerprint\([\s\S]*?let focusedObservation[\s\S]*?focusedUIElementEnablingManualAccessibilityIfNeeded\(/u,
     );
+    expect(helper).toContain("recoveredTargetIdentityIsAllowed(");
+    expect(helper).toContain("elementsAreSameOrAncestorDescendant(");
+    expect(helper).toContain("initialWindowFingerprint == finalWindowFingerprint");
+    expect(helper).toContain("controlsSameOrAncestorDescendant");
+    expect(helper).toContain("guard initialControlAvailable else { return false }");
+    expect(helper).toMatch(
+      /!recoveryIdentityIsAllowed\(\s*initialWindowFingerprint: fingerprint,\s*finalWindowFingerprint: fingerprint,\s*initialControlAvailable: false,\s*finalControlAvailable: true/um,
+    );
+    expect(helper).toContain("recoveryIdentityAllowed ? initialWindowFingerprint : nil");
     expect(helper).not.toMatch(/knownEditableRoles[\s\S]*?return true/u);
 
     // Tree activation must not read target content. Value, selected text, and
     // selected range appear only in settable-capability checks, never in an
     // attribute-value read or transcript write.
     expect(helper).not.toContain("kAXTitleAttribute");
-    expect(helper.match(/kAXValueAttribute/gu)).toHaveLength(2);
-    expect(helper.match(/kAXSelectedTextAttribute/gu)).toHaveLength(2);
+    expect(helper.match(/kAXValueAttribute/gu)).toHaveLength(1);
+    expect(helper.match(/kAXSelectedTextAttribute/gu)).toHaveLength(1);
     expect(helper.match(/kAXSelectedTextRangeAttribute/gu)).toHaveLength(1);
     expect(helper).toContain("attributeIsSettable(");
     expect(helper).toContain("return textRoleHasMutableValue || selectedTextSettable");
     expect(helper).toContain("kAXComboBoxRole as String");
     expect(helper).toContain("guard let finalTarget = try? captureTarget()");
     expect(helper).toContain("CGEvent offers no compare-and-post transaction");
+
+    const macVerification = projectFile("scripts/verify-local-macos.sh");
+    const coldEditorFixture = projectFile("scripts/test-macos-accessibility-target.mjs");
+    expect(macVerification).toContain("npm run test:macos-accessibility-target");
+    expect(coldEditorFixture).toContain('app.setAccessibilitySupportEnabled(true)');
+    expect(coldEditorFixture).toContain('target.accessibilityActivation !== "resolved"');
+    expect(coldEditorFixture).toContain('target.accessibilityElement !== "text_control"');
+    expect(coldEditorFixture).toContain("target.accessibilityLookupAttempts < 2");
+    expect(coldEditorFixture).toContain('pasteArgumentsFor(staleSequence)');
+    expect(coldEditorFixture).toContain('stalePaste.reason !== "clipboard_changed"');
+    expect(coldEditorFixture).toContain('paste.injected !== true');
+    expect(coldEditorFixture).toContain("finalSequence.sequence !== sequencePayload.sequence");
+    expect(coldEditorFixture).not.toContain("clipboard.read");
+    expect(coldEditorFixture).not.toContain("editor.innerText");
+    expect(coldEditorFixture).not.toContain("editor.textContent");
+    expect(coldEditorFixture).not.toContain("editor.innerHTML");
+    expect(coldEditorFixture).not.toContain("editor.value");
+    expect(coldEditorFixture).not.toContain("JSON.stringify({ target");
   });
 
   it("hardens the Electron fuse configuration without dropping ASAR protections", () => {
@@ -560,11 +590,13 @@ describe("release hardening configuration", () => {
   it("runs every local macOS gate in fail-fast order and verifies its artifacts", () => {
     const localMacVerification = projectFile("scripts/verify-local-macos.sh");
     const sourceIndex = localMacVerification.indexOf("npm run verify:local");
+    const settingsLayoutIndex = localMacVerification.indexOf("npm run test:settings-layout");
     const makeIndex = localMacVerification.indexOf("npm run make:mac");
     const smokeIndex = localMacVerification.indexOf("npm run smoke:packaged:macos");
 
     expect(sourceIndex).toBeGreaterThan(-1);
-    expect(makeIndex).toBeGreaterThan(sourceIndex);
+    expect(settingsLayoutIndex).toBeGreaterThan(sourceIndex);
+    expect(makeIndex).toBeGreaterThan(settingsLayoutIndex);
     expect(smokeIndex).toBeGreaterThan(makeIndex);
     expect(localMacVerification).toContain("PYTHONDONTWRITEBYTECODE=1");
     expect(localMacVerification).toContain("-m unittest discover -s worker/tests -v");

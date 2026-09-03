@@ -90,13 +90,17 @@ Node, npm, `uv`, and Python versions pinned by the repository.
 ```sh
 npm ci --strict-allow-scripts
 npm run verify:local
-npm run verify:local:macos
+npm run verify:local:macos -- --release-candidate --require-accessibility
 ```
 
 The macOS gate builds DMG and ZIP candidates under `out/`, verifies their
 contents, signatures, entitlements, provenance, SBOMs, and checksums, and runs
-the packaged worker smoke tests. Generated dependencies, runtimes, model files,
-credentials, and build output are excluded from Git.
+the packaged worker and cold-editor recovery tests. The explicit Accessibility
+flag makes a missing local TCC grant fail instead of silently skipping that
+machine-only test. Release-candidate mode also requires every provenance input
+to be committed in a clean Git worktree; ordinary pre-commit source checks
+continue to allow intended tracked edits. Generated dependencies, runtimes,
+model files, credentials, and build output are excluded from Git.
 
 Automated gates do not prove physical microphone permissions, global shortcuts,
 third-party focus/paste behavior, or clean-account Gatekeeper behavior. Use the

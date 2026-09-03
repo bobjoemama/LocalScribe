@@ -52,6 +52,41 @@ export {
   UNAVAILABLE_IN_THIS_BUILD_NOTICE,
 } from "../../generativeTextAvailability";
 
+type SettingsSubscriptionSource<T> = {
+  get(): Promise<T>;
+  onChanged(listener: (settings: T) => void): () => void;
+};
+
+/**
+ * Subscribe before loading the initial snapshot, and reject that snapshot if a
+ * newer pushed value wins the race. The generation also suppresses late work
+ * after the owning effect has been disposed.
+ */
+export function subscribeToSettingsWithInitialLoad<T>(
+  source: SettingsSubscriptionSource<T>,
+  applySettings: (settings: T) => void,
+  onInitialLoadError: (error: unknown) => void,
+): () => void {
+  let active = true;
+  let generation = 0;
+  const initialGeneration = generation;
+  const unsubscribe = source.onChanged((settings) => {
+    if (!active) return;
+    generation += 1;
+    applySettings(settings);
+  });
+  void source.get().then((settings) => {
+    if (active && generation === initialGeneration) applySettings(settings);
+  }).catch((error: unknown) => {
+    if (active && generation === initialGeneration) onInitialLoadError(error);
+  });
+  return () => {
+    active = false;
+    generation += 1;
+    unsubscribe();
+  };
+}
+
 export function appProfilePresentation(): {
   detail: string;
   labelPlaceholder: string;
@@ -286,6 +321,11 @@ export function modelPerformanceSaveMessage(
   return "Auto performance mode saved.";
 }
 
+/** Confirm an export without leaving a machine-specific absolute path on screen. */
+export function settingsHistoryExportMessage(path: string | null): string {
+  return path ? "History exported locally." : "Export cancelled";
+}
+
 const styleTabs: { id: StyleTab; label: string }[] = [
   { id: "personal", label: "Personal messages" },
   { id: "work", label: "Work messages" },
@@ -417,14 +457,16 @@ export function StyleScreen() {
       setSettings(settingsWithPendingDraft(next, cleanupDraft.current));
       setSettingsLoadError(null);
     };
-    void window.localScribe.settings.get().then(applySettings).catch((error: unknown) => {
-      setSettingsLoadError(error);
-    });
+    const unsubscribeSettings = subscribeToSettingsWithInitialLoad(
+      window.localScribe.settings,
+      applySettings,
+      setSettingsLoadError,
+    );
     void loadProfiles().catch((error: unknown) => {
       setProfileMessageIsError(true);
       setProfileMessage(`Could not load app profiles: ${errorDetail(error)}`);
     });
-    return window.localScribe.settings.onChanged(applySettings);
+    return unsubscribeSettings;
   }, [loadProfiles]);
 
   const cleanupLevel = useMemo<CleanupSelection | null>(
@@ -718,14 +760,16 @@ export function TransformsScreen() {
       setSettings(next);
       setSettingsLoadError(null);
     };
-    void window.localScribe.settings.get().then(applySettings).catch((error: unknown) => {
-      setSettingsLoadError(error);
-    });
+    const unsubscribeSettings = subscribeToSettingsWithInitialLoad(
+      window.localScribe.settings,
+      applySettings,
+      setSettingsLoadError,
+    );
     void loadRules().catch((error: unknown) => {
       setMessageIsError(true);
       setMessage(`Could not load replacement rules: ${errorDetail(error)}`);
     });
-    return window.localScribe.settings.onChanged(applySettings);
+    return unsubscribeSettings;
   }, [loadRules]);
 
   const transformControls = settingsControlAvailability(settings, settingsLoadError);
@@ -1036,9 +1080,11 @@ export function SettingsModal({ onClose, registerDismissalGate }: {
   }, []);
 
   useEffect(() => {
-    void window.localScribe.settings.get().then(applyPersistedSettings).catch((error: unknown) => {
-      setSettingsLoadError(error);
-    });
+    const unsubscribeSettings = subscribeToSettingsWithInitialLoad(
+      window.localScribe.settings,
+      applyPersistedSettings,
+      setSettingsLoadError,
+    );
     void refresh().catch((error: unknown) => {
       setStatus(`Could not refresh system information: ${errorDetail(error)}`);
     });
@@ -1046,7 +1092,7 @@ export function SettingsModal({ onClose, registerDismissalGate }: {
     void refreshMicrophones().catch((error: unknown) => {
       setStatus(`Could not list microphones: ${errorDetail(error)}`);
     });
-    return window.localScribe.settings.onChanged(applyPersistedSettings);
+    return unsubscribeSettings;
   }, [applyPersistedSettings, refresh, refreshMicrophones, refreshModelCatalog]);
 
   useEffect(() => {
@@ -1215,7 +1261,7 @@ export function SettingsModal({ onClose, registerDismissalGate }: {
   const exportHistory = async () => {
     try {
       const path = await window.localScribe.history.export();
-      setStatus(path ? `Exported to ${path}` : "Export cancelled");
+      setStatus(settingsHistoryExportMessage(path));
     } catch (error) {
       setStatus(`Could not export history: ${errorDetail(error)}`);
     }
@@ -1775,8 +1821,8 @@ export function SettingsModal({ onClose, registerDismissalGate }: {
           <footer className="ls-settings-footer">
             {/*
               The status ellipsizes rather than widening the footer, so a long
-              message (a save failure, or an export path) would otherwise lose
-              its tail. `title` keeps the whole string recoverable on hover.
+              failure would otherwise lose its tail. `title` keeps the whole
+              string recoverable on hover.
             */}
             <span
               className={settingsLoadError || status.startsWith("Could not") || status.startsWith("Model removed, but") ? "is-error" : ""}

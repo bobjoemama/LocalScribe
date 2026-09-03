@@ -91,8 +91,21 @@ function currentTargetFailure(
 function result(
   outcome: InsertionOutcome,
   reason?: InsertionReasonCode,
+  target?: ActiveTarget,
 ): InsertionResult {
-  return reason === undefined ? { outcome } : { outcome, reason };
+  return {
+    outcome,
+    ...(reason === undefined ? {} : { reason }),
+    ...(target?.accessibilityElement === undefined
+      ? {}
+      : { accessibilityElement: target.accessibilityElement }),
+    ...(target?.accessibilityActivation === undefined
+      ? {}
+      : { accessibilityActivation: target.accessibilityActivation }),
+    ...(target?.accessibilityLookupAttempts === undefined
+      ? {}
+      : { accessibilityLookupAttempts: target.accessibilityLookupAttempts }),
+  };
 }
 
 export class SafeInsertionCoordinator {
@@ -200,7 +213,7 @@ export class SafeInsertionCoordinator {
       const initialFailure = initialTargetFailure(expectedTarget);
       if (initialFailure) {
         this.clipboard.writeText(text);
-        return result("copied", initialFailure);
+        return result("copied", initialFailure, expectedTarget);
       }
 
       // Bracket the snapshot with native sequence reads. If another process
@@ -214,7 +227,7 @@ export class SafeInsertionCoordinator {
       } catch {
         if (!this.isCurrentSession(insertionGeneration)) return result("copied", "session_invalidated");
         this.clipboard.writeText(text);
-        return result("copied", "clipboard_snapshot_failed");
+        return result("copied", "clipboard_snapshot_failed", expectedTarget);
       }
       const sequenceAfterSnapshot = await this.platformBridge.clipboardSequence().catch(() => null);
       if (!this.isCurrentSession(insertionGeneration)) return result("copied", "session_invalidated");
@@ -223,11 +236,11 @@ export class SafeInsertionCoordinator {
         sequenceAfterSnapshot === null
       ) {
         this.clipboard.writeText(text);
-        return result("copied", "clipboard_sequence_unavailable");
+        return result("copied", "clipboard_sequence_unavailable", expectedTarget);
       }
       if (sequenceBeforeSnapshot !== sequenceAfterSnapshot) {
         this.clipboard.writeText(text);
-        return result("copied", "clipboard_changed");
+        return result("copied", "clipboard_changed", expectedTarget);
       }
 
       // Always leave the transcription available to the user. Capture the
@@ -238,23 +251,27 @@ export class SafeInsertionCoordinator {
       const sequenceAfterWrite = await this.platformBridge.clipboardSequence().catch(() => null);
       if (!this.isCurrentSession(insertionGeneration)) return result("copied", "session_invalidated");
       if (sequenceAfterWrite === null) {
-        return result("copied", "clipboard_sequence_unavailable");
+        return result("copied", "clipboard_sequence_unavailable", expectedTarget);
       }
       if (!clipboardAdvancedExactlyOnce(sequenceAfterSnapshot, sequenceAfterWrite)) {
         // Our synchronous clipboard write must be the only change since the
         // stable snapshot boundary. Otherwise a concurrent writer may have
         // replaced the text before this first post-write sequence read.
-        return result("copied", "clipboard_changed");
+        return result("copied", "clipboard_changed", expectedTarget);
       }
       const currentTarget = await this.platformBridge.captureActiveTarget().catch(() => null);
       if (!this.isCurrentSession(insertionGeneration)) return result("copied", "session_invalidated");
       const sequenceBeforePaste = await this.platformBridge.clipboardSequence().catch(() => null);
       if (!this.isCurrentSession(insertionGeneration)) return result("copied", "session_invalidated");
-      if (!currentTarget) return result("copied", "current_target_unavailable");
+      if (!currentTarget) return result("copied", "current_target_unavailable", expectedTarget);
       const currentFailure = currentTargetFailure(expectedTarget, currentTarget);
-      if (currentFailure) return result("copied", currentFailure);
-      if (sequenceBeforePaste === null) return result("copied", "clipboard_sequence_unavailable");
-      if (sequenceBeforePaste !== sequenceAfterWrite) return result("copied", "clipboard_changed");
+      if (currentFailure) return result("copied", currentFailure, currentTarget);
+      if (sequenceBeforePaste === null) {
+        return result("copied", "clipboard_sequence_unavailable", currentTarget);
+      }
+      if (sequenceBeforePaste !== sequenceAfterWrite) {
+        return result("copied", "clipboard_changed", currentTarget);
+      }
 
       let injection: PasteInjectionResult;
       try {
@@ -268,7 +285,7 @@ export class SafeInsertionCoordinator {
           sequenceBeforePaste,
         );
       } catch {
-        return result("copied", "paste_injection_failed");
+        return result("copied", "paste_injection_failed", currentTarget);
       }
       // A native paste already dispatched before cancellation cannot be
       // recalled. Do prevent all subsequent acknowledgement/restore work.
@@ -279,12 +296,12 @@ export class SafeInsertionCoordinator {
       // dictated text deliberately remains available on the clipboard.
       if (injection.status !== "injected" || !injection.consumptionAcknowledgement) {
         return injection.status === "injected"
-          ? result("pasted-with-copy", "paste_acknowledgement_unavailable")
-          : result("copied", injection.reason ?? "paste_injection_failed");
+          ? result("pasted-with-copy", "paste_acknowledgement_unavailable", currentTarget)
+          : result("copied", injection.reason ?? "paste_injection_failed", currentTarget);
       }
 
       if (!await this.waitForConsumptionAcknowledgement(injection.consumptionAcknowledgement)) {
-        return result("pasted-with-copy", "paste_acknowledgement_failed");
+        return result("pasted-with-copy", "paste_acknowledgement_failed", currentTarget);
       }
       if (!this.isCurrentSession(insertionGeneration)) return result("pasted-with-copy", "session_invalidated");
 
@@ -303,7 +320,7 @@ export class SafeInsertionCoordinator {
         this.clipboard.restore(originalClipboard);
       }
 
-      return result("pasted");
+      return result("pasted", undefined, currentTarget);
     });
   }
 }

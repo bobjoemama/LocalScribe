@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import { expectPrecedes, requireIndex } from "./support/order";
 import {
   DEFAULT_SETTINGS,
+  type AppSettings,
   type AppSettingsPatch,
 } from "../src/shared/contracts";
 import {
@@ -29,11 +30,13 @@ import {
   SettingsModal,
   SETTINGS_TABS,
   settingsControlAvailability,
+  settingsHistoryExportMessage,
   settingsLoadPresentation,
   settingsWithPendingDraft,
   shortcutHelpText,
   shortcutCommitErrorMessage,
   StyleScreen,
+  subscribeToSettingsWithInitialLoad,
   TOGGLE_UNREGISTERED_ADVICE,
   TransformsScreen,
   UNAVAILABLE_IN_THIS_BUILD_NOTICE,
@@ -220,6 +223,76 @@ describe("settings loading truthfulness", () => {
     );
   });
 
+  it("reports a completed history export without persisting its absolute path", () => {
+    expect(settingsHistoryExportMessage("/Users/Alice/Documents/private-history.json"))
+      .toBe("History exported locally.");
+    expect(settingsHistoryExportMessage("C:\\Users\\Alice\\Documents\\private-history.json"))
+      .toBe("History exported locally.");
+    expect(settingsHistoryExportMessage(null)).toBe("Export cancelled");
+  });
+
+});
+
+describe("settings initial snapshot ordering", () => {
+  it("subscribes before get and ignores a stale initial snapshot after a pushed change", async () => {
+    const calls: string[] = [];
+    const applied: AppSettings[] = [];
+    const errors: unknown[] = [];
+    let changedListener!: (settings: AppSettings) => void;
+    let resolveInitial!: (settings: AppSettings) => void;
+    const initial = new Promise<AppSettings>((resolve) => {
+      resolveInitial = resolve;
+    });
+    const source = {
+      onChanged(listener: (settings: AppSettings) => void) {
+        calls.push("subscribe");
+        changedListener = listener;
+        return () => calls.push("unsubscribe");
+      },
+      get() {
+        calls.push("get");
+        return initial;
+      },
+    };
+
+    const dispose = subscribeToSettingsWithInitialLoad(
+      source,
+      (settings) => applied.push(settings),
+      (error) => errors.push(error),
+    );
+    expect(calls).toEqual(["subscribe", "get"]);
+
+    const pushed = { ...DEFAULT_SETTINGS, language: "German" };
+    changedListener(pushed);
+    resolveInitial({ ...DEFAULT_SETTINGS, language: "French" });
+    await initial;
+    await Promise.resolve();
+
+    expect(applied).toEqual([pushed]);
+    expect(errors).toEqual([]);
+    dispose();
+    expect(calls).toEqual(["subscribe", "get", "unsubscribe"]);
+
+    changedListener({ ...DEFAULT_SETTINGS, language: "Spanish" });
+    expect(applied).toEqual([pushed]);
+  });
+
+  it("applies the initial snapshot when no settings change wins the race", async () => {
+    const initial = { ...DEFAULT_SETTINGS, language: "French" };
+    const applied: AppSettings[] = [];
+    subscribeToSettingsWithInitialLoad(
+      {
+        onChanged: () => () => undefined,
+        get: async () => initial,
+      },
+      (settings) => applied.push(settings),
+      () => undefined,
+    );
+
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(applied).toEqual([initial]);
+  });
 });
 
 /*

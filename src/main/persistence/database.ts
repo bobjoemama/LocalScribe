@@ -16,10 +16,14 @@ import { safeStorage } from "electron";
 import {
   DEFAULT_SETTINGS,
   MAX_HISTORY_ITEMS,
+  MAX_PERSISTED_PRIVATE_TEXT_CIPHERTEXT_BYTES,
+  MAX_PERSISTED_PRIVATE_TEXT_UTF8_BYTES,
   appProfileSchema,
   appSettingsSchema,
   dictionaryEntrySchema,
   migratePersistedAppSettings,
+  sanitizeSourceApplicationId,
+  sourceApplicationIdSchema,
   scratchpadNoteSchema,
   snippetSchema,
   transcriptionSchema,
@@ -32,7 +36,7 @@ import {
   type Snippet,
   type Transcription,
 } from "../../shared/contracts";
-import { applicationIdsMatch, normalizeApplicationId } from "../../shared/appIdentity";
+import { applicationIdsMatch } from "../../shared/appIdentity";
 import { migrations } from "./migrations";
 
 interface TranscriptionRow {
@@ -94,7 +98,7 @@ const USER_ONLY_DIRECTORY_MODE = 0o700;
 const USER_ONLY_FILE_MODE = 0o600;
 const MAX_PERSISTED_COLLECTION_ROWS = 10_000;
 const DATABASE_READ_PAGE_SIZE = 250;
-const MAX_ENCRYPTED_FIELD_BYTES = 2 * 1024 * 1024;
+const MAX_ENCRYPTED_FIELD_BYTES = MAX_PERSISTED_PRIVATE_TEXT_CIPHERTEXT_BYTES;
 const MAX_SETTINGS_JSON_BYTES = 256 * 1024;
 const MAX_EXPORT_PLAINTEXT_BYTES = 32 * 1024 * 1024;
 
@@ -487,8 +491,10 @@ export class LocalDatabase {
   }
 
   saveTranscription(input: Omit<Transcription, "id" | "createdAt">): Transcription {
+    const encryptedText = this.encryptPersistedPrivateText(input.text, "Transcript");
     const result: Transcription = {
       ...input,
+      sourceAppId: sanitizeSourceApplicationId(input.sourceAppId),
       id: randomUUID(),
       createdAt: Date.now(),
     };
@@ -502,11 +508,11 @@ export class LocalDatabase {
         result.id,
         result.createdAt,
         result.durationMs,
-        this.encrypt(result.text),
+        encryptedText,
         result.language,
         result.modelId,
         result.status,
-        result.sourceAppId ?? null,
+        result.sourceAppId,
       );
     return result;
   }
@@ -771,7 +777,7 @@ export class LocalDatabase {
 
   saveProfile(input: Omit<AppProfile, "id" | "createdAt">): AppProfile {
     const now = Date.now();
-    const normalizedAppId = normalizeApplicationId(input.appId);
+    const normalizedAppId = sourceApplicationIdSchema.parse(input.appId);
     // Identity lives in dedicated columns and remains usable even when the
     // settings JSON is malformed. Saving the same application repairs that row
     // in place instead of colliding with its UNIQUE app_id and stranding it.
@@ -818,8 +824,10 @@ export class LocalDatabase {
   }
 
   findProfile(appId: string | null): AppProfile | null {
-    if (!appId) return null;
-    return this.listProfiles().find((profile) => applicationIdsMatch(profile.appId, appId)) ?? null;
+    const normalizedAppId = sanitizeSourceApplicationId(appId);
+    if (normalizedAppId === null) return null;
+    return this.listProfiles().find((profile) =>
+      applicationIdsMatch(profile.appId, normalizedAppId)) ?? null;
   }
 
   listScratchpadNotes(): ScratchpadNote[] {
@@ -869,28 +877,25 @@ export class LocalDatabase {
         `INSERT INTO scratchpad_notes (id, body_encrypted, created_at, updated_at)
          VALUES (?, ?, ?, ?)`,
       )
-      .run(note.id, this.encrypt(note.body), note.createdAt, note.updatedAt);
+      .run(
+        note.id,
+        this.encryptPersistedPrivateText(note.body, "Scratchpad note"),
+        note.createdAt,
+        note.updatedAt,
+      );
     return note;
   }
 
   updateScratchpadNote(id: string, body: string): ScratchpadNote {
+    const encryptedBody = this.encryptPersistedPrivateText(body, "Scratchpad note");
     const now = Date.now();
-    const result = this.db
-      .prepare(
-        `UPDATE scratchpad_notes
-         SET body_encrypted = ?, updated_at = ?
-         WHERE id = ?`,
-      )
-      .run(this.encrypt(body), now, id);
-    if (result.changes === 0) throw new Error("Scratchpad note not found");
-
-    // Only `created_at` still has to be read back; the body is the caller's own
-    // plaintext, so decrypting the blob that was just sealed above would add a
-    // failure surface for a value already in hand.
+    // Validate every returned field before changing the row. A rejected update
+    // must leave the old note byte-for-byte intact, including when legacy
+    // metadata rather than the new body is malformed.
     const row = this.db
       .prepare("SELECT id, created_at FROM scratchpad_notes WHERE id = ?")
       .get(id) as Pick<ScratchpadNoteRow, "id" | "created_at"> | undefined;
-    if (!row) throw new Error("Scratchpad note metadata is missing");
+    if (!row) throw new Error("Scratchpad note not found");
     const parsed = scratchpadNoteSchema.safeParse({
       id: row.id,
       body,
@@ -899,6 +904,14 @@ export class LocalDatabase {
       updatedAt: now,
     });
     if (!parsed.success) throw new Error("Stored scratchpad metadata is invalid");
+    const result = this.db
+      .prepare(
+        `UPDATE scratchpad_notes
+         SET body_encrypted = ?, updated_at = ?
+         WHERE id = ?`,
+      )
+      .run(encryptedBody, now, id);
+    if (result.changes === 0) throw new Error("Scratchpad note not found");
     return parsed.data;
   }
 
@@ -1225,6 +1238,21 @@ export class LocalDatabase {
     return safeStorage.encryptString(value);
   }
 
+  /** Seal only values that this build can read back through its bounded queries. */
+  private encryptPersistedPrivateText(value: string, field: string): Buffer {
+    const plaintextBytes = Buffer.byteLength(value, "utf8");
+    if (plaintextBytes > MAX_PERSISTED_PRIVATE_TEXT_UTF8_BYTES) {
+      throw new Error(
+        `${field} exceeds the ${MAX_PERSISTED_PRIVATE_TEXT_UTF8_BYTES.toLocaleString()}-byte UTF-8 storage limit.`,
+      );
+    }
+    const encrypted = this.encrypt(value);
+    if (encrypted.byteLength > MAX_ENCRYPTED_FIELD_BYTES) {
+      throw new Error(`${field} encryption exceeds the safe ciphertext storage limit.`);
+    }
+    return encrypted;
+  }
+
   private decrypt(value: Buffer): string {
     return safeStorage.decryptString(value);
   }
@@ -1291,7 +1319,7 @@ export class LocalDatabase {
   private decodeTranscription(row: TranscriptionRow): Transcription | null {
     const text = this.tryDecrypt(row.text_encrypted);
     if (text === null) return null;
-    if (Buffer.byteLength(text, "utf8") > MAX_ENCRYPTED_FIELD_BYTES) {
+    if (Buffer.byteLength(text, "utf8") > MAX_PERSISTED_PRIVATE_TEXT_UTF8_BYTES) {
       this.markUnreadableRecord("malformed");
       return null;
     }
@@ -1303,7 +1331,7 @@ export class LocalDatabase {
       language: row.language,
       modelId: row.model_id,
       status: row.status,
-      sourceAppId: row.source_app_id,
+      sourceAppId: sanitizeSourceApplicationId(row.source_app_id),
     });
     if (!parsed.success) {
       this.markUnreadableRecord("malformed");

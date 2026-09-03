@@ -1,3 +1,24 @@
+export const ACCESSIBILITY_ELEMENT_CATEGORIES = [
+  "missing",
+  "web_area",
+  "text_control",
+  "static_text",
+  "other",
+] as const;
+
+export type AccessibilityElementCategory = (typeof ACCESSIBILITY_ELEMENT_CATEGORIES)[number];
+
+export const ACCESSIBILITY_ACTIVATION_OUTCOMES = [
+  "not_needed",
+  "unsupported",
+  "set_failed",
+  "resolved",
+  "timed_out",
+  "permission_denied",
+] as const;
+
+export type AccessibilityActivationOutcome = (typeof ACCESSIBILITY_ACTIVATION_OUTCOMES)[number];
+
 export interface ActiveTarget {
   platform: "darwin";
   processId: number;
@@ -11,6 +32,12 @@ export interface ActiveTarget {
    * atomic, so this supports best-effort paste with copy fallback.
    */
   focusedElementFingerprint?: string | null;
+  /** Closed, content-free category used only for insertion diagnostics. */
+  accessibilityElement?: AccessibilityElementCategory;
+  /** Whether cold accessibility-tree activation was needed and what happened. */
+  accessibilityActivation?: AccessibilityActivationOutcome;
+  /** Bounded number of focused-element observations made by the native helper. */
+  accessibilityLookupAttempts?: number;
 }
 
 export interface ClipboardSnapshot {
@@ -125,4 +152,7 @@ export interface InsertionResult {
   readonly outcome: InsertionOutcome;
   /** Omitted only when the insertion completed without a safety fallback. */
   readonly reason?: InsertionReasonCode;
+  readonly accessibilityElement?: AccessibilityElementCategory;
+  readonly accessibilityActivation?: AccessibilityActivationOutcome;
+  readonly accessibilityLookupAttempts?: number;
 }

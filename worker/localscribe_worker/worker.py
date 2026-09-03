@@ -2214,7 +2214,10 @@ def run_worker(
     hardware_probe: HardwareProbe = read_apple_hardware_info,
     platform_name: str | None = None,
     machine_name: str | None = None,
+    worker_role: str = "inference",
 ) -> int:
+    if worker_role not in {"inference", "installer"}:
+        raise ValueError("worker_role must be inference or installer")
     runtime: InferenceRuntime | None = None
     active_spec: TierSpec | None = None
     active_model_root: Path | None = None
@@ -2263,6 +2266,25 @@ def run_worker(
                     raise WorkerError("invalid_request", "request must be a JSON object")
                 request_id = _request_id(message)
                 message_type = _string_field(message, "type", max_chars=64)
+
+                # Process roles are capabilities, not advisory request fields.
+                # The long-lived inference child is born dependency-level
+                # offline and cannot turn itself into an installer. Conversely,
+                # the narrowly online child accepts only the one storage-only
+                # operation it was created to perform (plus orderly shutdown).
+                if worker_role == "inference" and message_type == "install_model":
+                    raise WorkerError(
+                        "operation_not_allowed",
+                        "model installation requires the dedicated installer worker",
+                    )
+                if worker_role == "installer" and message_type not in {
+                    "install_model",
+                    "shutdown",
+                }:
+                    raise WorkerError(
+                        "operation_not_allowed",
+                        "installer worker accepts only model installation",
+                    )
 
                 if message_type == "load_model":
                     spec, manifest, allow_download, model_root = _parse_model_request(

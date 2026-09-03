@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 import {
   DEFAULT_SETTINGS,
   HISTORY_RETENTION_OPTIONS,
+  MAX_PERSISTED_PRIVATE_TEXT_UTF8_BYTES,
   MODEL_FAMILY_IDS,
   MODEL_PERFORMANCE_MODES,
+  appProfileSchema,
   appSettingsPatchSchema,
   appSettingsSchema,
   diagnosticsSchema,
@@ -14,6 +16,7 @@ import {
   modelRemoveRequestSchema,
   modelSelectionApplyRequestSchema,
   scratchpadNoteSchema,
+  sanitizeSourceApplicationId,
   sessionFailureSchema,
   snippetSchema,
   transcribeAudioSchema,
@@ -363,6 +366,37 @@ describe("IPC contracts", () => {
         updatedAt: 1,
       }),
     ).toMatchObject({ title: "First line" });
+  });
+
+  it("bounds private text by UTF-8 bytes and accepts bundle-like source identities only", () => {
+    const base = {
+      id: "00000000-0000-4000-8000-000000000001",
+      title: "Boundary",
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    expect(scratchpadNoteSchema.parse({
+      ...base,
+      body: "😀".repeat(MAX_PERSISTED_PRIVATE_TEXT_UTF8_BYTES / 4),
+    }).body).toHaveLength(MAX_PERSISTED_PRIVATE_TEXT_UTF8_BYTES / 2);
+    expect(() => scratchpadNoteSchema.parse({
+      ...base,
+      body: `${"😀".repeat(MAX_PERSISTED_PRIVATE_TEXT_UTF8_BYTES / 4)}a`,
+    })).toThrow(/UTF-8 bytes/u);
+
+    expect(sanitizeSourceApplicationId(" COM.APPLE.TextEdit ")).toBe("com.apple.textedit");
+    expect(sanitizeSourceApplicationId("/Applications/TextEdit.app/Contents/MacOS/TextEdit"))
+      .toBeNull();
+    expect(sanitizeSourceApplicationId("\u212Aom.apple.TextEdit")).toBeNull();
+    expect(() => appProfileSchema.parse({
+      id: "00000000-0000-4000-8000-000000000002",
+      appId: "\u212Aom.apple.TextEdit",
+      label: "Confusable identity",
+      removeFillers: true,
+      spokenCommands: true,
+      smartPunctuation: true,
+      createdAt: 1,
+    })).toThrow();
   });
 
   it("preserves snippet formatting while rejecting an all-whitespace expansion", () => {

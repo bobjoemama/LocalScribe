@@ -4,7 +4,9 @@ import type { LiveAudioSink } from "../src/shared/liveAudioTransport";
 import {
   acceptsLivePartial,
   holdShortcutPresentation,
+  isLiveTranscriptNearBottom,
   isCurrentFinalization,
+  isCurrentRecorderFailure,
   listSelectableMicrophones,
   livePartialText,
   listeningRecorderStart,
@@ -46,10 +48,24 @@ describe("pill recorder lifecycle", () => {
     expect(livePartialText(listening, current)).toBe("the revised phrase");
   });
 
-  it("keeps the newest words in a growing Live transcript visible", () => {
-    const viewport = { scrollHeight: 480, scrollTop: 0 };
-    scrollLiveTranscriptToEnd(viewport);
+  it("follows new Live words only while the user remains near the bottom", () => {
+    const viewport = { clientHeight: 100, scrollHeight: 480, scrollTop: 360 };
+    expect(isLiveTranscriptNearBottom(viewport)).toBe(true);
+    scrollLiveTranscriptToEnd(viewport, true);
     expect(viewport.scrollTop).toBe(480);
+
+    viewport.scrollTop = 220;
+    expect(isLiveTranscriptNearBottom(viewport)).toBe(false);
+    scrollLiveTranscriptToEnd(viewport, false);
+    expect(viewport.scrollTop).toBe(220);
+
+    // Returning to the end re-enables following for the next replacement
+    // snapshot, with a small tolerance for fractional Chromium layout values.
+    viewport.scrollTop = 356;
+    expect(isLiveTranscriptNearBottom(viewport)).toBe(true);
+    viewport.scrollHeight = 560;
+    scrollLiveTranscriptToEnd(viewport, true);
+    expect(viewport.scrollTop).toBe(560);
 
     scrollLiveTranscriptToEnd(null);
   });
@@ -69,6 +85,26 @@ describe("pill recorder lifecycle", () => {
       state: "listening",
       sessionId: SECOND_SESSION_ID,
     }, FIRST_SESSION_ID)).toBe(false);
+  });
+
+  it("accepts an immediate recorder failure only for its current listening session", () => {
+    const listening: SessionSnapshot = {
+      state: "listening",
+      sessionId: FIRST_SESSION_ID,
+      activation: "toggle",
+    };
+
+    expect(isCurrentRecorderFailure(listening, FIRST_SESSION_ID, FIRST_SESSION_ID)).toBe(true);
+    expect(isCurrentRecorderFailure(listening, SECOND_SESSION_ID, FIRST_SESSION_ID)).toBe(false);
+    expect(isCurrentRecorderFailure({
+      state: "listening",
+      sessionId: SECOND_SESSION_ID,
+      activation: "toggle",
+    }, FIRST_SESSION_ID, FIRST_SESSION_ID)).toBe(false);
+    expect(isCurrentRecorderFailure({
+      state: "finalizing",
+      sessionId: FIRST_SESSION_ID,
+    }, FIRST_SESSION_ID, FIRST_SESSION_ID)).toBe(false);
   });
 
   it("waits for persisted microphone settings before starting an immediate hotkey session", () => {

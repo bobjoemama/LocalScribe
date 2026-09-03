@@ -12,12 +12,17 @@ import path from "node:path";
 
 const mocks = vi.hoisted(() => ({
   stdout: "",
+  delayMs: 0,
   execFile: vi.fn((
     _executable: string,
     _arguments: readonly string[],
     _options: Record<string, unknown>,
     callback: (error: Error | null, result: { stdout: string }) => void,
-  ) => callback(null, { stdout: mocks.stdout })),
+  ) => {
+    const complete = () => callback(null, { stdout: mocks.stdout });
+    if (mocks.delayMs > 0) setTimeout(complete, mocks.delayMs);
+    else complete();
+  }),
 }));
 
 vi.mock("node:child_process", () => ({ execFile: mocks.execFile }));
@@ -63,6 +68,7 @@ describe("native platform bridge execution", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.stdout = "";
+    mocks.delayMs = 0;
   });
 
   afterEach(() => {
@@ -156,7 +162,7 @@ describe("native platform bridge execution", () => {
         encoding: "utf8",
         maxBuffer: 16 * 1024,
         shell: false,
-        timeout: 1_000,
+        timeout: 3_500,
         windowsHide: true,
       }),
       expect.any(Function),
@@ -183,16 +189,81 @@ describe("native platform bridge execution", () => {
         "d".repeat(64),
         "101",
       ],
-      expect.objectContaining({ shell: false }),
+      expect.objectContaining({ shell: false, timeout: 6_000 }),
       expect.any(Function),
     );
     expect(JSON.stringify(mocks.execFile.mock.calls)).not.toContain(transcript);
+  });
+
+  it("allows a delayed cold-target helper beyond the one-second baseline", async () => {
+    vi.useFakeTimers();
+    try {
+      mocks.delayMs = 2_100;
+      mocks.stdout = JSON.stringify({
+        platform: "darwin",
+        processId: 812,
+        applicationId: "com.example.Editor",
+        windowFingerprint: "c".repeat(64),
+        focusedEditable: true,
+        focusedElementFingerprint: "d".repeat(64),
+      });
+      const bridge = bridgeWithDigest();
+
+      const pendingTarget = bridge.captureActiveTarget();
+      await vi.advanceTimersByTimeAsync(2_100);
+
+      await expect(pendingTarget).resolves.toMatchObject({ processId: 812 });
+      expect(mocks.execFile).toHaveBeenCalledWith(
+        process.execPath,
+        ["target"],
+        expect.objectContaining({ timeout: 3_500 }),
+        expect.any(Function),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("gives paste enough time for two delayed captures while other commands stay bounded", async () => {
+    vi.useFakeTimers();
+    try {
+      mocks.delayMs = 4_100;
+      mocks.stdout = JSON.stringify({ injected: true });
+      const bridge = bridgeWithDigest();
+
+      const pendingPaste = bridge.paste(EXPECTED_TARGET, 101);
+      await vi.advanceTimersByTimeAsync(4_100);
+
+      await expect(pendingPaste).resolves.toEqual({ status: "injected" });
+      expect(mocks.execFile.mock.calls[0]?.[2]).toMatchObject({ timeout: 6_000 });
+      expect(nativeBridgeInternals.helperTimeoutForCommand("self-test")).toBe(1_000);
+      expect(nativeBridgeInternals.helperTimeoutForCommand("clipboard-sequence")).toBe(1_000);
+      expect(nativeBridgeInternals.helperTimeoutForCommand("accessibility-status")).toBe(1_000);
+      expect(nativeBridgeInternals.helperTimeoutForCommand("hold-monitor")).toBe(1_000);
+      expect(nativeBridgeInternals.helperTimeoutForCommand("request-accessibility")).toBe(15_000);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("accepts zero as a valid macOS clipboard sequence", async () => {
     const bridge = bridgeWithDigest();
     mocks.stdout = JSON.stringify({ platform: "darwin", sequence: 0 });
     await expect(bridge.clipboardSequence()).resolves.toBe(0);
+  });
+
+  it("uses one second for short commands and fifteen seconds for the permission prompt", async () => {
+    const bridge = bridgeWithDigest();
+    mocks.stdout = JSON.stringify({ platform: "darwin", sequence: 7 });
+    await expect(bridge.clipboardSequence()).resolves.toBe(7);
+    expect(mocks.execFile.mock.calls[0]?.[2]).toMatchObject({ timeout: 1_000 });
+
+    mocks.stdout = JSON.stringify({ accessibility: true, postEvents: true });
+    await expect(bridge.accessibilityReady()).resolves.toBe(true);
+    expect(mocks.execFile.mock.calls[1]?.[2]).toMatchObject({ timeout: 1_000 });
+
+    await expect(bridge.requestAccessibility()).resolves.toBe(true);
+    expect(mocks.execFile.mock.calls[2]?.[2]).toMatchObject({ timeout: 15_000 });
   });
 
   it("proves helper readiness once with its deterministic self-test", async () => {

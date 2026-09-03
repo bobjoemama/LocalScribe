@@ -12,6 +12,10 @@ import {
   type ExecutableProofReader,
   type RegularExecutableProof,
 } from "./nativeExecutableIntegrity";
+import {
+  ACCESSIBILITY_ACTIVATION_OUTCOMES,
+  ACCESSIBILITY_ELEMENT_CATEGORIES,
+} from "./types";
 import type {
   ActiveTarget,
   PasteFailureReason,
@@ -21,6 +25,28 @@ import type {
 
 const execFileAsync = promisify(execFile);
 
+const DEFAULT_HELPER_TIMEOUT_MS = 1_000;
+// A target lookup can spend two seconds recovering a cold Chromium tree.
+// Leave process-startup and JSON-encoding margin beyond that native bound.
+const TARGET_HELPER_TIMEOUT_MS = 3_500;
+// Paste captures the target twice before posting Command-V. Each capture may
+// independently exercise the full cold-tree recovery bound.
+const PASTE_HELPER_TIMEOUT_MS = 6_000;
+const REQUEST_ACCESSIBILITY_TIMEOUT_MS = 15_000;
+
+function helperTimeoutForCommand(command: string | undefined): number {
+  switch (command) {
+    case "target":
+      return TARGET_HELPER_TIMEOUT_MS;
+    case "paste":
+      return PASTE_HELPER_TIMEOUT_MS;
+    case "request-accessibility":
+      return REQUEST_ACCESSIBILITY_TIMEOUT_MS;
+    default:
+      return DEFAULT_HELPER_TIMEOUT_MS;
+  }
+}
+
 interface HelperTargetPayload {
   platform?: unknown;
   processId?: unknown;
@@ -28,6 +54,9 @@ interface HelperTargetPayload {
   windowFingerprint?: unknown;
   focusedEditable?: unknown;
   focusedElementFingerprint?: unknown;
+  accessibilityElement?: unknown;
+  accessibilityActivation?: unknown;
+  accessibilityLookupAttempts?: unknown;
 }
 
 interface HelperAccessibilityPayload {
@@ -100,6 +129,25 @@ function parseTarget(raw: string): ActiveTarget | null {
     return null;
   }
 
+  const hasAccessibilityDiagnostics = payload.accessibilityElement !== undefined
+    || payload.accessibilityActivation !== undefined
+    || payload.accessibilityLookupAttempts !== undefined;
+  if (hasAccessibilityDiagnostics && (
+    typeof payload.accessibilityElement !== "string"
+    || !ACCESSIBILITY_ELEMENT_CATEGORIES.includes(
+      payload.accessibilityElement as (typeof ACCESSIBILITY_ELEMENT_CATEGORIES)[number],
+    )
+    || typeof payload.accessibilityActivation !== "string"
+    || !ACCESSIBILITY_ACTIVATION_OUTCOMES.includes(
+      payload.accessibilityActivation as (typeof ACCESSIBILITY_ACTIVATION_OUTCOMES)[number],
+    )
+    || !Number.isSafeInteger(payload.accessibilityLookupAttempts)
+    || (payload.accessibilityLookupAttempts as number) < 0
+    || (payload.accessibilityLookupAttempts as number) > 81
+  )) {
+    return null;
+  }
+
   const target: ActiveTarget = {
     platform: payload.platform,
     processId: payload.processId as number,
@@ -108,6 +156,13 @@ function parseTarget(raw: string): ActiveTarget | null {
   };
   target.focusedEditable = payload.focusedEditable as boolean | null;
   target.focusedElementFingerprint = focusedElementFingerprint;
+  if (hasAccessibilityDiagnostics) {
+    target.accessibilityElement = payload.accessibilityElement as
+      (typeof ACCESSIBILITY_ELEMENT_CATEGORIES)[number];
+    target.accessibilityActivation = payload.accessibilityActivation as
+      (typeof ACCESSIBILITY_ACTIVATION_OUTCOMES)[number];
+    target.accessibilityLookupAttempts = payload.accessibilityLookupAttempts as number;
+  }
   return target;
 }
 
@@ -234,21 +289,19 @@ export class NativeExecutableInsertionBridge implements PlatformInsertionBridge 
   }
 
   async requestAccessibility(): Promise<boolean> {
-    return this.readAccessibility("request-accessibility", 15_000);
+    return this.readAccessibility("request-accessibility");
   }
 
   private async readAccessibility(
     command: "accessibility-status" | "request-accessibility",
-    timeout = 1_000,
   ): Promise<boolean> {
-    const output = await this.run([command], timeout);
+    const output = await this.run([command]);
     if (output === null) return false;
     return parseAccessibility(output);
   }
 
   private async run(
     arguments_: readonly string[],
-    timeout = 1_000,
   ): Promise<string | null> {
     if (!this.executableMatchesPin()) {
       return null;
@@ -268,7 +321,7 @@ export class NativeExecutableInsertionBridge implements PlatformInsertionBridge 
       const { stdout } = await execFileAsync(this.executablePath, arguments_, {
         encoding: "utf8",
         env: nativeHelperEnvironment(),
-        timeout,
+        timeout: helperTimeoutForCommand(arguments_[0]),
         maxBuffer: 16 * 1024,
         shell: false,
         windowsHide: true,
@@ -324,5 +377,6 @@ export const nativeBridgeInternals = {
   pasteArguments,
   parsePaste,
   parseTarget,
+  helperTimeoutForCommand,
   defaultHelperPath: resolveNativeActiveTargetHelperPath,
 };
