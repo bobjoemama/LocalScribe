@@ -16,6 +16,7 @@ import base64
 import json
 import os
 import select
+import signal
 import stat
 import subprocess
 import threading
@@ -24,7 +25,7 @@ import uuid
 import wave
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Final
+from typing import Any, BinaryIO, Final
 
 MACOS_FAMILY_TIER_MANIFESTS: Final = {
     "parakeet-unified-en-0-6b": {
@@ -62,10 +63,54 @@ MAX_SMOKE_AUDIO_BYTES: Final = 16_000 * 2 * MAX_SMOKE_AUDIO_SECONDS
 MAX_PROTOCOL_INTEGER: Final = 2**53 - 1
 MAX_INSTALL_PROGRESS_EVENTS: Final = 1_000_000
 MAX_WORKER_RESPONSE_BYTES: Final = 1024 * 1024
-MAX_WORKER_STDERR_BYTES: Final = 256 * 1024
+MAX_IMPORT_PROBE_OUTPUT_BYTES: Final = 64 * 1024
 WORKER_REQUEST_TIMEOUT_SECONDS: Final = 20 * 60
 WORKER_SHUTDOWN_TIMEOUT_SECONDS: Final = 5
 PROCESS_GROUP_POLL_SECONDS: Final = 0.05
+OWNED_PROCESS_ANCHOR: Final = r"""
+import os
+import select
+import signal
+import sys
+
+status_fd = int(sys.argv[1])
+control_fd = int(sys.argv[2])
+command = sys.argv[3:]
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+child = os.fork()
+if child == 0:
+    signal.signal(signal.SIGTERM, signal.SIG_DFL)
+    os.close(status_fd)
+    os.close(control_fd)
+    os.execv(command[0], command)
+
+for descriptor in (0, 1, 2):
+    try:
+        os.close(descriptor)
+    except OSError:
+        pass
+
+reported = False
+while True:
+    if not reported:
+        finished, wait_status = os.waitpid(child, os.WNOHANG)
+        if finished:
+            exit_code = os.waitstatus_to_exitcode(wait_status)
+            try:
+                os.write(status_fd, (str(exit_code) + "\n").encode("ascii"))
+            except OSError:
+                pass
+            os.close(status_fd)
+            reported = True
+    ready, _, _ = select.select([control_fd], [], [], 0.05)
+    if not ready:
+        continue
+    command_byte = os.read(control_fd, 1)
+    if command_byte == b"T":
+        os.killpg(os.getpgrp(), signal.SIGTERM)
+    elif command_byte == b"K" or not command_byte:
+        os.killpg(os.getpgrp(), signal.SIGKILL)
+"""
 
 
 @dataclass(frozen=True)
@@ -76,6 +121,18 @@ class CandidateResources:
     worker: Path
     helper: Path
     manifests: Path
+
+
+@dataclass
+class OwnedProcess:
+    """A worker whose live session anchor owns every group-wide signal."""
+
+    process: subprocess.Popen[bytes]
+    status_fd: int
+    control_fd: int
+    status_pending: bytearray = field(default_factory=bytearray)
+    worker_exit_code: int | None = None
+    retired: bool = False
 
 
 @dataclass
@@ -90,13 +147,9 @@ class InstallProgressState:
 
 @dataclass
 class WorkerStderrReader:
-    """Drain stderr concurrently and retain only a bounded diagnostic tail."""
+    """Drain worker-controlled stderr without retaining or decoding its content."""
 
     process: subprocess.Popen[bytes]
-    maximum_bytes: int = MAX_WORKER_STDERR_BYTES
-    _buffer: bytearray = field(default_factory=bytearray, init=False)
-    _lock: threading.Lock = field(default_factory=threading.Lock, init=False)
-    _truncated: bool = field(default=False, init=False)
     _thread: threading.Thread = field(init=False)
 
     def __post_init__(self) -> None:
@@ -119,20 +172,52 @@ class WorkerStderrReader:
                 return
             if not chunk:
                 return
-            with self._lock:
-                self._buffer.extend(chunk)
-                overflow = len(self._buffer) - self.maximum_bytes
-                if overflow > 0:
-                    del self._buffer[:overflow]
-                    self._truncated = True
-
-    def text(self) -> str:
-        with self._lock:
-            content = bytes(self._buffer).decode("utf-8", errors="replace").strip()
-            return f"[earlier stderr truncated]\n{content}" if self._truncated else content
 
     def join(self) -> None:
         self._thread.join(timeout=WORKER_SHUTDOWN_TIMEOUT_SECONDS)
+
+
+@dataclass
+class BoundedPipeReader:
+    """Drain a probe pipe concurrently while retaining at most a fixed prefix."""
+
+    stream: BinaryIO
+    maximum_bytes: int = MAX_IMPORT_PROBE_OUTPUT_BYTES
+    retain: bool = True
+    _buffer: bytearray = field(default_factory=bytearray, init=False)
+    _total_bytes: int = field(default=0, init=False)
+    _thread: threading.Thread = field(init=False)
+
+    def __post_init__(self) -> None:
+        self._thread = threading.Thread(
+            target=self._drain,
+            name="localscribe-smoke-probe-pipe",
+            daemon=True,
+        )
+        self._thread.start()
+
+    def _drain(self) -> None:
+        while True:
+            try:
+                chunk = os.read(self.stream.fileno(), 64 * 1024)
+            except OSError:
+                return
+            if not chunk:
+                return
+            self._total_bytes += len(chunk)
+            if self.retain and len(self._buffer) < self.maximum_bytes:
+                remaining = self.maximum_bytes - len(self._buffer)
+                self._buffer.extend(chunk[:remaining])
+
+    @property
+    def exceeded(self) -> bool:
+        return self._total_bytes > self.maximum_bytes
+
+    def finish(self) -> bytes:
+        self._thread.join(timeout=WORKER_SHUTDOWN_TIMEOUT_SECONDS)
+        if self._thread.is_alive():
+            raise RuntimeError("candidate worker import probe output did not close")
+        return bytes(self._buffer)
 
 
 @dataclass
@@ -140,7 +225,6 @@ class WorkerResponseReader:
     """Read NDJSON without losing lines already buffered after a progress burst."""
 
     process: subprocess.Popen[bytes]
-    stderr: WorkerStderrReader | None = None
     pending: bytearray = field(default_factory=bytearray)
 
     def receive(self, *, timeout_seconds: float) -> dict[str, Any]:
@@ -171,8 +255,7 @@ class WorkerResponseReader:
                 raise RuntimeError("candidate worker request timed out")
             chunk = os.read(self.process.stdout.fileno(), 64 * 1024)
             if not chunk:
-                stderr = self.stderr.text() if self.stderr else ""
-                raise RuntimeError(stderr or "candidate worker exited without a response")
+                raise RuntimeError("candidate worker exited without a response")
             self.pending.extend(chunk)
 
 
@@ -294,7 +377,9 @@ def assert_model_root_is_read_only(model_root: Path, *, allow_download: bool) ->
         )
 
 
-def worker_environment(*, allow_download: bool) -> dict[str, str]:
+def worker_environment(*, role: str) -> dict[str, str]:
+    if role not in {"inference", "installer"}:
+        raise ValueError("worker role must be inference or installer")
     environment = {
         "HOME": str(Path.home()),
         "PATH": os.environ.get("PATH", "/usr/bin:/bin:/usr/sbin:/sbin"),
@@ -303,12 +388,132 @@ def worker_environment(*, allow_download: bool) -> dict[str, str]:
         "PYTHONDONTWRITEBYTECODE": "1",
         "HF_HUB_DISABLE_TELEMETRY": "1",
         "HF_HUB_DISABLE_IMPLICIT_TOKEN": "1",
+        "LOCALSCRIBE_WORKER_ROLE": role,
     }
-    if not allow_download:
+    if role == "inference":
         # The load request is already local-only. This is a second independent
         # guard against an accidental library-default network request.
         environment["HF_HUB_OFFLINE"] = "1"
+        environment["TRANSFORMERS_OFFLINE"] = "1"
+        environment["UV_OFFLINE"] = "1"
     return environment
+
+
+def start_owned_process(
+    command: list[str],
+    *,
+    cwd: Path,
+    environment: dict[str, str],
+) -> OwnedProcess:
+    """Start a command behind a live session anchor that owns group cleanup."""
+    status_read, status_write = os.pipe()
+    control_read, control_write = os.pipe()
+    try:
+        process = subprocess.Popen(
+            [
+                command[0],
+                "-B",
+                "-E",
+                "-c",
+                OWNED_PROCESS_ANCHOR,
+                str(status_write),
+                str(control_read),
+                *command,
+            ],
+            cwd=cwd,
+            env=environment,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            pass_fds=(status_write, control_read),
+            start_new_session=True,
+        )
+    except BaseException:
+        for descriptor in (status_read, status_write, control_read, control_write):
+            os.close(descriptor)
+        raise
+    os.close(status_write)
+    os.close(control_read)
+    return OwnedProcess(
+        process=process,
+        status_fd=status_read,
+        control_fd=control_write,
+    )
+
+
+def wait_for_worker_exit(owned: OwnedProcess, timeout_seconds: float) -> int:
+    if owned.worker_exit_code is not None:
+        return owned.worker_exit_code
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        newline = owned.status_pending.find(b"\n")
+        if newline >= 0:
+            raw_exit_code = bytes(owned.status_pending[:newline])
+            if not raw_exit_code or len(raw_exit_code) > 8:
+                raise RuntimeError("candidate worker anchor returned invalid status")
+            try:
+                exit_code = int(raw_exit_code.decode("ascii"))
+            except (UnicodeDecodeError, ValueError) as error:
+                raise RuntimeError("candidate worker anchor returned invalid status") from error
+            if exit_code < -255 or exit_code > 255:
+                raise RuntimeError("candidate worker anchor returned invalid status")
+            owned.worker_exit_code = exit_code
+            os.close(owned.status_fd)
+            owned.status_fd = -1
+            return exit_code
+        if len(owned.status_pending) > 8:
+            raise RuntimeError("candidate worker anchor returned invalid status")
+        remaining_seconds = deadline - time.monotonic()
+        if remaining_seconds <= 0:
+            raise RuntimeError("candidate worker did not exit in time")
+        ready, _, _ = select.select([owned.status_fd], [], [], remaining_seconds)
+        if not ready:
+            raise RuntimeError("candidate worker did not exit in time")
+        chunk = os.read(owned.status_fd, 16)
+        if not chunk:
+            raise RuntimeError("candidate worker anchor exited without status")
+        owned.status_pending.extend(chunk)
+
+
+def retire_owned_process(owned: OwnedProcess) -> None:
+    """Ask the live anchor to retire its own group, never a cached numeric PGID."""
+    if owned.retired:
+        return
+    process = owned.process
+    if process.stdin is not None and not process.stdin.closed:
+        try:
+            process.stdin.close()
+        except OSError:
+            pass
+    if process.poll() is not None:
+        if owned.control_fd >= 0:
+            os.close(owned.control_fd)
+            owned.control_fd = -1
+        if owned.status_fd >= 0:
+            os.close(owned.status_fd)
+            owned.status_fd = -1
+        raise RuntimeError("candidate worker ownership anchor exited unexpectedly")
+    command_failed = False
+    try:
+        if owned.control_fd >= 0:
+            os.write(owned.control_fd, b"T")
+            time.sleep(PROCESS_GROUP_POLL_SECONDS)
+            os.write(owned.control_fd, b"K")
+    except OSError:
+        command_failed = True
+    if owned.control_fd >= 0:
+        os.close(owned.control_fd)
+        owned.control_fd = -1
+    try:
+        anchor_exit_code = process.wait(timeout=WORKER_SHUTDOWN_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired as error:
+        raise RuntimeError("candidate worker ownership anchor did not exit") from error
+    if owned.status_fd >= 0:
+        os.close(owned.status_fd)
+        owned.status_fd = -1
+    if command_failed or anchor_exit_code != -signal.SIGKILL:
+        raise RuntimeError("candidate worker ownership anchor exited unexpectedly")
+    owned.retired = True
 
 
 def assert_packaged_imports(
@@ -326,23 +531,40 @@ def assert_packaged_imports(
         "  'helper': str(worker._fluid_audio_helper_path().resolve()),\n"
         "}, sort_keys=True))\n"
     )
-    result = subprocess.run(
+    owned = start_owned_process(
         [str(candidate.python), "-B", "-E", "-c", probe, manifest_filename],
         cwd=candidate.worker,
-        env=environment,
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=WORKER_SHUTDOWN_TIMEOUT_SECONDS,
+        environment=environment,
     )
-    if result.returncode != 0:
-        raise RuntimeError(
-            "candidate worker import probe failed: "
-            f"{result.stderr.strip() or result.stdout.strip() or result.returncode}"
-        )
+    process = owned.process
+    if process.stdout is None or process.stderr is None:
+        raise RuntimeError("candidate worker import probe pipes are unavailable")
+    stdout = BoundedPipeReader(process.stdout)
+    stderr = BoundedPipeReader(process.stderr, retain=False)
+    exit_error: RuntimeError | None = None
+    exit_code: int | None = None
     try:
-        locations = json.loads(result.stdout)
-    except json.JSONDecodeError as error:
+        exit_code = wait_for_worker_exit(
+            owned,
+            WORKER_SHUTDOWN_TIMEOUT_SECONDS,
+        )
+    except RuntimeError as error:
+        exit_error = error
+    finally:
+        retire_owned_process(owned)
+    stdout_bytes = stdout.finish()
+    stderr.finish()
+    if stdout.exceeded or stderr.exceeded:
+        raise RuntimeError("candidate worker import probe output exceeds its safety limit")
+    if exit_error is not None:
+        raise RuntimeError("candidate worker import probe failed to exit") from exit_error
+    if exit_code is None:
+        raise RuntimeError("candidate worker import probe returned no exit status")
+    if exit_code != 0:
+        raise RuntimeError(f"candidate worker import probe exited with code {exit_code}")
+    try:
+        locations = json.loads(stdout_bytes)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise RuntimeError("candidate worker import probe emitted invalid JSON") from error
     expected_module = (candidate.worker / "localscribe_worker" / "worker.py").resolve()
     expected_manifest = (candidate.manifests / manifest_filename).resolve()
@@ -464,67 +686,13 @@ def require_response_type(response: dict[str, Any], expected: str) -> None:
         raise RuntimeError(f"candidate worker returned {response.get('type')!r}, expected {expected!r}")
 
 
-def process_group_is_alive(process_group_id: int) -> bool:
+def wait_for_exit(owned: OwnedProcess) -> None:
     try:
-        os.killpg(process_group_id, 0)
-        return True
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-
-
-def signal_process_group(process_group_id: int, signal_number: int) -> None:
-    try:
-        os.killpg(process_group_id, signal_number)
-    except ProcessLookupError:
-        return
-
-
-def wait_for_process_group_exit(process_group_id: int, timeout_seconds: float) -> bool:
-    deadline = time.monotonic() + timeout_seconds
-    while process_group_is_alive(process_group_id):
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            return False
-        time.sleep(min(PROCESS_GROUP_POLL_SECONDS, remaining))
-    return True
-
-
-def retire_process_group(process_group_id: int) -> None:
-    if not process_group_is_alive(process_group_id):
-        return
-    signal_process_group(process_group_id, 15)
-    if wait_for_process_group_exit(process_group_id, WORKER_SHUTDOWN_TIMEOUT_SECONDS):
-        return
-    signal_process_group(process_group_id, 9)
-    if not wait_for_process_group_exit(process_group_id, WORKER_SHUTDOWN_TIMEOUT_SECONDS):
-        raise RuntimeError(
-            f"candidate worker process group {process_group_id} survived SIGKILL"
-        )
-
-
-def wait_for_exit(
-    process: subprocess.Popen[bytes],
-    stderr: WorkerStderrReader,
-    process_group_id: int,
-) -> None:
-    try:
-        exit_code = process.wait(timeout=WORKER_SHUTDOWN_TIMEOUT_SECONDS)
-    except subprocess.TimeoutExpired as error:
-        retire_process_group(process_group_id)
-        process.wait(timeout=WORKER_SHUTDOWN_TIMEOUT_SECONDS)
-        stderr.join()
+        exit_code = wait_for_worker_exit(owned, WORKER_SHUTDOWN_TIMEOUT_SECONDS)
+    except RuntimeError as error:
         raise RuntimeError("candidate worker did not acknowledge shutdown in time") from error
-    stderr.join()
     if exit_code != 0:
-        raise RuntimeError(stderr.text() or f"candidate worker exited with {exit_code}")
-    if not wait_for_process_group_exit(
-        process_group_id,
-        WORKER_SHUTDOWN_TIMEOUT_SECONDS,
-    ):
-        retire_process_group(process_group_id)
-        raise RuntimeError("candidate worker left a descendant running after shutdown")
+        raise RuntimeError(f"candidate worker exited with code {exit_code}")
 
 
 def read_smoke_pcm(audio_path: Path) -> bytes:
@@ -550,6 +718,53 @@ def require_nonempty_final(final: dict[str, Any], *, mode: str) -> None:
         raise RuntimeError(f"candidate {mode} smoke returned an empty final transcript")
 
 
+def install_model(
+    candidate: CandidateResources,
+    *,
+    model_root: Path,
+    model_id: str,
+    tier: str,
+    compute_type: str,
+) -> None:
+    """Install through a short-lived online worker with no inference capability."""
+    environment = worker_environment(role="installer")
+    owned = start_owned_process(
+        [str(candidate.python), "-B", "-E", "-m", "localscribe_worker"],
+        cwd=candidate.worker,
+        environment=environment,
+    )
+    process = owned.process
+    stderr = WorkerStderrReader(process)
+    reader = WorkerResponseReader(process)
+    try:
+        hello = reader.receive(timeout_seconds=WORKER_SHUTDOWN_TIMEOUT_SECONDS)
+        require_response_type(hello, "hello")
+        installed = request(
+            process,
+            reader,
+            {
+                "type": "install_model",
+                "tier": tier,
+                "modelId": model_id,
+                "computeType": compute_type,
+                "modelRoot": str(model_root),
+                "allowDownload": True,
+            },
+        )
+        require_response_type(installed, "model_installed")
+        shutdown = request(
+            process,
+            reader,
+            {"type": "shutdown"},
+            timeout_seconds=WORKER_SHUTDOWN_TIMEOUT_SECONDS,
+        )
+        require_response_type(shutdown, "shutdown")
+        wait_for_exit(owned)
+    finally:
+        retire_owned_process(owned)
+        stderr.join()
+
+
 def smoke_mode(
     candidate: CandidateResources,
     *,
@@ -561,38 +776,19 @@ def smoke_mode(
     mode: str,
     pcm16: bytes,
     repeat: int,
-    allow_download: bool,
 ) -> dict[str, Any]:
-    environment = worker_environment(allow_download=allow_download)
-    process = subprocess.Popen(
+    environment = worker_environment(role="inference")
+    owned = start_owned_process(
         [str(candidate.python), "-B", "-E", "-m", "localscribe_worker"],
         cwd=candidate.worker,
-        env=environment,
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        start_new_session=True,
+        environment=environment,
     )
-    process_group_id = process.pid
+    process = owned.process
     stderr = WorkerStderrReader(process)
-    reader = WorkerResponseReader(process, stderr)
+    reader = WorkerResponseReader(process)
     try:
         hello = reader.receive(timeout_seconds=WORKER_SHUTDOWN_TIMEOUT_SECONDS)
         require_response_type(hello, "hello")
-        if allow_download:
-            installed = request(
-                process,
-                reader,
-                {
-                    "type": "install_model",
-                    "tier": tier,
-                    "modelId": model_id,
-                    "computeType": compute_type,
-                    "modelRoot": str(model_root),
-                    "allowDownload": True,
-                },
-            )
-            require_response_type(installed, "model_installed")
         ready = request(
             process,
             reader,
@@ -661,7 +857,7 @@ def smoke_mode(
             timeout_seconds=WORKER_SHUTDOWN_TIMEOUT_SECONDS,
         )
         require_response_type(shutdown, "shutdown")
-        wait_for_exit(process, stderr, process_group_id)
+        wait_for_exit(owned)
         return {
             "mode": mode,
             "finalCount": len(finals),
@@ -669,10 +865,7 @@ def smoke_mode(
             "partialCount": partial_count,
         }
     finally:
-        if process_group_is_alive(process_group_id):
-            retire_process_group(process_group_id)
-        if process.poll() is None:
-            process.wait(timeout=WORKER_SHUTDOWN_TIMEOUT_SECONDS)
+        retire_owned_process(owned)
         stderr.join()
 
 
@@ -741,8 +934,16 @@ def main() -> int:
         "selected model manifest",
     )
     model_id = load_model_id(manifest_path, args.family)
-    environment = worker_environment(allow_download=args.allow_download)
+    environment = worker_environment(role="inference")
     assert_packaged_imports(candidate, manifest_filename, environment)
+    if args.allow_download:
+        install_model(
+            candidate,
+            model_root=model_root,
+            model_id=model_id,
+            tier=args.tier,
+            compute_type=compute_type,
+        )
     modes = ("after-stop", "live") if args.mode == "both" else (args.mode,)
     started_at = time.monotonic()
     reports = [
@@ -756,7 +957,6 @@ def main() -> int:
             mode=mode,
             pcm16=pcm16,
             repeat=args.repeat,
-            allow_download=args.allow_download,
         )
         for mode in modes
     ]

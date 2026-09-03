@@ -75,15 +75,52 @@ export const livePartialTranscriptSchema = z.object({
 }).strict();
 export type LivePartialTranscript = z.infer<typeof livePartialTranscriptSchema>;
 
+/**
+ * Private text has to fit both sides of the persistence boundary. The
+ * plaintext ceiling is deliberately less than half the ciphertext read limit,
+ * leaving more than a mebibyte for the platform-specific safeStorage envelope.
+ */
+export const MAX_PERSISTED_PRIVATE_TEXT_UTF8_BYTES = 1_000_000;
+export const MAX_PERSISTED_PRIVATE_TEXT_CIPHERTEXT_BYTES = 2 * 1024 * 1024;
+
+export function utf8ByteLength(value: string): number {
+  return new TextEncoder().encode(value).byteLength;
+}
+
+export const persistedPrivateTextSchema = z.string()
+  .max(MAX_PERSISTED_PRIVATE_TEXT_UTF8_BYTES)
+  .refine(
+    (value) => utf8ByteLength(value) <= MAX_PERSISTED_PRIVATE_TEXT_UTF8_BYTES,
+    `Private text must be at most ${MAX_PERSISTED_PRIVATE_TEXT_UTF8_BYTES} UTF-8 bytes`,
+  );
+
+// Spell out both ASCII cases instead of using `/i`: Unicode case folding makes
+// characters such as the Kelvin sign match `[a-z]`, while SQLite NOCASE and
+// lower() intentionally operate on ASCII for these identifiers.
+const BUNDLE_LIKE_APPLICATION_ID = /^[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+$/u;
+
+/** A stable application identity suitable for durable history metadata. */
+export const sourceApplicationIdSchema = z.string()
+  .trim()
+  .min(3)
+  .max(300)
+  .regex(BUNDLE_LIKE_APPLICATION_ID)
+  .transform((value) => value.toLowerCase());
+
+export function sanitizeSourceApplicationId(value: unknown): string | null {
+  const parsed = sourceApplicationIdSchema.safeParse(value);
+  return parsed.success ? parsed.data : null;
+}
+
 export const transcriptionSchema = z.object({
   id: z.string().uuid(),
   createdAt: z.number().int().positive(),
   durationMs: z.number().int().nonnegative(),
-  text: z.string(),
+  text: persistedPrivateTextSchema,
   language: z.string().nullable(),
   modelId: z.string(),
   status: z.enum(["complete", "failed"]),
-  sourceAppId: z.string().nullable().optional(),
+  sourceAppId: sourceApplicationIdSchema.nullable().optional(),
 });
 export type Transcription = z.infer<typeof transcriptionSchema>;
 
@@ -115,7 +152,7 @@ export type Snippet = z.infer<typeof snippetSchema>;
 
 export const scratchpadNoteSchema = z.object({
   id: z.string().uuid(),
-  body: z.string().max(1_000_000),
+  body: persistedPrivateTextSchema,
   title: z.string().min(1).max(1_000_000),
   createdAt: z.number().int().positive(),
   updatedAt: z.number().int().positive(),
@@ -132,7 +169,7 @@ export type ScratchpadListResult = z.infer<typeof scratchpadListResultSchema>;
 
 export const appProfileSchema = z.object({
   id: z.string().uuid(),
-  appId: z.string().trim().min(1).max(300),
+  appId: sourceApplicationIdSchema,
   label: z.string().trim().min(1).max(120),
   removeFillers: z.boolean(),
   spokenCommands: z.boolean(),

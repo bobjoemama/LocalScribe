@@ -11,6 +11,7 @@ import {
 import { AUDIO_MAX_DURATION_MS, isAudioProtocolWav } from "../src/shared/audioProtocol";
 
 interface AudioHarness {
+  addModule: ReturnType<typeof vi.fn>;
   closeContext: ReturnType<typeof vi.fn>;
   disconnectNode: ReturnType<typeof vi.fn>;
   disconnectSource: ReturnType<typeof vi.fn>;
@@ -20,7 +21,10 @@ interface AudioHarness {
   stopTrack: ReturnType<typeof vi.fn>;
 }
 
-function installAudioHarness(sampleRate: number): AudioHarness {
+function installAudioHarness(
+  sampleRate: number,
+  addModule = vi.fn().mockResolvedValue(undefined),
+): AudioHarness {
   const stopTrack = vi.fn();
   const disconnectSource = vi.fn();
   const disconnectNode = vi.fn();
@@ -36,7 +40,7 @@ function installAudioHarness(sampleRate: number): AudioHarness {
 
   class FakeAudioContext {
     readonly sampleRate = sampleRate;
-    readonly audioWorklet = { addModule: vi.fn().mockResolvedValue(undefined) };
+    readonly audioWorklet = { addModule };
     readonly close = closeContext;
 
     createMediaStreamSource(): MediaStreamAudioSourceNode {
@@ -55,6 +59,7 @@ function installAudioHarness(sampleRate: number): AudioHarness {
   vi.stubGlobal("AudioWorkletNode", FakeAudioWorkletNode);
 
   return {
+    addModule,
     closeContext,
     disconnectNode,
     disconnectSource,
@@ -105,7 +110,10 @@ describe("AudioRecorder capture bounds", () => {
     const sampleRate = 100;
     const harness = installAudioHarness(sampleRate);
     const recorder = new AudioRecorder();
-    await recorder.start(null);
+    const onFailure = vi.fn(() => {
+      throw new Error("renderer failure reporting is unavailable");
+    });
+    await recorder.start(null, { onFailure });
 
     const maxSamples = sampleRate * AUDIO_MAX_DURATION_MS / 1_000;
     const atLimit = new Float32Array(maxSamples).fill(0.02);
@@ -128,15 +136,21 @@ describe("AudioRecorder capture bounds", () => {
     expect(harness.port.onmessage).toBeNull();
     expect(beforeOverflow.capturedSamples).toBe(maxSamples);
     expect(beforeOverflow.capturedBytes).toBe(atLimit.byteLength);
-    expect(beforeOverflow.chunks).toEqual([atLimit]);
+    expect(beforeOverflow.chunks).toEqual([]);
     expect(harness.disconnectSource).toHaveBeenCalledOnce();
     expect(harness.disconnectNode).toHaveBeenCalledOnce();
     expect(harness.stopTrack).toHaveBeenCalledOnce();
+    expect(onFailure).toHaveBeenCalledOnce();
+    expect(onFailure).toHaveBeenCalledWith(expect.objectContaining({
+      message: `Recording is too long; please keep dictation under ${audioDurationLimitLabel()}`,
+    }));
+    await vi.waitFor(() => expect(harness.closeContext).toHaveBeenCalledOnce());
 
     await expect(recorder.stop()).rejects.toThrow(
       `Recording is too long; please keep dictation under ${audioDurationLimitLabel()}`,
     );
     expect(harness.closeContext).toHaveBeenCalledOnce();
+    expect(onFailure).toHaveBeenCalledOnce();
   });
 
   it("keeps ordinary recordings in the canonical PCM16 WAV protocol", async () => {
@@ -317,6 +331,64 @@ describe("AudioRecorder cancellation", () => {
     expect(stopTrack).toHaveBeenCalledOnce();
   });
 
+  it("makes concurrent starts share a deferred worklet startup", async () => {
+    let releaseModule!: () => void;
+    const moduleReady = new Promise<void>((resolve) => {
+      releaseModule = resolve;
+    });
+    const harness = installAudioHarness(16_000, vi.fn(() => moduleReady));
+    const recorder = new AudioRecorder();
+
+    const first = recorder.start(null);
+    await vi.waitFor(() => expect(harness.addModule).toHaveBeenCalledOnce());
+    const second = recorder.start(null);
+    let secondSettled = false;
+    void second.then(() => {
+      secondSettled = true;
+    });
+
+    await Promise.resolve();
+    expect(secondSettled).toBe(false);
+    expect(harness.getUserMedia).toHaveBeenCalledOnce();
+    expect(harness.closeContext).not.toHaveBeenCalled();
+
+    releaseModule();
+    await Promise.all([first, second]);
+
+    expect(harness.getUserMedia).toHaveBeenCalledOnce();
+    expect(harness.addModule).toHaveBeenCalledOnce();
+    expect(harness.port.onmessage).toBeTypeOf("function");
+    expect(harness.closeContext).not.toHaveBeenCalled();
+
+    await recorder.cancel();
+    expect(harness.closeContext).toHaveBeenCalledOnce();
+  });
+
+  it("rejects every concurrent caller when a deferred worklet startup is cancelled", async () => {
+    let releaseModule!: () => void;
+    const moduleReady = new Promise<void>((resolve) => {
+      releaseModule = resolve;
+    });
+    const harness = installAudioHarness(16_000, vi.fn(() => moduleReady));
+    const recorder = new AudioRecorder();
+
+    const first = recorder.start(null);
+    await vi.waitFor(() => expect(harness.addModule).toHaveBeenCalledOnce());
+    const second = recorder.start(null);
+    const firstResult = expect(first).rejects.toBeInstanceOf(RecorderCancelledError);
+    const secondResult = expect(second).rejects.toBeInstanceOf(RecorderCancelledError);
+    const cancelling = recorder.cancel();
+
+    releaseModule();
+    await Promise.all([firstResult, secondResult, cancelling]);
+
+    expect(harness.getUserMedia).toHaveBeenCalledOnce();
+    expect(harness.addModule).toHaveBeenCalledOnce();
+    expect(harness.port.onmessage).toBeNull();
+    expect(harness.stopTrack).toHaveBeenCalledOnce();
+    expect(harness.closeContext).toHaveBeenCalledOnce();
+  });
+
   it("starts a real recorder after cancelling an in-flight finalization", async () => {
     let now = 0;
     vi.stubGlobal("performance", { now: () => now });
@@ -439,6 +511,47 @@ describe("AudioRecorder live transport", () => {
     expect(frames).toEqual(Array.from({ length: 5 }, () => ({ sampleCount: 320, bytes: 640 })));
     expect(sink.finish).toHaveBeenCalledOnce();
     expect(recorder as unknown as { chunks: Float32Array[] }).toMatchObject({ chunks: [] });
+  });
+
+  it("cancels Live transport without finishing when too few samples were captured", async () => {
+    let now = 0;
+    vi.stubGlobal("performance", { now: () => now });
+    const harness = installAudioHarness(16_000);
+    const sink = {
+      write: vi.fn(),
+      finish: vi.fn(),
+      abort: vi.fn(),
+    };
+    const recorder = new AudioRecorder();
+    await recorder.start(null, { transport: "live", liveSink: sink });
+
+    const samples = new Float32Array(1_599).fill(0.025);
+    now = 200;
+    harness.port.onmessage?.({ data: samples } as MessageEvent<Float32Array>);
+
+    await expect(recorder.stop()).rejects.toThrow("No usable audio was captured");
+    expect(sink.finish).not.toHaveBeenCalled();
+    expect(sink.abort).toHaveBeenCalledOnce();
+  });
+
+  it("cancels Live transport without finishing when the capture has no speech energy", async () => {
+    let now = 0;
+    vi.stubGlobal("performance", { now: () => now });
+    const harness = installAudioHarness(16_000);
+    const sink = {
+      write: vi.fn(),
+      finish: vi.fn(),
+      abort: vi.fn(),
+    };
+    const recorder = new AudioRecorder();
+    await recorder.start(null, { transport: "live", liveSink: sink });
+
+    now = 200;
+    harness.port.onmessage?.({ data: new Float32Array(1_600) } as MessageEvent<Float32Array>);
+
+    await expect(recorder.stop()).rejects.toThrow("No speech detected");
+    expect(sink.finish).not.toHaveBeenCalled();
+    expect(sink.abort).toHaveBeenCalledOnce();
   });
 
   it("stops capture when a Live adapter rejects a frame", async () => {

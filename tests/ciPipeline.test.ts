@@ -1,10 +1,24 @@
-import { accessSync, constants, readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import {
+  accessSync,
+  constants,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
-import { SOURCE_VERIFICATION_CHECKS } from "../scripts/verify-local-source.mjs";
+import {
+  assertReleaseCandidateGitState,
+  releaseCandidateModeFromArguments,
+  SOURCE_VERIFICATION_CHECKS,
+} from "../scripts/verify-local-source.mjs";
 
 /*
  * LocalScribe runs the same source pipeline in two places: the local pre-push
@@ -78,6 +92,68 @@ describe("local ci pipeline", () => {
   it("runs the macOS gate directly so npm forwards smoke arguments", () => {
     const scripts = readScripts();
     expect(scripts["ci:macos"]).toBe("bash scripts/verify-local-macos.sh");
+  });
+
+  it("runs the native settings-layout gate before creating macOS artifacts", () => {
+    const scripts = readScripts();
+    const macosVerification = readFileSync(
+      path.join(REPOSITORY_ROOT, "scripts", "verify-local-macos.sh"),
+      "utf8",
+    );
+    const source = macosVerification.indexOf("npm run verify:local");
+    const settings = macosVerification.indexOf("npm run test:settings-layout");
+    const make = macosVerification.indexOf("npm run make:mac");
+
+    expect(scripts["test:settings-layout"]).toBe(
+      "node scripts/test-settings-scroll-layout.mjs",
+    );
+    expect(settings).toBeGreaterThan(source);
+    expect(make).toBeGreaterThan(settings);
+  });
+
+  it("routes focused packaging tests through the bounded Vitest runner", () => {
+    const packaging = readScripts()["test:packaging"] ?? "";
+    expect(packaging).toMatch(/^node scripts\/run-bounded-vitest\.mjs tests\//u);
+    expect(packaging).not.toMatch(/(^|\s)vitest run(?:\s|$)/u);
+  });
+
+  it("keeps clean-tree enforcement explicit to release-candidate mode", () => {
+    expect(releaseCandidateModeFromArguments([])).toBe(false);
+    expect(releaseCandidateModeFromArguments(["--release-candidate"])).toBe(true);
+    expect(() => releaseCandidateModeFromArguments(["--unknown"])).toThrow(/Unknown/u);
+
+    const project = mkdtempSync(path.join(tmpdir(), "localscribe-release-git-"));
+    try {
+      mkdirSync(path.join(project, "src"));
+      writeFileSync(
+        path.join(project, "package.json"),
+        JSON.stringify({ productName: "LocalScribe", version: "0.1.0" }),
+      );
+      writeFileSync(path.join(project, "src", "main.ts"), "export {};\n");
+      execFileSync("git", ["init", "--quiet"], { cwd: project });
+      execFileSync("git", ["add", "package.json", "src/main.ts"], { cwd: project });
+      execFileSync(
+        "git",
+        [
+          "-c", "user.name=LocalScribe Test",
+          "-c", "user.email=localscribe-test.invalid@example.invalid",
+          "commit", "--quiet", "-m", "fixture",
+        ],
+        { cwd: project },
+      );
+      expect(() => assertReleaseCandidateGitState(
+        project,
+        ["package.json", "src"],
+      )).not.toThrow();
+
+      writeFileSync(path.join(project, "src", "main.ts"), "export const dirty = true;\n");
+      expect(() => assertReleaseCandidateGitState(
+        project,
+        ["package.json", "src"],
+      )).toThrow(/clean Git worktree/u);
+    } finally {
+      rmSync(project, { recursive: true, force: true });
+    }
   });
 
   it("requires exact bundled-CPython SBOM evidence only after the runtime build", () => {

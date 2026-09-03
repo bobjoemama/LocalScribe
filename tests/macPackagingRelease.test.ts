@@ -9,6 +9,14 @@ function projectFile(relativePath: string): string {
 }
 
 describe("macOS package release gates", () => {
+  it("documents release-candidate verification with the physical Accessibility gate", () => {
+    const packagingDocs = projectFile("docs/PACKAGING.md");
+
+    expect(packagingDocs).toContain(
+      "npm run verify:local:macos -- --release-candidate --require-accessibility",
+    );
+  });
+
   it("ties a freshly built Vite tree and packaged archive to source provenance", () => {
     const forge = projectFile("forge.config.ts");
     const smoke = projectFile("scripts/smoke-packaged-macos.sh");

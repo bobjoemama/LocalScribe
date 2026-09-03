@@ -34,6 +34,7 @@ import {
   IPC,
   liveAudioFrameSchema,
   liveAudioSessionSchema,
+  persistedPrivateTextSchema,
   MAX_HISTORY_ITEMS,
   modelFamilyLibraryRequestSchema,
   modelInstallRequestSchema,
@@ -43,6 +44,7 @@ import {
   pillModeSchema,
   sessionFailureSchema,
   sessionSnapshotSchema,
+  sanitizeSourceApplicationId,
   snippetSchema,
   transcribeAudioSchema,
   type Diagnostics,
@@ -269,7 +271,7 @@ const limitSchema = z.number().int().min(1).max(MAX_HISTORY_ITEMS).optional();
 const dictionaryInputSchema = dictionaryEntrySchema.pick({ phrase: true, replacement: true });
 const snippetInputSchema = snippetSchema.pick({ trigger: true, expansion: true });
 const profileInputSchema = appProfileSchema.omit({ id: true, createdAt: true });
-const scratchpadSchema = z.string().max(1_000_000);
+const scratchpadSchema = persistedPrivateTextSchema;
 
 function platformModelCatalog(): RuntimePlatformModelCatalog {
   if (!runtimeModelPlatformCatalog) throw new Error("The packaged model catalog was not loaded");
@@ -1356,6 +1358,7 @@ async function completeDictationFinal(input: {
   const concreteModel = resolution.tier.manifest;
   const dictionary = database.listDictionary();
   const targetAppId = await insertion.targetAppId();
+  const persistedSourceAppId = sanitizeSourceApplicationId(targetAppId);
   assertActiveSession(sessionId);
   const profile = database.findProfile(targetAppId);
   const cleanup = {
@@ -1419,7 +1422,7 @@ async function completeDictationFinal(input: {
       language: result.language,
       modelId: concreteModel.modelId,
       status: "complete" as const,
-      sourceAppId: targetAppId,
+      sourceAppId: persistedSourceAppId,
     }),
     save: () => database.saveTranscription({
       durationMs,
@@ -1427,7 +1430,7 @@ async function completeDictationFinal(input: {
       language: result.language,
       modelId: concreteModel.modelId,
       status: "complete",
-      sourceAppId: targetAppId,
+      sourceAppId: persistedSourceAppId,
     }),
     purgeExpired: () => database.purgeExpiredTranscriptions(settings.historyRetentionDays),
     notifyChanged: notifyHistoryChanged,

@@ -251,10 +251,9 @@
 
 /*
  * The single implicit column used to be `auto`, sized from the footer's
- * content: a long status (`Could not save settings: <160 chars>`, or
- * `Exported to <path>`) is `white-space: nowrap`, so the track grew to the
- * unwrapped string and `overflow: hidden` here clipped Cancel, Save changes,
- * and the close button off the modal with no horizontal scroll owner.
+ * content: a long failure status is `white-space: nowrap`, so the track grew
+ * to the unwrapped string and `overflow: hidden` here clipped Cancel, Save
+ * changes, and the close button off the modal with no horizontal scroll owner.
  * Measured in Electron's Chromium at 1220x760 and 900x640: 445px of
  * horizontal overflow at a 185-character status.
  *

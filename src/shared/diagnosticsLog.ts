@@ -91,6 +91,9 @@ export interface DiagnosticEvent {
   readonly hotkeyMode?: string;
   readonly permission?: string;
   readonly count?: number;
+  readonly accessibilityElement?: string;
+  readonly accessibilityActivation?: string;
+  readonly accessibilityLookupAttempts?: number;
 }
 
 /** Build identity, written once at the head of every diagnostics file. */
@@ -203,6 +206,7 @@ export const KNOWN_ERROR_CODES: ReadonlySet<string> = new Set([
   "model_path_changed",
   "model_recovery_failed",
   "model_verification_failed",
+  "operation_not_allowed",
   "parakeet_runtime_failed",
   "runtime_import_failed",
   "runtime_protocol_error",
@@ -275,6 +279,21 @@ const PERMISSIONS: ReadonlySet<string> = new Set([
   "not_ready",
   "ready",
 ]);
+const ACCESSIBILITY_ELEMENTS: ReadonlySet<string> = new Set([
+  "missing",
+  "web_area",
+  "text_control",
+  "static_text",
+  "other",
+]);
+const ACCESSIBILITY_ACTIVATIONS: ReadonlySet<string> = new Set([
+  "not_needed",
+  "unsupported",
+  "set_failed",
+  "resolved",
+  "timed_out",
+  "permission_denied",
+]);
 
 function memberOf(value: unknown, vocabulary: ReadonlySet<string>): string | undefined {
   return typeof value === "string" && vocabulary.has(value) ? value : undefined;
@@ -322,6 +341,19 @@ export function sanitizeDiagnosticEvent(input: DiagnosticEvent): DiagnosticEvent
   if (hotkeyMode !== undefined) sanitized.hotkeyMode = hotkeyMode;
   const permission = memberOf(input.permission, PERMISSIONS);
   if (permission !== undefined) sanitized.permission = permission;
+  const accessibilityElement = memberOf(input.accessibilityElement, ACCESSIBILITY_ELEMENTS);
+  if (accessibilityElement !== undefined) sanitized.accessibilityElement = accessibilityElement;
+  const accessibilityActivation = memberOf(
+    input.accessibilityActivation,
+    ACCESSIBILITY_ACTIVATIONS,
+  );
+  if (accessibilityActivation !== undefined) {
+    sanitized.accessibilityActivation = accessibilityActivation;
+  }
+  const accessibilityLookupAttempts = safeCount(input.accessibilityLookupAttempts);
+  if (accessibilityLookupAttempts !== undefined && accessibilityLookupAttempts <= 81) {
+    sanitized.accessibilityLookupAttempts = accessibilityLookupAttempts;
+  }
   return sanitized;
 }
 

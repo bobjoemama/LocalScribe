@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -47,7 +48,7 @@ describe("packaged macOS smoke gate cannot fail open", () => {
   });
 
   it("runs the packaged binary with the flag that makes startup failure deterministic", () => {
-    expect(smokeScript).toContain("LOCALSCRIBE_SMOKE=1");
+    expect(smokeScript).toContain('LOCALSCRIBE_SMOKE: "1"');
     expect(mainSource).toContain('process.env.LOCALSCRIBE_SMOKE === "1"');
   });
 
@@ -58,17 +59,40 @@ describe("packaged macOS smoke gate cannot fail open", () => {
     expect(startupFailure).toContain("app.exit(1)");
   });
 
-  it("requires every observed packaged Electron child to retire with the main process", () => {
-    expect(smokeScript).toContain("capture_descendants");
-    expect(smokeScript).toContain("tracked_processes_alive");
+  it("keeps a live ownership anchor while the app and late children retire", () => {
+    expect(smokeScript).toContain("detached: true");
+    expect(smokeScript).toContain("owned_process_group_anchored");
+    expect(smokeScript).toContain("signal_owned_application TERM");
+    expect(smokeScript).toContain("release_owned_anchor");
+    expect(smokeScript).toContain("app_exit_path");
+    expect(smokeScript).not.toContain('kill -0 -- "-$candidate_process_group"');
+    expect(smokeScript).toContain('kill "-$signal" -- "-$candidate_process_group"');
     expect(smokeScript).toContain(
-      "Packaged macOS smoke could not enumerate the candidate process tree.",
+      "Packaged macOS smoke lost its live process-group ownership anchor.",
     );
     expect(smokeScript).toContain(
-      "Packaged macOS app left an observed child process running after shutdown.",
+      "Packaged macOS app left a process running in its owned group after shutdown.",
     );
     expect(smokeScript).toContain(
-      "Packaged macOS main-process and observed-child shutdown smoke passed.",
+      "Packaged macOS main-process and anchored-process-group shutdown smoke passed.",
+    );
+    expect(smokeScript).not.toContain("capture_descendants");
+    expect(smokeScript).not.toMatch(/\b(?:pgrep|pkill)\b/u);
+  });
+
+  it("holds the anchor after the app leader exits until a real late child retires", () => {
+    const result = execFileSync(
+      "/bin/bash",
+      [resolve(root, "scripts/smoke-packaged-macos.sh"), "--self-test-process-group-anchor"],
+      {
+        cwd: root,
+        encoding: "utf8",
+        timeout: 15_000,
+      },
+    );
+
+    expect(result).toContain(
+      "Process-group anchor regression passed: app leader exited before late child teardown.",
     );
   });
 });

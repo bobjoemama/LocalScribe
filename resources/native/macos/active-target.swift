@@ -12,6 +12,9 @@ private struct TargetPayload: Encodable {
     let windowFingerprint: String?
     let focusedEditable: Bool?
     let focusedElementFingerprint: String?
+    let accessibilityElement: String
+    let accessibilityActivation: String
+    let accessibilityLookupAttempts: Int
 
     private enum CodingKeys: String, CodingKey {
         case platform
@@ -20,6 +23,9 @@ private struct TargetPayload: Encodable {
         case windowFingerprint
         case focusedEditable
         case focusedElementFingerprint
+        case accessibilityElement
+        case accessibilityActivation
+        case accessibilityLookupAttempts
     }
 
     func encode(to encoder: Encoder) throws {
@@ -42,6 +48,9 @@ private struct TargetPayload: Encodable {
         } else {
             try container.encodeNil(forKey: .focusedElementFingerprint)
         }
+        try container.encode(accessibilityElement, forKey: .accessibilityElement)
+        try container.encode(accessibilityActivation, forKey: .accessibilityActivation)
+        try container.encode(accessibilityLookupAttempts, forKey: .accessibilityLookupAttempts)
     }
 }
 
@@ -85,6 +94,13 @@ private struct PasteExpectation {
 private struct FocusedElementState {
     let editable: Bool?
     let fingerprint: String?
+}
+
+private struct FocusedElementObservation {
+    let element: AXUIElement?
+    let roleCategory: String
+    let activation: String
+    let lookupAttempts: Int
 }
 
 private enum HelperError: Error {
@@ -503,8 +519,12 @@ private func focusedElementIsEditable(_ element: AXUIElement) -> Bool {
 
 private let manualAccessibilityAttribute = "AXManualAccessibility" as CFString
 private let editableAncestorAttribute = "AXEditableAncestor" as CFString
-private let focusedElementLookupAttemptCount = 6
-private let focusedElementLookupInterval: TimeInterval = 0.02
+// Cold Chromium trees have exceeded the old 100 ms, 500 ms, and one-second
+// windows in physical and packaged integration use. This starts alongside
+// microphone capture, so a bounded two-second recovery does not delay
+// recording and is normally complete long before transcription.
+private let focusedElementLookupAttemptCount = 81
+private let focusedElementLookupInterval: TimeInterval = 0.025
 
 private func firstAvailable<T>(
     attemptCount: Int,
@@ -523,68 +543,109 @@ private func copyFocusedUIElement(_ application: AXUIElement) -> AXUIElement? {
     attributeElement(application, kAXFocusedUIElementAttribute as CFString)
 }
 
-private func manualAccessibilityActivationNeeded(
-    role: String?,
-    valueSettable: Bool,
-    selectedTextSettable: Bool,
-    editableAncestorAvailable: Bool
-) -> Bool {
-    role == "AXWebArea"
-        && !valueSettable
-        && !selectedTextSettable
-        && !editableAncestorAvailable
+private func focusedElementRoleCategory(_ role: String?) -> String {
+    guard let role else { return "missing" }
+    if role == "AXWebArea" { return "web_area" }
+    if role == (kAXStaticTextRole as String) { return "static_text" }
+    if [
+        kAXTextFieldRole as String,
+        kAXTextAreaRole as String,
+        kAXComboBoxRole as String,
+    ].contains(role) {
+        return "text_control"
+    }
+    return "other"
 }
 
-private func manualAccessibilityActivationNeeded(_ element: AXUIElement) -> Bool {
-    manualAccessibilityActivationNeeded(
-        role: attributeString(element, kAXRoleAttribute as CFString),
-        valueSettable: attributeIsSettable(element, kAXValueAttribute as CFString),
-        selectedTextSettable: attributeIsSettable(
-            element,
-            kAXSelectedTextAttribute as CFString
-        ),
-        editableAncestorAvailable: attributeElement(
-            element,
-            editableAncestorAttribute
-        ) != nil
-    )
+private func manualAccessibilityActivationNeeded(
+    focusedElementAvailable: Bool,
+    editableElementAvailable: Bool
+) -> Bool {
+    !focusedElementAvailable || !editableElementAvailable
 }
 
 private func focusedUIElementEnablingManualAccessibilityIfNeeded(
-    _ application: AXUIElement
-) -> AXUIElement? {
-    let initialFocusedElement = copyFocusedUIElement(application)
-    if let initialFocusedElement,
-       !manualAccessibilityActivationNeeded(initialFocusedElement) {
-        return initialFocusedElement
+    _ application: AXUIElement,
+    initialFocusedElement: AXUIElement?,
+    processId: pid_t
+) -> FocusedElementObservation {
+    let initialEditableElement = initialFocusedElement.flatMap {
+        focusedEditableElement($0, processId: processId)
+    }
+    if !manualAccessibilityActivationNeeded(
+        focusedElementAvailable: initialFocusedElement != nil,
+        editableElementAvailable: initialEditableElement != nil
+    ) {
+        return FocusedElementObservation(
+            element: initialFocusedElement,
+            roleCategory: focusedElementRoleCategory(
+                initialFocusedElement.flatMap {
+                    attributeString($0, kAXRoleAttribute as CFString)
+                }
+            ),
+            activation: "not_needed",
+            lookupAttempts: 1
+        )
     }
 
     // Electron documents AXManualAccessibility as the third-party integration
-    // point for enabling Chromium's otherwise lazy accessibility tree. A lazy
-    // tree can return a non-null AXWebArea placeholder with no mutation
-    // capability or editable ancestor, so existence alone cannot skip
-    // activation. Toggle only the documented attribute when focus is missing
-    // or has that exact placeholder shape and the app declares it settable.
-    // Chromium updates asynchronously; retry for at most 100 ms and fail closed.
-    guard
-        attributeIsSettable(application, manualAccessibilityAttribute),
-        AXUIElementSetAttributeValue(
-            application,
-            manualAccessibilityAttribute,
-            kCFBooleanTrue
-        ) == .success
-    else { return nil }
+    // point for enabling Chromium's otherwise lazy accessibility tree. Cold
+    // trees do not have one stable placeholder shape: physical targets have
+    // exposed AXWebArea, AXStaticText, and AXTextField before their editable
+    // ancestor or mutation capabilities were ready. Therefore the actual
+    // security property drives activation: if the focused control cannot yet
+    // be proven editable, activate the documented tree when supported.
+    guard attributeIsSettable(application, manualAccessibilityAttribute) else {
+        return FocusedElementObservation(
+            element: initialFocusedElement,
+            roleCategory: focusedElementRoleCategory(
+                initialFocusedElement.flatMap {
+                    attributeString($0, kAXRoleAttribute as CFString)
+                }
+            ),
+            activation: "unsupported",
+            lookupAttempts: 1
+        )
+    }
+    guard AXUIElementSetAttributeValue(
+        application,
+        manualAccessibilityAttribute,
+        kCFBooleanTrue
+    ) == .success else {
+        return FocusedElementObservation(
+            element: initialFocusedElement,
+            roleCategory: focusedElementRoleCategory(
+                initialFocusedElement.flatMap {
+                    attributeString($0, kAXRoleAttribute as CFString)
+                }
+            ),
+            activation: "set_failed",
+            lookupAttempts: 1
+        )
+    }
 
-    return firstAvailable(
+    var lookupAttempts = 0
+    var latestFocusedElement = initialFocusedElement
+    let resolvedElement: AXUIElement? = firstAvailable(
         attemptCount: focusedElementLookupAttemptCount,
         lookup: {
-            guard let candidate = copyFocusedUIElement(application),
-                  !manualAccessibilityActivationNeeded(candidate) else {
-                return nil
-            }
-            return candidate
+            lookupAttempts += 1
+            guard let candidate = copyFocusedUIElement(application) else { return nil }
+            latestFocusedElement = candidate
+            return focusedEditableElement(candidate, processId: processId) == nil
+                ? nil
+                : candidate
         },
         wait: { Thread.sleep(forTimeInterval: focusedElementLookupInterval) }
+    )
+    let finalElement = resolvedElement ?? latestFocusedElement
+    return FocusedElementObservation(
+        element: finalElement,
+        roleCategory: focusedElementRoleCategory(
+            finalElement.flatMap { attributeString($0, kAXRoleAttribute as CFString) }
+        ),
+        activation: resolvedElement == nil ? "timed_out" : "resolved",
+        lookupAttempts: lookupAttempts
     )
 }
 
@@ -602,6 +663,70 @@ private func elementIsInParentChain(
         current = parent
     }
     return false
+}
+
+private func elementsAreSameOrAncestorDescendant(
+    _ first: AXUIElement,
+    _ second: AXUIElement
+) -> Bool {
+    CFEqual(first, second)
+        || elementIsInParentChain(first, of: second)
+        || elementIsInParentChain(second, of: first)
+}
+
+private func elementBelongsToProcess(_ element: AXUIElement, processId: pid_t) -> Bool {
+    var elementPid: pid_t = 0
+    return AXUIElementGetPid(element, &elementPid) == .success && elementPid == processId
+}
+
+private func recoveryIdentityIsAllowed(
+    initialWindowFingerprint: String?,
+    finalWindowFingerprint: String?,
+    initialControlAvailable: Bool,
+    finalControlAvailable: Bool,
+    controlsSameOrAncestorDescendant: Bool
+) -> Bool {
+    guard
+        let initialWindowFingerprint,
+        let finalWindowFingerprint,
+        initialWindowFingerprint == finalWindowFingerprint
+    else { return false }
+
+    // A window fingerprint cannot distinguish sibling controls. If focus was
+    // absent before recovery, there is no immutable control identity to prove
+    // that the eventual editor was the user's original target, even when the
+    // window remained stable. When a control did exist, accept only the same
+    // control or an ancestor/descendant evolution (for example a Chromium
+    // placeholder becoming, or resolving beneath, its editor root).
+    guard initialControlAvailable else { return false }
+    return finalControlAvailable && controlsSameOrAncestorDescendant
+}
+
+private func recoveredTargetIdentityIsAllowed(
+    initialWindowFingerprint: String?,
+    finalWindowFingerprint: String?,
+    initialFocusedElement: AXUIElement?,
+    finalFocusedElement: AXUIElement?,
+    processId: pid_t
+) -> Bool {
+    let controlsRelated: Bool
+    if let initialFocusedElement, let finalFocusedElement {
+        controlsRelated = elementBelongsToProcess(initialFocusedElement, processId: processId)
+            && elementBelongsToProcess(finalFocusedElement, processId: processId)
+            && elementsAreSameOrAncestorDescendant(
+                initialFocusedElement,
+                finalFocusedElement
+            )
+    } else {
+        controlsRelated = false
+    }
+    return recoveryIdentityIsAllowed(
+        initialWindowFingerprint: initialWindowFingerprint,
+        finalWindowFingerprint: finalWindowFingerprint,
+        initialControlAvailable: initialFocusedElement != nil,
+        finalControlAvailable: finalFocusedElement != nil,
+        controlsSameOrAncestorDescendant: controlsRelated
+    )
 }
 
 private func elementsShareAccessibilityWindow(
@@ -695,22 +820,51 @@ private func captureTarget() throws -> TargetPayload {
         ?? "pid:\(application.processIdentifier)"
     let accessibilityTrusted = AXIsProcessTrusted()
     let focusedApplication = AXUIElementCreateApplication(application.processIdentifier)
-    // Chromium may not expose either its focused control or focused window
-    // until AXManualAccessibility activates the tree. Capture/activate focus
-    // first, then derive the window from the now-current tree. The inverse
-    // order degraded a multi-window Electron target to copy-only on its first
-    // dictation even though the exact window became available milliseconds
-    // later.
-    let focusedUIElement = accessibilityTrusted
-        ? focusedUIElementEnablingManualAccessibilityIfNeeded(focusedApplication)
+    // Pin the pre-recovery focus boundary before AXManualAccessibility can
+    // asynchronously materialize or alter Chromium's tree. A window identity
+    // that is unavailable here cannot be made trustworthy retroactively by a
+    // later observation.
+    let initialFocusedUIElement = accessibilityTrusted
+        ? copyFocusedUIElement(focusedApplication)
         : nil
-    let windowFingerprint = accessibilityTrusted
+    let initialWindowFingerprint = accessibilityTrusted
         ? focusedWindowFingerprint(
             for: application.processIdentifier,
             focusedApplication: focusedApplication,
-            focusedElement: focusedUIElement
+            focusedElement: initialFocusedUIElement
         )
         : coreGraphicsWindowFingerprint(for: application.processIdentifier)
+    let focusedObservation = accessibilityTrusted
+        ? focusedUIElementEnablingManualAccessibilityIfNeeded(
+            focusedApplication,
+            initialFocusedElement: initialFocusedUIElement,
+            processId: application.processIdentifier
+        )
+        : FocusedElementObservation(
+            element: nil,
+            roleCategory: "missing",
+            activation: "permission_denied",
+            lookupAttempts: 0
+        )
+    let finalFocusedUIElement = focusedObservation.element
+    let finalWindowFingerprint = accessibilityTrusted
+        ? focusedWindowFingerprint(
+            for: application.processIdentifier,
+            focusedApplication: focusedApplication,
+            focusedElement: finalFocusedUIElement
+        )
+        : coreGraphicsWindowFingerprint(for: application.processIdentifier)
+    let recoveryIdentityAllowed = recoveredTargetIdentityIsAllowed(
+        initialWindowFingerprint: initialWindowFingerprint,
+        finalWindowFingerprint: finalWindowFingerprint,
+        initialFocusedElement: initialFocusedUIElement,
+        finalFocusedElement: finalFocusedUIElement,
+        processId: application.processIdentifier
+    )
+    // Preserve a closed diagnostic payload, but discard all target authority
+    // when focus crossed a window or sibling-control boundary during recovery.
+    let focusedUIElement = recoveryIdentityAllowed ? finalFocusedUIElement : nil
+    let windowFingerprint = recoveryIdentityAllowed ? initialWindowFingerprint : nil
     let focusedElement = focusedElementState(
         for: application.processIdentifier,
         focusedElement: focusedUIElement,
@@ -721,7 +875,10 @@ private func captureTarget() throws -> TargetPayload {
         applicationId: applicationId,
         windowFingerprint: windowFingerprint,
         focusedEditable: focusedElement.editable,
-        focusedElementFingerprint: focusedElement.fingerprint
+        focusedElementFingerprint: focusedElement.fingerprint,
+        accessibilityElement: focusedObservation.roleCategory,
+        accessibilityActivation: focusedObservation.activation,
+        accessibilityLookupAttempts: focusedObservation.lookupAttempts
     )
     guard
         let confirmedApplication = NSWorkspace.shared.frontmostApplication,
@@ -910,29 +1067,22 @@ private func selfTest() -> Bool {
             selectedTextRangeSettable: false
         ),
         manualAccessibilityActivationNeeded(
-            role: "AXWebArea",
-            valueSettable: false,
-            selectedTextSettable: false,
-            editableAncestorAvailable: false
+            focusedElementAvailable: false,
+            editableElementAvailable: false
+        ),
+        manualAccessibilityActivationNeeded(
+            focusedElementAvailable: true,
+            editableElementAvailable: false
         ),
         !manualAccessibilityActivationNeeded(
-            role: "AXWebArea",
-            valueSettable: true,
-            selectedTextSettable: false,
-            editableAncestorAvailable: false
+            focusedElementAvailable: true,
+            editableElementAvailable: true
         ),
-        !manualAccessibilityActivationNeeded(
-            role: "AXWebArea",
-            valueSettable: false,
-            selectedTextSettable: false,
-            editableAncestorAvailable: true
-        ),
-        !manualAccessibilityActivationNeeded(
-            role: kAXTextFieldRole as String,
-            valueSettable: false,
-            selectedTextSettable: false,
-            editableAncestorAvailable: false
-        ),
+        focusedElementRoleCategory(nil) == "missing",
+        focusedElementRoleCategory("AXWebArea") == "web_area",
+        focusedElementRoleCategory(kAXStaticTextRole as String) == "static_text",
+        focusedElementRoleCategory(kAXTextFieldRole as String) == "text_control",
+        focusedElementRoleCategory("AXButton") == "other",
         immediateValue == 1,
         immediateLookups == 1,
         immediateWaits == 0,
@@ -942,6 +1092,50 @@ private func selfTest() -> Bool {
         exhaustedValue == nil,
         exhaustedLookups == 3,
         exhaustedWaits == 2,
+        // A missing initial control followed by any same-window control is
+        // indistinguishable from an A-to-B sibling retarget and must fail.
+        !recoveryIdentityIsAllowed(
+            initialWindowFingerprint: fingerprint,
+            finalWindowFingerprint: fingerprint,
+            initialControlAvailable: false,
+            finalControlAvailable: true,
+            controlsSameOrAncestorDescendant: false
+        ),
+        !recoveryIdentityIsAllowed(
+            initialWindowFingerprint: fingerprint,
+            finalWindowFingerprint: String(repeating: "c", count: 64),
+            initialControlAvailable: false,
+            finalControlAvailable: true,
+            controlsSameOrAncestorDescendant: false
+        ),
+        !recoveryIdentityIsAllowed(
+            initialWindowFingerprint: nil,
+            finalWindowFingerprint: fingerprint,
+            initialControlAvailable: false,
+            finalControlAvailable: true,
+            controlsSameOrAncestorDescendant: false
+        ),
+        recoveryIdentityIsAllowed(
+            initialWindowFingerprint: fingerprint,
+            finalWindowFingerprint: fingerprint,
+            initialControlAvailable: true,
+            finalControlAvailable: true,
+            controlsSameOrAncestorDescendant: true
+        ),
+        !recoveryIdentityIsAllowed(
+            initialWindowFingerprint: fingerprint,
+            finalWindowFingerprint: fingerprint,
+            initialControlAvailable: true,
+            finalControlAvailable: true,
+            controlsSameOrAncestorDescendant: false
+        ),
+        !recoveryIdentityIsAllowed(
+            initialWindowFingerprint: fingerprint,
+            finalWindowFingerprint: fingerprint,
+            initialControlAvailable: true,
+            finalControlAvailable: false,
+            controlsSameOrAncestorDescendant: true
+        ),
         editableAncestorRelationshipIsAllowed(
             candidateDiffers: true,
             sameProcess: true,
@@ -1062,21 +1256,30 @@ private func selfTest() -> Bool {
         applicationId: "com.example.Editor",
         windowFingerprint: fingerprint,
         focusedEditable: true,
-        focusedElementFingerprint: elementFingerprint
+        focusedElementFingerprint: elementFingerprint,
+        accessibilityElement: "text_control",
+        accessibilityActivation: "not_needed",
+        accessibilityLookupAttempts: 1
     )
     let nonEditableTarget = TargetPayload(
         processId: 42,
         applicationId: "com.example.Editor",
         windowFingerprint: fingerprint,
         focusedEditable: false,
-        focusedElementFingerprint: elementFingerprint
+        focusedElementFingerprint: elementFingerprint,
+        accessibilityElement: "other",
+        accessibilityActivation: "unsupported",
+        accessibilityLookupAttempts: 1
     )
     let otherFocusedElement = TargetPayload(
         processId: 42,
         applicationId: "com.example.Editor",
         windowFingerprint: fingerprint,
         focusedEditable: true,
-        focusedElementFingerprint: String(repeating: "c", count: 64)
+        focusedElementFingerprint: String(repeating: "c", count: 64),
+        accessibilityElement: "static_text",
+        accessibilityActivation: "resolved",
+        accessibilityLookupAttempts: 4
     )
     return targetMatches(matchingTarget, expectation: expectation)
         && !targetMatches(nonEditableTarget, expectation: expectation)

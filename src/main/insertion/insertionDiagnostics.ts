@@ -1,4 +1,10 @@
-import type { InsertionOutcome, InsertionReasonCode, InsertionResult } from "./types";
+import type {
+  AccessibilityActivationOutcome,
+  AccessibilityElementCategory,
+  InsertionOutcome,
+  InsertionReasonCode,
+  InsertionResult,
+} from "./types";
 
 export interface InsertionDiagnosticEvent {
   readonly stage: "insertion";
@@ -7,6 +13,9 @@ export interface InsertionDiagnosticEvent {
   readonly permission: "disabled" | "not_ready" | "ready";
   /** Privacy-safe reason classification; contains no dictated or target data. */
   readonly detail?: InsertionReasonCode;
+  readonly accessibilityElement?: AccessibilityElementCategory;
+  readonly accessibilityActivation?: AccessibilityActivationOutcome;
+  readonly accessibilityLookupAttempts?: number;
 }
 
 /**
@@ -39,5 +48,14 @@ export function insertionDiagnosticEvent(
     outcome: insertionOutcome === "copied" ? "skipped" : "ok",
     permission,
     ...(reason ? { detail: reason } : {}),
+    ...(insertionResult.accessibilityElement === undefined
+      ? {}
+      : { accessibilityElement: insertionResult.accessibilityElement }),
+    ...(insertionResult.accessibilityActivation === undefined
+      ? {}
+      : { accessibilityActivation: insertionResult.accessibilityActivation }),
+    ...(insertionResult.accessibilityLookupAttempts === undefined
+      ? {}
+      : { accessibilityLookupAttempts: insertionResult.accessibilityLookupAttempts }),
   };
 }

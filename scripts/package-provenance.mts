@@ -4,10 +4,12 @@ import {
   lstatSync,
   mkdirSync,
   readFileSync,
+  realpathSync,
   readdirSync,
   statSync,
   writeFileSync,
 } from "node:fs";
+import { execFileSync } from "node:child_process";
 import path from "node:path";
 import { extractFile, listPackage } from "@electron/asar";
 import type { PackagedPlatform } from "../src/shared/platformResourcePolicy";
@@ -19,11 +21,15 @@ const RENDERER_ROOT = ".vite/renderer/main_window";
 const BUILD_FRESHNESS_TOLERANCE_MS = 2_000;
 
 const COMMON_RELEASE_INPUTS = [
+  ".github/workflows/ci.yml",
+  ".githooks/pre-push",
+  ".gitignore",
   ".nvmrc",
   ".uv-version",
   "LICENSE",
   "NOTICE",
   "THIRD_PARTY_NOTICES.md",
+  "eslint.config.mjs",
   "forge.config.ts",
   "index.html",
   "package-lock.json",
@@ -39,11 +45,23 @@ const COMMON_RELEASE_INPUTS = [
   "scripts/verify-packaged-archive.mjs",
   "scripts/verify-packaged-main.mjs",
   "scripts/verify-release-assets.mjs",
+  /*
+   * Source verification executes and typechecks files throughout scripts/, and
+   * the test suite is itself release policy. Bind the directories rather than
+   * maintaining another fragile copy of package.json's transitive script
+   * graph. A new checker or regression test therefore starts affecting the
+   * source root immediately, before this list is manually updated.
+   */
+  "scripts",
   "src",
+  "tests",
+  "tools/python-audit/pyproject.toml",
+  "tools/python-audit/uv.lock",
   "tsconfig.json",
   "vite.main.config.ts",
   "vite.preload.config.ts",
   "vite.renderer.config.ts",
+  "vitest.config.ts",
 ] as const;
 
 const MAC_RELEASE_INPUTS = [
@@ -72,6 +90,10 @@ const MAC_RELEASE_INPUTS = [
   "resources/model-manifest/parakeet-unified-en-0-6b-coreml-fp16.json",
   "resources/model-manifest/parakeet-unified-en-0-6b-coreml-int8.json",
   "resources/native/macos/active-target.swift",
+  "scripts/test-macos-accessibility-target.mjs",
+  "scripts/test-settings-scroll-layout.mjs",
+  "scripts/settings-layout-harness.html",
+  "scripts/settings-layout-harness.tsx",
   "tools/fluidaudio-parakeet-helper/Package.resolved",
   "tools/fluidaudio-parakeet-helper/Package.swift",
   "tools/fluidaudio-parakeet-helper/Sources/localscribe-fluidaudio-parakeet/main.swift",
@@ -96,6 +118,7 @@ const MAC_RELEASE_INPUTS = [
   "scripts/verify-macos-entitlements.mjs",
   "worker/localscribe_worker",
   "worker/pyproject.toml",
+  "worker/tests",
   "worker/uv.lock",
 ] as const;
 
@@ -132,6 +155,12 @@ export interface PackageProvenanceOptions {
   projectPath?: string;
   platform: PackagedPlatform;
   arch: string;
+  inputCandidates?: readonly string[];
+}
+
+export interface ReleaseInputGitOptions {
+  projectPath?: string;
+  platform: PackagedPlatform;
   inputCandidates?: readonly string[];
 }
 
@@ -221,6 +250,48 @@ function sourceEntries(
         contentHash: sha256(content),
       };
     });
+}
+
+/**
+ * A release-candidate gate must not approve policy that exists only in one
+ * developer's working directory. This deliberately remains opt-in: ordinary
+ * pre-commit/package verification is allowed to exercise intended local
+ * changes, while the release-candidate mode calls this before building.
+ */
+export function assertReleaseInputsGitTracked({
+  projectPath = process.cwd(),
+  platform,
+  inputCandidates = releaseInputCandidates(platform),
+}: ReleaseInputGitOptions): void {
+  const resolvedProjectPath = realpathSync(path.resolve(projectPath));
+  const repositoryRoot = execFileSync(
+    "git",
+    ["-C", resolvedProjectPath, "rev-parse", "--show-toplevel"],
+    { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
+  ).trim();
+  if (path.resolve(repositoryRoot) !== resolvedProjectPath) {
+    throw new Error(
+      "Release-candidate provenance requires the project path to be the Git repository root.",
+    );
+  }
+
+  const tracked = new Set(
+    execFileSync(
+      "git",
+      ["-C", resolvedProjectPath, "ls-files", "-z", "--cached", "--"],
+      { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
+    ).split("\0").filter(Boolean),
+  );
+  const untrackedInputs = sourceEntries(
+    resolvedProjectPath,
+    platform,
+    inputCandidates,
+  ).map((entry) => entry.relativePath).filter((entry) => !tracked.has(entry));
+  if (untrackedInputs.length > 0) {
+    throw new Error(
+      `Release-candidate provenance includes ${untrackedInputs.length} untracked input(s); refusing to bless local-only gate policy.`,
+    );
+  }
 }
 
 function packageManifest(projectPath: string): {

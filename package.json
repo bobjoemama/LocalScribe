@@ -1,7 +1,7 @@
 {
   "name": "localscribe",
   "productName": "LocalScribe",
-  "version": "0.1.0-dev.13",
+  "version": "0.1.0-dev.14",
   "description": "Private, local-first AI desktop dictation for Apple Silicon Macs.",
   "author": "Devesh",
   "license": "Apache-2.0",
@@ -46,7 +46,8 @@
     "typecheck": "tsc --noEmit",
     "test": "node scripts/run-bounded-vitest.mjs",
     "test:settings-layout": "node scripts/test-settings-scroll-layout.mjs",
-    "test:packaging": "vitest run tests/packageInventory.test.ts tests/packageProvenance.test.ts tests/releaseMetadata.test.ts tests/releaseAssets.test.ts tests/macPackagingRelease.test.ts tests/resourceIntegrity.test.ts tests/buildSecurity.test.ts tests/makeResultSafety.test.ts",
+    "test:macos-accessibility-target": "node scripts/test-macos-accessibility-target.mjs",
+    "test:packaging": "node scripts/run-bounded-vitest.mjs tests/packageInventory.test.ts tests/packageProvenance.test.ts tests/releaseMetadata.test.ts tests/releaseAssets.test.ts tests/macPackagingRelease.test.ts tests/resourceIntegrity.test.ts tests/buildSecurity.test.ts tests/makeResultSafety.test.ts",
     "test:watch": "vitest",
     "audit:production": "npm audit --omit=dev --audit-level=high",
     "audit:all": "node scripts/audit-npm-all.mjs",

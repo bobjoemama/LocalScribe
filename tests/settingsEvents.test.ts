@@ -22,7 +22,9 @@ describe("validated settings-change delivery", () => {
     expect(source("src/renderer/pill/Pill.tsx")).not.toContain("setInterval(refreshSettings");
     expect(source("src/renderer/settings/screens/HistoryInsights.tsx")).toContain("settings.onChanged((settings) =>");
     expect(source("src/renderer/settings/screens/HistoryInsights.tsx")).toContain("setShortcutSettings(settings);");
-    expect(source("src/renderer/settings/screens/StyleSettings.tsx")).toContain("settings.onChanged(applyPersistedSettings)");
+    const settingsSource = source("src/renderer/settings/screens/StyleSettings.tsx");
+    expect(settingsSource.match(/const unsubscribeSettings = subscribeToSettingsWithInitialLoad\(/gu))
+      .toHaveLength(3);
   });
 
   it("uses the field patch path for stale-prone settings writers and direct commit for recording", () => {

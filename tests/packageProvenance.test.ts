@@ -1,4 +1,5 @@
 import { createPackage } from "@electron/asar";
+import { execFileSync } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
@@ -12,6 +13,7 @@ import path, { resolve } from "node:path";
 import { finished } from "node:stream/promises";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  assertReleaseInputsGitTracked,
   archiveExtractionPath,
   assertFreshViteBuild,
   assertPackagedArchive,
@@ -25,6 +27,27 @@ import { resourcePolicyFor } from "../src/shared/platformResourcePolicy";
 
 const temporaryDirectories: string[] = [];
 const inputCandidates = ["package.json", "src"] as const;
+const sourceGatePolicyFiles = [
+  ".github/workflows/ci.yml",
+  ".githooks/pre-push",
+  ".gitignore",
+  "eslint.config.mjs",
+  "scripts/audit-npm-all.mjs",
+  "scripts/audit-python-deps.mjs",
+  "scripts/run-bounded-vitest.mjs",
+  "scripts/settings-layout-harness.html",
+  "scripts/settings-layout-harness.tsx",
+  "scripts/test-macos-accessibility-target.mjs",
+  "scripts/test-settings-scroll-layout.mjs",
+  "scripts/verify-local-source.mjs",
+  "scripts/verify-npm-version.mjs",
+  "scripts/verify-toolchain.mjs",
+  "tests/ciPipeline.test.ts",
+  "tools/python-audit/pyproject.toml",
+  "tools/python-audit/uv.lock",
+  "vitest.config.ts",
+  "worker/tests/test_worker.py",
+] as const;
 
 function temporaryDirectory(label: string): string {
   const directory = mkdtempSync(path.join(tmpdir(), `localscribe-${label}-`));
@@ -120,6 +143,70 @@ afterEach(() => {
 });
 
 describe("package source provenance", () => {
+  it("binds every transitive source-gate policy and macOS UI fixture", () => {
+    const macInputs = releaseInputCandidates("darwin");
+    const covers = (relativePath: string): boolean => macInputs.some(
+      (candidate) => relativePath === candidate || relativePath.startsWith(`${candidate}/`),
+    );
+
+    for (const policyFile of sourceGatePolicyFiles) {
+      expect(covers(policyFile), `provenance does not cover ${policyFile}`).toBe(true);
+    }
+  });
+
+  it.each(sourceGatePolicyFiles)(
+    "changes the source root when gate policy %s changes",
+    (policyFile) => {
+      const project = temporaryDirectory("gate-policy");
+      writeFixtureFile(
+        project,
+        "package.json",
+        JSON.stringify({ productName: "LocalScribe", version: "0.1.0" }),
+      );
+      writeFixtureFile(project, policyFile, "reviewed gate policy\n");
+      const candidates = ["package.json", policyFile] as const;
+      const initial = buildPackageProvenance({
+        projectPath: project,
+        platform: "darwin",
+        arch: "arm64",
+        inputCandidates: candidates,
+      });
+
+      writeFixtureFile(project, policyFile, "weakened gate policy\n");
+      expect(buildPackageProvenance({
+        projectPath: project,
+        platform: "darwin",
+        arch: "arm64",
+        inputCandidates: candidates,
+      }).sourceRoot).not.toBe(initial.sourceRoot);
+    },
+  );
+
+  it("rejects an untracked or missing release-candidate input", () => {
+    const project = makeSourceProject();
+    execFileSync("git", ["init", "--quiet"], { cwd: project });
+    execFileSync("git", ["add", "package.json", "src"], { cwd: project });
+    expect(() => assertReleaseInputsGitTracked({
+      projectPath: project,
+      platform: "darwin",
+      inputCandidates,
+    })).not.toThrow();
+
+    writeFixtureFile(project, "scripts/release-gate.mjs", "export {};\n");
+    expect(() => assertReleaseInputsGitTracked({
+      projectPath: project,
+      platform: "darwin",
+      inputCandidates: [...inputCandidates, "scripts/release-gate.mjs"],
+    })).toThrow(/untracked input/u);
+
+    rmSync(path.join(project, "scripts/release-gate.mjs"));
+    expect(() => assertReleaseInputsGitTracked({
+      projectPath: project,
+      platform: "darwin",
+      inputCandidates: [...inputCandidates, "scripts/release-gate.mjs"],
+    })).toThrow(/input is missing/u);
+  });
+
   it("binds the Apache-2.0 license and notices into every release", () => {
     const macInputs = releaseInputCandidates("darwin");
     expect(macInputs).toEqual(expect.arrayContaining([
@@ -178,6 +265,8 @@ describe("package source provenance", () => {
       "scripts/reconcile-python-sbom.py",
       "scripts/smoke-worker.py",
       "scripts/smoke-packaged-macos.sh",
+      "scripts/test-macos-accessibility-target.mjs",
+      "scripts/test-settings-scroll-layout.mjs",
       "scripts/verify-local-macos.sh",
       "scripts/verify-local-source.mjs",
       "scripts/verify-macos-artifacts.mjs",

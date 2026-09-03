@@ -33,6 +33,13 @@ export interface AudioRecorderStartOptions {
   readonly transport?: "finalized" | "live";
   readonly liveSink?: LiveAudioSink;
   readonly maxLivePendingFrames?: number;
+  /**
+   * Reports a terminal failure that happens while capture is still active
+   * (for example, the duration ceiling or Live backpressure). The callback is
+   * session-scoped by the caller and must not be allowed to break recorder
+   * cleanup, so exceptions are contained here.
+   */
+  readonly onFailure?: (error: Error) => void;
 }
 
 export class RecorderCancelledError extends Error {
@@ -73,42 +80,64 @@ export class AudioRecorder {
   private startPromise: Promise<void> | null = null;
   private stopPromise: Promise<CapturedAudio> | null = null;
   private cancelPromise: Promise<void> | null = null;
+  private captureFailureCleanup: Promise<void> | null = null;
   private generation = 0;
+  private stopping = false;
   private smoothedLevel = 0;
   private lastLevelEmitAt = 0;
   private levelListener: (level: number) => void = () => undefined;
   private transport: "finalized" | "live" = "finalized";
   private liveTransport: LivePcmTransport | null = null;
   private liveEncoder: LivePcmFrameEncoder | null = null;
+  private failureListener: ((error: Error) => void) | null = null;
+  private failureNotified = false;
 
   setLevelListener(listener: (level: number) => void): void {
     this.levelListener = listener;
   }
 
   async start(deviceId: string | null, options: AudioRecorderStartOptions = {}): Promise<void> {
-    const generation = ++this.generation;
-    const pendingCancel = this.cancelPromise;
-    if (pendingCancel) await pendingCancel;
-    const pendingStop = this.stopPromise;
-    if (pendingStop) {
-      try {
-        await pendingStop;
-      } catch {
-        // A failed or cancelled finalization still has to release its recorder
-        // before a later session can acquire the microphone.
+    // Lifecycle operations can settle on a microtask and immediately expose a
+    // newer one. Recheck after every await so callers that arrive together all
+    // join the same startup instead of allocating competing generations.
+    while (true) {
+      const pendingCancel = this.cancelPromise;
+      if (pendingCancel) {
+        await pendingCancel;
+        continue;
       }
-    }
-    if (generation !== this.generation) throw new RecorderCancelledError();
-    if (this.context) return;
-    const startPromise = this.startInternal(deviceId, generation, options);
-    this.startPromise = startPromise;
-    try {
-      await startPromise;
-    } catch (error) {
-      await this.teardown();
-      if (this.startPromise === startPromise) this.startPromise = null;
-      if (generation !== this.generation) throw new RecorderCancelledError();
-      throw error;
+      const pendingStop = this.stopPromise;
+      if (pendingStop) {
+        try {
+          await pendingStop;
+        } catch {
+          // A failed or cancelled finalization still has to release its recorder
+          // before a later session can acquire the microphone.
+        }
+        continue;
+      }
+      const pendingFailureCleanup = this.captureFailureCleanup;
+      if (pendingFailureCleanup) {
+        await pendingFailureCleanup;
+        continue;
+      }
+      if (this.startPromise) {
+        await this.startPromise;
+        return;
+      }
+      if (this.context) return;
+
+      const generation = ++this.generation;
+      const operation = this.startInternal(deviceId, generation, options);
+      const tracked = operation.catch(async (error: unknown) => {
+        await this.teardown();
+        if (this.startPromise === tracked) this.startPromise = null;
+        if (generation !== this.generation) throw new RecorderCancelledError();
+        throw error;
+      });
+      this.startPromise = tracked;
+      await tracked;
+      return;
     }
   }
 
@@ -152,17 +181,19 @@ export class AudioRecorder {
       const remainingSamples = this.maxCapturedSamples - this.capturedSamples;
       const remainingBytes = this.maxCapturedBytes - this.capturedBytes;
       if (chunk.length > remainingSamples || chunk.byteLength > remainingBytes) {
-        this.captureLimitError = createCaptureLimitError(
+        this.failCapture(createCaptureLimitError(
           chunk.length > remainingSamples ? "long" : "large",
-        );
-        this.stopCaptureAtLimit();
+        ));
         return;
       }
       if (this.transport === "finalized") this.chunks.push(chunk);
       this.capturedSamples += chunk.length;
       this.capturedBytes += chunk.byteLength;
       if (!this.offerLiveFrames(chunk)) {
-        this.stopCaptureAtLimit();
+        this.failCapture(
+          this.liveTransport?.failed
+            ?? new Error("Live dictation could not keep up with microphone audio"),
+        );
         return;
       }
       let energy = 0;
@@ -212,7 +243,15 @@ export class AudioRecorder {
 
   private async stopInternal(): Promise<CapturedAudio> {
     await this.startPromise;
+    const pendingFailureCleanup = this.captureFailureCleanup;
+    if (pendingFailureCleanup) await pendingFailureCleanup;
+    const captureLimitError = this.captureLimitError;
+    if (captureLimitError) {
+      this.resetAfterStop();
+      throw captureLimitError;
+    }
     if (!this.context || !this.stream) throw new Error("Recorder is not active");
+    this.stopping = true;
     const durationMs = Math.max(1, Math.round(performance.now() - this.startedAt));
     const inputRate = this.context.sampleRate;
     this.source?.disconnect();
@@ -220,24 +259,19 @@ export class AudioRecorder {
     for (const track of this.stream.getTracks()) track.stop();
     await this.context.close();
 
-    const captureLimitError = this.captureLimitError;
-    if (captureLimitError) {
+    const stoppedCaptureError = this.captureLimitError;
+    if (stoppedCaptureError) {
       await this.cancelLiveTransport();
       this.resetAfterStop();
-      throw captureLimitError;
+      throw stoppedCaptureError;
     }
     if (durationMs > AUDIO_MAX_DURATION_MS) {
       await this.cancelLiveTransport();
       this.resetAfterStop();
       throw createCaptureLimitError("long");
     }
-    const liveError = await this.finishLiveTransport();
-    if (liveError) {
-      await this.cancelLiveTransport();
-      this.resetAfterStop();
-      throw liveError;
-    }
     if (this.capturedSamples < Math.round(inputRate * 0.1)) {
+      await this.cancelLiveTransport();
       this.resetAfterStop();
       throw new Error("No usable audio was captured; hold the dictation key a little longer");
     }
@@ -246,8 +280,15 @@ export class AudioRecorder {
       this.liveActiveSamples,
       inputRate,
     )) {
+      await this.cancelLiveTransport();
       this.resetAfterStop();
       throw new Error("No speech detected; try again a little closer to the microphone");
+    }
+    const liveError = await this.finishLiveTransport();
+    if (liveError) {
+      await this.cancelLiveTransport();
+      this.resetAfterStop();
+      throw liveError;
     }
     if (this.transport === "live") {
       this.resetAfterStop();
@@ -281,6 +322,7 @@ export class AudioRecorder {
   private async cancelInternal(): Promise<void> {
     const pendingStart = this.startPromise;
     const pendingStop = this.stopPromise;
+    const pendingFailureCleanup = this.captureFailureCleanup;
     this.generation += 1;
     if (pendingStop) {
       try {
@@ -289,6 +331,7 @@ export class AudioRecorder {
         // Cancellation owns cleanup after a failed finalization.
       }
     }
+    if (pendingFailureCleanup) await pendingFailureCleanup;
     await this.teardown();
     if (pendingStart) {
       try {
@@ -313,6 +356,7 @@ export class AudioRecorder {
     this.chunks = [];
     await this.cancelLiveTransport();
     this.resetCaptureLimit();
+    this.stopping = false;
     this.smoothedLevel = 0;
     this.lastLevelEmitAt = 0;
     this.levelListener(0);
@@ -343,6 +387,46 @@ export class AudioRecorder {
     this.levelListener(0);
   }
 
+  private failCapture(error: Error): void {
+    if (this.captureLimitError) return;
+    this.captureLimitError = error;
+    if (this.stopping) return;
+
+    this.stopCaptureAtLimit();
+    const cleanup = this.closeFailedCapture();
+    const tracked = cleanup.finally(() => {
+      if (this.captureFailureCleanup === tracked) this.captureFailureCleanup = null;
+    });
+    this.captureFailureCleanup = tracked;
+
+    if (this.failureNotified) return;
+    this.failureNotified = true;
+    try {
+      this.failureListener?.(error);
+    } catch {
+      // A renderer notification failure must never strand microphone or Live
+      // resources. Main also scopes the report to the originating session.
+    }
+  }
+
+  private async closeFailedCapture(): Promise<void> {
+    const context = this.context;
+    const transport = this.liveTransport;
+    this.context = null;
+    this.stream = null;
+    this.source = null;
+    this.node = null;
+    this.chunks = [];
+    this.startPromise = null;
+    this.liveTransport = null;
+    this.liveEncoder = null;
+    this.transport = "finalized";
+    await Promise.allSettled([
+      context?.close() ?? Promise.resolve(),
+      transport?.cancel(this.captureLimitError ?? undefined) ?? Promise.resolve(),
+    ]);
+  }
+
   private resetAfterStop(): void {
     this.context = null;
     this.stream = null;
@@ -353,6 +437,8 @@ export class AudioRecorder {
     this.liveTransport = null;
     this.liveEncoder = null;
     this.transport = "finalized";
+    this.captureFailureCleanup = null;
+    this.stopping = false;
     this.resetCaptureLimit();
   }
 
@@ -363,6 +449,8 @@ export class AudioRecorder {
     this.maxCapturedBytes = 0;
     this.captureLimitError = null;
     this.liveActiveSamples = 0;
+    this.failureListener = null;
+    this.failureNotified = false;
   }
 
   private configureTransport(options: AudioRecorderStartOptions): void {
@@ -371,13 +459,11 @@ export class AudioRecorder {
       throw new Error("Live dictation is unavailable because no local Live adapter is installed.");
     }
     this.transport = transport;
+    this.failureListener = options.onFailure ?? null;
     this.liveTransport = transport === "live" && options.liveSink
       ? new LivePcmTransport(options.liveSink, {
         maxPendingFrames: options.maxLivePendingFrames,
-        onFailure: (error) => {
-          this.captureLimitError = error;
-          this.stopCaptureAtLimit();
-        },
+        onFailure: (error) => this.failCapture(error),
       })
       : null;
   }

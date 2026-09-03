@@ -52,15 +52,22 @@ staged.
 Run on an Apple Silicon Mac:
 
 ```sh
-npm run verify:local:macos
+npm run verify:local:macos -- --release-candidate --require-accessibility
 ```
+
+`--release-candidate` rejects missing or untracked provenance inputs and any
+tracked or non-ignored untracked worktree change before the build. Ignored
+package output such as `out/` does not make the check dirty. The flag is
+deliberately absent from ordinary `npm run verify:local` and pre-push checks so
+maintainers can verify intended pre-commit edits. `LOCALSCRIBE_RELEASE=1`
+enables the same release-candidate check automatically.
 
 The command:
 
-1. runs the source gates;
+1. runs the source gates and native settings-layout harness;
 2. rebuilds the pinned relocatable Python/MLX runtime and native helpers;
 3. builds fresh main, preload, renderer, DMG, and ZIP outputs;
-4. binds exact source provenance into `app.asar`;
+4. binds exact source and release-gate provenance into `app.asar`;
 5. inventories ASAR, renderer assets, native modules, and loose resources;
 6. verifies bundle identity, arm64 slices, fuses, exact entitlements, and deep
    signatures;
@@ -101,6 +108,13 @@ The smoke uses only the candidate's bundled runtime, worker, manifests, and
 helpers. Downloads are disabled unless explicitly authorized. The local-only
 path rejects pending install transactions and does not repair or delete the
 user's model cache.
+
+The default packaged-app shutdown smoke starts the candidate in a dedicated,
+owned POSIX process group and requires that entire group to disappear after
+termination, including children created after shutdown begins. It exercises an
+idle startup. It does not deterministically put a real model worker in an
+active or finalizing transaction, so worker retirement in those states remains
+part of the physical warm-model acceptance below.
 
 ## Physical acceptance boundary
 

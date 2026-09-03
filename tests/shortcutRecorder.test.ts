@@ -7,6 +7,7 @@ import {
   shortcutRecorderErrorMessage,
   shortcutFromKeyboardEvent,
   shouldRestoreRecorderFocus,
+  withShortcutValidation,
 } from "../src/renderer/settings/components/ShortcutRecorder";
 import { expectPrecedes, sliceBetween } from "./support/order";
 
@@ -168,5 +169,32 @@ describe("shortcut recorder failed native capture", () => {
     expectPrecedes(rejection, "captureId.current += 1", "capturingRef.current = false");
     expect(rejection).toContain('lastShortcut.current = ""');
     expect(rejection).toContain('setLiveShortcut("")');
+  });
+
+  it("clears validation after an asynchronous capture-start rejection invalidates the attempt", async () => {
+    let rejectCaptureStart!: (error: Error) => void;
+    const captureStart = new Promise<void>((_resolve, reject) => {
+      rejectCaptureStart = reject;
+    });
+    let attempt = 1;
+    const validationStates: boolean[] = [];
+
+    const validation = withShortcutValidation(
+      (validating) => validationStates.push(validating),
+      async () => {
+        try {
+          await captureStart;
+        } catch {
+          attempt += 1;
+        }
+        if (attempt !== 1) return "superseded" as const;
+        return "current" as const;
+      },
+    );
+
+    expect(validationStates).toEqual([true]);
+    rejectCaptureStart(new Error("native capture unavailable"));
+    await expect(validation).resolves.toBe("superseded");
+    expect(validationStates).toEqual([true, false]);
   });
 });

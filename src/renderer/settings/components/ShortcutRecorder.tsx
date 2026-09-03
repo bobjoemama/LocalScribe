@@ -101,6 +101,19 @@ export function shortcutRecorderErrorMessage(error: unknown, fallback: string): 
   return rendererSafeErrorMessage(error, fallback);
 }
 
+/** Keep the recorder's busy state paired even when an awaited capture step races. */
+export async function withShortcutValidation<T>(
+  setValidating: (validating: boolean) => void,
+  operation: () => Promise<T>,
+): Promise<T> {
+  setValidating(true);
+  try {
+    return await operation();
+  } finally {
+    setValidating(false);
+  }
+}
+
 function readableShortcutLabel(shortcut: string): string {
   try {
     return shortcutDisplayLabel(shortcut);
@@ -180,46 +193,46 @@ export function ShortcutRecorder({
     const attempt = captureId.current;
     capturingRef.current = false;
     setCapturing(false);
-    setValidating(true);
-    await endNativeCapture();
+    await withShortcutValidation(setValidating, async () => {
+      await endNativeCapture();
 
-    if (attempt !== captureId.current) return;
-    const parsed = kind === "toggle"
-      ? toggleShortcutSchema.safeParse(candidate)
-      : holdShortcutSchema.safeParse(candidate);
-    if (!parsed.success) {
-      setError(parsed.error.issues[0]?.message ?? "That key combination cannot be used as a shortcut.");
-      setValidating(false);
-      return;
-    }
-    const shortcut = parsed.data;
-
-    try {
-      const result = await onAccept(shortcut);
+      // beginCapture can reject while endNativeCapture is awaiting it. The
+      // rejection deliberately invalidates this attempt; the outer finally
+      // must still release the disabled/busy state before returning.
       if (attempt !== captureId.current) return;
-      if (!result.accepted) {
-        setError(shortcutRecorderErrorMessage(
-          result.error,
-          "That shortcut is unavailable. Choose another key combination.",
-        ));
-        setWarning("");
-        setValidating(false);
+      const parsed = kind === "toggle"
+        ? toggleShortcutSchema.safeParse(candidate)
+        : holdShortcutSchema.safeParse(candidate);
+      if (!parsed.success) {
+        setError(parsed.error.issues[0]?.message ?? "That key combination cannot be used as a shortcut.");
         return;
       }
-      const acceptedShortcut = result.shortcut ?? shortcut;
-      setError("");
-      setWarning(result.warning ?? "");
-      setLiveShortcut(acceptedShortcut);
-      setValidating(false);
-    } catch (validationError) {
-      if (attempt !== captureId.current) return;
-      setWarning("");
-      setError(shortcutRecorderErrorMessage(
-        validationError,
-        "The shortcut could not be applied. Try again.",
-      ));
-      setValidating(false);
-    }
+      const shortcut = parsed.data;
+
+      try {
+        const result = await onAccept(shortcut);
+        if (attempt !== captureId.current) return;
+        if (!result.accepted) {
+          setError(shortcutRecorderErrorMessage(
+            result.error,
+            "That shortcut is unavailable. Choose another key combination.",
+          ));
+          setWarning("");
+          return;
+        }
+        const acceptedShortcut = result.shortcut ?? shortcut;
+        setError("");
+        setWarning(result.warning ?? "");
+        setLiveShortcut(acceptedShortcut);
+      } catch (validationError) {
+        if (attempt !== captureId.current) return;
+        setWarning("");
+        setError(shortcutRecorderErrorMessage(
+          validationError,
+          "The shortcut could not be applied. Try again.",
+        ));
+      }
+    });
   }, [endNativeCapture, kind, onAccept]);
 
   useEffect(() => {

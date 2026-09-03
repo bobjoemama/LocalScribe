@@ -363,6 +363,9 @@ describe("safe insertion", () => {
       focusedEditable: null,
       windowFingerprint: null,
       focusedElementFingerprint: null,
+      accessibilityElement: "static_text",
+      accessibilityActivation: "timed_out",
+      accessibilityLookupAttempts: 81,
     };
     const bridge = new FakeBridge([initialTarget]);
     const clipboard = new FakeClipboard(bridge);
@@ -372,6 +375,9 @@ describe("safe insertion", () => {
     await expect(insertion.insert("dictated", true)).resolves.toEqual({
       outcome: "copied",
       reason: "initial_target_editability_unavailable",
+      accessibilityElement: "static_text",
+      accessibilityActivation: "timed_out",
+      accessibilityLookupAttempts: 81,
     });
   });
 
@@ -466,7 +472,13 @@ describe("safe insertion", () => {
   });
 
   it("reports a clipboard snapshot failure without exposing clipboard data", async () => {
-    const bridge = new FakeBridge([TARGET_A]);
+    const diagnosticTarget: ActiveTarget = {
+      ...TARGET_A,
+      accessibilityElement: "text_control",
+      accessibilityActivation: "resolved",
+      accessibilityLookupAttempts: 7,
+    };
+    const bridge = new FakeBridge([diagnosticTarget]);
     const clipboard = new FakeClipboard(bridge);
     vi.spyOn(clipboard, "snapshot").mockImplementation(() => {
       throw new Error("private clipboard contents");
@@ -477,6 +489,9 @@ describe("safe insertion", () => {
     await expect(insertion.insert("dictated", true)).resolves.toEqual({
       outcome: "copied",
       reason: "clipboard_snapshot_failed",
+      accessibilityElement: "text_control",
+      accessibilityActivation: "resolved",
+      accessibilityLookupAttempts: 7,
     });
     expect(clipboard.currentText).toBe("dictated");
   });
@@ -803,6 +818,39 @@ describe("native helper boundary", () => {
       focusedElementFingerprint: null,
     });
     expect(nativeBridgeInternals.parseTarget(JSON.stringify({ ...base, windowFingerprint: null }))).toBeNull();
+  });
+
+  it("accepts only closed, bounded accessibility-tree diagnostics", async () => {
+    const { nativeBridgeInternals } = await import("../src/main/insertion/nativePlatformBridge");
+    const base = {
+      platform: "darwin",
+      processId: 41,
+      applicationId: "com.example.Editor",
+      windowFingerprint: "a".repeat(64),
+      focusedEditable: true,
+      focusedElementFingerprint: "b".repeat(64),
+      accessibilityElement: "static_text",
+      accessibilityActivation: "resolved",
+      accessibilityLookupAttempts: 4,
+    };
+
+    expect(nativeBridgeInternals.parseTarget(JSON.stringify(base))).toEqual(base);
+    expect(nativeBridgeInternals.parseTarget(JSON.stringify({
+      ...base,
+      accessibilityElement: "private-editor-name",
+    }))).toBeNull();
+    expect(nativeBridgeInternals.parseTarget(JSON.stringify({
+      ...base,
+      accessibilityActivation: "eventual-secret",
+    }))).toBeNull();
+    expect(nativeBridgeInternals.parseTarget(JSON.stringify({
+      ...base,
+      accessibilityLookupAttempts: 82,
+    }))).toBeNull();
+    expect(nativeBridgeInternals.parseTarget(JSON.stringify({
+      ...base,
+      accessibilityActivation: undefined,
+    }))).toBeNull();
   });
 
   it("requires both focused-control and event-posting access", async () => {

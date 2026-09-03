@@ -1,6 +1,6 @@
 import { EventEmitter } from "node:events";
 import { spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -17,7 +17,9 @@ import {
   TRANSCRIBE_COLD_LOAD_BUDGET_MS,
   TRANSCRIBE_REALTIME_FACTOR_BUDGET,
   TRANSCRIBE_TIMEOUT_CEILING_MS,
+  WORKER_PROCESS_ANCHOR_SOURCE,
   WORKER_RUNTIME_IDENTITIES,
+  WORKER_STDERR_SUPPRESSED_NOTICE,
   WorkerSupervisor,
   installTimeoutMs,
   transcribeTimeoutMs,
@@ -30,6 +32,7 @@ const spawnMock = vi.mocked(spawn);
 const requests: Array<Record<string, unknown>> = [];
 let onWorkerRequest: ((request: Record<string, unknown>) => void) | null = null;
 const temporaryDirectories: string[] = [];
+const packagedPython = path.resolve("resources/python-runtime/venv/bin/python3");
 const deferredWorkerRequests = new Set<string>();
 let workerEmitsInstallProgress = true;
 let workerLiveFinalText = "live final";
@@ -515,6 +518,10 @@ describe("WorkerSupervisor model lifecycle", () => {
     const spawnOptions = spawnMock.mock.calls[0]?.[2];
     expect(spawnOptions?.shell).toBe(false);
     expect(spawnOptions?.env).toMatchObject({
+      LOCALSCRIBE_WORKER_ROLE: "inference",
+      HF_HUB_OFFLINE: "1",
+      TRANSFORMERS_OFFLINE: "1",
+      UV_OFFLINE: "1",
       HF_HUB_DISABLE_TELEMETRY: "1",
       HF_HUB_DISABLE_IMPLICIT_TOKEN: "1",
       PYTHONUTF8: "1",
@@ -522,6 +529,60 @@ describe("WorkerSupervisor model lifecycle", () => {
     });
     expect(spawnOptions?.env).not.toHaveProperty("HF_TOKEN");
     expect(spawnOptions?.env).not.toHaveProperty("HTTPS_PROXY");
+  });
+
+  it("suppresses multi-megabyte dependency stderr without leaking or flooding logs", async () => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const worker = supervisor();
+    await worker.ensureReady(medium);
+    const child = spawnMock.mock.results[0]?.value as FakeWorkerProcess;
+    const sentinel = "/Users/alice/private.wav https://token.example secret-token\u001b[31m";
+    child.stderr.emit("data", Buffer.concat([
+      Buffer.from(sentinel, "utf8"),
+      Buffer.from([0xff, 0xfe]),
+      Buffer.alloc(2 * 1024 * 1024, 0x78),
+    ]));
+    for (let index = 0; index < 2_048; index += 1) {
+      child.stderr.emit("data", Buffer.alloc(1_024, 0x79));
+    }
+
+    await expect(worker.transcribe({
+      model: medium,
+      audioPath: "/audio/request.wav",
+      allowedRoot: "/audio",
+      language: "auto",
+      context: "",
+      durationMs: 1_000,
+    })).resolves.toMatchObject({ text: "local result" });
+
+    expect(log).toHaveBeenCalledTimes(1);
+    expect(log).toHaveBeenCalledWith(WORKER_STDERR_SUPPRESSED_NOTICE);
+    const forwarded = JSON.stringify(log.mock.calls);
+    expect(forwarded).not.toContain("alice");
+    expect(forwarded).not.toContain("token.example");
+    expect(forwarded).not.toContain("secret-token");
+    expect(forwarded.length).toBeLessThan(200);
+    log.mockRestore();
+  });
+
+  it("ignores retired-worker stderr and grants each fresh child one bounded notice", async () => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const worker = supervisor();
+    await worker.ensureReady(medium);
+    const first = spawnMock.mock.results[0]?.value as FakeWorkerProcess;
+    first.stderr.emit("data", Buffer.from("first private detail"));
+    worker.abort("replace worker");
+
+    await worker.ensureReady(medium);
+    const second = spawnMock.mock.results[1]?.value as FakeWorkerProcess;
+    first.stderr.emit("data", Buffer.from("stale private detail"));
+    second.stderr.emit("data", Buffer.from("second private detail"));
+
+    expect(log.mock.calls).toEqual([
+      [WORKER_STDERR_SUPPRESSED_NOTICE],
+      [WORKER_STDERR_SUPPRESSED_NOTICE],
+    ]);
+    log.mockRestore();
   });
 
   it("reports the warm selection without mutating or reloading it", async () => {
@@ -644,9 +705,21 @@ describe("WorkerSupervisor model lifecycle", () => {
 
     await worker.ensureReady(medium);
 
+    const bundledPython = path.join(executableDirectory, executable);
+    expect(spawnMock.mock.calls[0]?.[0]).toBe(bundledPython);
+    expect(spawnMock.mock.calls[0]?.[1]).toEqual([
+      "-B",
+      "-c",
+      WORKER_PROCESS_ANCHOR_SOURCE,
+      bundledPython,
+      "-B",
+      "-m",
+      "localscribe_worker",
+    ]);
     const spawnOptions = spawnMock.mock.calls[0]?.[2];
     expect(spawnOptions?.env).not.toHaveProperty("PATH");
     expect(spawnOptions?.env).not.toHaveProperty("HF_TOKEN");
+    expect(spawnOptions?.env).not.toHaveProperty("ELECTRON_RUN_AS_NODE");
   });
 
   it("uses only an explicitly supplied app-owned temporary directory", async () => {
@@ -1023,26 +1096,30 @@ describe("WorkerSupervisor model lifecycle", () => {
   });
 
   it.runIf(process.platform !== "win32")(
-    "signals the owned process group and escalates from SIGTERM to SIGKILL",
+    "commands the live ownership anchor and escalates without signaling a stored PGID",
     async () => {
       vi.useFakeTimers();
       const processGroupId = 424_242;
-      let groupAlive = true;
-      const killSpy = vi.spyOn(process, "kill").mockImplementation((pid, signal) => {
-        if (pid !== -processGroupId) {
-          throw new Error(`unexpected pid ${pid}`);
-        }
-        if (signal === 0) {
-          if (groupAlive) return true;
-          throw Object.assign(new Error("no such process group"), { code: "ESRCH" });
-        }
-        if (signal === "SIGKILL") groupAlive = false;
-        return true;
+      const killSpy = vi.spyOn(process, "kill").mockImplementation(() => {
+        throw new Error("the supervisor must not signal a retained numeric process group");
       });
+      let anchor: FakeWorkerProcess | null = null;
+      const anchorSignals: Array<NodeJS.Signals | number | undefined> = [];
       spawnMock.mockImplementation(() => {
-        const process = new FakeWorkerProcess(processGroupId);
-        process.start();
-        return process as never;
+        anchor = new FakeWorkerProcess(processGroupId);
+        const originalKill = anchor.kill.bind(anchor);
+        anchor.kill = (signal?: NodeJS.Signals | number) => {
+          anchorSignals.push(signal);
+          if (signal === "SIGWINCH") {
+            anchor!.signalCode = "SIGKILL";
+            anchor!.emit("exit", null, "SIGKILL");
+            return true;
+          }
+          if (signal === "SIGUSR2") return true;
+          return originalKill();
+        };
+        anchor.start();
+        return anchor as never;
       });
 
       try {
@@ -1050,10 +1127,14 @@ describe("WorkerSupervisor model lifecycle", () => {
         await worker.ensureReady(medium);
 
         worker.abort("process-tree test");
-        expect(killSpy).toHaveBeenCalledWith(-processGroupId, "SIGTERM");
+        expect(anchor).not.toBeNull();
+        expect(anchorSignals).toEqual(["SIGUSR2"]);
+        expect(killSpy).not.toHaveBeenCalled();
 
         await vi.advanceTimersByTimeAsync(1_001);
-        expect(killSpy).toHaveBeenCalledWith(-processGroupId, "SIGKILL");
+        expect(anchorSignals).toEqual(["SIGUSR2", "SIGWINCH"]);
+        expect(anchor!.signalCode).toBe("SIGKILL");
+        expect(killSpy).not.toHaveBeenCalled();
 
         await vi.advanceTimersByTimeAsync(25);
         const retiring = (
@@ -1062,6 +1143,159 @@ describe("WorkerSupervisor model lifecycle", () => {
         expect(retiring.size).toBe(0);
       } finally {
         killSpy.mockRestore();
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it.runIf(process.platform !== "win32" && existsSync(packagedPython))(
+    "keeps a real non-reusable anchor alive after the worker leader exits and tears down its late child",
+    async () => {
+      const actualChildProcess = await vi.importActual<typeof import("node:child_process")>(
+        "node:child_process",
+      );
+      const fixtureDirectory = mkdtempSync(path.join(os.tmpdir(), "localscribe-anchor-"));
+      temporaryDirectories.push(fixtureDirectory);
+      const lockPath = path.join(fixtureDirectory, "late-child.lock");
+      const lateChildSource = [
+        "import fcntl, signal, sys, time\n",
+        "handle = open(sys.argv[1], 'a')\n",
+        "fcntl.flock(handle, fcntl.LOCK_EX)\n",
+        "signal.signal(signal.SIGTERM, lambda *_args: None)\n",
+        "sys.stdout.write('ready\\n')\n",
+        "sys.stdout.flush()\n",
+        "while True: time.sleep(1)\n",
+      ].join("");
+      const workerSource = [
+        'const { spawn } = require("node:child_process");',
+        `const late = spawn(${JSON.stringify(packagedPython)},`,
+        `["-B", "-c", ${JSON.stringify(lateChildSource)}, ${JSON.stringify(lockPath)}],`,
+        '{ detached: false, stdio: ["ignore", "pipe", "ignore"] });',
+        "late.stdout.once('data', () => {",
+        "late.unref();",
+        'process.stdout.write("{\\"type\\":\\"late_ready\\"}\\n");',
+        "process.exit(0);",
+        "});",
+      ].join("");
+      const anchor = actualChildProcess.spawn(
+        packagedPython,
+        ["-B", "-c", WORKER_PROCESS_ANCHOR_SOURCE, process.execPath, "-e", workerSource],
+        {
+          detached: true,
+          env: process.env,
+          stdio: ["pipe", "pipe", "pipe"],
+        },
+      );
+      let output = "";
+      anchor.stdout.setEncoding("utf8");
+      anchor.stdout.on("data", (chunk: string) => {
+        output += chunk;
+      });
+
+      const lockProbeSource = [
+        "import fcntl, sys\n",
+        "handle = open(sys.argv[1], 'a')\n",
+        "try:\n",
+        "    fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)\n",
+        "except BlockingIOError:\n",
+        "    sys.exit(1)\n",
+      ].join("");
+      const lockProbeStatus = (): number | null => actualChildProcess.spawnSync(
+        packagedPython,
+        ["-B", "-c", lockProbeSource, lockPath],
+        { stdio: "ignore" },
+      ).status;
+      const anchorExited = (): boolean => (
+        anchor.exitCode !== null || anchor.signalCode !== null
+      );
+      const waitUntil = async (condition: () => boolean, timeoutMs: number): Promise<void> => {
+        const deadline = Date.now() + timeoutMs;
+        while (!condition()) {
+          if (Date.now() >= deadline) throw new Error("real process-anchor fixture timed out");
+          await new Promise((resolve) => setTimeout(resolve, 20));
+        }
+      };
+
+      let cleanupFailure: Error | null = null;
+      try {
+        await waitUntil(
+          () => (
+            output.includes('"type":"late_ready"')
+            && output.includes('"code":"worker_exited"')
+          ),
+          2_000,
+        );
+        expect(anchorExited()).toBe(false);
+        expect(lockProbeStatus()).toBe(1);
+
+        // The direct, unreaped ChildProcess identity is the only shutdown
+        // capability the supervisor uses. The anchor itself owns group-wide
+        // TERM/KILL and survives long enough to make numeric reuse impossible.
+        expect(anchor.kill("SIGUSR2")).toBe(true);
+        await waitUntil(
+          () => anchorExited() && lockProbeStatus() === 0,
+          3_000,
+        );
+      } finally {
+        if (anchor.exitCode === null && anchor.signalCode === null) {
+          // Close only the pipe owned by this exact ChildProcess. The anchor
+          // observes EOF and tears down its own current group; never signal a
+          // reported descendant pid, which could already have been reused.
+          anchor.stdin.end();
+          try {
+            await waitUntil(
+              () => anchorExited() && lockProbeStatus() === 0,
+              2_500,
+            );
+          } catch (error) {
+            cleanupFailure = error instanceof Error
+              ? error
+              : new Error("process-anchor fixture cleanup timed out");
+          }
+        }
+        if (lockProbeStatus() !== 0) {
+          cleanupFailure = new Error(
+            "process-anchor fixture lost ownership before descendant cleanup could be proved",
+          );
+        }
+      }
+      if (cleanupFailure) throw cleanupFailure;
+    },
+    8_000,
+  );
+
+  it.runIf(process.platform !== "win32")(
+    "never signals from stale anchor ownership and refuses replacement after an unexpected anchor exit",
+    async () => {
+      vi.useFakeTimers();
+      try {
+        const processGroupId = 434_343;
+        const anchor = new FakeWorkerProcess(processGroupId);
+        spawnMock.mockImplementation(() => {
+          anchor.start();
+          return anchor as never;
+        });
+        const killSpy = vi.spyOn(process, "kill");
+        const directKill = vi.spyOn(anchor, "kill");
+        const worker = supervisor();
+        await worker.ensureReady(medium);
+
+        anchor.exitCode = 0;
+        (
+          worker as unknown as {
+            terminateWorker(process: FakeWorkerProcess, error: Error): void;
+          }
+        ).terminateWorker(anchor, new Error("ownership anchor exited unexpectedly"));
+        const replacement = worker.ensureReady(medium);
+        await vi.advanceTimersByTimeAsync(2_101);
+
+        expect(killSpy).not.toHaveBeenCalled();
+        expect(directKill).not.toHaveBeenCalled();
+        await expect(replacement).rejects.toThrow(
+          "refusing to start an overlapping model process",
+        );
+        killSpy.mockRestore();
+      } finally {
         vi.useRealTimers();
       }
     },
@@ -1082,6 +1316,8 @@ describe("WorkerSupervisor model lifecycle", () => {
   });
 
   it("installs through the data-only protocol without loading a runtime", async () => {
+    vi.stubEnv("HF_TOKEN", "must-not-cross-process-boundary");
+    vi.stubEnv("HF_HUB_OFFLINE", "1");
     const worker = supervisor();
 
     await worker.installModel(medium);
@@ -1097,6 +1333,16 @@ describe("WorkerSupervisor model lifecycle", () => {
     }));
     expect(requests.some((request) => request.type === "load_model")).toBe(false);
     expect(spawnMock).toHaveBeenCalledOnce();
+    const installerEnvironment = spawnMock.mock.calls[0]?.[2]?.env;
+    expect(installerEnvironment).toMatchObject({
+      LOCALSCRIBE_WORKER_ROLE: "installer",
+      HF_HUB_DISABLE_TELEMETRY: "1",
+      HF_HUB_DISABLE_IMPLICIT_TOKEN: "1",
+    });
+    expect(installerEnvironment).not.toHaveProperty("HF_HUB_OFFLINE");
+    expect(installerEnvironment).not.toHaveProperty("TRANSFORMERS_OFFLINE");
+    expect(installerEnvironment).not.toHaveProperty("UV_OFFLINE");
+    expect(installerEnvironment).not.toHaveProperty("HF_TOKEN");
   });
 
   it("forwards measured install bytes without treating progress as completion", async () => {
@@ -1161,12 +1407,23 @@ describe("WorkerSupervisor model lifecycle", () => {
     expect(requests.map((request) => request.type)).toEqual([
       "load_model",
       "install_model",
+      "shutdown",
     ]);
     expect(requests.some((request) => (
       request.type === "load_model" && request.modelId === high.modelId
     ))).toBe(false);
     expect(worker.loadedSelection()).toEqual(medium);
-    expect(spawnMock).toHaveBeenCalledOnce();
+    expect(spawnMock).toHaveBeenCalledTimes(2);
+    expect(spawnMock.mock.calls[0]?.[2]?.env).toMatchObject({
+      LOCALSCRIBE_WORKER_ROLE: "inference",
+      HF_HUB_OFFLINE: "1",
+      TRANSFORMERS_OFFLINE: "1",
+      UV_OFFLINE: "1",
+    });
+    expect(spawnMock.mock.calls[1]?.[2]?.env).toMatchObject({
+      LOCALSCRIBE_WORKER_ROLE: "installer",
+    });
+    expect(spawnMock.mock.calls[1]?.[2]?.env).not.toHaveProperty("HF_HUB_OFFLINE");
   });
 
   it("preserves an unrelated warm runtime after a structured install rejection", async () => {
@@ -1179,10 +1436,11 @@ describe("WorkerSupervisor model lifecycle", () => {
     );
 
     expect(worker.loadedSelection()).toEqual(medium);
-    expect(spawnMock).toHaveBeenCalledOnce();
+    expect(spawnMock).toHaveBeenCalledTimes(2);
     expect(requests.map((request) => request.type)).toEqual([
       "load_model",
       "install_model",
+      "shutdown",
     ]);
 
     await worker.transcribe({
@@ -1196,12 +1454,13 @@ describe("WorkerSupervisor model lifecycle", () => {
     expect(requests.filter((request) => request.type === "load_model")).toHaveLength(1);
   });
 
-  it("clears the warm selection when an unrelated install violates the protocol", async () => {
+  it("isolates an unrelated installer protocol violation from the warm runtime", async () => {
     const worker = supervisor();
     await worker.ensureReady(medium);
     onWorkerRequest = (request) => {
       if (request.type !== "install_model") return;
-      const child = spawnMock.mock.results[0]?.value as FakeWorkerProcess;
+      const child = spawnMock.mock.results[spawnMock.mock.results.length - 1]
+        ?.value as FakeWorkerProcess;
       (child as unknown as { respond(message: unknown): void }).respond({
         type: "health",
         id: "00000000-0000-4000-8000-000000000099",
@@ -1211,11 +1470,10 @@ describe("WorkerSupervisor model lifecycle", () => {
 
     await expect(worker.installModel(high)).rejects.toThrow(/unknown request/u);
 
-    // A protocol failure retires the process as untrustworthy. The higher
-    // model-apply transaction owns restoration; the supervisor must not claim
-    // a runtime survived when it deliberately terminated that runtime.
-    expect(worker.loadedSelection()).toBeNull();
-    expect(spawnMock).toHaveBeenCalledOnce();
+    // Only the transient online process is untrustworthy and retired. The
+    // dependency-level-offline inference process remains exactly as it was.
+    expect(worker.loadedSelection()).toEqual(medium);
+    expect(spawnMock).toHaveBeenCalledTimes(2);
   });
 
   it("unloads a replaced warm artifact and restores its exact prior selection", async () => {
@@ -1254,17 +1512,36 @@ describe("WorkerSupervisor model lifecycle", () => {
     onWorkerRequest = (request) => {
       if (request.type === "install_model") worker.retire();
     };
-    await worker.installModel(high, { replacesLoadedArtifact: true });
+    await expect(worker.installModel(high, { replacesLoadedArtifact: true }))
+      .rejects.toThrow("LocalScribe is shutting down");
 
     expect(requests.map((request) => request.type)).toEqual([
       "load_model",
       "shutdown",
       "install_model",
-      "shutdown",
     ]);
     expect(requests.filter((request) => request.type === "load_model")).toEqual([
       expect.objectContaining(medium),
     ]);
+    expect(worker.loadedSelection()).toBeNull();
+  });
+
+  it("does not start an online installer when quit lands during repair unload", async () => {
+    const worker = supervisor();
+    await worker.ensureReady(medium);
+    onWorkerRequest = (request) => {
+      if (request.type !== "shutdown") return;
+      // This is beginShutdown's ordering: latch retirement first, then abort
+      // the currently owned process without waiting for the serialized queue.
+      worker.retire();
+      worker.abort("LocalScribe is shutting down");
+    };
+
+    await expect(worker.installModel(medium, { replacesLoadedArtifact: true }))
+      .rejects.toThrow("LocalScribe is shutting down");
+
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+    expect(requests.filter((request) => request.type === "install_model")).toEqual([]);
     expect(worker.loadedSelection()).toBeNull();
   });
 

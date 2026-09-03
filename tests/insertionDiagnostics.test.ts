@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { insertionDiagnosticEvent } from "../src/main/insertion/insertionDiagnostics";
 import {
+  ACCESSIBILITY_ACTIVATION_OUTCOMES,
+  ACCESSIBILITY_ELEMENT_CATEGORIES,
   INSERTION_REASON_CODES,
 } from "../src/main/insertion/types";
 import { sanitizeDiagnosticEvent } from "../src/shared/diagnosticsLog";
@@ -74,6 +76,69 @@ describe("insertion diagnostics", () => {
       event: "copied",
       detail: "clipboard_snapshot_failed",
     });
+  });
+
+  it("records only closed cold-accessibility-tree metadata", () => {
+    const event = insertionDiagnosticEvent({
+      outcome: "copied",
+      reason: "initial_target_editability_unavailable",
+      accessibilityElement: "static_text",
+      accessibilityActivation: "timed_out",
+      accessibilityLookupAttempts: 81,
+    }, true, true);
+
+    expect(event).toMatchObject({
+      accessibilityElement: "static_text",
+      accessibilityActivation: "timed_out",
+      accessibilityLookupAttempts: 81,
+    });
+    expect(sanitizeDiagnosticEvent({ ...event, at: 123 })).toMatchObject({
+      accessibilityElement: "static_text",
+      accessibilityActivation: "timed_out",
+      accessibilityLookupAttempts: 81,
+    });
+    expect(sanitizeDiagnosticEvent({
+      ...event,
+      at: 123,
+      accessibilityElement: "private target title",
+      accessibilityActivation: "arbitrary state",
+      accessibilityLookupAttempts: 82,
+    })).not.toHaveProperty("accessibilityElement");
+    expect(sanitizeDiagnosticEvent({
+      ...event,
+      at: 123,
+      accessibilityElement: "private target title",
+      accessibilityActivation: "arbitrary state",
+      accessibilityLookupAttempts: 22,
+    })).not.toHaveProperty("accessibilityActivation");
+    expect(sanitizeDiagnosticEvent({
+      ...event,
+      at: 123,
+      accessibilityElement: "private target title",
+      accessibilityActivation: "arbitrary state",
+      accessibilityLookupAttempts: 82,
+    })).not.toHaveProperty("accessibilityLookupAttempts");
+  });
+
+  it("keeps native insertion vocabularies reachable through the durable allowlist", () => {
+    for (const accessibilityElement of ACCESSIBILITY_ELEMENT_CATEGORIES) {
+      expect(sanitizeDiagnosticEvent({
+        at: 123,
+        stage: "insertion",
+        event: "copied",
+        outcome: "skipped",
+        accessibilityElement,
+      }).accessibilityElement).toBe(accessibilityElement);
+    }
+    for (const accessibilityActivation of ACCESSIBILITY_ACTIVATION_OUTCOMES) {
+      expect(sanitizeDiagnosticEvent({
+        at: 123,
+        stage: "insertion",
+        event: "copied",
+        outcome: "skipped",
+        accessibilityActivation,
+      }).accessibilityActivation).toBe(accessibilityActivation);
+    }
   });
 
   it("preserves every closed reason code without adding target or clipboard fields", () => {
