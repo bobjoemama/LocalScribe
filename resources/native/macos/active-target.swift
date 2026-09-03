@@ -97,7 +97,6 @@ private struct FocusedElementState {
 }
 
 private struct FocusedElementObservation {
-    let element: AXUIElement?
     let roleCategory: String
     let activation: String
     let lookupAttempts: Int
@@ -564,6 +563,23 @@ private func manualAccessibilityActivationNeeded(
     !focusedElementAvailable || !editableElementAvailable
 }
 
+private func manualAccessibilityFailureOutcome(_ error: AXError) -> String {
+    switch error {
+    case .attributeUnsupported, .notImplemented:
+        return "unsupported"
+    default:
+        return "set_failed"
+    }
+}
+
+private func activationProvidesPasteAuthority(_ activation: String) -> Bool {
+    // AXManualAccessibility can materialize a completely different element
+    // graph. Nothing observed after that mutation inherits authority from the
+    // pre-activation focus. A later helper invocation must establish a fresh,
+    // already-active target from one observation boundary.
+    activation == "not_needed"
+}
+
 private func focusedUIElementEnablingManualAccessibilityIfNeeded(
     _ application: AXUIElement,
     initialFocusedElement: AXUIElement?,
@@ -577,7 +593,6 @@ private func focusedUIElementEnablingManualAccessibilityIfNeeded(
         editableElementAvailable: initialEditableElement != nil
     ) {
         return FocusedElementObservation(
-            element: initialFocusedElement,
             roleCategory: focusedElementRoleCategory(
                 initialFocusedElement.flatMap {
                     attributeString($0, kAXRoleAttribute as CFString)
@@ -595,31 +610,23 @@ private func focusedUIElementEnablingManualAccessibilityIfNeeded(
     // ancestor or mutation capabilities were ready. Therefore the actual
     // security property drives activation: if the focused control cannot yet
     // be proven editable, activate the documented tree when supported.
-    guard attributeIsSettable(application, manualAccessibilityAttribute) else {
-        return FocusedElementObservation(
-            element: initialFocusedElement,
-            roleCategory: focusedElementRoleCategory(
-                initialFocusedElement.flatMap {
-                    attributeString($0, kAXRoleAttribute as CFString)
-                }
-            ),
-            activation: "unsupported",
-            lookupAttempts: 1
-        )
-    }
-    guard AXUIElementSetAttributeValue(
+    // Electron's documented integration path can accept this set even when an
+    // AX preflight says the private application attribute is not settable.
+    // Make the operation itself authoritative and classify its AXError without
+    // reading any target content.
+    let activationError = AXUIElementSetAttributeValue(
         application,
         manualAccessibilityAttribute,
         kCFBooleanTrue
-    ) == .success else {
+    )
+    guard activationError == .success else {
         return FocusedElementObservation(
-            element: initialFocusedElement,
             roleCategory: focusedElementRoleCategory(
                 initialFocusedElement.flatMap {
                     attributeString($0, kAXRoleAttribute as CFString)
                 }
             ),
-            activation: "set_failed",
+            activation: manualAccessibilityFailureOutcome(activationError),
             lookupAttempts: 1
         )
     }
@@ -640,7 +647,6 @@ private func focusedUIElementEnablingManualAccessibilityIfNeeded(
     )
     let finalElement = resolvedElement ?? latestFocusedElement
     return FocusedElementObservation(
-        element: finalElement,
         roleCategory: focusedElementRoleCategory(
             finalElement.flatMap { attributeString($0, kAXRoleAttribute as CFString) }
         ),
@@ -663,70 +669,6 @@ private func elementIsInParentChain(
         current = parent
     }
     return false
-}
-
-private func elementsAreSameOrAncestorDescendant(
-    _ first: AXUIElement,
-    _ second: AXUIElement
-) -> Bool {
-    CFEqual(first, second)
-        || elementIsInParentChain(first, of: second)
-        || elementIsInParentChain(second, of: first)
-}
-
-private func elementBelongsToProcess(_ element: AXUIElement, processId: pid_t) -> Bool {
-    var elementPid: pid_t = 0
-    return AXUIElementGetPid(element, &elementPid) == .success && elementPid == processId
-}
-
-private func recoveryIdentityIsAllowed(
-    initialWindowFingerprint: String?,
-    finalWindowFingerprint: String?,
-    initialControlAvailable: Bool,
-    finalControlAvailable: Bool,
-    controlsSameOrAncestorDescendant: Bool
-) -> Bool {
-    guard
-        let initialWindowFingerprint,
-        let finalWindowFingerprint,
-        initialWindowFingerprint == finalWindowFingerprint
-    else { return false }
-
-    // A window fingerprint cannot distinguish sibling controls. If focus was
-    // absent before recovery, there is no immutable control identity to prove
-    // that the eventual editor was the user's original target, even when the
-    // window remained stable. When a control did exist, accept only the same
-    // control or an ancestor/descendant evolution (for example a Chromium
-    // placeholder becoming, or resolving beneath, its editor root).
-    guard initialControlAvailable else { return false }
-    return finalControlAvailable && controlsSameOrAncestorDescendant
-}
-
-private func recoveredTargetIdentityIsAllowed(
-    initialWindowFingerprint: String?,
-    finalWindowFingerprint: String?,
-    initialFocusedElement: AXUIElement?,
-    finalFocusedElement: AXUIElement?,
-    processId: pid_t
-) -> Bool {
-    let controlsRelated: Bool
-    if let initialFocusedElement, let finalFocusedElement {
-        controlsRelated = elementBelongsToProcess(initialFocusedElement, processId: processId)
-            && elementBelongsToProcess(finalFocusedElement, processId: processId)
-            && elementsAreSameOrAncestorDescendant(
-                initialFocusedElement,
-                finalFocusedElement
-            )
-    } else {
-        controlsRelated = false
-    }
-    return recoveryIdentityIsAllowed(
-        initialWindowFingerprint: initialWindowFingerprint,
-        finalWindowFingerprint: finalWindowFingerprint,
-        initialControlAvailable: initialFocusedElement != nil,
-        finalControlAvailable: finalFocusedElement != nil,
-        controlsSameOrAncestorDescendant: controlsRelated
-    )
 }
 
 private func elementsShareAccessibilityWindow(
@@ -820,10 +762,10 @@ private func captureTarget() throws -> TargetPayload {
         ?? "pid:\(application.processIdentifier)"
     let accessibilityTrusted = AXIsProcessTrusted()
     let focusedApplication = AXUIElementCreateApplication(application.processIdentifier)
-    // Pin the pre-recovery focus boundary before AXManualAccessibility can
-    // asynchronously materialize or alter Chromium's tree. A window identity
-    // that is unavailable here cannot be made trustworthy retroactively by a
-    // later observation.
+    // Capture the complete authority boundary before any possible tree
+    // activation. If activation is attempted, this invocation returns only
+    // closed diagnostics plus app/process identity. A later invocation must
+    // establish a fresh target after the accessibility tree is already active.
     let initialFocusedUIElement = accessibilityTrusted
         ? copyFocusedUIElement(focusedApplication)
         : nil
@@ -841,30 +783,15 @@ private func captureTarget() throws -> TargetPayload {
             processId: application.processIdentifier
         )
         : FocusedElementObservation(
-            element: nil,
             roleCategory: "missing",
             activation: "permission_denied",
             lookupAttempts: 0
         )
-    let finalFocusedUIElement = focusedObservation.element
-    let finalWindowFingerprint = accessibilityTrusted
-        ? focusedWindowFingerprint(
-            for: application.processIdentifier,
-            focusedApplication: focusedApplication,
-            focusedElement: finalFocusedUIElement
-        )
-        : coreGraphicsWindowFingerprint(for: application.processIdentifier)
-    let recoveryIdentityAllowed = recoveredTargetIdentityIsAllowed(
-        initialWindowFingerprint: initialWindowFingerprint,
-        finalWindowFingerprint: finalWindowFingerprint,
-        initialFocusedElement: initialFocusedUIElement,
-        finalFocusedElement: finalFocusedUIElement,
-        processId: application.processIdentifier
+    let mayAuthorizePaste = activationProvidesPasteAuthority(
+        focusedObservation.activation
     )
-    // Preserve a closed diagnostic payload, but discard all target authority
-    // when focus crossed a window or sibling-control boundary during recovery.
-    let focusedUIElement = recoveryIdentityAllowed ? finalFocusedUIElement : nil
-    let windowFingerprint = recoveryIdentityAllowed ? initialWindowFingerprint : nil
+    let focusedUIElement = mayAuthorizePaste ? initialFocusedUIElement : nil
+    let windowFingerprint = mayAuthorizePaste ? initialWindowFingerprint : nil
     let focusedElement = focusedElementState(
         for: application.processIdentifier,
         focusedElement: focusedUIElement,
@@ -1092,50 +1019,15 @@ private func selfTest() -> Bool {
         exhaustedValue == nil,
         exhaustedLookups == 3,
         exhaustedWaits == 2,
-        // A missing initial control followed by any same-window control is
-        // indistinguishable from an A-to-B sibling retarget and must fail.
-        !recoveryIdentityIsAllowed(
-            initialWindowFingerprint: fingerprint,
-            finalWindowFingerprint: fingerprint,
-            initialControlAvailable: false,
-            finalControlAvailable: true,
-            controlsSameOrAncestorDescendant: false
-        ),
-        !recoveryIdentityIsAllowed(
-            initialWindowFingerprint: fingerprint,
-            finalWindowFingerprint: String(repeating: "c", count: 64),
-            initialControlAvailable: false,
-            finalControlAvailable: true,
-            controlsSameOrAncestorDescendant: false
-        ),
-        !recoveryIdentityIsAllowed(
-            initialWindowFingerprint: nil,
-            finalWindowFingerprint: fingerprint,
-            initialControlAvailable: false,
-            finalControlAvailable: true,
-            controlsSameOrAncestorDescendant: false
-        ),
-        recoveryIdentityIsAllowed(
-            initialWindowFingerprint: fingerprint,
-            finalWindowFingerprint: fingerprint,
-            initialControlAvailable: true,
-            finalControlAvailable: true,
-            controlsSameOrAncestorDescendant: true
-        ),
-        !recoveryIdentityIsAllowed(
-            initialWindowFingerprint: fingerprint,
-            finalWindowFingerprint: fingerprint,
-            initialControlAvailable: true,
-            finalControlAvailable: true,
-            controlsSameOrAncestorDescendant: false
-        ),
-        !recoveryIdentityIsAllowed(
-            initialWindowFingerprint: fingerprint,
-            finalWindowFingerprint: fingerprint,
-            initialControlAvailable: true,
-            finalControlAvailable: false,
-            controlsSameOrAncestorDescendant: true
-        ),
+        manualAccessibilityFailureOutcome(.attributeUnsupported) == "unsupported",
+        manualAccessibilityFailureOutcome(.notImplemented) == "unsupported",
+        manualAccessibilityFailureOutcome(.cannotComplete) == "set_failed",
+        activationProvidesPasteAuthority("not_needed"),
+        !activationProvidesPasteAuthority("resolved"),
+        !activationProvidesPasteAuthority("timed_out"),
+        !activationProvidesPasteAuthority("unsupported"),
+        !activationProvidesPasteAuthority("set_failed"),
+        !activationProvidesPasteAuthority("permission_denied"),
         editableAncestorRelationshipIsAllowed(
             candidateDiffers: true,
             sameProcess: true,

@@ -59,6 +59,15 @@ const TARGET_B: ActiveTarget = {
   ...TARGET_A,
   windowFingerprint: "b".repeat(64),
 };
+const COLD_TARGET: ActiveTarget = {
+  ...TARGET_A,
+  windowFingerprint: null,
+  focusedEditable: null,
+  focusedElementFingerprint: null,
+  accessibilityElement: "static_text",
+  accessibilityActivation: "resolved",
+  accessibilityLookupAttempts: 8,
+};
 
 class FakeBridge implements PlatformInsertionBridge {
   sequence = 100;
@@ -195,6 +204,286 @@ describe("safe insertion", () => {
 
     releaseCapture(TARGET_A);
     await expect(pendingIdentity).resolves.toBe(TARGET_A.applicationId);
+  });
+
+  it.each(["resolved", "timed_out"] as const)(
+    "recaptures once after a cold Accessibility activation %s without paste authority",
+    async (accessibilityActivation) => {
+      const firstTarget: ActiveTarget = { ...COLD_TARGET, accessibilityActivation };
+      const recoveredTarget: ActiveTarget = {
+        ...TARGET_B,
+        accessibilityElement: "text_control",
+        accessibilityActivation: "not_needed",
+        accessibilityLookupAttempts: 1,
+      };
+      const bridge = new FakeBridge([firstTarget, recoveredTarget, recoveredTarget]);
+      const captureActiveTarget = vi.spyOn(bridge, "captureActiveTarget");
+      const clipboard = new FakeClipboard(bridge);
+      const paste = vi.fn(() => ({
+        status: "injected" as const,
+        consumptionAcknowledgement: Promise.resolve(),
+      }));
+      const insertion = coordinator(bridge, clipboard, paste);
+
+      insertion.beginSession();
+      await expect(insertion.targetAppId()).resolves.toBe(TARGET_A.applicationId);
+      await expect(insertion.insert("dictated", true)).resolves.toEqual({
+        outcome: "pasted",
+        accessibilityElement: "text_control",
+        accessibilityActivation: "not_needed",
+        accessibilityLookupAttempts: 1,
+      });
+
+      expect(captureActiveTarget).toHaveBeenCalledTimes(3);
+      expect(paste).toHaveBeenCalledWith(recoveredTarget, 101);
+    },
+  );
+
+  it.each(["unsupported", "set_failed", "permission_denied", "not_needed"] as const)(
+    "does not recapture after the non-retryable Accessibility outcome %s",
+    async (accessibilityActivation) => {
+      const firstTarget: ActiveTarget = { ...COLD_TARGET, accessibilityActivation };
+      const bridge = new FakeBridge([firstTarget, TARGET_A]);
+      const captureActiveTarget = vi.spyOn(bridge, "captureActiveTarget");
+      const clipboard = new FakeClipboard(bridge);
+      const paste = vi.fn();
+      const insertion = coordinator(bridge, clipboard, paste);
+
+      insertion.beginSession();
+      await expect(insertion.insert("dictated", true)).resolves.toEqual({
+        outcome: "copied",
+        reason: "initial_target_editability_unavailable",
+        accessibilityElement: "static_text",
+        accessibilityActivation,
+        accessibilityLookupAttempts: 8,
+      });
+
+      expect(captureActiveTarget).toHaveBeenCalledOnce();
+      expect(paste).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["resolved", "timed_out"] as const)(
+    "recaptures when an activation-derived %s target claims complete paste authority",
+    async (accessibilityActivation) => {
+      const activationDerivedTarget: ActiveTarget = {
+        ...TARGET_A,
+        accessibilityElement: "text_control",
+        accessibilityActivation,
+        accessibilityLookupAttempts: 2,
+      };
+      const independentlyObservedTarget: ActiveTarget = {
+        ...TARGET_B,
+        accessibilityElement: "text_control",
+        accessibilityActivation: "not_needed",
+        accessibilityLookupAttempts: 1,
+      };
+      const bridge = new FakeBridge([
+        activationDerivedTarget,
+        independentlyObservedTarget,
+        independentlyObservedTarget,
+      ]);
+      const captureActiveTarget = vi.spyOn(bridge, "captureActiveTarget");
+      const clipboard = new FakeClipboard(bridge);
+      const paste = vi.fn(() => ({
+        status: "injected" as const,
+        consumptionAcknowledgement: Promise.resolve(),
+      }));
+      const insertion = coordinator(bridge, clipboard, paste);
+
+      insertion.beginSession();
+      await expect(insertion.insert("dictated", true)).resolves.toEqual({
+        outcome: "pasted",
+        accessibilityElement: "text_control",
+        accessibilityActivation: "not_needed",
+        accessibilityLookupAttempts: 1,
+      });
+
+      expect(captureActiveTarget).toHaveBeenCalledTimes(3);
+      expect(paste).toHaveBeenCalledWith(independentlyObservedTarget, 101);
+    },
+  );
+
+  it.each([
+    { applicationId: "com.example.OtherEditor", processId: TARGET_A.processId },
+    { applicationId: TARGET_A.applicationId, processId: TARGET_A.processId + 1 },
+  ])("preserves the first fail-closed target when the recovery capture changes app identity", async (identity) => {
+    const switchedTarget: ActiveTarget = { ...TARGET_A, ...identity };
+    const bridge = new FakeBridge([COLD_TARGET, switchedTarget]);
+    const captureActiveTarget = vi.spyOn(bridge, "captureActiveTarget");
+    const clipboard = new FakeClipboard(bridge);
+    const paste = vi.fn();
+    const insertion = coordinator(bridge, clipboard, paste);
+
+    insertion.beginSession();
+    await expect(insertion.targetAppId()).resolves.toBe(COLD_TARGET.applicationId);
+    await expect(insertion.insert("dictated", true)).resolves.toEqual({
+      outcome: "copied",
+      reason: "initial_target_editability_unavailable",
+      accessibilityElement: "static_text",
+      accessibilityActivation: "resolved",
+      accessibilityLookupAttempts: 8,
+    });
+
+    expect(captureActiveTarget).toHaveBeenCalledTimes(2);
+    expect(paste).not.toHaveBeenCalled();
+  });
+
+  it("accepts a recovered sibling target only when the exact target remains focused before paste", async () => {
+    const bridge = new FakeBridge([COLD_TARGET, TARGET_B, TARGET_A]);
+    const captureActiveTarget = vi.spyOn(bridge, "captureActiveTarget");
+    const clipboard = new FakeClipboard(bridge);
+    const paste = vi.fn();
+    const insertion = coordinator(bridge, clipboard, paste);
+
+    insertion.beginSession();
+    await expect(insertion.insert("dictated", true)).resolves.toEqual({
+      outcome: "copied",
+      reason: "current_window_changed",
+    });
+
+    expect(captureActiveTarget).toHaveBeenCalledTimes(3);
+    expect(paste).not.toHaveBeenCalled();
+  });
+
+  it("runs the ordinary initial-target checks on the one recovery capture without retrying again", async () => {
+    const stillUnusable: ActiveTarget = {
+      ...TARGET_A,
+      focusedEditable: false,
+      accessibilityElement: "text_control",
+      accessibilityActivation: "resolved",
+      accessibilityLookupAttempts: 1,
+    };
+    const bridge = new FakeBridge([COLD_TARGET, stillUnusable, TARGET_A]);
+    const captureActiveTarget = vi.spyOn(bridge, "captureActiveTarget");
+    const clipboard = new FakeClipboard(bridge);
+    const paste = vi.fn();
+    const insertion = coordinator(bridge, clipboard, paste);
+
+    insertion.beginSession();
+    await expect(insertion.insert("dictated", true)).resolves.toEqual({
+      outcome: "copied",
+      reason: "initial_target_not_editable",
+      accessibilityElement: "text_control",
+      accessibilityActivation: "resolved",
+      accessibilityLookupAttempts: 1,
+    });
+
+    expect(captureActiveTarget).toHaveBeenCalledTimes(2);
+    expect(paste).not.toHaveBeenCalled();
+  });
+
+  it("preserves the first fail-closed target when the one recovery capture rejects", async () => {
+    let rejectRecovery!: (error: Error) => void;
+    const rejectedRecovery = new Promise<ActiveTarget | null>((_resolve, reject) => {
+      rejectRecovery = reject;
+    });
+    const bridge = new FakeBridge([COLD_TARGET, rejectedRecovery]);
+    const captureActiveTarget = vi.spyOn(bridge, "captureActiveTarget");
+    const clipboard = new FakeClipboard(bridge);
+    const insertion = coordinator(bridge, clipboard);
+
+    insertion.beginSession();
+    const pendingInsertion = insertion.insert("dictated", true);
+    await vi.waitFor(() => expect(captureActiveTarget).toHaveBeenCalledTimes(2));
+    rejectRecovery(new Error("private native failure"));
+
+    await expect(pendingInsertion).resolves.toEqual({
+      outcome: "copied",
+      reason: "initial_target_editability_unavailable",
+      accessibilityElement: "static_text",
+      accessibilityActivation: "resolved",
+      accessibilityLookupAttempts: 8,
+    });
+    expect(clipboard.currentText).toBe("dictated");
+  });
+
+  it("preserves the first fail-closed target when the one recovery capture is unavailable", async () => {
+    const bridge = new FakeBridge([COLD_TARGET, null]);
+    const captureActiveTarget = vi.spyOn(bridge, "captureActiveTarget");
+    const clipboard = new FakeClipboard(bridge);
+    const insertion = coordinator(bridge, clipboard);
+
+    insertion.beginSession();
+    await expect(insertion.insert("dictated", true)).resolves.toEqual({
+      outcome: "copied",
+      reason: "initial_target_editability_unavailable",
+      accessibilityElement: "static_text",
+      accessibilityActivation: "resolved",
+      accessibilityLookupAttempts: 8,
+    });
+    expect(captureActiveTarget).toHaveBeenCalledTimes(2);
+    expect(clipboard.currentText).toBe("dictated");
+  });
+
+  it("does not attempt recovery when the first target capture rejects", async () => {
+    const bridge = new FakeBridge([]);
+    const captureActiveTarget = vi.spyOn(bridge, "captureActiveTarget")
+      .mockRejectedValueOnce(new Error("private native failure"));
+    const clipboard = new FakeClipboard(bridge);
+    const insertion = coordinator(bridge, clipboard);
+
+    insertion.beginSession();
+    await expect(insertion.insert("dictated", true)).resolves.toEqual({
+      outcome: "copied",
+      reason: "initial_target_unavailable",
+    });
+    expect(captureActiveTarget).toHaveBeenCalledOnce();
+    expect(clipboard.currentText).toBe("dictated");
+  });
+
+  it("does not start a cold recovery capture after the session is cancelled", async () => {
+    let releaseFirstCapture!: (target: ActiveTarget | null) => void;
+    const delayedFirstCapture = new Promise<ActiveTarget | null>((resolve) => {
+      releaseFirstCapture = resolve;
+    });
+    const bridge = new FakeBridge([delayedFirstCapture, TARGET_A]);
+    const captureActiveTarget = vi.spyOn(bridge, "captureActiveTarget");
+    const insertion = coordinator(bridge, new FakeClipboard(bridge));
+
+    insertion.beginSession();
+    const pendingIdentity = insertion.targetAppId();
+    insertion.cancelSession();
+    releaseFirstCapture(COLD_TARGET);
+
+    await expect(pendingIdentity).resolves.toBeNull();
+    expect(captureActiveTarget).toHaveBeenCalledOnce();
+    await expect(insertion.targetAppId()).resolves.toBeNull();
+  });
+
+  it("does not let a stale recovery capture authorize insertion or overwrite the next session identity", async () => {
+    let releaseOldRecovery!: (target: ActiveTarget | null) => void;
+    const delayedOldRecovery = new Promise<ActiveTarget | null>((resolve) => {
+      releaseOldRecovery = resolve;
+    });
+    const nextTarget: ActiveTarget = {
+      ...TARGET_A,
+      processId: 99,
+      applicationId: "com.example.NextEditor",
+    };
+    const bridge = new FakeBridge([COLD_TARGET, delayedOldRecovery, nextTarget]);
+    const captureActiveTarget = vi.spyOn(bridge, "captureActiveTarget");
+    const clipboard = new FakeClipboard(bridge);
+    const writeText = vi.spyOn(clipboard, "writeText");
+    const paste = vi.fn();
+    const insertion = coordinator(bridge, clipboard, paste);
+
+    insertion.beginSession();
+    const staleInsertion = insertion.insert("stale dictation", true);
+    await vi.waitFor(() => expect(captureActiveTarget).toHaveBeenCalledTimes(2));
+
+    insertion.cancelSession();
+    insertion.beginSession();
+    await expect(insertion.targetAppId()).resolves.toBe(nextTarget.applicationId);
+    releaseOldRecovery(TARGET_A);
+
+    await expect(staleInsertion).resolves.toEqual({
+      outcome: "copied",
+      reason: "session_invalidated",
+    });
+    await expect(insertion.targetAppId()).resolves.toBe(nextTarget.applicationId);
+    expect(writeText).not.toHaveBeenCalled();
+    expect(paste).not.toHaveBeenCalled();
   });
 
   it("does not let a cancelled capture overwrite the next session identity", async () => {

@@ -253,6 +253,11 @@ describe("release hardening configuration", () => {
     expect(helper).toContain('"AXManualAccessibility" as CFString');
     expect(helper).toContain("AXUIElementSetAttributeValue(");
     expect(helper).toContain("kCFBooleanTrue");
+    expect(helper).toContain("manualAccessibilityFailureOutcome(");
+    expect(helper).toContain("case .attributeUnsupported, .notImplemented:");
+    expect(helper).not.toContain(
+      "attributeIsSettable(application, manualAccessibilityAttribute)",
+    );
     expect(helper).toContain("focusedElementLookupAttemptCount = 81");
     expect(helper).toContain("focusedElementLookupInterval: TimeInterval = 0.025");
     expect(helper).not.toContain("AXEnhancedUserInterface");
@@ -267,17 +272,19 @@ describe("release hardening configuration", () => {
     expect(helper).toContain("candidateEditable: focusedElementIsEditable(editableAncestor)");
     expect(helper).toContain("let initialWindowFingerprint = accessibilityTrusted");
     expect(helper).toMatch(
-      /let initialWindowFingerprint[\s\S]*?focusedWindowFingerprint\([\s\S]*?let focusedObservation[\s\S]*?focusedUIElementEnablingManualAccessibilityIfNeeded\(/u,
+      /let initialFocusedUIElement[\s\S]*?let initialWindowFingerprint[\s\S]*?let focusedObservation[\s\S]*?focusedUIElementEnablingManualAccessibilityIfNeeded\(/u,
     );
-    expect(helper).toContain("recoveredTargetIdentityIsAllowed(");
-    expect(helper).toContain("elementsAreSameOrAncestorDescendant(");
-    expect(helper).toContain("initialWindowFingerprint == finalWindowFingerprint");
-    expect(helper).toContain("controlsSameOrAncestorDescendant");
-    expect(helper).toContain("guard initialControlAvailable else { return false }");
-    expect(helper).toMatch(
-      /!recoveryIdentityIsAllowed\(\s*initialWindowFingerprint: fingerprint,\s*finalWindowFingerprint: fingerprint,\s*initialControlAvailable: false,\s*finalControlAvailable: true/um,
+    expect(helper).toContain("activationProvidesPasteAuthority(");
+    expect(helper).toContain(
+      "let focusedUIElement = mayAuthorizePaste ? initialFocusedUIElement : nil",
     );
-    expect(helper).toContain("recoveryIdentityAllowed ? initialWindowFingerprint : nil");
+    expect(helper).toContain(
+      "let windowFingerprint = mayAuthorizePaste ? initialWindowFingerprint : nil",
+    );
+    expect(helper).not.toContain("recoveredTargetIdentityIsAllowed(");
+    expect(helper).not.toContain("elementsAreSameOrAncestorDescendant(");
+    expect(helper).not.toContain("controlsSameOrAncestorDescendant");
+    expect(helper).not.toContain("focusedObservation.element");
     expect(helper).not.toMatch(/knownEditableRoles[\s\S]*?return true/u);
 
     // Tree activation must not read target content. Value, selected text, and
@@ -296,13 +303,35 @@ describe("release hardening configuration", () => {
     const macVerification = projectFile("scripts/verify-local-macos.sh");
     const coldEditorFixture = projectFile("scripts/test-macos-accessibility-target.mjs");
     expect(macVerification).toContain("npm run test:macos-accessibility-target");
-    expect(coldEditorFixture).toContain('app.setAccessibilitySupportEnabled(true)');
-    expect(coldEditorFixture).toContain('target.accessibilityActivation !== "resolved"');
+    expect(coldEditorFixture).toContain("app.setAccessibilitySupportEnabled(false)");
+    expect(coldEditorFixture).not.toContain("app.setAccessibilitySupportEnabled(true)");
+    expect(coldEditorFixture).toMatch(
+      /app\.whenReady\(\)[\s\S]*?app\.setAccessibilitySupportEnabled\(false\)[\s\S]*?localscribe-accessibility-fixture-ready/u,
+    );
+    expect(coldEditorFixture).toContain('contenteditable="true"');
+    expect(coldEditorFixture).toContain('firstTarget.accessibilityActivation !== "resolved"');
+    expect(coldEditorFixture).toContain("firstTarget.windowFingerprint !== null");
+    expect(coldEditorFixture).toContain("firstTarget.focusedEditable !== null");
+    expect(coldEditorFixture).toContain("firstTarget.focusedElementFingerprint !== null");
+    expect(coldEditorFixture).toContain('target.accessibilityActivation !== "not_needed"');
     expect(coldEditorFixture).toContain('target.accessibilityElement !== "text_control"');
-    expect(coldEditorFixture).toContain("target.accessibilityLookupAttempts < 2");
+    expect(coldEditorFixture).toContain("target.accessibilityLookupAttempts !== 1");
     expect(coldEditorFixture).toContain('pasteArgumentsFor(staleSequence)');
     expect(coldEditorFixture).toContain('stalePaste.reason !== "clipboard_changed"');
+    expect(coldEditorFixture).toContain(
+      "await new Promise((resolve) => setTimeout(resolve, 200))",
+    );
+    expect(coldEditorFixture).toMatch(
+      /stalePaste\.reason[\s\S]*?setTimeout\(resolve, 200\)[\s\S]*?localscribe-accessibility-paste-observed[\s\S]*?const pasteResult/u,
+    );
     expect(coldEditorFixture).toContain('paste.injected !== true');
+    expect(coldEditorFixture).toContain('addEventListener("paste"');
+    expect(coldEditorFixture).toContain("pasteEventObserved !== true");
+    expect(coldEditorFixture).not.toContain('addEventListener("input"');
+    expect(coldEditorFixture).not.toContain("inputObserved");
+    expect(coldEditorFixture).toContain(
+      "Physical acceptance must prove text insertion.",
+    );
     expect(coldEditorFixture).toContain("finalSequence.sequence !== sequencePayload.sequence");
     expect(coldEditorFixture).not.toContain("clipboard.read");
     expect(coldEditorFixture).not.toContain("editor.innerText");
