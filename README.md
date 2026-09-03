@@ -1,6 +1,6 @@
 # LocalScribe
 
-LocalScribe is a private, local-first dictation app for Apple Silicon Macs. It
+LocalScribe is a local-first dictation app for Apple Silicon Macs. It
 records your microphone, transcribes speech on the Mac, and inserts the result
 into the app you were using—without a transcription account, cloud API,
 telemetry, hidden network fallback, or listening network port.
@@ -47,6 +47,11 @@ Current binaries are private validation builds. They may use Apple Development
 or ad-hoc signing and are not claimed to be Developer ID notarized or accepted
 by Gatekeeper on every Mac. Do not weaken macOS security settings to open a
 blocked build.
+
+The repository is currently private. A tester must be invited to the GitHub
+repository before the Releases link or its assets will be accessible. Send the
+tester the [coworker validation runbook](docs/COWORKER_TESTING.md) with the
+release link.
 
 Do not replace or overwrite an existing release asset. Every build must have a
 new version and tag so its source, checksums, and packaged bytes remain
@@ -104,7 +109,7 @@ model files, credentials, and build output are excluded from Git.
 
 Automated gates do not prove physical microphone permissions, global shortcuts,
 third-party focus/paste behavior, or clean-account Gatekeeper behavior. Use the
-[coworker testing runbook](docs/COWORKER_TESTING.md) for those checks.
+[coworker validation runbook](docs/COWORKER_TESTING.md) for those checks.
 
 LocalScribe is a native macOS application, not a container service. Docker
 Compose cannot validate macOS Microphone/Accessibility consent, global input
