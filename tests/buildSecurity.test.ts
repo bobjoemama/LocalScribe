@@ -309,7 +309,10 @@ describe("release hardening configuration", () => {
       /app\.whenReady\(\)[\s\S]*?app\.setAccessibilitySupportEnabled\(false\)[\s\S]*?localscribe-accessibility-fixture-ready/u,
     );
     expect(coldEditorFixture).toContain('contenteditable="true"');
-    expect(coldEditorFixture).toContain('firstTarget.accessibilityActivation !== "resolved"');
+    expect(coldEditorFixture).toContain(
+      '!["resolved", "timed_out"].includes(firstTarget.accessibilityActivation)',
+    );
+    expect(coldEditorFixture).toContain("focusRetentionTimer");
     expect(coldEditorFixture).toContain("firstTarget.windowFingerprint !== null");
     expect(coldEditorFixture).toContain("firstTarget.focusedEditable !== null");
     expect(coldEditorFixture).toContain("firstTarget.focusedElementFingerprint !== null");
