@@ -25,6 +25,8 @@ export type TextToken =
 const TOKEN_PATTERN = new RegExp(
   [
     String.raw`\r\n|\r|\n`,
+    // Preserve common email local-part punctuation without joining spaced arithmetic.
+    String.raw`[\p{L}\p{M}\p{N}]+(?:[._%+'\u2019\-][\p{L}\p{M}\p{N}]+)*@[\p{L}\p{M}\p{N}]+(?:[.\-][\p{L}\p{M}\p{N}]+)*`,
     String.raw`[\p{L}\p{M}\p{N}]+(?:(?:['\u2019\-.@][\p{L}\p{M}\p{N}]+)|(?:[:,]\p{N}+))*`,
     String.raw`[^\s]`,
   ].join("|"),
@@ -75,7 +77,7 @@ export function wordSequenceAt(
 function isClosingPunctuation(token: TextToken): boolean {
   return (
     token.kind === "punctuation" &&
-    (token.role === "close" || ",.;:!?%)]}".includes(token.value))
+    (token.role === "close" || ",.;:!?%)]}”".includes(token.value))
   );
 }
 
@@ -84,7 +86,7 @@ function isOpeningPunctuation(token: TextToken): boolean {
     token.kind === "punctuation" &&
     // A currency sign binds to the amount that follows it, exactly like a
     // bracket binds to what it opens: "$4.50", never "$ 4.50".
-    (token.role === "open" || "([{".includes(token.value) || /^\p{Sc}$/u.test(token.value))
+    (token.role === "open" || "([{“".includes(token.value) || /^\p{Sc}$/u.test(token.value))
   );
 }
 

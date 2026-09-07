@@ -348,6 +348,23 @@ describe("text that contains a period, colon, or at-sign", () => {
     expect(render('He said "hello there" loudly.')).toBe('He said "hello there" loudly.');
   });
 
+  it.each([
+    "Send to jane+work@example.com now.",
+    "Send to jane_doe@example.com now.",
+    "Send to jane.doe+work_mail@example.co.uk now.",
+  ])("preserves email address punctuation: %s", (text) => {
+    expect(render(text)).toBe(text);
+  });
+
+  it("preserves directional curly quotes without padding their contents", () => {
+    expect(render("He said “hello there” loudly.")).toBe("He said “hello there” loudly.");
+    expect(render("Use “first” and “second”.")).toBe("Use “first” and “second”.");
+  });
+
+  it("does not join spaced arithmetic while preserving email addresses", () => {
+    expect(render("The sum is 2 + 3.")).toBe("The sum is 2 + 3.");
+  });
+
   it("keeps a currency sign attached to its amount", () => {
     expect(render("It costs $12 total.")).toBe("It costs $12 total.");
     expect(render("It costs £7.50 total.")).toBe("It costs £7.50 total.");
