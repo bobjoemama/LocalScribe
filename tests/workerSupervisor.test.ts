@@ -17,6 +17,7 @@ import {
   TRANSCRIBE_COLD_LOAD_BUDGET_MS,
   TRANSCRIBE_REALTIME_FACTOR_BUDGET,
   TRANSCRIBE_TIMEOUT_CEILING_MS,
+  WORKER_NODE_PROCESS_ANCHOR_SOURCE,
   WORKER_PROCESS_ANCHOR_SOURCE,
   WORKER_RUNTIME_IDENTITIES,
   WORKER_STDERR_SUPPRESSED_NOTICE,
@@ -1148,9 +1149,12 @@ describe("WorkerSupervisor model lifecycle", () => {
     },
   );
 
-  it.runIf(process.platform !== "win32" && existsSync(packagedPython))(
-    "keeps a real non-reusable anchor alive after the worker leader exits and tears down its late child",
-    async () => {
+  it.runIf(process.platform !== "win32" && existsSync(packagedPython)).each([
+    { name: "Python", executable: packagedPython, args: ["-B", "-c", WORKER_PROCESS_ANCHOR_SOURCE] },
+    { name: "Node", executable: process.execPath, args: ["-e", WORKER_NODE_PROCESS_ANCHOR_SOURCE, "--"] },
+  ])(
+    "$name anchor delivers a newline-delimited worker exit and tears down its late child",
+    async ({ executable, args }) => {
       const actualChildProcess = await vi.importActual<typeof import("node:child_process")>(
         "node:child_process",
       );
@@ -1178,8 +1182,8 @@ describe("WorkerSupervisor model lifecycle", () => {
         "});",
       ].join("");
       const anchor = actualChildProcess.spawn(
-        packagedPython,
-        ["-B", "-c", WORKER_PROCESS_ANCHOR_SOURCE, process.execPath, "-e", workerSource],
+        executable,
+        [...args, process.execPath, "-e", workerSource],
         {
           detached: true,
           env: process.env,
@@ -1191,6 +1195,13 @@ describe("WorkerSupervisor model lifecycle", () => {
       anchor.stdout.on("data", (chunk: string) => {
         output += chunk;
       });
+      // Match the supervisor's framing: bytes without a terminating LF are
+      // not a delivered message, even if they contain the expected JSON text.
+      const deliveredMessages = (): Array<Record<string, unknown>> => output
+        .split("\n")
+        .slice(0, -1)
+        .filter((line) => line.length > 0)
+        .map((line) => JSON.parse(line) as Record<string, unknown>);
 
       const lockProbeSource = [
         "import fcntl, sys\n",
@@ -1220,11 +1231,17 @@ describe("WorkerSupervisor model lifecycle", () => {
       try {
         await waitUntil(
           () => (
-            output.includes('"type":"late_ready"')
-            && output.includes('"code":"worker_exited"')
+            deliveredMessages().some((message) => message.type === "late_ready")
+            && deliveredMessages().some((message) => message.code === "worker_exited")
           ),
           5_000,
         );
+        expect(deliveredMessages()).toContainEqual({
+          type: "error",
+          id: null,
+          code: "worker_exited",
+          message: "ASR worker exited",
+        });
         expect(anchorExited()).toBe(false);
         expect(lockProbeStatus()).toBe(1);
 

@@ -1391,6 +1391,9 @@ async function completeDictationFinal(input: {
     successMessage = outcome === "copied" ? "Copied to clipboard" : "Inserted";
   } else {
     const automaticPasteReady = await insertion.automaticPasteReady();
+    // The native permission check yields to cancellation and new dictations.
+    // Do not bind this result to a newer insertion target or revive its state.
+    assertActiveSession(sessionId);
     const canAutoPaste = settings.autoPaste && automaticPasteReady;
     setSession({ state: "inserting", sessionId, message: canAutoPaste ? "Inserting" : "Copying" });
     const insertionResult = await insertion.copyAndPasteDetailed(text, canAutoPaste);

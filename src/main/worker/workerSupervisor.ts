@@ -350,7 +350,7 @@ const WORKER_TERM_GRACE_MS = 1_000;
 const WORKER_KILL_GRACE_MS = 1_000;
 const WORKER_EXIT_POLL_MS = 25;
 
-const WORKER_NODE_PROCESS_ANCHOR_SOURCE = String.raw`
+export const WORKER_NODE_PROCESS_ANCHOR_SOURCE = String.raw`
 "use strict";
 const { spawn } = require("node:child_process");
 const [command, ...args] = process.argv.slice(1);
@@ -372,7 +372,7 @@ function reportWorkerExit() {
   if (reportedExit || terminating) return;
   reportedExit = true;
   process.stdout.write(
-    '{"type":"error","id":null,"code":"worker_exited","message":"ASR worker exited"}\\n',
+    '{"type":"error","id":null,"code":"worker_exited","message":"ASR worker exited"}\n',
   );
 }
 
@@ -444,7 +444,7 @@ def report_worker_exit():
     try:
         os.write(
             sys.stdout.fileno(),
-            b'{"type":"error","id":null,"code":"worker_exited","message":"ASR worker exited"}\\n',
+            b'{"type":"error","id":null,"code":"worker_exited","message":"ASR worker exited"}\n',
         )
     except OSError:
         begin_termination()
