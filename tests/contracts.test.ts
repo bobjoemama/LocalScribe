@@ -59,6 +59,7 @@ describe("IPC contracts", () => {
       "whisper-large-v3",
       "qwen3-asr-0-6b",
       "qwen3-asr-1-7b",
+      "canary-qwen-2-5b",
       "whisper-large-v2",
     ]);
     expect(DEFAULT_SETTINGS).toMatchObject({

@@ -43,6 +43,7 @@ def tier_spec(tier: str, *, family: str = "v3") -> TierSpec:
         "qwen": "Qwen3-ASR-1.7B",
         "qwen06": "Qwen3-ASR-0.6B",
         "parakeet": "parakeet-unified-en-0.6b-coreml",
+        "canary": "canary-qwen-2.5b-gguf",
     }.get(family, f"whisper-large-{family}-mlx")
     matches = [
         spec
@@ -373,6 +374,12 @@ class WorkerProtocolTests(unittest.TestCase):
         self.assertTrue(runtime.closed)
 
     def test_live_mode_is_rejected_for_non_streaming_models(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            messages, _, _ = self.run_protocol(
+                encode_requests(load_request("medium", Path(temporary), family="canary", asr_mode="live"))
+            )
+        self.assertEqual(messages[1]["type"], "error")
+        self.assertEqual(messages[1]["code"], "invalid_asr_mode")
         with tempfile.TemporaryDirectory() as temporary:
             messages, _errors, exit_code = self.run_protocol(
                 encode_requests(load_request("low", Path(temporary), asr_mode="live"))
@@ -1936,10 +1943,13 @@ class ModelInstallationTests(unittest.TestCase):
         self.assertEqual(manifest.revision, "c" * 40)
 
     def test_packaged_catalog_has_exact_curated_manifests_and_files(self) -> None:
-        self.assertEqual(len(TIER_SPECS), 14)
+        self.assertEqual(len(TIER_SPECS), 17)
         self.assertEqual(
             {spec.manifest_filename for spec in TIER_SPECS.values()},
             {
+                "canary-qwen-2-5b-gguf-bf16.json",
+                "canary-qwen-2-5b-gguf-q8.json",
+                "canary-qwen-2-5b-gguf-q4.json",
                 "whisper-large-v3-mlx.json",
                 "whisper-large-v3-mlx-8bit.json",
                 "whisper-large-v3-mlx-4bit.json",
@@ -1986,7 +1996,10 @@ class ModelInstallationTests(unittest.TestCase):
             self.assertEqual(manifest.family_id, spec.family_id)
             self.assertEqual(manifest.artifact_id, spec.artifact_id)
             self.assertEqual(manifest.revision, spec.revision)
-            if manifest.family_id in {"qwen3-asr-1-7b", "qwen3-asr-0-6b"}:
+            if manifest.family_id == "canary-qwen-2-5b":
+                self.assertEqual(len(manifest.files), 1)
+                self.assertTrue(next(iter(manifest.files)).endswith(".gguf"))
+            elif manifest.family_id in {"qwen3-asr-1-7b", "qwen3-asr-0-6b"}:
                 self.assertIn("model.safetensors", manifest.files)
                 self.assertIn("config.json", manifest.files)
             elif manifest.family_id == "parakeet-unified-en-0-6b":

@@ -16,6 +16,9 @@ export interface PlatformResourcePolicy {
 }
 
 const MAC_MANIFESTS = [
+  "canary-qwen-2-5b-gguf-bf16.json",
+  "canary-qwen-2-5b-gguf-q8.json",
+  "canary-qwen-2-5b-gguf-q4.json",
   "whisper-large-v3-mlx.json",
   "whisper-large-v3-mlx-8bit.json",
   "whisper-large-v3-mlx-4bit.json",
@@ -69,9 +72,13 @@ export function resourcePolicyFor(
       helperFiles: [
         "native/macos/active-target",
         "native/macos/localscribe-fluidaudio-parakeet",
+        "native/macos/liblocalscribe-canary.dylib",
       ],
       manifestFiles: MAC_MANIFESTS.map((filename) => `model-manifest/${filename}`),
       licenseFiles: [
+        "licenses/transcribe-cpp-LICENSE.txt",
+        "licenses/transcribe-cpp-ggml-LICENSE.txt",
+        "licenses/transcribe-cpp-miniz-LICENSE.txt",
         "licenses/FluidAudio-0.15.5-LICENSE.txt",
         "licenses/FluidAudio-0.15.5-fastcluster-LICENSE.md",
         "licenses/FluidAudio-0.15.5-vbx-LICENSE.md",

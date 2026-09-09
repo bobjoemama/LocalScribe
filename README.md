@@ -24,6 +24,10 @@ Its High profile is FP16 original precision and Medium is INT8; Parakeet has no
 Low/Q4 profile. Other curated MLX-based Whisper and Qwen profiles are available
 for different language, quality, and memory requirements.
 
+Canary-Qwen 2.5B is an optional English-only **After I stop** model using Metal,
+with High (BF16), Medium (Q8), and Low (Q4) profiles. See
+[runtime details and validation limits](docs/CANARY_RUNTIME.md).
+
 ## Download and install
 
 LocalScribe supports Apple Silicon and macOS 14 or newer.

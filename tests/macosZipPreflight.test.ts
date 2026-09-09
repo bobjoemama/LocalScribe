@@ -184,4 +184,28 @@ describe.runIf(process.platform === "darwin")("macOS application ZIP preflight",
       preflightMacApplicationZip(archiveWithSymlinkParent(), "LocalScribe.app"),
     ).rejects.toThrow(/nested beneath a non-directory/u);
   });
+
+  it("rejects a symlink followed by a same-name file before extraction (CVE-2026-19693)", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "localscribe-zip-leaf-"));
+    temporaryRoots.push(root);
+    const archive = path.join(root, "candidate.zip");
+    const program = [
+      "import stat, sys, zipfile",
+      "with zipfile.ZipFile(sys.argv[1], 'w') as archive:",
+      "  for name, mode, content in [",
+      "    ('LocalScribe.app/', stat.S_IFDIR | 0o755, b''),",
+      "    ('LocalScribe.app/Contents/', stat.S_IFDIR | 0o755, b''),",
+      "    ('LocalScribe.app/Contents/target', stat.S_IFREG | 0o644, b'original'),",
+      "    ('LocalScribe.app/Contents/link', stat.S_IFLNK | 0o755, b'target'),",
+      "    ('LocalScribe.app/Contents/link', stat.S_IFREG | 0o644, b'overwrite'),",
+      "  ]:",
+      "    entry = zipfile.ZipInfo(name)",
+      "    entry.create_system = 3",
+      "    entry.external_attr = mode << 16",
+      "    archive.writestr(entry, content)",
+    ].join("\n");
+    execFileSync("python3", ["-B", "-W", "ignore", "-c", program, archive]);
+    await expect(preflightMacApplicationZip(archive, "LocalScribe.app"))
+      .rejects.toThrow(/duplicate or case-colliding/u);
+  });
 });

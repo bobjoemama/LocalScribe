@@ -13,6 +13,8 @@ import { defineConfig } from "vitest/config";
  */
 export default defineConfig({
   test: {
+    // Generated native dependency checkouts contain their own test suites.
+    include: ["tests/**/*.test.{ts,tsx,mts,mjs}"],
     /*
      * Generous relative to the real distribution (the slowest tests here are
      * packaged-artifact and SBOM checks measured in hundreds of milliseconds),

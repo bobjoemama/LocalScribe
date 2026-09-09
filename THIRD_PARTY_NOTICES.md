@@ -8,6 +8,18 @@ Major runtime components include:
 
 - Electron, React, React DOM, better-sqlite3, uiohook-napi, and Zod (MIT)
 - CPython (Python Software Foundation License)
+- transcribe.cpp and its embedded GGML sources (MIT), pinned at
+  `e2f82cb6702315a1194f3bf1a6fee67cd2678447`. Exact upstream license texts are
+  distributed as `resources/licenses/transcribe-cpp-LICENSE.txt` and
+  `resources/licenses/transcribe-cpp-ggml-LICENSE.txt`. The embedded miniz codec's
+  MIT license is in `resources/licenses/transcribe-cpp-miniz-LICENSE.txt`.
+- Optional Canary-Qwen-2.5B weights by NVIDIA (CC BY 4.0), converted to GGUF
+  with merged LoRA weights and lower-profile quantization by handy-computer.
+  Original: https://huggingface.co/nvidia/canary-qwen-2.5b
+  Conversion: https://huggingface.co/handy-computer/canary-qwen-2.5b-gguf/tree/3370d4e2f28cc70eea79dfc9f2f43fb91eef3163
+  License: https://creativecommons.org/licenses/by/4.0/
+  Weights are downloaded only at the user's request and are not included in
+  the installer. High uses BF16; Medium and Low use Q8_0 and Q4_K_M conversions.
 - FluidAudio 0.15.5 (Apache License 2.0). The exact upstream license from
   pinned revision `19600a485baa4998812e4654b70d2bab8f2c9949` is distributed
   as `resources/licenses/FluidAudio-0.15.5-LICENSE.txt`.

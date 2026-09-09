@@ -21,6 +21,9 @@ import {
 
 const temporaryRoots: string[] = [];
 const MAC_MANIFEST_FILENAMES = [
+  "canary-qwen-2-5b-gguf-bf16.json",
+  "canary-qwen-2-5b-gguf-q8.json",
+  "canary-qwen-2-5b-gguf-q4.json",
   "parakeet-unified-en-0-6b-coreml-fp16.json",
   "parakeet-unified-en-0-6b-coreml-int8.json",
   "whisper-large-v3-mlx.json",
@@ -140,6 +143,7 @@ describe("packaged model specifications", () => {
       "whisper-large-v3",
       "qwen3-asr-0-6b",
       "qwen3-asr-1-7b",
+      "canary-qwen-2-5b",
       "whisper-large-v2",
     ]);
     expect(platformMac.recommendedDefaultFamilyId).toBe("parakeet-unified-en-0-6b");
@@ -317,11 +321,14 @@ describe("packaged model specifications", () => {
       expect.objectContaining({ familyId: "qwen3-asr-1-7b", artifactId: "qwen3-asr-1-7b-mlx-bf16" }),
       expect.objectContaining({ familyId: "qwen3-asr-1-7b", artifactId: "qwen3-asr-1-7b-mlx-8bit" }),
       expect.objectContaining({ familyId: "qwen3-asr-1-7b", artifactId: "qwen3-asr-1-7b-mlx-4bit" }),
+      expect.objectContaining({ familyId: "canary-qwen-2-5b", artifactId: "canary-qwen-2-5b-gguf-bf16" }),
+      expect.objectContaining({ familyId: "canary-qwen-2-5b", artifactId: "canary-qwen-2-5b-gguf-q8" }),
+      expect.objectContaining({ familyId: "canary-qwen-2-5b", artifactId: "canary-qwen-2-5b-gguf-q4" }),
       expect.objectContaining({ familyId: "whisper-large-v2", artifactId: "whisper-large-v2-mlx-fp16" }),
       expect.objectContaining({ familyId: "whisper-large-v2", artifactId: "whisper-large-v2-mlx-int8" }),
       expect.objectContaining({ familyId: "whisper-large-v2", artifactId: "whisper-large-v2-mlx-int4" }),
     ]);
-    expect(macVerifier).toHaveBeenCalledTimes(14);
+    expect(macVerifier).toHaveBeenCalledTimes(17);
   });
 
   it("rejects cross-family storage aliasing before verification or removal can target it", async () => {

@@ -67,8 +67,10 @@ const MAC_FLUID_AUDIO_HELPER = path.resolve(
   "resources/native/macos/localscribe-fluidaudio-parakeet",
 );
 const MAC_ACTIVE_TARGET = path.resolve("resources/native/macos/active-target");
+const MAC_CANARY_LIBRARY = path.resolve("resources/native/macos/liblocalscribe-canary.dylib");
 const MAC_STAGING_ROOT = path.resolve("out/runtime-staging/native/macos");
 const MAC_STAGED_ACTIVE_TARGET = path.join(MAC_STAGING_ROOT, "active-target");
+const MAC_STAGED_CANARY_LIBRARY = path.join(MAC_STAGING_ROOT, "liblocalscribe-canary.dylib");
 const MAC_STAGED_FLUID_AUDIO_HELPER = path.join(
   MAC_STAGING_ROOT,
   "localscribe-fluidaudio-parakeet",
@@ -145,7 +147,8 @@ function signingEntitlementsFor(filePath: string): string {
   if (normalizedPath.includes("/python-runtime/")) {
     return MAC_RUNTIME_ENTITLEMENTS;
   }
-  if (normalizedPath.endsWith("/native/macos/localscribe-fluidaudio-parakeet")) {
+  if (normalizedPath.endsWith("/native/macos/localscribe-fluidaudio-parakeet") ||
+      normalizedPath.endsWith("/native/macos/liblocalscribe-canary.dylib")) {
     return MAC_RUNTIME_ENTITLEMENTS;
   }
   /*
@@ -236,7 +239,7 @@ function collectMachOFiles(directory: string): string[] {
  */
 function signProtectedMacResources(): void {
   const runtimeRoot = path.resolve("resources/python-runtime");
-  const binaries = [...collectMachOFiles(runtimeRoot), MAC_ACTIVE_TARGET, MAC_FLUID_AUDIO_HELPER]
+  const binaries = [...collectMachOFiles(runtimeRoot), MAC_ACTIVE_TARGET, MAC_FLUID_AUDIO_HELPER, MAC_CANARY_LIBRARY]
     .sort((left, right) => right.split(path.sep).length - left.split(path.sep).length);
 
   for (const binary of binaries) {
@@ -259,7 +262,8 @@ function isPreSignedProtectedMacResource(filePath: string): boolean {
   const normalizedPath = filePath.replaceAll("\\", "/");
   return normalizedPath.includes("/Contents/Resources/python-runtime/") ||
     normalizedPath.endsWith("/Contents/Resources/native/macos/active-target") ||
-    normalizedPath.endsWith("/Contents/Resources/native/macos/localscribe-fluidaudio-parakeet");
+    normalizedPath.endsWith("/Contents/Resources/native/macos/localscribe-fluidaudio-parakeet") ||
+    normalizedPath.endsWith("/Contents/Resources/native/macos/liblocalscribe-canary.dylib");
 }
 
 function removeInfoPlistKeyIfPresent(infoPlist: string, keyPath: string): void {
@@ -510,6 +514,7 @@ const config: ForgeConfig = {
         protectedResourcePreparation = promoteProtectedResources([
           { sourcePath: MAC_ACTIVE_TARGET, stagedPath: MAC_STAGED_ACTIVE_TARGET },
           { sourcePath: MAC_FLUID_AUDIO_HELPER, stagedPath: MAC_STAGED_FLUID_AUDIO_HELPER },
+          { sourcePath: MAC_CANARY_LIBRARY, stagedPath: MAC_STAGED_CANARY_LIBRARY },
         ]);
         signProtectedMacResources();
         assertSourceResources(platform, arch);

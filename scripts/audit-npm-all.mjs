@@ -29,6 +29,16 @@ import { fileURLToPath } from "node:url";
  * ancestors introduced by a dependency update.
  */
 export const EXPECTED_BUILD_TOOL_ADVISORIES = Object.freeze({
+  // Re-reviewed 2026-09-09: final-component symlink overwrite, still in the
+  // same build-only extract-zip@2.0.1 path. No patched release exists. Product
+  // archive verification uses preflight + ditto, not this dependency; preflight
+  // rejects duplicate names before extraction (covered by a real ZIP fixture).
+  "https://github.com/advisories/GHSA-7pqw-9j4j-h8q3": Object.freeze({
+    name: "extract-zip",
+    dependency: "extract-zip",
+    severity: "high",
+    range: "<=2.0.1",
+  }),
   "https://github.com/advisories/GHSA-w3rx-r6r6-pgpr": Object.freeze({
     name: "image-size",
     dependency: "image-size",
@@ -86,7 +96,7 @@ export const EXPECTED_BUILD_TOOL_VULNERABILITIES = Object.freeze({
   "@electron/packager": Object.freeze({ nodes: Object.freeze(["node_modules/@electron/packager"]), via: Object.freeze(["extract-zip"]) }),
   appdmg: Object.freeze({ nodes: Object.freeze(["node_modules/appdmg"]), via: Object.freeze(["image-size"]) }),
   "electron-installer-dmg": Object.freeze({ nodes: Object.freeze(["node_modules/electron-installer-dmg"]), via: Object.freeze(["appdmg"]) }),
-  "extract-zip": Object.freeze({ nodes: Object.freeze(["node_modules/extract-zip"]), via: Object.freeze(["https://github.com/advisories/GHSA-jmr9-qjv8-65gv"]) }),
+  "extract-zip": Object.freeze({ nodes: Object.freeze(["node_modules/extract-zip"]), via: Object.freeze(["https://github.com/advisories/GHSA-jmr9-qjv8-65gv", "https://github.com/advisories/GHSA-7pqw-9j4j-h8q3"]) }),
   "image-size": Object.freeze({ nodes: Object.freeze(["node_modules/image-size"]), via: Object.freeze(["https://github.com/advisories/GHSA-w3rx-r6r6-pgpr", "https://github.com/advisories/GHSA-5p2g-fcmc-qvqq"]) }),
 });
 
