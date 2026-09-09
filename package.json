@@ -1,7 +1,7 @@
 {
   "name": "localscribe",
   "productName": "LocalScribe",
-  "version": "0.1.0-dev.15",
+  "version": "0.1.0-dev.16",
   "description": "Local-first desktop dictation for Apple Silicon Macs.",
   "author": "Devesh",
   "license": "Apache-2.0",
@@ -87,7 +87,7 @@
     "typescript": "5.9.3",
     "typescript-eslint": "8.65.0",
     "vite": "8.1.5",
-    "vitest": "4.1.0",
+    "vitest": "4.1.11",
     "yauzl": "2.10.0"
   },
   "overrides": {

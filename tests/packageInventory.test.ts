@@ -24,6 +24,9 @@ import {
 
 const temporaryDirectories: string[] = [];
 const MAC_MODEL_MANIFESTS = [
+  "canary-qwen-2-5b-gguf-bf16.json",
+  "canary-qwen-2-5b-gguf-q8.json",
+  "canary-qwen-2-5b-gguf-q4.json",
   "whisper-large-v3-mlx.json",
   "whisper-large-v3-mlx-8bit.json",
   "whisper-large-v3-mlx-4bit.json",
@@ -180,8 +183,12 @@ describe("packaged dependency inventory", () => {
     expect(mac.helperFiles).toEqual([
       "native/macos/active-target",
       "native/macos/localscribe-fluidaudio-parakeet",
+      "native/macos/liblocalscribe-canary.dylib",
     ]);
     expect(mac.licenseFiles).toEqual([
+      "licenses/transcribe-cpp-LICENSE.txt",
+      "licenses/transcribe-cpp-ggml-LICENSE.txt",
+      "licenses/transcribe-cpp-miniz-LICENSE.txt",
       "licenses/FluidAudio-0.15.5-LICENSE.txt",
       "licenses/FluidAudio-0.15.5-fastcluster-LICENSE.md",
       "licenses/FluidAudio-0.15.5-vbx-LICENSE.md",
@@ -203,6 +210,10 @@ describe("packaged dependency inventory", () => {
 
   it("accepts a complete Mac allowlist and rejects Windows or development resources", () => {
     const valid = [
+      "native/macos/liblocalscribe-canary.dylib",
+      "licenses/transcribe-cpp-LICENSE.txt",
+      "licenses/transcribe-cpp-ggml-LICENSE.txt",
+      "licenses/transcribe-cpp-miniz-LICENSE.txt",
       "worker/localscribe_worker/__init__.py",
       "worker/localscribe_worker/__main__.py",
       "python-runtime/venv/bin/python3",

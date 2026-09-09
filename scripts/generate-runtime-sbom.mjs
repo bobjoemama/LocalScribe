@@ -166,6 +166,13 @@ export function packagedRuntimeIdentity({ applicationPath, version, expectedBuil
     fluidAudioHelperSha256: createHash("sha256")
       .update(readFileSync(helperPath))
       .digest("hex"),
+    canaryLibrarySha256: createHash("sha256")
+      .update(readFileSync(ordinaryCandidateFile(
+        path.join(resources, "native", "macos", "liblocalscribe-canary.dylib"),
+        resources,
+        "Canary Metal library",
+      )))
+      .digest("hex"),
   };
 }
 
@@ -467,12 +474,53 @@ const rootSupplementalComponents = [
     properties: [{ name: "com.localscribe.runtime-role", value: "target-bound-paste-helper" }],
   },
 ];
+const canaryPin = readJson("tools/canary-runtime/pin.json");
+if (canaryPin.repository !== "handy-computer/transcribe.cpp" ||
+    !/^[a-f0-9]{40}$/u.test(canaryPin.revision) ||
+    !/^[a-f0-9]{64}$/u.test(canaryPin.archiveSha256)) {
+  throw new Error("Canary runtime must have an immutable source pin and archive digest.");
+}
+const canaryReference = `transcribe.cpp@${canaryPin.revision}`;
+const ggmlReference = `ggml@embedded-in-transcribe-${canaryPin.revision}`;
+const minizReference = `miniz@embedded-in-transcribe-${canaryPin.revision}`;
+const canaryLibraryReference = `localscribe-canary@${appVersion}`;
+rootSupplementalComponents.push({
+  type: "library",
+  "bom-ref": canaryLibraryReference,
+  name: "native/macos/liblocalscribe-canary.dylib",
+  version: appVersion,
+  properties: [
+    { name: "com.localscribe.runtime-role", value: "canary-offline-metal" },
+    { name: "com.localscribe.helper-protocol", value: "1" },
+  ],
+  ...(packagedRuntime ? { hashes: [{ alg: "SHA-256", content: packagedRuntime.canaryLibrarySha256 }] } : {}),
+});
+const canaryComponents = [
+  { name: "transcribe.cpp", reference: canaryReference, notice: "transcribe-cpp-LICENSE.txt" },
+  { name: "ggml", reference: ggmlReference, notice: "transcribe-cpp-ggml-LICENSE.txt" },
+  { name: "miniz", reference: minizReference, notice: "transcribe-cpp-miniz-LICENSE.txt" },
+].map(({ name, reference, notice }) => ({
+  type: "library",
+  "bom-ref": reference,
+  name,
+  version: canaryPin.revision,
+  licenses: [{ license: { id: "MIT" } }],
+  externalReferences: [{ type: "vcs", url: `https://github.com/${canaryPin.repository}/tree/${canaryPin.revision}${name === "ggml" ? "/ggml" : name === "miniz" ? "/src/third_party/miniz" : ""}` }],
+  properties: [
+    { name: "com.localscribe.source-archive-sha256", value: canaryPin.archiveSha256 },
+    { name: "com.localscribe.packaged-notice-path", value: `licenses/${notice}` },
+    { name: "com.localscribe.packaged-notice-sha256", value: createHash("sha256").update(readFileSync(path.join(projectRoot, "resources/licenses", notice))).digest("hex") },
+  ],
+}));
 const supplementalComponents = [
   ...rootSupplementalComponents,
+  ...canaryComponents,
   fluidAudioComponent,
   ...fluidAudioEmbeddedComponents,
 ];
 const supplementalDependencyEdges = new Map([
+  [canaryLibraryReference, [canaryReference]],
+  [canaryReference, [ggmlReference, minizReference]],
   [fluidAudioHelperReference, [fluidAudioReference]],
   [fluidAudioReference, [fastClusterReference, vbxReference]],
 ]);

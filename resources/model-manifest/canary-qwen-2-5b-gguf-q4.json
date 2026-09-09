@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "familyId": "canary-qwen-2-5b",
+  "artifactId": "canary-qwen-2-5b-gguf-q4",
+  "platform": "darwin-arm64",
+  "backend": "transcribe.cpp / Metal",
+  "displayName": "Canary-Qwen 2.5B · GGUF Q4_K_M",
+  "modelId": "handy-computer/canary-qwen-2.5b-gguf",
+  "storageDirectory": "canary-qwen-2-5b-q4-3370d4e",
+  "revision": "3370d4e2f28cc70eea79dfc9f2f43fb91eef3163",
+  "license": "CC-BY-4.0",
+  "files": {
+    "canary-qwen-2.5b-Q4_K_M.gguf": {
+      "bytes": 1737575808,
+      "sha256": "db5162229d6fa22597d06a613bd9b543eddb3ee02e6afc5e759120fde02bebf7"
+    }
+  }
+}

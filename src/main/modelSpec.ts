@@ -79,7 +79,8 @@ export type ModelCatalogPlatform = ModelSpec["platform"];
 export type ModelEngine =
   | "mlx-whisper"
   | "mlx-audio"
-  | "fluid-audio";
+  | "fluid-audio"
+  | "transcribe-cpp";
 export type ModelPrecision =
   | "fp16"
   | "bf16"
@@ -284,7 +285,7 @@ const immutableArtifactAudit = (
 ): ModelResourceEvidence => ({
   kind: "measured",
   source: `https://huggingface.co/${modelId}/tree/${revision}`,
-  auditedAt: "2026-07-23",
+  auditedAt: modelId === "handy-computer/canary-qwen-2.5b-gguf" ? "2026-09-09" : "2026-07-23",
 });
 
 const estimatedMemory = (source: string, minimumGiB: number, maximumGiB: number) => ({
@@ -511,6 +512,38 @@ const qwen06Mac: FamilyCatalogDefinition = {
   },
 };
 
+const canaryTier = (
+  suffix: string,
+  precision: "bf16" | "8-bit" | "4-bit",
+  minimumGiB: number,
+  maximumGiB: number,
+): CatalogTierDefinition => ({
+  manifestFilename: `canary-qwen-2-5b-gguf-${suffix}.json`,
+  engine: "transcribe-cpp",
+  precision,
+  acceleratorMemory: {
+    minimumBytes: Math.ceil(minimumGiB * GIBIBYTE),
+    maximumBytes: Math.ceil(maximumGiB * GIBIBYTE),
+    evidence: {
+      kind: "estimated",
+      source: "Canary-Qwen GGUF weights plus bounded 30-second inference working set; not a measured benchmark",
+      auditedAt: "2026-09-09",
+    },
+  },
+});
+
+const canaryMac: FamilyCatalogDefinition = {
+  familyId: "canary-qwen-2-5b",
+  displayName: "Canary-Qwen 2.5B",
+  engine: "transcribe-cpp",
+  capabilities: { ...AFTER_STOP_CAPABILITIES, supportedLanguages: ["en"] },
+  tiers: {
+    high: canaryTier("bf16", "bf16", 6, 9),
+    medium: canaryTier("q8", "8-bit", 4, 7),
+    low: canaryTier("q4", "4-bit", 3, 6),
+  },
+};
+
 /** Every shipped family is declared for the supported Apple Silicon runtime. */
 export const MODEL_CATALOG_DEFINITIONS = {
   "darwin-arm64": {
@@ -520,6 +553,7 @@ export const MODEL_CATALOG_DEFINITIONS = {
       "whisper-large-v3": v3Mac,
       "qwen3-asr-0-6b": qwen06Mac,
       "qwen3-asr-1-7b": qwenMac,
+      "canary-qwen-2-5b": canaryMac,
       "whisper-large-v2": v2Mac,
     },
   },
@@ -865,6 +899,7 @@ function assertManifestMatchesCatalog(
     "mlx-whisper": "MLX Whisper",
     "mlx-audio": "MLX Audio",
     "fluid-audio": "FluidAudio CoreML / ANE",
+    "transcribe-cpp": "transcribe.cpp / Metal",
   };
   const expectedBackend = expectedBackends[definition.engine];
   const expected = {

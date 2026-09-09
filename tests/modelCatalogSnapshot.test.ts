@@ -39,7 +39,7 @@ describe("main-process model catalog snapshot", () => {
 
     expect(() => modelCatalogSchema.parse(snapshot)).not.toThrow();
     expect(snapshot.recommendedDefaultFamilyId).toBe("parakeet-unified-en-0-6b");
-    expect(snapshot.verifications).toHaveLength(14);
+    expect(snapshot.verifications).toHaveLength(17);
     expect(snapshot.verifications).toEqual(expect.arrayContaining([
       expect.objectContaining({
         familyId: "parakeet-unified-en-0-6b",

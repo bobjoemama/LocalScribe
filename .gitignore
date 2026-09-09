@@ -27,6 +27,7 @@
 /resources/python-runtime/*
 !/resources/python-runtime/.gitkeep
 /resources/native/macos/active-target
+/resources/native/macos/liblocalscribe-canary.dylib
 /tools/fluidaudio-parakeet-helper/.build/
 
 # Downloaded model artifacts never belong in source control or app installers

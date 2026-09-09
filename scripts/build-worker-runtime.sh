@@ -2,6 +2,7 @@
 set -euo pipefail
 
 project_root="$(cd "$(dirname "$0")/.." && pwd)"
+bash "$project_root/scripts/build-canary-runtime.sh"
 runtime_root="$project_root/resources/python-runtime"
 venv_root="$runtime_root/venv"
 worker_root="$project_root/worker"

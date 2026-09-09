@@ -157,6 +157,9 @@ def _catalog_selection(spec: TierSpec) -> CatalogSelection:
 # runtime compute profile remain an executable allowlist: a renderer cannot
 # supply either, and adding a curated model still requires a signed app build.
 CURATED_PROFILE_POLICIES = (
+    ("canary-qwen-2-5b-gguf-bf16.json", "high", "bfloat16", "transcribe.cpp / Metal"),
+    ("canary-qwen-2-5b-gguf-q8.json", "medium", "int8", "transcribe.cpp / Metal"),
+    ("canary-qwen-2-5b-gguf-q4.json", "low", "int4", "transcribe.cpp / Metal"),
     ("whisper-large-v3-mlx.json", "high", "float16", "MLX Whisper"),
     ("whisper-large-v3-mlx-8bit.json", "medium", "int8", "MLX Whisper"),
     ("whisper-large-v3-mlx-4bit.json", "low", "int4", "MLX Whisper"),
@@ -1957,6 +1960,10 @@ class FluidAudioParakeetRuntime:
 
 
 def _load_runtime(model_directory: Path, spec: TierSpec) -> InferenceRuntime:
+    if spec.family_id == "canary-qwen-2-5b":
+        from .canary_runtime import CanaryRuntime
+
+        return CanaryRuntime.load(model_directory, spec)
     if spec.family_id == "parakeet-unified-en-0-6b":
         return FluidAudioParakeetRuntime.load(model_directory, spec)
     if spec.family_id in {"qwen3-asr-1-7b", "qwen3-asr-0-6b"}:

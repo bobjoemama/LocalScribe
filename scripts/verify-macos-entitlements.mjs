@@ -110,6 +110,7 @@ const signedEntitlements = assertMainAppEntitlements({
 
 assertNoEntitlementKeys(activeTarget);
 assertNoEntitlementKeys(fluidAudioHelper);
+assertNoEntitlementKeys(path.join(resourcesPath, "native", "macos", "liblocalscribe-canary.dylib"));
 const runtimeMachOFiles = collectMachOFiles(runtimeRoot);
 if (runtimeMachOFiles.length === 0) fail("the packaged Python runtime contains no Mach-O files");
 for (const binary of runtimeMachOFiles) assertNoEntitlementKeys(binary);

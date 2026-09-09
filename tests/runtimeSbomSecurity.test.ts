@@ -214,6 +214,31 @@ describe("runtime core SBOM generation", () => {
       }
   });
 
+  it("includes the exact Canary native source and embedded dependency graph", () => {
+    const bom = runtimeSbom();
+    const pin = JSON.parse(projectFile("tools/canary-runtime/pin.json")) as { revision: string; archiveSha256: string };
+    const reference = `transcribe.cpp@${pin.revision}`;
+    for (const [name, notice] of [
+      ["transcribe.cpp", "transcribe-cpp-LICENSE.txt"],
+      ["ggml", "transcribe-cpp-ggml-LICENSE.txt"],
+      ["miniz", "transcribe-cpp-miniz-LICENSE.txt"],
+    ] as const) {
+      const component = namedComponents(bom, name)[0];
+      expect(component).toMatchObject({ version: pin.revision, licenses: [{ license: { id: "MIT" } }] });
+      expect(componentProperty(component!, "com.localscribe.source-archive-sha256")).toBe(pin.archiveSha256);
+      expect(componentProperty(component!, "com.localscribe.packaged-notice-sha256")).toBe(
+        createHash("sha256").update(projectFile(`resources/licenses/${notice}`)).digest("hex"),
+      );
+    }
+    expect(dependencies(bom)).toContainEqual({
+      ref: `localscribe-canary@${packageJson.version}`, dependsOn: [reference],
+    });
+    expect(dependencies(bom)).toContainEqual({
+      ref: reference,
+      dependsOn: [`ggml@embedded-in-transcribe-${pin.revision}`, `miniz@embedded-in-transcribe-${pin.revision}`],
+    });
+  });
+
   it("is byte-for-byte deterministic for each platform graph", () => {
     expect(runtimeSbomOutput()).toBe(runtimeSbomOutput());
   }, 20_000);
@@ -482,6 +507,7 @@ describe("bundled CPython distribution identity", () => {
       writeFileSync(resolve(runtime, "BUILD"), "20260504\n");
       writeFileSync(resolve(runtime, "bin/python3.12"), "packaged interpreter");
       writeFileSync(helper, "packaged helper");
+      writeFileSync(resolve(helper, "../liblocalscribe-canary.dylib"), "packaged canary");
 
       expect(module.packagedRuntimeIdentity({
         applicationPath: app,
@@ -492,6 +518,7 @@ describe("bundled CPython distribution identity", () => {
           sha256: createHash("sha256").update("packaged interpreter").digest("hex"),
         }),
         fluidAudioHelperSha256: createHash("sha256").update("packaged helper").digest("hex"),
+        canaryLibrarySha256: createHash("sha256").update("packaged canary").digest("hex"),
       });
     } finally {
       rmSync(temporaryRoot, { force: true, recursive: true });

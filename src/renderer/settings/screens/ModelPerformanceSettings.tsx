@@ -88,6 +88,16 @@ export function modelFamilyPresentation(family: CatalogFamily): ModelFamilyPrese
       latencyLabel: "Fast after stop",
     };
   }
+  if (family.familyId === "canary-qwen-2-5b") {
+    return {
+      experience: "after-stop",
+      experiences,
+      recommendation: "accurate",
+      summary: "English-only final dictation using a local Metal runtime. Longer recordings are processed in chunks.",
+      languageLabel,
+      latencyLabel: "After stop",
+    };
+  }
   if (identity.includes("qwen")) {
     return {
       experience: "after-stop",
