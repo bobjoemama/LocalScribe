@@ -1545,6 +1545,7 @@ class ModelInstallationTests(unittest.TestCase):
             self.assertEqual(observed["allow_patterns"], ["config.json", "weights.npz"])
             self.assertEqual(observed["max_workers"], 4)
             self.assertIs(observed["token"], False)
+            self.assertEqual(observed["endpoint"], "https://huggingface.co")
             staging = Path(observed["local_dir"])
             self.assertEqual(staging.name, "staging")
             self.assertEqual(staging.parent.parent, model_root.resolve())

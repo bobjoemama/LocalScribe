@@ -1200,6 +1200,9 @@ def ensure_model(
                     "allow_patterns": sorted(manifest.files),
                     "max_workers": 4,
                     "token": False,
+                    # The curated catalog is hosted on the canonical Hub, never
+                    # an ambient HF_ENDPOINT mirror (including direct CLI use).
+                    "endpoint": "https://huggingface.co",
                 }
                 if progress is not None:
                     download_options["tqdm_class"] = _snapshot_download_progress_class(progress)
