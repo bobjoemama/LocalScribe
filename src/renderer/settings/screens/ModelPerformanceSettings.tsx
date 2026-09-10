@@ -1,13 +1,14 @@
 import {
-  DEFAULT_MODEL_FAMILY_ID,
   type ModelCatalog,
   type ModelFamilyId,
   type ModelPerformanceMode,
   type ModelPerformanceTier,
 } from "../../../shared/contracts";
-import { useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import { modelPerformanceTierLabel } from "../../../shared/modelPerformance";
 import { dictationLanguagePresentation } from "../dictationLanguages";
+import { MODEL_EVIDENCE, MODEL_EVIDENCE_REVIEWED, REFERENCE_BENCHMARK_CONTEXT, REFERENCE_BENCHMARK_URL, modelArtifactSourceUrl } from "../../../shared/modelEvidence";
+import { MODEL_SORT_OPTIONS, isModelSortOrder, modelComparisonValues, orderModelFamilies, type ModelSortOrder } from "./modelOrdering";
 
 /*
  * Tier labels come from the shared source so main-composed status copy and
@@ -576,6 +577,24 @@ export function ModelPerformanceSettings({
     initialBrowsingFamily ? modelFamilyPresentation(initialBrowsingFamily).experience : "after-stop"
   ));
   const browsingExperience = recognitionExperience ?? uncontrolledBrowsingExperience;
+  const [sortOrder, setSortOrder] = useState<ModelSortOrder>("recommended");
+  const [comparisonTier, setComparisonTier] = useState<ConcreteModelTier>("high");
+  const statusRef = useRef<HTMLElement>(null);
+  useLayoutEffect(() => {
+    const status = statusRef.current;
+    const scroll = status?.closest<HTMLElement>(".ls-settings-scroll");
+    if (!status || !scroll) return;
+    // Keep keyboard-focused controls clear of the sticky status at any size,
+    // including longer failure messages and expanded selection details.
+    const update = () => scroll.style.setProperty("--ls-model-sticky-height", `${status.getBoundingClientRect().height + 12}px`);
+    const observer = new ResizeObserver(update);
+    observer.observe(status);
+    update();
+    return () => {
+      observer.disconnect();
+      scroll.style.removeProperty("--ls-model-sticky-height");
+    };
+  }, []);
   const chooseExperience = (experience: RecognitionExperience) => {
     if (onRecognitionExperienceChange) onRecognitionExperienceChange(experience);
     else setUncontrolledBrowsingExperience(experience);
@@ -603,12 +622,7 @@ export function ModelPerformanceSettings({
   const liveFamiliesAvailable = catalog?.families.some(
     (family) => modelFamilyPresentation(family).experiences.includes("live"),
   ) ?? false;
-  const visibleFamilies = catalog?.families.filter(
-    (family) => modelFamilyPresentation(family).experiences.includes(browsingExperience),
-  ) ?? [];
-  const parakeetFamily = catalog?.families.find((family) => (
-    `${family.familyId} ${family.displayName}`.toLowerCase().includes("parakeet")
-  ));
+  const visibleFamilies = orderModelFamilies(catalog?.families ?? [], sortOrder, comparisonTier, browsingExperience);
   const applyState = applying
     ? "Applying model change"
     : selectionChanged
@@ -626,7 +640,7 @@ export function ModelPerformanceSettings({
 
   return (
     <div className="ls-model-performance">
-      <section className="ls-model-apply-card" aria-labelledby="model-apply-heading" aria-busy={applying || undefined}>
+      <section ref={statusRef} className="ls-model-apply-card" aria-labelledby="model-apply-heading" aria-busy={applying || undefined}>
         <div>
           <span className={applying ? "ls-model-apply-state is-busy" : "ls-model-apply-state"} role="status" aria-live="polite">
             {applyState}
@@ -634,6 +648,9 @@ export function ModelPerformanceSettings({
           <h2 id="model-apply-heading">
             {pendingFamily?.displayName ?? pendingSelection.familyId} · {pendingSelection.asrMode === "live" ? "Live" : "After I stop"} · {pendingModeLabel}
           </h2>
+          {selectionChanged && <p className="ls-model-saved-context">Saved: {currentFamily?.displayName ?? currentSelection.familyId} · {currentSelection.asrMode === "live" ? "Live" : "After I stop"} · {currentModeLabel}</p>}
+          <details className="ls-model-selection-details">
+          <summary>Selection details</summary>
           <dl className="ls-model-selection-summary">
             <div>
               <dt>Saved selection</dt>
@@ -646,12 +663,11 @@ export function ModelPerformanceSettings({
                 : residentRuntimeLabel ?? "No model runtime is loaded"}</dd>
             </div>
           </dl>
-          <p id="model-apply-status">{applyStatus} {applyEligibility.reason}</p>
+          <p>{applyStatus}</p>
+          </details>
+          <p id="model-apply-status">{applyEligibility.reason}</p>
         </div>
         <div className="ls-model-apply-actions">
-          <button type="button" className="ls-secondary-button" disabled={applying || refreshing || action !== null} onClick={onRefresh}>
-            {refreshing ? "Refreshing…" : "Refresh status"}
-          </button>
           <button
             type="button"
             className="ls-primary-button ls-model-apply-button"
@@ -672,9 +688,8 @@ export function ModelPerformanceSettings({
 
       <section className="ls-model-experience-picker" aria-labelledby="model-experience-heading">
         <div>
-          <span>Dictation experience</span>
-          <h2 id="model-experience-heading">Choose when LocalScribe recognizes your speech</h2>
-          <p>Both keep audio on this Mac. Live recognition streams while you speak, but LocalScribe inserts final text only after you stop.</p>
+          <h2 id="model-experience-heading">When should text appear?</h2>
+          <p>Both run locally and insert the finished text after you stop.</p>
         </div>
         <div className="ls-model-experience-options" role="group" aria-label="Dictation experience">
           <button
@@ -685,7 +700,7 @@ export function ModelPerformanceSettings({
             onClick={() => chooseExperience("after-stop")}
           >
             <strong>After I stop</strong>
-            <span>Fast, polished final dictation</span>
+            <span>Transcribe the finished recording</span>
           </button>
           <button
             type="button"
@@ -695,14 +710,9 @@ export function ModelPerformanceSettings({
             onClick={() => chooseExperience("live")}
           >
             <strong>Live</strong>
-            <span>{liveFamiliesAvailable ? "Separate streaming recognition while you speak" : "No streaming model in this catalog"}</span>
+            <span>{liveFamiliesAvailable ? "Preview words as you speak" : "No streaming model in this catalog"}</span>
           </button>
         </div>
-        {browsingExperience === "after-stop" && parakeetFamily && (
-          <p className="ls-model-experience-recommendation" role="status">
-            <strong>Looking for Parakeet?</strong> {parakeetFamily.displayName} is available below for fast final dictation after you stop — it is not the Live preview choice.
-          </p>
-        )}
         {!liveFamiliesAvailable && (
           <p className="ls-model-experience-unavailable" role="status">
             Live recognition will appear here only when a verified local streaming model is included in your catalog. It is unavailable in this build, so LocalScribe will not silently substitute another model.
@@ -710,21 +720,9 @@ export function ModelPerformanceSettings({
         )}
       </section>
 
-      <section className="ls-model-auto-card" aria-labelledby="model-auto-heading">
-        <div>
-          <span>Performance within the selected family</span>
-          <h2 id="model-auto-heading">
-            {mode === "auto"
-              ? <>Auto resolves to <strong>{selectionChanged ? applyEligibility.targetTier ? modeLabel(applyEligibility.targetTier) : "after validation" : autoResolutionLabel}</strong></>
-              : <><strong>{requestedLabel}</strong> selected</>}
-          </h2>
-          <p>{memoryCopy.summary} Changing these controls only stages a choice. LocalScribe unloads the current model and loads the new one only after you press Apply model.</p>
-        </div>
-      </section>
-
-      <fieldset className="ls-model-mode-picker" disabled={applying || refreshing || action !== null || Boolean(catalogError) || !catalog}>
-        <legend>Performance mode</legend>
-        <p>Choose Auto or one concrete quality and memory profile for the active speech-model family.</p>
+      <fieldset id="model-quality-picker" className="ls-model-mode-picker" disabled={applying || refreshing || action !== null || Boolean(catalogError) || !catalog}>
+        <legend>Quality for {pendingFamily?.displayName ?? pendingSelection.familyId}</legend>
+        <p>Auto chooses a profile within this family. High keeps original precision; lower profiles reduce memory use. Changes wait for Apply model.</p>
         <div>
           {availableModeChoices.map((choice) => (
             <label key={choice.id} className={mode === choice.id ? "is-selected" : ""}>
@@ -748,14 +746,13 @@ export function ModelPerformanceSettings({
             </label>
           ))}
         </div>
+        <p className="ls-model-quality-summary">
+          {mode === "auto"
+            ? <>Auto resolves to <strong>{selectionChanged ? applyEligibility.targetTier ? modeLabel(applyEligibility.targetTier) : "after validation" : autoResolutionLabel}</strong>.</>
+            : <><strong>{requestedLabel}</strong> selected.</>}
+        </p>
       </fieldset>
 
-      {!selectionChanged && mode === "auto" && resolutionReason && (
-        <p className="ls-model-resolution-note" role="status">
-          <InfoIcon />
-          <span>{resolutionReason}</span>
-        </p>
-      )}
       {mode !== "auto" && fitsMemoryBudget === false && (
         <p className="ls-model-resolution-note" role="status">
           <InfoIcon />
@@ -765,13 +762,21 @@ export function ModelPerformanceSettings({
         </p>
       )}
 
-      <MemoryStatus
+      <details className="ls-model-hardware-details">
+        <summary>Mac memory &amp; runtime details{eligibilityUnknown ? " · Memory unavailable" : ""}</summary>
+        <p>{memoryCopy.summary}</p>
+        {!selectionChanged && mode === "auto" && resolutionReason && <p>{resolutionReason}</p>}
+        <MemoryStatus
         hardware={hardware}
         memoryRequirement={memoryRequirement}
         memoryCopy={memoryCopy}
         eligibilityUnknown={eligibilityUnknown}
         normalizedForWarmModel={currentModelLoaded}
       />
+        <button type="button" className="ls-small-button" disabled={applying || refreshing || action !== null} onClick={onRefresh}>
+          {refreshing ? "Refreshing…" : "Refresh status"}
+        </button>
+      </details>
 
       {feedback && (
         <p
@@ -787,11 +792,35 @@ export function ModelPerformanceSettings({
         <div className="ls-model-catalog-heading">
           <div>
             <h2 id="model-catalog-heading">{browsingExperience === "live" ? "Live models" : "After I stop models"}</h2>
-            <p>{browsingExperience === "live"
-              ? "Live preview is a separate streaming experience. Choose a model first, then a profile."
-              : "These models produce the finished text after you stop speaking. Choose a model first, then a profile."}</p>
+            <p>Select a model. Open its profiles to manage downloads.</p>
+          </div>
+          <div className="ls-model-sort-toolbar">
+            <label>
+              Sort models
+              <select value={sortOrder} onChange={(event) => {
+                if (isModelSortOrder(event.target.value)) setSortOrder(event.target.value);
+              }} aria-describedby="model-comparison-basis">
+                {MODEL_SORT_OPTIONS.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
+              </select>
+            </label>
+            <label>
+              Memory / download profile
+              <select value={comparisonTier} onChange={(event) => {
+                const value = event.target.value;
+                if (value === "high" || value === "medium" || value === "low") setComparisonTier(value);
+              }}>
+                {TIER_ORDER.map((tier) => <option key={tier} value={tier}>{modelPerformanceTierLabel(tier)}</option>)}
+              </select>
+            </label>
           </div>
         </div>
+        <details className="ls-model-comparison-basis" id="model-comparison-basis">
+          <summary>About these comparisons · estimates and server references</summary>
+          <p>Sorting only changes this list, not your selected model. Memory uses the upper end of the estimated unified-memory range, not dedicated VRAM or a measurement. Unavailable profiles and missing metrics sort last.
+            {" "}WER and speed are published after-stop server references, independent of the profile above—not Mac speed or quantized accuracy predictions.
+            {browsingExperience === "live" && " No matching Live benchmark is available; reference WER and speed are unreported."}
+          </p>
+        </details>
 
         {catalogError ? (
           <div className="ls-model-empty is-error" role="alert">
@@ -806,6 +835,9 @@ export function ModelPerformanceSettings({
                 <ModelFamilyCard
                   key={family.familyId}
                   family={family}
+                  comparisonTier={comparisonTier}
+                  browsingExperience={browsingExperience}
+                  sortOrder={sortOrder}
                   mode={mode}
                   currentFamilyId={currentSelection.familyId}
                   pendingFamilyId={pendingSelection.familyId}
@@ -938,6 +970,9 @@ function MemoryStatus({
 
 function ModelFamilyCard({
   family,
+  comparisonTier,
+  browsingExperience,
+  sortOrder,
   mode,
   currentFamilyId,
   pendingFamilyId,
@@ -954,6 +989,9 @@ function ModelFamilyCard({
   selectionDisabled,
 }: {
   family: ModelCatalog["families"][number];
+  comparisonTier: ConcreteModelTier;
+  browsingExperience: RecognitionExperience;
+  sortOrder: ModelSortOrder;
   mode: ModelModeChoice;
   currentFamilyId: ModelFamilyId;
   pendingFamilyId: ModelFamilyId;
@@ -979,25 +1017,30 @@ function ModelFamilyCard({
   for (const tier of tiers) {
     if (!firstTierForArtifact.has(tier.artifactId)) firstTierForArtifact.set(tier.artifactId, tier.tier);
   }
-  const isDefault = family.familyId === DEFAULT_MODEL_FAMILY_ID;
   const isCurrent = family.familyId === currentFamilyId;
   const isPending = family.familyId === pendingFamilyId;
+  const familyAction = action && action.action !== "adding" && action.familyId === family.familyId ? action : null;
+  const activeTier = tiers.find((tier) => tier.tier === familyAction?.tier);
+  const comparison = modelComparisonValues(family, comparisonTier, browsingExperience);
+  const sortSummary = sortOrder.startsWith("memory-")
+    ? `${modelPerformanceTierLabel(comparisonTier)} estimated memory: ${comparison.memory === null ? "Profile unavailable" : formatAcceleratorBytes(comparison.memory)}`
+    : sortOrder.startsWith("download-")
+      ? `${modelPerformanceTierLabel(comparisonTier)} download: ${comparison.download === null ? "Profile unavailable" : formatStorageBytes(comparison.download)}`
+      : sortOrder.startsWith("wer-")
+        ? `Reference WER (LS clean): ${comparison.wer === null ? "Not reported" : `${comparison.wer.toFixed(2)}%`}`
+        : sortOrder.startsWith("speed-")
+          ? `Server reference speed: ${comparison.speed === null ? "Not reported" : `${comparison.speed.toFixed(1)}× real time`}`
+          : null;
 
   return (
     <article className={isPending ? "ls-model-family-card is-selected" : isCurrent ? "ls-model-family-card is-active" : "ls-model-family-card"}>
       <header className="ls-model-family-heading">
         <div>
           <div className="ls-model-family-badges">
-            {presentation.recommendation === "recommended" && <span className="ls-model-family-badge is-recommended">Recommended</span>}
-            {family.familyId.toLowerCase().includes("parakeet") && <span className="ls-model-family-badge is-final">Fast final dictation</span>}
-            {presentation.recommendation === "accurate" && <span className="ls-model-family-badge">Accuracy-focused</span>}
-            {presentation.recommendation === "legacy" && <span className="ls-model-family-badge">Legacy</span>}
-            {presentation.recommendation === "live" && <span className="ls-model-family-badge is-live">Live</span>}
-            {isDefault && <span className="ls-model-family-badge">Built-in default</span>}
-            {isCurrent && <span className="ls-model-family-badge is-active">Saved selection</span>}
-            {isPending && !isCurrent && <span className="ls-model-family-badge is-pending">Selected to apply</span>}
-            {!isCurrent && family.inLibrary && <span className="ls-model-family-badge">Added to library</span>}
-            {!family.inLibrary && <span className="ls-model-family-badge">Available to add</span>}
+            {family.recommendedDefault && <span className="ls-model-family-badge is-recommended">Recommended</span>}
+            {isCurrent ? <span className="ls-model-family-badge is-active">Saved selection</span>
+              : isPending ? <span className="ls-model-family-badge is-pending">Selected to apply</span>
+                : family.inLibrary ? <span className="ls-model-family-badge">In your library</span> : null}
           </div>
           <h3>{family.displayName}</h3>
           <p>{presentation.summary}</p>
@@ -1011,28 +1054,24 @@ function ModelFamilyCard({
             Select
           </button>
         ) : (
-          <span className="ls-model-active-label">{isCurrent ? "Current selection" : "Pending selection"}</span>
+          <button type="button" className="ls-small-button" disabled={selectionDisabled} onClick={() => {
+            const picker = document.getElementById("model-quality-picker");
+            picker?.scrollIntoView({ block: "start" });
+            picker?.querySelector<HTMLInputElement>("input:checked")?.focus({ preventScroll: true });
+          }}>Change quality</button>
         )}
       </header>
 
-      {!isCurrent && family.inLibrary && (
-        <p className="ls-model-family-note">Added locally. Select it, choose a performance mode, then use Apply model to switch safely.</p>
-      )}
-      {!family.inLibrary && (
-        <p className="ls-model-family-note">This curated family is available but is not part of your local library yet. Add it before selecting it or managing its model data.</p>
-      )}
+      <p className="ls-model-family-meta">{presentation.languageLabel} · {catalogFamilyBackendLabel(family)}{presentation.experiences.length > 1 ? " · After I stop + Live" : ""}</p>
+      {sortSummary && <p className="ls-model-sort-value">{sortSummary}</p>}
+      {familyAction && activeTier && <ModelOperationProgress action={familyAction} expectedBytes={activeTier.downloadBytes} />}
+      <details className="ls-model-profiles" open={isPending || familyAction !== null}>
+      <summary>Profiles &amp; downloads <span>{tiers.length} profiles · {tiers.filter((tier) => tier.verificationStatus === "verified").length} verified</span></summary>
       {presentation.experiences.length > 1 && (
         <p className="ls-model-family-note ls-model-family-note--shared-runtime">
           One downloaded model supports both After I stop and Live. Changing dictation experience does not download a second copy.
         </p>
       )}
-
-      <dl className="ls-model-family-glance">
-        <div><dt>Recognition</dt><dd>{presentation.latencyLabel}</dd></div>
-        <div><dt>Languages</dt><dd>{presentation.languageLabel}</dd></div>
-        <div><dt>Runtime</dt><dd>{catalogFamilyBackendLabel(family)}</dd></div>
-      </dl>
-
       <div className="ls-model-tier-list">
         {tiers.map((tier) => (
           <ModelTierRow
@@ -1057,7 +1096,49 @@ function ModelFamilyCard({
           />
         ))}
       </div>
+      </details>
+      <ModelComparisonDetails family={family} tier={comparisonTier} experience={browsingExperience} />
     </article>
+  );
+}
+
+function ModelComparisonDetails({ family, tier, experience }: {
+  family: CatalogFamily;
+  tier: ConcreteModelTier;
+  experience: RecognitionExperience;
+}) {
+  const evidence = MODEL_EVIDENCE[family.familyId];
+  const values = modelComparisonValues(family, tier, experience);
+  const originalUrl = `https://huggingface.co/${evidence.originalModelId}`;
+  const sourceUrls = family.artifacts.map((artifact) => modelArtifactSourceUrl(artifact.modelId, artifact.revision))
+    .filter((url): url is string => url !== null);
+  const sources = [...new Set([originalUrl, ...sourceUrls, ...(evidence.reference ? [REFERENCE_BENCHMARK_URL] : [])])];
+  const [copyStatus, setCopyStatus] = useState("");
+  const copySources = async () => {
+    try {
+      await navigator.clipboard.writeText(sources.join("\n"));
+      setCopyStatus("Source URLs copied.");
+    } catch {
+      setCopyStatus("Could not copy. Select a source URL above to copy it manually.");
+    }
+  };
+  return (
+    <details className="ls-model-comparison ls-model-evidence">
+      <summary>Metrics &amp; download sources</summary>
+      <dl className="ls-model-family-glance">
+        <div><dt>Est. memory · {modelPerformanceTierLabel(tier)}</dt><dd>{values.memory === null ? "Profile unavailable" : formatAcceleratorBytes(values.memory)}</dd></div>
+        <div><dt>Download · {modelPerformanceTierLabel(tier)}</dt><dd>{values.download === null ? "Profile unavailable" : formatStorageBytes(values.download)}</dd></div>
+        <div><dt>Reference WER · LS clean</dt><dd>{values.wer === null ? "Not reported" : `${values.wer.toFixed(2)}%`}</dd></div>
+        <div><dt>Reference speed · server</dt><dd>{values.speed === null ? "Not reported" : `${values.speed.toFixed(1)}× real time`}</dd></div>
+      </dl>
+      <div className="ls-model-source-list">
+        <p>{REFERENCE_BENCHMARK_CONTEXT} {evidence.reference ? `Reference checkpoint: ${evidence.reference.modelId}.` : "This exact family is absent from that snapshot; no substitute score is used."} Reviewed {MODEL_EVIDENCE_REVIEWED}.</p>
+        <p>{evidence.publisherDescription} Downloads use the pinned publisher revisions below, require an explicit download action, and are SHA-256 verified before installation. The original model page is provenance, not an alternate download used by the app.</p>
+        <ul>{sources.map((url) => <li key={url}><code>{url}</code></li>)}</ul>
+        <button type="button" className="ls-small-button" onClick={() => void copySources()}>Copy source URLs</button>
+        <span role="status">{copyStatus}</span>
+      </div>
+    </details>
   );
 }
 
@@ -1113,17 +1194,13 @@ function ModelTierRow({
         <span className="ls-model-tier-label">{tierLabel}</span>
         <span className={`ls-model-state is-${status.tone}`}>{status.label}</span>
       </div>
-      <div className="ls-model-tier-title">
-        <strong>{tier.displayName}</strong>
-        {selected && <span>Selected</span>}
-      </div>
       <dl className="ls-model-tier-facts">
         <div><dt>Precision</dt><dd>{tier.precision}</dd></div>
         <div><dt>Artifact</dt><dd>{formatModelBytes(tier.downloadBytes)}</dd></div>
         <div><dt>Memory</dt><dd>{formatMemoryRange(tier.acceleratorMemory)}</dd></div>
       </dl>
       <div className="ls-model-tier-footer">
-        <p>{tier.qualityNote}{runEligibilityUnknown && activeFamily ? " Run eligibility is unknown until accelerator memory can be read." : ""}</p>
+        <span className="ls-model-profile-selection">{selected ? "Selected profile" : ""}</span>
         {!familyInLibrary ? (
           <span className="ls-model-shared-label">
             Add to library to manage
@@ -1143,6 +1220,7 @@ function ModelTierRow({
       </div>
       <details className="ls-model-tier-details">
         <summary>Technical details</summary>
+        <p>{tier.displayName}. {tier.qualityNote}{runEligibilityUnknown && activeFamily ? " Run eligibility is unknown until accelerator memory can be read." : ""}</p>
         <dl>
           <div><dt>Runtime</dt><dd>{tier.backend}</dd></div>
           <div><dt>License</dt><dd>{tier.license}</dd></div>
@@ -1191,15 +1269,12 @@ function ModelArtifactControl({
   // diagnostics or catalog refresh updates the disk status first.
   if (activeAction?.action === "installing") return <>
     {operationButton("install", "Download")}
-    <ModelOperationProgress action={activeAction} expectedBytes={tier.downloadBytes} />
   </>;
   if (activeAction?.action === "repairing") return <>
     {operationButton("repair", "Repair", "ls-model-repair-button")}
-    <ModelOperationProgress action={activeAction} expectedBytes={tier.downloadBytes} />
   </>;
   if (activeAction?.action === "removing") return <>
     {operationButton("remove", "Remove", "ls-model-remove-button")}
-    <ModelOperationProgress action={activeAction} expectedBytes={tier.downloadBytes} />
   </>;
   if (tier.verificationStatus === "verified") return operationButton("remove", "Remove", "ls-model-remove-button");
   if (tier.verificationStatus === "invalid") return operationButton("repair", "Repair", "ls-model-repair-button");

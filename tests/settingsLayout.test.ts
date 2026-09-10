@@ -29,7 +29,9 @@ describe("settings modal layout", () => {
     const scroll = declarations(".ls-settings-scroll");
     expect(scroll).toMatch(/min-height:\s*0\s*;/);
     expect(scroll).toMatch(/overflow-y:\s*auto\s*;/);
-    expect(scroll).toMatch(/padding:\s*22px\s+24px\s+68px\s*;/);
+    expect(scroll).toMatch(/--ls-settings-gutter:\s*24px\s*;/);
+    expect(scroll).toMatch(/padding:\s*22px\s+var\(--ls-settings-gutter\)\s+68px\s*;/);
+    expect(declarations(".ls-settings-scroll:has(.ls-model-performance)")).toMatch(/padding-top:\s*0\s*;/);
   });
 
   it("keeps the sidebar chrome fixed while allowing its category list to scroll at short window heights", () => {

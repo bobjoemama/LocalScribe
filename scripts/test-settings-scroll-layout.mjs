@@ -85,6 +85,16 @@ async function inspectTab(window, label, targetText) {
       .filter((candidate) => candidate.textContent?.trim() === \${JSON.stringify(targetText)})
       .at(-1);
     if (!(target instanceof HTMLElement)) throw new Error("Missing \${label} target: \${targetText}");
+    // Expand disclosure ancestors as a user would before testing reachability.
+    const reveal = async (control) => {
+      const ancestors = [];
+      for (let parent = control.parentElement; parent && parent !== scroll; parent = parent.parentElement) {
+        if (parent instanceof HTMLDetailsElement && !parent.open) ancestors.unshift(parent);
+      }
+      for (const detail of ancestors) detail.querySelector(":scope > summary").click();
+      await waitForPaint();
+    };
+    await reveal(target);
 
     scroll.scrollTop = 0;
     await waitForPaint();
@@ -174,20 +184,21 @@ async function inspectTab(window, label, targetText) {
         modelControls.modes.push({
           value: input.value,
           checked: input.checked,
-          visible: bounds.top >= controlViewport.top - 1 && bounds.bottom <= controlViewport.bottom + 1,
+          visible: bounds.height > 0 && bounds.top >= document.querySelector(".ls-model-apply-card").getBoundingClientRect().bottom - 1 && bounds.bottom <= controlViewport.bottom + 1,
         });
       }
       const actionButtons = [...scroll.querySelectorAll(
         "button[aria-label^='Download'], button[aria-label^='Repair'], button[aria-label^='Remove']",
       )];
       for (const control of actionButtons) {
+        await reveal(control);
         control.scrollIntoView({ block: "nearest" });
         await waitForPaint();
         const bounds = control.getBoundingClientRect();
         const controlViewport = scroll.getBoundingClientRect();
         modelControls.actions.push({
           label: control.getAttribute("aria-label"),
-          visible: bounds.top >= controlViewport.top - 1 && bounds.bottom <= controlViewport.bottom + 1,
+          visible: bounds.height > 0 && bounds.top >= document.querySelector(".ls-model-apply-card").getBoundingClientRect().bottom - 1 && bounds.bottom <= controlViewport.bottom + 1,
         });
       }
       modelControls.copy = scroll.textContent ?? "";
@@ -523,6 +534,111 @@ async function exerciseModelSelection(window, expectedResult) {
   })()\`);
 }
 
+async function exerciseModelOrdering(window) {
+  return window.webContents.executeJavaScript(\`(async () => {
+    const paint = () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    [...document.querySelectorAll(".ls-settings-sidebar nav button")]
+      .find((button) => button.textContent.trim() === "Model & Performance").click();
+    await paint();
+    const controls = [...document.querySelectorAll(".ls-model-sort-toolbar select")];
+    if (controls.length !== 2) throw new Error("Missing model ordering controls");
+    const [sort, profile] = controls;
+    const scrollRegion = document.querySelector(".ls-settings-scroll");
+    const sticky = document.querySelector(".ls-model-apply-card");
+    if (document.querySelector(".ls-model-performance").firstElementChild !== sticky) throw new Error("Apply status is not first");
+    if (document.querySelector(".ls-model-hardware-details").open
+      || [...document.querySelectorAll(".ls-model-evidence")].some((detail) => detail.open)
+      || document.querySelectorAll(".ls-model-profiles[open]").length > 1) {
+      throw new Error("Secondary model details must start collapsed");
+    }
+    const stickyPositions = [];
+    for (const offset of [0, 120, scrollRegion.scrollHeight / 2, scrollRegion.scrollHeight]) {
+      scrollRegion.scrollTop = offset;
+      await paint();
+      const bounds = sticky.getBoundingClientRect();
+      const viewport = scrollRegion.getBoundingClientRect();
+      const headerBottom = document.querySelector(".ls-settings-header").getBoundingClientRect().bottom;
+      const applyBounds = sticky.querySelector(".ls-model-apply-button").getBoundingClientRect();
+      if (Math.abs(bounds.top - viewport.top) > 1 || Math.abs(bounds.top - headerBottom) > 1) {
+        throw new Error("Gap above sticky status: " + JSON.stringify({ offset, top: bounds.top, viewportTop: viewport.top, headerBottom }));
+      }
+      if (bounds.height > viewport.height * 0.55 || applyBounds.bottom > bounds.bottom || applyBounds.right > viewport.right) {
+        throw new Error("Sticky status is oversized or Apply is clipped");
+      }
+      const covering = document.elementFromPoint(viewport.left + 4, viewport.top + 5);
+      if (!sticky.contains(covering)) throw new Error("Scrolled content paints through the sticky header gutter");
+      stickyPositions.push({ scrollTop: scrollRegion.scrollTop, top: bounds.top, height: bounds.height });
+    }
+    const selectionDetails = sticky.querySelector("details");
+    selectionDetails.open = true;
+    await paint();
+    if (parseFloat(getComputedStyle(scrollRegion).scrollPaddingTop) < sticky.getBoundingClientRect().height) {
+      throw new Error("Keyboard scroll clearance did not update with the status height");
+    }
+    selectionDetails.open = false;
+    const profileSummary = document.querySelector(".ls-model-profiles > summary");
+    profileSummary.focus();
+    profileSummary.scrollIntoView({ block: "start" });
+    await paint();
+    if (profileSummary.getBoundingClientRect().top < sticky.getBoundingClientRect().bottom) throw new Error("Focused profile control is hidden beneath sticky status");
+    const changeQuality = [...document.querySelectorAll(".ls-model-family-card button")]
+      .find((button) => button.textContent.trim() === "Change quality");
+    if (changeQuality) {
+      changeQuality.click();
+      await paint();
+      const checked = document.querySelector("#model-quality-picker input:checked");
+      if (document.activeElement !== checked || checked.getBoundingClientRect().top < sticky.getBoundingClientRect().bottom) {
+        throw new Error("Change quality did not reveal and focus the selected profile");
+      }
+    }
+    scrollRegion.scrollTop = 0;
+    await paint();
+    const names = () => [...document.querySelectorAll(".ls-model-family-card h3")].map((node) => node.textContent.trim());
+    const change = async (select, value) => {
+      Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value").set.call(select, value);
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+      await paint();
+    };
+    const original = names();
+    const summary = document.querySelector(".ls-model-apply-card").textContent;
+    const calls = JSON.stringify([window.__localScribeSettingsHarness.applyCalls, window.__localScribeSettingsHarness.patchCalls]);
+    const orders = {};
+    for (const option of [...sort.options]) {
+      await change(sort, option.value);
+      orders[option.value] = names();
+      if (names().length !== original.length) throw new Error("Sorting lost model cards");
+      if (document.querySelector(".ls-model-apply-card").textContent !== summary) throw new Error("Sorting changed the pending model");
+    }
+    if (orders["wer-asc"][0] !== "Qwen3-ASR 1.7B" || orders["wer-desc"][0] !== "Qwen3-ASR 0.6B"
+      || orders["speed-desc"][0] !== "Qwen3-ASR 0.6B" || orders["speed-asc"][0] !== "Whisper large-v3"
+      || orders["memory-asc"][0] !== "Parakeet Unified EN 0.6B" || orders["memory-desc"][0] !== "Qwen3-ASR 1.7B") {
+      throw new Error("Model ordering does not match fixture metrics: " + JSON.stringify(orders));
+    }
+    await change(profile, "low");
+    await change(sort, "memory-desc");
+    if (names().at(-1) !== "Parakeet Unified EN 0.6B") throw new Error("Unavailable Low profile did not sort last");
+    const detail = document.querySelector(".ls-model-evidence");
+    detail.open = true;
+    await paint();
+    const scroll = document.querySelector(".ls-settings-scroll");
+    if (scroll.scrollWidth > scroll.clientWidth + 1) throw new Error("Model sources overflow the Settings width");
+    for (const select of controls) {
+      const bounds = select.getBoundingClientRect();
+      const outer = scroll.getBoundingClientRect();
+      if (bounds.left < outer.left - 1 || bounds.right > outer.right + 1) throw new Error("Sort control overflows Settings");
+    }
+    detail.open = false;
+    await change(profile, "high");
+    await change(sort, "recommended");
+    if (JSON.stringify(names()) !== JSON.stringify(original)) throw new Error("Recommended order was not restored");
+    if (document.querySelector(".ls-model-apply-card").textContent !== summary
+      || JSON.stringify([window.__localScribeSettingsHarness.applyCalls, window.__localScribeSettingsHarness.patchCalls]) !== calls) {
+      throw new Error("Comparison controls mutated model selection or invoked settings IPC");
+    }
+    return { orders, unchangedSelection: true, sourceDetailsFit: true, stickyPositions, keyboardClearance: true };
+  })()\`);
+}
+
 async function inspectSize(width, height, platform, verification, settingsPreset = "default", applyResult = null, saveResult = null) {
   const window = new BrowserWindow({
     width,
@@ -588,6 +704,7 @@ async function inspectSize(width, height, platform, verification, settingsPreset
       await inspectTab(window, "Data & Privacy", "Automatic paste reads the active app identity and hashes limited focused-window metadata to confirm the dictation target. LocalScribe does not read field or document contents from other applications."),
     ];
     const sidebar = await inspectSidebarReach(window);
+    const modelOrdering = await exerciseModelOrdering(window);
     const saveReload = settingsPreset === "custom"
       ? await exerciseChangedSettings(window)
       : null;
@@ -604,6 +721,7 @@ async function inspectSize(width, height, platform, verification, settingsPreset
       contentSize,
       tabs,
       sidebar,
+      modelOrdering,
       saveReload,
       modelSelection,
       longFooterStatus,

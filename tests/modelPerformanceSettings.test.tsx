@@ -222,6 +222,43 @@ function storageButtonTags(html: string): string[] {
 }
 
 describe("ModelPerformanceSettings", () => {
+  it("puts status first and collapses secondary details without hiding the selected profiles", () => {
+    const html = renderModelSettings();
+    expect(html).toMatch(/^<div class="ls-model-performance"><section class="ls-model-apply-card"/);
+    expect(html).toContain('<details class="ls-model-selection-details">');
+    expect(html).toContain('<details class="ls-model-hardware-details">');
+    expect(html.match(/<details class="ls-model-profiles" open=""/g)).toHaveLength(1);
+    expect(html).toContain('<details class="ls-model-profiles">');
+    expect(html).toContain('<details class="ls-model-comparison ls-model-evidence">');
+    expect(html).toContain("Change quality");
+    expect(html).not.toContain('class="ls-model-auto-card"');
+  });
+
+  it("keeps an active download visible outside its collapsible profiles", () => {
+    const html = renderModelSettings({ action: {
+      action: "installing", familyId: "whisper-large-v3", tier: "high",
+      progress: { phase: "downloading", completedBytes: 10, totalBytes: 100 },
+    } });
+    expect(html.indexOf('class="ls-model-operation-progress"')).toBeLessThan(html.indexOf('class="ls-model-profiles"'));
+    expect(html.match(/role="progressbar"/g)).toHaveLength(1);
+    expect(html).toContain('class="ls-model-profiles" open=""');
+  });
+
+  it("labels comparison controls, benchmark limits, and conversion provenance", () => {
+    const html = renderModelSettings();
+    expect(html).toContain("Sort models");
+    expect(html).toContain("Memory / download profile");
+    expect(html).toContain("Estimated memory: high → low");
+    expect(html).toContain("Reference WER: low → high");
+    expect(html).toContain("Reference speed: fast → slow");
+    expect(html).toContain("not Mac speed or quantized accuracy predictions");
+    expect(html).toContain("Copy source URLs");
+    expect(html).toContain("MLX Community conversion");
+    expect(html).toContain("NVIDIA H200");
+    expect(html).toContain("Not reported");
+    expect(html).not.toContain('href="https://');
+  });
+
   it("derives model experience from catalog capabilities rather than family-name guesses", () => {
     const base = catalog().families[0]!;
     const parakeet = {
@@ -272,12 +309,12 @@ describe("ModelPerformanceSettings", () => {
   it("uses a mode-first picker and keeps unavailable live recognition visibly unavailable", () => {
     const html = renderModelSettings();
 
-    expect(html).toContain("Choose when LocalScribe recognizes your speech");
+    expect(html).toContain("When should text appear?");
     expect(html).toContain('<strong>After I stop</strong>');
     expect(html).toContain('<strong>Live</strong>');
     expect(html).toContain("No streaming model in this catalog");
     expect(html).toContain("will not silently substitute another model");
-    expect(html).toContain("Live recognition streams while you speak");
+    expect(html).toContain("Both run locally and insert the finished text after you stop.");
     expect(html).not.toContain("may show a private preview");
     expect(html).toContain("Model library and technical details");
     expect(html).toContain("Technical details");
@@ -555,7 +592,7 @@ describe("ModelPerformanceSettings", () => {
     expect(html).toContain('value="high"');
     expect(html).toContain('value="medium"');
     expect(html).toContain('value="low"');
-    expect(html).toContain("Changing these controls only stages a choice");
+    expect(html).toContain("Changes wait for Apply model.");
     expect(html).toContain("Saved selection");
     expect(html).toContain("Resident runtime");
     expect(html).toContain("Apply model");
@@ -777,9 +814,9 @@ describe("ModelPerformanceSettings", () => {
   it("shows an added v2 family as selectable and keeps artifact management separate", () => {
     const html = renderModelSettings({ catalog: catalog({ v2InLibrary: true }) });
 
-    expect(html).toContain("Added to library");
+    expect(html).toContain("In your library");
     expect(html).toContain("Select");
-    expect(html).toContain("Added locally. Select it");
+    expect(html).toContain("Profiles &amp; downloads");
     expect(html).toContain("Undeclared — review required");
     expect(html).toContain("Check / download");
   });

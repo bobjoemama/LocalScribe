@@ -275,7 +275,8 @@
  * final target 1.5px behind the footer at maximum scroll, so retain a small
  * rounding reserve as part of the layout contract.
  */
-.ls-settings-scroll { min-width: 0; min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; padding: 22px 24px 68px; }
+.ls-settings-scroll { --ls-settings-gutter: 24px; min-width: 0; min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; padding: 22px var(--ls-settings-gutter) 68px; }
+.ls-settings-scroll:has(.ls-model-performance) { padding-top: 0; scroll-padding-top: var(--ls-model-sticky-height, 0px); }
 .ls-settings-group + .ls-settings-group { margin-top: 24px; }
 .ls-settings-group > h2 { margin: 0 0 8px 2px; color: #7d7770; font-size: 10px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
 .ls-settings-group > div { overflow: hidden; border: 1px solid #e6e2dc; border-radius: 11px; background: #fff; }
@@ -312,7 +313,7 @@
 .ls-permission-state.is-ready i { background: #3b9c86; }
 .ls-small-button { border-radius: 7px; background: #f1efeb; padding: 6px 8px; color: #55514c !important; font-size: 10px; }
 .ls-small-button:hover { background: #e4e0da; }
-.ls-model-performance { display: grid; gap: 20px; }
+.ls-model-performance { display: grid; gap: 18px; }
 /*
  * Settings is deliberately calm: controls use the normal arrow cursor rather
  * than switching between a hand and arrow as panels reflow under the pointer.
@@ -330,32 +331,37 @@
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 18px;
-  border: 1px solid #9bbdb5;
-  border-radius: 13px;
+  gap: 14px;
+  margin-inline: calc(-1 * var(--ls-settings-gutter, 24px));
+  border: 0;
+  border-bottom: 1px solid #d9e3de;
+  border-radius: 0;
   background: #f5faf8;
-  padding: 16px;
-  box-shadow: inset 0 0 0 1px #dcebe7;
+  padding: 12px var(--ls-settings-gutter, 24px);
 }
 .ls-model-apply-card > div:first-child { min-width: 0; }
 .ls-model-apply-state { display: inline-flex; align-items: center; border-radius: 999px; background: #e4f1ed; padding: 4px 7px; color: #286f63; font-size: 10px; font-weight: 750; letter-spacing: .07em; text-transform: uppercase; }
 .ls-model-apply-state.is-busy { background: #e8edf8; color: #48547b; }
-.ls-model-apply-card h2 { margin: 5px 0 10px; color: #214d45; font-size: 17px; letter-spacing: -.02em; }
+.ls-model-apply-card h2 { margin: 5px 0; overflow-wrap: anywhere; color: #214d45; font-size: 15px; letter-spacing: -.02em; }
 .ls-model-apply-card p { margin: 9px 0 0; color: #607a72; font-size: 11px; line-height: 1.45; }
 .ls-model-selection-summary { display: grid; gap: 5px; margin: 0; }
 .ls-model-selection-summary > div { display: grid; grid-template-columns: 90px minmax(0, 1fr); gap: 8px; }
 .ls-model-selection-summary dt { color: #7f918b; font-size: 10px; font-weight: 700; }
 .ls-model-selection-summary dd { margin: 0; overflow-wrap: anywhere; color: #384d47; font-size: 11px; font-weight: 650; }
 .ls-model-apply-actions { display: grid; flex: 0 0 auto; gap: 7px; }
+.ls-model-selection-details { color: #607a72; font-size: 11px; }
+.ls-model-selection-details[open] { max-height: 150px; overflow-y: auto; }
+.ls-model-selection-details summary { padding: 4px 0; }
+.ls-model-selection-details .ls-model-selection-summary { margin-top: 6px; }
+.ls-model-hardware-details { min-width: 0; border-block: 1px solid #eeeae5; padding: 11px 0; color: #68625b; font-size: 11px; line-height: 1.5; }
+.ls-model-hardware-details > summary { font-weight: 600; }
+.ls-model-hardware-details .ls-model-hardware { margin-top: 12px; }
+.ls-model-quality-summary { margin: 8px 0 0 !important; }
 .ls-model-apply-button { min-width: 112px; }
 .ls-model-apply-button:disabled { cursor: not-allowed; opacity: .5; }
 .ls-model-experience-picker {
   display: grid;
-  gap: 12px;
-  border: 1px solid #ded9d2;
-  border-radius: 13px;
-  background: #fbfaf8;
-  padding: 15px 16px;
+  gap: 10px;
 }
 .ls-model-experience-picker > div:first-child > span {
   color: #6d6861;
@@ -383,31 +389,7 @@
 .ls-model-experience-options button:disabled { opacity: .58; }
 .ls-model-experience-options strong { font-size: 12px; }
 .ls-model-experience-options span { font-size: 10px; line-height: 1.35; }
-.ls-model-experience-recommendation { border-left: 2px solid #3d8174; padding-left: 9px; color: #52736b !important; }
-.ls-model-experience-recommendation strong { color: #286f63; }
 .ls-model-experience-unavailable { border-left: 2px solid #d8d2ca; padding-left: 9px; }
-.ls-model-auto-card {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 18px;
-  border: 1px solid #d7e8e2;
-  border-radius: 12px;
-  background: linear-gradient(135deg, #eaf5f1, #f7f4ed);
-  padding: 15px 16px;
-}
-.ls-model-auto-card > div { min-width: 0; }
-.ls-model-auto-card > div > span {
-  color: #367568;
-  font-size: 10px;
-  font-weight: 750;
-  letter-spacing: .09em;
-  text-transform: uppercase;
-}
-.ls-model-auto-card h2 { margin: 4px 0 5px; color: #214d45; font-size: 16px; letter-spacing: -.02em; }
-.ls-model-auto-card h2 strong { font-weight: 780; }
-.ls-model-auto-card p { margin: 0; color: #607a72; font-size: 11px; line-height: 1.45; }
-.ls-model-auto-card .ls-secondary-button { flex: 0 0 auto; background: rgb(255 255 255 / 70%); }
 
 .ls-model-mode-picker { min-width: 0; margin: 0; border: 0; padding: 0; }
 .ls-model-mode-picker:disabled { opacity: .62; }
@@ -509,7 +491,38 @@
 .ls-model-memory-note strong { color: #3f3a35; }
 
 .ls-model-catalog { min-width: 0; }
+
+.ls-model-sort-toolbar { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 12px; }
+.ls-model-sort-toolbar label { display: grid; gap: 5px; min-width: 0; max-width: 100%; font-size: 11px; color: #68625b; }
+.ls-model-sort-toolbar select { max-width: 100%; min-width: 0; padding: 8px; border: 1px solid #e6e2dc; border-radius: 8px; color: #2e2b28; background: #fbfaf8; font: inherit; }
+.ls-model-sort-toolbar select:focus-visible, .ls-model-evidence summary:focus-visible { outline: 2px solid #2b796c; outline-offset: 2px; }
+.ls-model-comparison-basis, .ls-model-evidence { font-size: 11px; line-height: 1.55; color: #68625b; }
+.ls-model-comparison-basis { margin: 0 0 8px; }
+.ls-model-comparison { min-width: 0; margin-bottom: 14px; }
+.ls-model-comparison .ls-model-family-glance { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.ls-model-comparison .ls-model-family-glance > div { padding: 8px; border-right: 0; }
+.ls-model-comparison .ls-model-family-glance dd { white-space: normal; overflow-wrap: anywhere; }
+.ls-model-evidence summary { cursor: pointer; width: fit-content; }
+.ls-model-evidence ul { padding-left: 16px; }
+.ls-model-evidence code { user-select: text; overflow-wrap: anywhere; font-size: 10px; }
+.ls-model-evidence [role="status"] { margin-left: 8px; }
 .ls-model-catalog-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
+.ls-model-catalog-heading { flex-wrap: wrap; }
+.ls-model-catalog-heading .ls-model-sort-toolbar { margin-left: auto; }
+.ls-model-comparison-basis { margin-bottom: 12px; }
+.ls-model-family-meta { margin: 8px 0; color: #77716a; font-size: 11px; line-height: 1.5; }
+.ls-model-sort-value { margin: 8px 0; color: #286f63; font-size: 11px; font-weight: 600; }
+.ls-model-profiles { border-top: 1px solid #eeeae5; padding-top: 10px; }
+.ls-model-profiles > summary { color: #514d48; font-size: 11px; font-weight: 600; }
+.ls-model-profiles > summary > span { margin-left: 6px; color: #858079; font-weight: 400; }
+.ls-model-profiles .ls-model-tier-list { margin-top: 12px; }
+.ls-model-profiles .ls-model-tier-facts { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.ls-model-profiles .ls-model-tier-facts > div { border: 0; padding: 0 5px 0 0; }
+.ls-model-profiles .ls-model-tier-footer { display: flex; }
+.ls-model-profile-selection { color: #286f63; font-size: 10px; }
+.ls-model-family-card > .ls-model-comparison { margin: 12px 0 0; }
+.ls-model-family-card > .ls-model-operation-progress { width: 100%; margin: 10px 0; }
+.ls-model-performance summary:focus-visible { outline: 2px solid #2b796c; outline-offset: 3px; }
 .ls-model-catalog-heading h2 { margin: 0 0 4px; color: #2e2b28; font-size: 12px; }
 .ls-model-catalog-heading p { margin: 0; color: #858079; font-size: 11px; line-height: 1.4; }
 .ls-model-empty {
@@ -576,7 +589,6 @@
 }
 .ls-model-tier-row.is-selected { border-color: #9bbdb5; box-shadow: inset 0 0 0 1px #b9d4cd; }
 .ls-model-tier-heading,
-.ls-model-tier-title,
 .ls-model-tier-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .ls-model-tier-label {
   color: #77716a;
@@ -590,8 +602,6 @@
 .ls-model-state.is-missing { background: #efede9; color: #6f6a64; }
 .ls-model-state.is-repair { background: #f8e9e6; color: #a34439; }
 .ls-model-state.is-unknown { background: #f3f0e9; color: #74603a; }
-.ls-model-tier-title strong { min-width: 0; overflow: hidden; color: #2e2b28; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
-.ls-model-tier-title > span { flex: 0 0 auto; color: #2b7467; font-size: 10px; font-weight: 700; }
 .ls-model-tier-facts {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -702,16 +712,11 @@
   .ls-settings-local { display: none; }
   .ls-settings-sidebar nav button { justify-content: center; }
   .ls-settings-sidebar nav svg { width: 17px; }
-  .ls-settings-scroll { padding-inline: 16px; }
+  .ls-settings-scroll { --ls-settings-gutter: 16px; }
   .ls-settings-row { align-items: flex-start; flex-wrap: wrap; }
   .ls-shortcut-recorder__button { flex-basis: 100%; width: 100%; }
   .ls-readonly-value { max-width: 50%; }
   .ls-data-actions { grid-template-columns: 1fr; }
-  .ls-model-auto-card { align-items: flex-start; flex-direction: column; }
-  .ls-model-apply-card { flex-direction: column; }
-  .ls-model-apply-actions { grid-template-columns: 1fr 1fr; width: 100%; }
-  .ls-model-experience-options { grid-template-columns: 1fr; }
-  .ls-model-mode-picker > div { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .ls-model-hardware { grid-template-columns: 1fr; }
   .ls-model-hardware > span { border-right: 0; border-bottom: 1px solid #e9e5df; }
   .ls-model-hardware > span:last-child { border-bottom: 0; }

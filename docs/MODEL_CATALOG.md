@@ -10,6 +10,18 @@ curated after-stop alternatives. Qwen3-ASR 0.6B is a smaller candidate, not a
 claim of measured superiority. Comparative accuracy, latency, and memory
 remain real-device benchmark questions.
 
+The Settings model sorter exposes estimated unified memory, exact download
+sizes, and explicitly labeled published reference WER/speed. See
+[comparison evidence and source verification](MODEL_COMPARISON_EVIDENCE.md)
+for the pinned benchmark, coverage gaps, and Mac artifact provenance.
+
+The applied/pending status and Apply button stay flush beneath the Settings
+header while scrolling. Other families start compact: open **Profiles &
+downloads** to manage weights or **Metrics & download sources** to compare
+evidence. The selected family opens its profiles, and **Change quality** returns
+to its quality controls. Live download progress stays outside collapsed details.
+Hardware telemetry and extended selection information are available on demand.
+
 ## Installation and Apply contract
 
 Model weights are not bundled in the app. An explicit install action fetches

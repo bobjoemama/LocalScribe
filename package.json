@@ -1,7 +1,7 @@
 {
   "name": "localscribe",
   "productName": "LocalScribe",
-  "version": "0.1.0-dev.16",
+  "version": "0.1.0-dev.17",
   "description": "Local-first desktop dictation for Apple Silicon Macs.",
   "author": "Devesh",
   "license": "Apache-2.0",
@@ -51,6 +51,7 @@
     "test:watch": "vitest",
     "audit:production": "npm audit --omit=dev --audit-level=high",
     "audit:all": "node scripts/audit-npm-all.mjs",
+    "audit:model-sources": "node scripts/audit-model-sources.mts",
     "audit:python": "node scripts/audit-python-deps.mjs",
     "sbom:runtime:macos": "node scripts/generate-runtime-sbom.mjs --platform darwin --source-only",
     "sbom:runtime:macos:candidate": "node scripts/generate-runtime-sbom.mjs --platform darwin",
