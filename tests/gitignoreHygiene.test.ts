@@ -20,6 +20,8 @@ describe("repository ignore hygiene", () => {
       ".env",
       ".env.production",
       "developer.env",
+      "AuthKey_EXAMPLE123.p8",
+      "signing-identity.p12",
       ".direnv/cache",
       ".venv/bin/python",
       "out/LocalScribe.app/Contents/Info.plist",
