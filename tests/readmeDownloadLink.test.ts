@@ -21,6 +21,15 @@ describe("README download section", () => {
     expect(readme).toContain("shasum -a 256");
   });
 
+  it("separates ordinary installation from developer prerequisites", () => {
+    expect(readme).toContain("You do not need Docker, Python, Node.js, Homebrew, Xcode");
+    expect(readme).toContain("**Not included:** large speech-model weights");
+    expect(readme).toContain("**Microphone**");
+    expect(readme).toContain("**Accessibility**");
+    expect(readme).toContain("Press **Apply model**");
+    expect(readme).toContain("Check the release notes for its signing status");
+  });
+
   it("requires a new version and tag instead of overwriting a release", () => {
     expect(readme).toMatch(/every build must have a\s+new version and tag/iu);
     expect(readme).toMatch(/do\s+not replace or overwrite an existing release asset/iu);
