@@ -51,15 +51,13 @@ describe("dictionaryAsrContextForCapabilities", () => {
 });
 
 /*
- * mlx-whisper truncates `initial_prompt` from the front — it keeps only
- * `prompt_tokens[-(n_ctx // 2 - 1):]`, i.e. the last 223 tokens for large-v3,
- * where the protocol lets this builder emit 4,000 characters. Emitting
- * newest-first therefore fed Whisper a prompt whose surviving tail was the
- * *oldest* entries, silently inverting the priority the builder computes. These
- * tests pin the surviving tail, not just the selection.
+ * Context consumers may retain only the tail of a bounded prompt. Preserve
+ * the established lowest-priority-first ordering so the newest entries remain
+ * at the end. These tests pin the surviving tail, not just the selection, and
+ * do not assume a specific tokenizer or truncation policy for the current model.
  */
 describe("dictionary ASR context survives front truncation", () => {
-  /** What Whisper actually keeps: the tail. Character count stands in for tokens. */
+  /** Simulate a consumer retaining the tail, using characters as a token proxy. */
   function keepTail(context: string, chars: number): string {
     return context.slice(-chars);
   }
@@ -97,10 +95,10 @@ describe("dictionary ASR context survives front truncation", () => {
     expect(context.endsWith("phrase-39=Replacement39")).toBe(true);
   });
 
-  it("documents the Whisper truncation that makes the ordering load-bearing", () => {
+  it("preserves the documented priority ordering for bounded recognition context", () => {
     const source = readFileSync("src/shared/dictionaryContext.ts", "utf8");
 
-    expect(source).toContain("prompt_tokens[-(n_ctx // 2 - 1):]");
+    expect(source).toContain("highest-priority");
     expect(source).toContain("selected.reverse()");
   });
 });

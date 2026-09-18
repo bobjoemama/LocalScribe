@@ -32,10 +32,14 @@ Major runtime components include:
   FluidAudio's exact upstream attribution and license text from
   `ThirdPartyLicenses/vbx-LICENSE.md` is distributed as
   `resources/licenses/FluidAudio-0.15.5-vbx-LICENSE.md`.
-- MLX, MLX Whisper, and the Python inference stack (their packaged
+- MLX, MLX Audio, and the Python inference stack (their packaged
   upstream licenses)
-- OpenAI Whisper model artifacts (the license declared in each immutable
-  packaged model manifest)
+
+The pinned MLX Audio 0.4.6 package is modified during the build to remove its
+unused Whisper backend and that backend's eager import. The exact source hash,
+patch, and verification are in `scripts/prune-mlx-audio-whisper.py`; packaged
+metadata and the Python SBOM record the change. Upstream licenses remain intact.
+Qwen's shared Transformers audio feature extractor is retained.
 
 This summary is not an exhaustive dependency list. Every release candidate
 must include:

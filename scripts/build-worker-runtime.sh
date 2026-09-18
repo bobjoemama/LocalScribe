@@ -95,6 +95,12 @@ UV_PROJECT_ENVIRONMENT="$venv_root" "$uv_bin" sync \
   --link-mode copy \
   --python "$python_path"
 
+# mlx-audio also ships an unused Whisper backend. Remove only that backend
+# from this generated runtime; Qwen uses the separate Transformers feature
+# extractor, which must remain available. Keep package metadata and notices.
+"$venv_root/bin/python3" -B "$project_root/scripts/prune-mlx-audio-whisper.py" \
+  "$venv_root/lib/python3.12/site-packages"
+
 # Python distributions and wheels frequently include their own tests, bytecode,
 # activation scripts, and developer CLIs. None are required by LocalScribe's
 # import-only worker and none belong in a public desktop artifact.
@@ -151,7 +157,7 @@ chmod 755 "$helper_temp"
 mv -f "$helper_temp" "$fluid_audio_helper_output"
 
 "$venv_root/bin/python3" -B -c \
-  'import mlx, mlx_whisper, localscribe_worker; print("Bundled macOS worker runtime is ready")'
+  'import mlx; from mlx_audio.stt.models.qwen3_asr import Model; from transformers import AutoTokenizer, WhisperFeatureExtractor; from localscribe_worker.worker import FluidAudioParakeetRuntime, MLXAudioRuntime; print("Bundled macOS worker runtime is ready")'
 
 resolved_python="$(cd "$(dirname "$venv_root/bin/python3")" && realpath "$venv_root/bin/python3")"
 case "$resolved_python" in

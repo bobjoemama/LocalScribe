@@ -18,6 +18,6 @@ describe("worker language resolution", () => {
   it("preserves Auto for a model that actually supports language detection", () => {
     expect(workerLanguageForModel("auto", {
       supportedLanguages: ["auto", "en", "es"],
-    }, "Whisper")).toBe("auto");
+    }, "Qwen")).toBe("auto");
   });
 });

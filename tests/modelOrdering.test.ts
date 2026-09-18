@@ -4,7 +4,7 @@ import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { loadRuntimePlatformModelCatalog } from "../src/main/modelSpec";
 import { buildModelCatalogSnapshot } from "../src/main/modelCatalogSnapshot";
-import { MODEL_FAMILY_IDS, type ModelCatalog } from "../src/shared/contracts";
+import { AVAILABLE_MODEL_FAMILY_IDS, type ModelCatalog } from "../src/shared/contracts";
 import { MODEL_EVIDENCE, modelArtifactSourceUrl } from "../src/shared/modelEvidence";
 import { MODEL_SORT_OPTIONS, isModelSortOrder, modelComparisonValues, orderModelFamilies } from "../src/renderer/settings/screens/modelOrdering";
 import { validateBenchmarkSnapshot, validateRemoteFile, validateSourceIdentity } from "../scripts/audit-model-sources.mts";
@@ -54,7 +54,7 @@ describe("model ordering", () => {
 
   it("preserves ties and unknown order, and restores curated order", () => {
     expect(orderModelFamilies(families, "recommended", "low", "after-stop")).toEqual(families);
-    const unknown = families.filter((family) => MODEL_EVIDENCE[family.familyId].reference === null);
+    const unknown = families.filter((family) => MODEL_EVIDENCE[family.familyId]?.reference === null);
     expect(orderModelFamilies(unknown, "wer-desc", "high", "after-stop")).toEqual(unknown);
     const tied = families.map((family) => ({ ...family, profiles: family.profiles.map((profile) => ({ ...profile, expectedMemoryMaxBytes: 123 })) }));
     expect(orderModelFamilies(tied, "memory-asc", "high", "after-stop")).toEqual(tied);
@@ -66,9 +66,9 @@ describe("model ordering", () => {
 
 describe("model evidence and download source audit", () => {
   it("covers every real artifact with an immutable canonical Hub source and disclosed publisher", () => {
-    expect(Object.keys(MODEL_EVIDENCE).sort()).toEqual([...MODEL_FAMILY_IDS].sort());
+    expect(Object.keys(MODEL_EVIDENCE).sort()).toEqual([...AVAILABLE_MODEL_FAMILY_IDS].sort());
     for (const family of families) for (const artifact of family.artifacts) {
-      expect(artifact.modelId.split("/")[0]).toBe(MODEL_EVIDENCE[family.familyId].artifactPublisher);
+      expect(artifact.modelId.split("/")[0]).toBe(MODEL_EVIDENCE[family.familyId]?.artifactPublisher);
       expect(modelArtifactSourceUrl(artifact.modelId, artifact.revision)).toBe(`https://huggingface.co/${artifact.modelId}/tree/${artifact.revision}`);
     }
   });
@@ -79,7 +79,7 @@ describe("model evidence and download source audit", () => {
 
   it("rejects mutable revisions, mismatched identities and unverified digests", () => {
     expect(modelArtifactSourceUrl("mlx-community/model", "main")).toBeNull();
-    const manifest = { familyId: "whisper-large-v3" as const, modelId: "mlx-community/model", revision: "a".repeat(40), files: {} };
+    const manifest = { familyId: "qwen3-asr-0-6b" as const, modelId: "mlx-community/model", revision: "a".repeat(40), files: {} };
     const metadata = { id: manifest.modelId, sha: manifest.revision, siblings: [] };
     expect(() => validateSourceIdentity(manifest, metadata)).not.toThrow();
     expect(() => validateSourceIdentity(manifest, { ...metadata, sha: "b".repeat(40) })).toThrow();
@@ -98,7 +98,7 @@ describe("model evidence and download source audit", () => {
     const csv = ["model,avg,LS Clean WER,LS Clean RTFx", ...rows].join("\n");
     expect(() => validateBenchmarkSnapshot(csv)).not.toThrow();
     expect(() => validateBenchmarkSnapshot(csv.replace("LS Clean WER", "LS Other WER"))).toThrow();
-    expect(() => validateBenchmarkSnapshot(csv.replace("1.56", "9.99"))).toThrow();
+    expect(() => validateBenchmarkSnapshot(csv.replace("1.7,", "9.99,"))).toThrow();
     expect(() => validateBenchmarkSnapshot(csv.replace("-0.6B-hf", "-0.6B"))).toThrow();
     expect(() => validateBenchmarkSnapshot(`${csv}\n${rows[0]}`)).toThrow();
   });

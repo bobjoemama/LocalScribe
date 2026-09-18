@@ -11,7 +11,7 @@ Implemented:
 - Parakeet Unified EN 0.6B as the fresh-install recommendation;
 - pinned FluidAudio/Core ML/ANE runtime for English after-stop and Live modes;
 - Parakeet High FP16 and Medium INT8 profiles, with no Low/Q4 profile;
-- curated MLX Whisper and Qwen alternatives;
+- curated Qwen3-ASR through MLX Audio and Canary-Qwen through Metal alternatives;
 - Auto, High, Medium, and Low choices, limited to profiles available for the
   selected family;
 - revision-, size-, and SHA-256-pinned model installation;

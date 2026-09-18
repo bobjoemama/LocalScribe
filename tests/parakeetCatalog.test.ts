@@ -24,14 +24,14 @@ function digest(value: string): string {
 }
 
 describe("curated Parakeet Unified catalog", () => {
-  it("reports the actual multilingual Whisper language and prompt capabilities", () => {
+  it("reports the actual multilingual Qwen language and prompt capabilities", () => {
     const catalog = loadRuntimePlatformModelCatalog(
       path.resolve("resources/model-manifest"),
       "darwin",
       "arm64",
     );
-    const whisper = catalog.families["whisper-large-v3"];
-    expect(whisper?.capabilities).toMatchObject({
+    const qwen = catalog.families["qwen3-asr-0-6b"];
+    expect(qwen?.capabilities).toMatchObject({
       modes: ["after-stop"],
       languageDetection: true,
       promptContext: true,
@@ -94,7 +94,7 @@ describe("curated Parakeet Unified catalog", () => {
     const invalid = {
       platform: "darwin-arm64",
       activeModelFamilyId: "parakeet-unified-en-0-6b",
-      modelLibraryFamilyIds: ["parakeet-unified-en-0-6b", "whisper-large-v3"],
+      modelLibraryFamilyIds: ["parakeet-unified-en-0-6b", "qwen3-asr-0-6b"],
       recommendedDefaultFamilyId: "parakeet-unified-en-0-6b",
       families: [{
         familyId: "parakeet-unified-en-0-6b",

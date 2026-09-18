@@ -194,15 +194,19 @@ export function historyRetentionLabel(days: HistoryRetentionDays): string {
   return days === 0 ? "Forever" : `${days} days`;
 }
 
-/** Persisted family IDs, including retired families so upgrades preserve settings. */
-export const MODEL_FAMILY_IDS = [
+/** Families shipped in the current application, not legacy saved selections. */
+export const AVAILABLE_MODEL_FAMILY_IDS = [
   "parakeet-unified-en-0-6b",
-  "whisper-large-v3",
   "qwen3-asr-0-6b",
   "qwen3-asr-1-7b",
   "canary-qwen-2-5b",
-  "whisper-large-v2",
- ] as const;
+] as const;
+/** Retired IDs remain readable so upgrades never silently replace a saved model. */
+export const RETIRED_MODEL_FAMILY_IDS = ["whisper-large-v3", "whisper-large-v2"] as const;
+export const MODEL_FAMILY_IDS = [
+  ...AVAILABLE_MODEL_FAMILY_IDS,
+  ...RETIRED_MODEL_FAMILY_IDS,
+] as const;
 /** Fresh macOS installs default to the Apple-native Parakeet runtime. */
 export const DEFAULT_MODEL_FAMILY_ID = "parakeet-unified-en-0-6b" as const;
 export const modelFamilyIdSchema = z.enum(MODEL_FAMILY_IDS);
@@ -468,7 +472,7 @@ const modelCatalogProfileSchema = z.object({
   profileId: z.string().regex(/^[a-z0-9][a-z0-9-]*$/),
   tier: modelPerformanceTierSchema,
   artifactId: z.string().regex(/^[a-z0-9][a-z0-9-]*$/),
-  engine: z.enum(["mlx-whisper", "mlx-audio", "fluid-audio", "transcribe-cpp"]),
+  engine: z.enum(["mlx-audio", "fluid-audio", "transcribe-cpp"]),
   precision: z.string().min(1).max(40),
   expectedMemoryMinBytes: z.number().int().positive(),
   expectedMemoryMaxBytes: z.number().int().positive(),
@@ -558,9 +562,13 @@ export const modelCatalogSchema = z.object({
     });
   }
   const seenFamilies = new Set<string>();
+  const retiredFamilies = new Set<string>(RETIRED_MODEL_FAMILY_IDS);
   let recommendedDefaultCount = 0;
   const expectedArtifacts = new Map<string, number>();
   for (const [index, family] of catalog.families.entries()) {
+    if (retiredFamilies.has(family.familyId)) {
+      context.addIssue({ code: "custom", path: ["families", index, "familyId"], message: "Retired families cannot expose runnable profiles." });
+    }
     if (seenFamilies.has(family.familyId)) {
       context.addIssue({ code: "custom", path: ["families", index, "familyId"], message: "Duplicate family." });
     }
@@ -622,7 +630,10 @@ export const modelCatalogSchema = z.object({
       }
     }
   }
-  if (!seenFamilies.has(catalog.activeModelFamilyId)) {
+  // A retired saved identity is still valid persisted state. It must reach the
+  // renderer as unavailable so the user can explicitly Apply a replacement.
+  // Current families missing from the catalog remain a contract error.
+  if (!seenFamilies.has(catalog.activeModelFamilyId) && !retiredFamilies.has(catalog.activeModelFamilyId)) {
     context.addIssue({
       code: "custom",
       path: ["activeModelFamilyId"],
@@ -630,7 +641,7 @@ export const modelCatalogSchema = z.object({
     });
   }
   for (const [index, familyId] of catalog.modelLibraryFamilyIds.entries()) {
-    if (!seenFamilies.has(familyId)) {
+    if (!seenFamilies.has(familyId) && !retiredFamilies.has(familyId)) {
       context.addIssue({
         code: "custom",
         path: ["modelLibraryFamilyIds", index],

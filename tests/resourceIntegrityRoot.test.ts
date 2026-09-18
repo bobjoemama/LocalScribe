@@ -38,9 +38,9 @@ const temporaryDirectories: string[] = [];
  * scheme must update this deliberately — and must rebuild every artifact whose
  * embedded expectation was computed under the old scheme.
  */
-// Deliberately regenerated when the five unreviewed Whisper manifests left
-// the selected inventory. The hashing algorithm is unchanged.
-const GOLDEN_ROOT = "38dd8cc66cc92b71939a0e99ff9e4e9d19166b0005cd1c4f1bbb47f875efe033";
+// Deliberately regenerated when the final Whisper manifest left the selected
+// inventory (eleven supported profiles). The hashing algorithm is unchanged.
+const GOLDEN_ROOT = "0b30326190eeeea4f015f7cb674494b90b2313a7c032175f15dd63f0ba64c1e1";
 
 function fixture(): string {
   const resourcesPath = mkdtempSync(path.join(tmpdir(), "localscribe-root-"));

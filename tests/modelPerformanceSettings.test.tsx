@@ -11,6 +11,7 @@ import {
 } from "../src/renderer/settings/screens/ModelPerformanceSettings";
 
 const GIBIBYTE = 1_073_741_824;
+const qwenPrecisions = ["bf16", "8-bit", "4-bit"] as const;
 const afterStopCapabilities: ModelCapabilities = {
   modes: ["after-stop"],
   partialResults: false,
@@ -22,87 +23,93 @@ const afterStopCapabilities: ModelCapabilities = {
 };
 
 function catalog({
-  sharedV3Artifact = false,
-  v2InLibrary = false,
-  activeFamilyId = "whisper-large-v3",
+  sharedPrimaryArtifact = false,
+  sharedSecondaryArtifact = false,
+  secondaryInLibrary = false,
+  activeFamilyId = "qwen3-asr-0-6b",
 }: {
-  sharedV3Artifact?: boolean;
-  v2InLibrary?: boolean;
+  sharedPrimaryArtifact?: boolean;
+  sharedSecondaryArtifact?: boolean;
+  secondaryInLibrary?: boolean;
   activeFamilyId?: ModelCatalog["activeModelFamilyId"];
 } = {}): ModelCatalog {
-  const v3ArtifactId = sharedV3Artifact ? "whisper-large-v3-shared" : undefined;
-  const v2IsInLibrary = v2InLibrary || activeFamilyId === "whisper-large-v2";
-  const backend = "MLX Whisper";
-  const v3Artifacts = sharedV3Artifact
+  // Shared artifacts are deliberately synthetic: shipped Qwen tiers each have
+  // distinct weights. These switches exercise generic artifact deduplication.
+  const primaryArtifactId = sharedPrimaryArtifact ? "synthetic-qwen3-asr-0-6b-shared" : undefined;
+  const secondaryIsInLibrary = secondaryInLibrary || activeFamilyId === "qwen3-asr-1-7b";
+  const backend = "MLX Audio";
+  const primaryArtifacts = sharedPrimaryArtifact
     ? [{
-      artifactId: v3ArtifactId!,
-      displayName: "Whisper large-v3 curated artifact",
+      artifactId: primaryArtifactId!,
+      displayName: "Synthetic Qwen3-ASR 0.6B shared artifact",
       backend,
-      modelId: "curated/whisper-large-v3",
-      storageDirectory: "whisper-large-v3",
+      modelId: "curated/qwen3-asr-0-6b",
+      storageDirectory: "qwen3-asr-0-6b",
       revision: "a".repeat(40),
-      license: "MIT",
+      license: "Apache-2.0",
       expectedDownloadBytes: 3_000_000_000,
     }]
     : ["high", "medium", "low"].map((tier, index) => ({
-      artifactId: `whisper-large-v3-${tier}`,
-      displayName: `Whisper large-v3 ${tier}`,
+      artifactId: `qwen3-asr-0-6b-${tier}`,
+      displayName: `Qwen3-ASR 0.6B ${tier}`,
       backend,
-      modelId: `curated/whisper-large-v3-${tier}`,
-      storageDirectory: `whisper-large-v3-${tier}`,
+      modelId: `curated/qwen3-asr-0-6b-${tier}`,
+      storageDirectory: `qwen3-asr-0-6b-${tier}`,
       revision: `${index + 1}`.repeat(40),
-      license: "MIT",
+      license: "Apache-2.0",
       expectedDownloadBytes: (3 - index) * 1_000_000_000,
     }));
   const profiles = ["high", "medium", "low"] as const;
+  const secondaryArtifacts = (sharedSecondaryArtifact ? ["shared"] : ["bf16", "8bit", "4bit"])
+    .map((precision, index) => ({
+      artifactId: sharedSecondaryArtifact ? "synthetic-qwen3-asr-1-7b-shared" : `qwen3-asr-1-7b-mlx-${precision}`,
+      displayName: sharedSecondaryArtifact ? "Synthetic Qwen3-ASR 1.7B shared artifact" : `Qwen3-ASR 1.7B · MLX ${precision}`,
+      backend,
+      modelId: `curated/qwen3-asr-1-7b-${precision}`,
+      storageDirectory: `qwen3-asr-1-7b-${precision}`,
+      revision: `${index + 4}`.repeat(40),
+      license: "Apache-2.0",
+      expectedDownloadBytes: (3 - index) * 1_000_000_000,
+    }));
   return {
     platform: "darwin-arm64",
     activeModelFamilyId: activeFamilyId,
-    recommendedDefaultFamilyId: "whisper-large-v3",
-    modelLibraryFamilyIds: v2IsInLibrary ? ["whisper-large-v3", "whisper-large-v2"] : ["whisper-large-v3"],
+    recommendedDefaultFamilyId: "qwen3-asr-0-6b",
+    modelLibraryFamilyIds: secondaryIsInLibrary ? ["qwen3-asr-0-6b", "qwen3-asr-1-7b"] : ["qwen3-asr-0-6b"],
     families: [
       {
-        familyId: "whisper-large-v3",
-        displayName: "Whisper large-v3",
+        familyId: "qwen3-asr-0-6b",
+        displayName: "Qwen3-ASR 0.6B",
         capabilities: afterStopCapabilities,
         recommendedDefault: true,
-        active: activeFamilyId === "whisper-large-v3",
+        active: activeFamilyId === "qwen3-asr-0-6b",
         inLibrary: true,
-        artifacts: v3Artifacts,
+        artifacts: primaryArtifacts,
         profiles: profiles.map((tier, index) => ({
-          profileId: `v3-${tier}`,
+          profileId: `primary-${tier}`,
           tier,
-          artifactId: v3ArtifactId ?? `whisper-large-v3-${tier}`,
-          engine: "mlx-whisper",
-          precision: tier === "high" ? "fp16" : tier === "medium" ? "coreml-int8" : "4-bit",
+          artifactId: primaryArtifactId ?? `qwen3-asr-0-6b-${tier}`,
+          engine: "mlx-audio",
+          precision: qwenPrecisions[index]!,
           expectedMemoryMinBytes: (3 - index) * GIBIBYTE,
           expectedMemoryMaxBytes: (4 - index) * GIBIBYTE,
           memoryBasis: "estimated",
         })),
       },
       {
-        familyId: "whisper-large-v2",
-        displayName: "Whisper large-v2",
+        familyId: "qwen3-asr-1-7b",
+        displayName: "Qwen3-ASR 1.7B",
         capabilities: afterStopCapabilities,
         recommendedDefault: false,
-        active: activeFamilyId === "whisper-large-v2",
-        inLibrary: v2IsInLibrary,
-        artifacts: [{
-          artifactId: "whisper-large-v2-mlx-fp16",
-          displayName: "Whisper large-v2 · MLX float16",
-          backend,
-          modelId: "curated/whisper-large-v2",
-          storageDirectory: "whisper-large-v2",
-          revision: "b".repeat(40),
-          license: "Undeclared",
-          expectedDownloadBytes: 3_000_000_000,
-        }],
+        active: activeFamilyId === "qwen3-asr-1-7b",
+        inLibrary: secondaryIsInLibrary,
+        artifacts: secondaryArtifacts,
         profiles: profiles.map((tier, index) => ({
-          profileId: `v2-${tier}`,
+          profileId: `secondary-${tier}`,
           tier,
-          artifactId: "whisper-large-v2-mlx-fp16",
-          engine: "mlx-whisper",
-          precision: tier === "high" ? "fp16" : tier === "medium" ? "8-bit" : "4-bit",
+          artifactId: secondaryArtifacts[sharedSecondaryArtifact ? 0 : index]!.artifactId,
+          engine: "mlx-audio",
+          precision: qwenPrecisions[index]!,
           expectedMemoryMinBytes: (3 - index) * GIBIBYTE,
           expectedMemoryMaxBytes: (4 - index) * GIBIBYTE,
           memoryBasis: "estimated",
@@ -110,8 +117,8 @@ function catalog({
       },
     ],
     verifications: [
-      ...v3Artifacts.map((artifact) => ({
-        familyId: "whisper-large-v3" as const,
+      ...primaryArtifacts.map((artifact) => ({
+        familyId: "qwen3-asr-0-6b" as const,
         artifactId: artifact.artifactId,
         present: false,
         verified: false,
@@ -121,17 +128,17 @@ function catalog({
         verifiedFiles: 0,
         expectedFiles: 1,
       })),
-      {
-        familyId: "whisper-large-v2",
-        artifactId: "whisper-large-v2-mlx-fp16",
+      ...secondaryArtifacts.map((artifact) => ({
+        familyId: "qwen3-asr-1-7b" as const,
+        artifactId: artifact.artifactId,
         present: false,
         verified: false,
-        verificationStatus: "missing",
+        verificationStatus: "missing" as const,
         sizeBytes: 0,
-        expectedBytes: 3_000_000_000,
+        expectedBytes: artifact.expectedDownloadBytes,
         verifiedFiles: 0,
         expectedFiles: 1,
-      },
+      })),
     ],
     unmanagedEntries: [],
   };
@@ -140,13 +147,13 @@ function catalog({
 function renderModelSettings(overrides: Partial<ModelPerformanceSettingsProps> = {}) {
   const props: ModelPerformanceSettingsProps = {
     currentSelection: {
-      familyId: "whisper-large-v3",
+      familyId: "qwen3-asr-0-6b",
       asrMode: "after-stop",
       performanceMode: "auto",
     },
     currentModelLoaded: true,
     pendingSelection: {
-      familyId: "whisper-large-v3",
+      familyId: "qwen3-asr-0-6b",
       asrMode: "after-stop",
       performanceMode: "auto",
     },
@@ -169,23 +176,23 @@ function renderModelSettings(overrides: Partial<ModelPerformanceSettingsProps> =
     catalogError: null,
     runtimeTierStatuses: [
       {
-        familyId: "whisper-large-v3",
+        familyId: "qwen3-asr-0-6b",
         tier: "high",
-        artifactId: "whisper-large-v3-high",
+        artifactId: "qwen3-asr-0-6b-high",
         qualityNote: "Highest local transcription quality.",
         verificationStatus: "missing",
       },
       {
-        familyId: "whisper-large-v3",
+        familyId: "qwen3-asr-0-6b",
         tier: "medium",
-        artifactId: "whisper-large-v3-medium",
+        artifactId: "qwen3-asr-0-6b-medium",
         qualityNote: "Balanced quality and memory use.",
         verificationStatus: "verified",
       },
       {
-        familyId: "whisper-large-v3",
+        familyId: "qwen3-asr-0-6b",
         tier: "low",
-        artifactId: "whisper-large-v3-low",
+        artifactId: "qwen3-asr-0-6b-low",
         qualityNote: "Lowest memory use.",
         verificationStatus: "invalid",
       },
@@ -194,7 +201,7 @@ function renderModelSettings(overrides: Partial<ModelPerformanceSettingsProps> =
     feedback: null,
     applying: false,
     refreshing: false,
-    residentRuntimeLabel: "Whisper large-v3 medium",
+    residentRuntimeLabel: "Qwen3-ASR 0.6B medium",
     onModeChange: vi.fn(),
     onFamilyChange: vi.fn(),
     onApply: vi.fn(),
@@ -222,23 +229,25 @@ function storageButtonTags(html: string): string[] {
 }
 
 describe("ModelPerformanceSettings", () => {
-  it("explains a retired saved family while allowing an explicit supported replacement", () => {
-    const reduced = catalog({ activeFamilyId: "whisper-large-v2" });
-    reduced.families = reduced.families.filter((family) => family.familyId !== "whisper-large-v2")
+  it.each(["whisper-large-v2", "whisper-large-v3"] as const)("explains retired %s while allowing an explicit supported replacement", (familyId) => {
+    const reduced = catalog({ activeFamilyId: familyId });
+    reduced.modelLibraryFamilyIds.push(familyId);
+    reduced.families = reduced.families
       .map((family) => ({ ...family, profiles: family.profiles.filter((profile) => profile.tier === "high") }));
     const html = renderModelSettings({
       catalog: reduced,
-      currentSelection: { familyId: "whisper-large-v2", asrMode: "after-stop", performanceMode: "medium" },
-      pendingSelection: { familyId: "whisper-large-v3", asrMode: "after-stop", performanceMode: "high" },
+      currentSelection: { familyId, asrMode: "after-stop", performanceMode: "high" },
+      pendingSelection: { familyId: "qwen3-asr-0-6b", asrMode: "after-stop", performanceMode: "high" },
       currentModelLoaded: false,
       mode: "high",
       resolvedTier: null,
       residentRuntimeLabel: null,
-      runtimeTierStatuses: [{ familyId: "whisper-large-v3", tier: "high", artifactId: "whisper-large-v3-high",
+      runtimeTierStatuses: [{ familyId: "qwen3-asr-0-6b", tier: "high", artifactId: "qwen3-asr-0-6b-high",
         qualityNote: "Original precision", verificationStatus: "verified" }],
     });
     expect(html).toContain('role="alert"');
     expect(html).toContain("Your saved selection and model files have not been changed");
+    expect(html).not.toMatch(/<h3>Whisper|aria-label="(?:Download|Repair|Remove)[^"]*whisper/);
     expect(applyButtonTag(html)).toContain('aria-disabled="false"');
     expect(supportedModeChoices(reduced.families[0]).map((choice) => choice.id)).toEqual(["auto", "high"]);
     expect(supportedModeChoices(undefined)).toEqual([]);
@@ -258,7 +267,7 @@ describe("ModelPerformanceSettings", () => {
 
   it("keeps an active download visible outside its collapsible profiles", () => {
     const html = renderModelSettings({ action: {
-      action: "installing", familyId: "whisper-large-v3", tier: "high",
+      action: "installing", familyId: "qwen3-asr-0-6b", tier: "high",
       progress: { phase: "downloading", completedBytes: 10, totalBytes: 100 },
     } });
     expect(html.indexOf('class="ls-model-operation-progress"')).toBeLessThan(html.indexOf('class="ls-model-profiles"'));
@@ -277,7 +286,7 @@ describe("ModelPerformanceSettings", () => {
     expect(html).toContain("Copy source URLs");
     expect(html).toContain("MLX Community conversion");
     expect(html).toContain("NVIDIA H200");
-    expect(html).toContain("Not reported");
+    expect(html).toContain("1.70%");
     expect(html).not.toContain('href="https://');
   });
 
@@ -360,7 +369,7 @@ describe("ModelPerformanceSettings", () => {
 
   it("names staged, applying, and confirmed runtime states instead of implying a selection is already live", () => {
     const pending = renderModelSettings({
-      pendingSelection: { familyId: "whisper-large-v3", asrMode: "after-stop", performanceMode: "medium" },
+      pendingSelection: { familyId: "qwen3-asr-0-6b", asrMode: "after-stop", performanceMode: "medium" },
       mode: "medium",
     });
     expect(pending).toContain("Pending model change");
@@ -376,7 +385,7 @@ describe("ModelPerformanceSettings", () => {
     expect(ready).toContain("This selection is loaded and ready for dictation.");
     expect(ready).toContain("Saved selection");
     expect(ready).toContain("Resident runtime");
-    expect(ready).toContain("Whisper large-v3 medium");
+    expect(ready).toContain("Qwen3-ASR 0.6B medium");
 
     const mismatchedResident = renderModelSettings({
       currentModelLoaded: false,
@@ -399,7 +408,7 @@ describe("ModelPerformanceSettings", () => {
   it("renders byte progress only when runtime reports real byte counts", () => {
     expect(modelActionProgressPresentation({
       action: "installing",
-      familyId: "whisper-large-v3",
+      familyId: "qwen3-asr-0-6b",
       tier: "high",
       progress: { phase: "downloading", completedBytes: 500_000_000, totalBytes: 2_000_000_000 },
     }, 2_000_000_000)).toMatchObject({
@@ -408,7 +417,7 @@ describe("ModelPerformanceSettings", () => {
     });
     expect(modelActionProgressPresentation({
       action: "installing",
-      familyId: "whisper-large-v3",
+      familyId: "qwen3-asr-0-6b",
       tier: "high",
       progress: { phase: "preparing" },
     }, 2_000_000_000)).toMatchObject({
@@ -417,7 +426,7 @@ describe("ModelPerformanceSettings", () => {
     });
     expect(modelActionProgressPresentation({
       action: "installing",
-      familyId: "whisper-large-v3",
+      familyId: "qwen3-asr-0-6b",
       tier: "high",
       progress: { phase: "verifying", completedBytes: 500_000_000, totalBytes: 2_000_000_000 },
     }, 2_000_000_000)).toMatchObject({
@@ -428,7 +437,7 @@ describe("ModelPerformanceSettings", () => {
     const html = renderModelSettings({
       action: {
         action: "installing",
-        familyId: "whisper-large-v3",
+        familyId: "qwen3-asr-0-6b",
         tier: "high",
         progress: { phase: "downloading", completedBytes: 500_000_000, totalBytes: 2_000_000_000 },
       },
@@ -440,13 +449,13 @@ describe("ModelPerformanceSettings", () => {
 
   it("allows an exact verified persisted selection to load when its runtime is cold", () => {
     const eligibility = modelApplyEligibility({
-      currentSelection: { familyId: "whisper-large-v3", asrMode: "after-stop", performanceMode: "auto" },
+      currentSelection: { familyId: "qwen3-asr-0-6b", asrMode: "after-stop", performanceMode: "auto" },
       currentModelLoaded: false,
-      pendingSelection: { familyId: "whisper-large-v3", asrMode: "after-stop", performanceMode: "auto" },
+      pendingSelection: { familyId: "qwen3-asr-0-6b", asrMode: "after-stop", performanceMode: "auto" },
       resolvedTier: "high",
       catalog: catalog(),
       catalogError: null,
-      runtimeTierStatuses: [{ familyId: "whisper-large-v3", tier: "high", artifactId: "whisper-large-v3-high", verificationStatus: "verified" }],
+      runtimeTierStatuses: [{ familyId: "qwen3-asr-0-6b", tier: "high", artifactId: "qwen3-asr-0-6b-high", verificationStatus: "verified" }],
       hardware: { platform: "darwin", displayName: "Apple M-series GPU", totalMemoryBytes: 48 * GIBIBYTE, availableMemoryBytes: 31 * GIBIBYTE, memoryBasis: "measured" },
       memoryRequirement: { requiredFreeMemoryBytes: null, reservedHeadroomBytes: 2 * GIBIBYTE },
       action: null,
@@ -471,7 +480,7 @@ describe("ModelPerformanceSettings", () => {
     expect(applyButtonTag(warm)).toContain('aria-disabled="true"');
 
     const changed = renderModelSettings({
-      pendingSelection: { familyId: "whisper-large-v3", asrMode: "after-stop", performanceMode: "medium" },
+      pendingSelection: { familyId: "qwen3-asr-0-6b", asrMode: "after-stop", performanceMode: "medium" },
       mode: "medium",
     });
     expect(applyButtonTag(changed)).not.toContain('disabled=""');
@@ -511,16 +520,16 @@ describe("ModelPerformanceSettings", () => {
   it("enables one combined Apply only for a changed, verified, memory-eligible target", () => {
     const modelCatalog = catalog();
     const eligibility = modelApplyEligibility({
-      currentSelection: { familyId: "whisper-large-v3", asrMode: "after-stop", performanceMode: "auto" },
+      currentSelection: { familyId: "qwen3-asr-0-6b", asrMode: "after-stop", performanceMode: "auto" },
       currentModelLoaded: true,
-      pendingSelection: { familyId: "whisper-large-v3", asrMode: "after-stop", performanceMode: "medium" },
+      pendingSelection: { familyId: "qwen3-asr-0-6b", asrMode: "after-stop", performanceMode: "medium" },
       resolvedTier: "high",
       catalog: modelCatalog,
       catalogError: null,
       runtimeTierStatuses: [{
-        familyId: "whisper-large-v3",
+        familyId: "qwen3-asr-0-6b",
         tier: "medium",
-        artifactId: "whisper-large-v3-medium",
+        artifactId: "qwen3-asr-0-6b-medium",
         verificationStatus: "verified",
       }],
       hardware: {
@@ -545,16 +554,16 @@ describe("ModelPerformanceSettings", () => {
 
   it("accounts conservatively for memory released by the warm model before Apply", () => {
     const eligibility = modelApplyEligibility({
-      currentSelection: { familyId: "whisper-large-v3", asrMode: "after-stop", performanceMode: "high" },
+      currentSelection: { familyId: "qwen3-asr-0-6b", asrMode: "after-stop", performanceMode: "high" },
       currentModelLoaded: true,
-      pendingSelection: { familyId: "whisper-large-v3", asrMode: "after-stop", performanceMode: "medium" },
+      pendingSelection: { familyId: "qwen3-asr-0-6b", asrMode: "after-stop", performanceMode: "medium" },
       resolvedTier: "high",
       catalog: catalog(),
       catalogError: null,
       runtimeTierStatuses: [{
-        familyId: "whisper-large-v3",
+        familyId: "qwen3-asr-0-6b",
         tier: "medium",
-        artifactId: "whisper-large-v3-medium",
+        artifactId: "qwen3-asr-0-6b-medium",
         verificationStatus: "verified",
       }],
       hardware: {
@@ -584,8 +593,8 @@ describe("ModelPerformanceSettings", () => {
 
   it("disables Apply when the exact selected artifact is missing", () => {
     const html = renderModelSettings({
-      currentSelection: { familyId: "whisper-large-v3", asrMode: "after-stop", performanceMode: "auto" },
-      pendingSelection: { familyId: "whisper-large-v3", asrMode: "after-stop", performanceMode: "high" },
+      currentSelection: { familyId: "qwen3-asr-0-6b", asrMode: "after-stop", performanceMode: "auto" },
+      pendingSelection: { familyId: "qwen3-asr-0-6b", asrMode: "after-stop", performanceMode: "high" },
       mode: "high",
     });
 
@@ -595,14 +604,14 @@ describe("ModelPerformanceSettings", () => {
 
   it("derives current and pending labels from the catalog", () => {
     const html = renderModelSettings({
-      catalog: catalog({ v2InLibrary: true }),
-      currentSelection: { familyId: "whisper-large-v3", asrMode: "after-stop", performanceMode: "auto" },
-      pendingSelection: { familyId: "whisper-large-v2", asrMode: "after-stop", performanceMode: "low" },
+      catalog: catalog({ secondaryInLibrary: true }),
+      currentSelection: { familyId: "qwen3-asr-0-6b", asrMode: "after-stop", performanceMode: "auto" },
+      pendingSelection: { familyId: "qwen3-asr-1-7b", asrMode: "after-stop", performanceMode: "low" },
       mode: "low",
     });
 
-    expect(html).toContain("Saved selection</dt><dd>Whisper large-v3 · After I stop · Auto");
-    expect(html).toContain("After applying</dt><dd>Whisper large-v2 · After I stop · Low");
+    expect(html).toContain("Saved selection</dt><dd>Qwen3-ASR 0.6B · After I stop · Auto");
+    expect(html).toContain("After applying</dt><dd>Qwen3-ASR 1.7B · After I stop · Low");
     expect(html).toContain("Selected to apply");
   });
 
@@ -618,9 +627,9 @@ describe("ModelPerformanceSettings", () => {
     expect(html).toContain("Saved selection");
     expect(html).toContain("Resident runtime");
     expect(html).toContain("Apply model");
-    expect(html).toContain("Whisper large-v3");
+    expect(html).toContain("Qwen3-ASR 0.6B");
     expect(html).toContain("Recommended");
-    expect(html).toContain("Whisper large-v2");
+    expect(html).toContain("Qwen3-ASR 1.7B");
     expect(html).toContain("Add to library");
     expect(html).toContain("Add to library to manage");
     expect(html).not.toContain("Built-in family");
@@ -628,7 +637,7 @@ describe("ModelPerformanceSettings", () => {
 
   it("renders a curated Qwen family from catalog data with platform-specific profiles", () => {
     const modelCatalog = catalog();
-    modelCatalog.families.splice(1, 0, {
+    modelCatalog.families.splice(1, 1, {
       familyId: "qwen3-asr-1-7b",
       displayName: "Qwen3-ASR 1.7B",
       capabilities: afterStopCapabilities,
@@ -670,7 +679,7 @@ describe("ModelPerformanceSettings", () => {
   });
 
   it("permits the default family data install when memory telemetry is unavailable", () => {
-    const macCatalog = catalog({ sharedV3Artifact: true });
+    const macCatalog = catalog({ sharedPrimaryArtifact: true });
     const html = renderModelSettings({
       catalog: macCatalog,
       hardware: {
@@ -682,26 +691,26 @@ describe("ModelPerformanceSettings", () => {
       },
       memoryRequirement: null,
       runtimeTierStatuses: [{
-        familyId: "whisper-large-v3",
+        familyId: "qwen3-asr-0-6b",
         tier: "high",
-        artifactId: "whisper-large-v3-shared",
+        artifactId: "synthetic-qwen3-asr-0-6b-shared",
         qualityNote: "Curated macOS artifact.",
         verificationStatus: "missing",
       }],
     });
 
-    expect(html).toContain("Whisper large-v3");
-    expect(html).toContain("<dt>Runtime</dt><dd>MLX Whisper</dd>");
+    expect(html).toContain("Qwen3-ASR 0.6B");
+    expect(html).toContain("<dt>Runtime</dt><dd>MLX Audio</dd>");
     expect(html).toContain("Run eligibility is unknown");
     expect(html).toContain("Availability · unavailable");
     expect(html).not.toContain("Available now · unavailable");
-    expect(html).toContain('<button type="button" class="ls-small-button" aria-label="Download High profile for whisper-large-v3">Download</button>');
+    expect(html).toContain('<button type="button" class="ls-small-button" aria-label="Download High profile for qwen3-asr-0-6b">Download</button>');
     expect(html).toContain("Shared artifact · managed from High");
     expect(html).not.toContain("Checking the local model catalog");
   });
 
   it("does not claim an explicit profile is running when unified memory is insufficient", () => {
-    const macCatalog = catalog({ sharedV3Artifact: true });
+    const macCatalog = catalog({ sharedPrimaryArtifact: true });
     const html = renderModelSettings({
       mode: "high",
       resolvedTier: "high",
@@ -720,9 +729,9 @@ describe("ModelPerformanceSettings", () => {
       },
       catalog: macCatalog,
       runtimeTierStatuses: (["high", "medium", "low"] as const).map((tier) => ({
-        familyId: "whisper-large-v3" as const,
+        familyId: "qwen3-asr-0-6b" as const,
         tier,
-        artifactId: "whisper-large-v3-shared",
+        artifactId: "synthetic-qwen3-asr-0-6b-shared",
         qualityNote: "Curated macOS profile.",
         verificationStatus: "verified" as const,
       })),
@@ -740,39 +749,39 @@ describe("ModelPerformanceSettings", () => {
 
   it("derives shared controls from artifact identity", () => {
     const shared = renderModelSettings({
-      catalog: catalog({ sharedV3Artifact: true }),
+      catalog: catalog({ sharedPrimaryArtifact: true }),
       runtimeTierStatuses: [{
-        familyId: "whisper-large-v3",
+        familyId: "qwen3-asr-0-6b",
         tier: "high",
-        artifactId: "whisper-large-v3-shared",
+        artifactId: "synthetic-qwen3-asr-0-6b-shared",
         qualityNote: "One artifact.",
         verificationStatus: "missing",
       }],
     });
     const distinct = renderModelSettings({
-      catalog: catalog({ sharedV3Artifact: false }),
+      catalog: catalog({ sharedPrimaryArtifact: false }),
       runtimeTierStatuses: (["high", "medium", "low"] as const).map((tier) => ({
-        familyId: "whisper-large-v3" as const,
+        familyId: "qwen3-asr-0-6b" as const,
         tier,
-        artifactId: `whisper-large-v3-${tier}`,
+        artifactId: `qwen3-asr-0-6b-${tier}`,
         qualityNote: "Distinct artifact.",
         verificationStatus: "missing" as const,
       })),
     });
 
-    expect(shared.match(/aria-label="Download [^"]*profile for whisper-large-v3"/g)).toHaveLength(1);
+    expect(shared.match(/aria-label="Download [^"]*profile for qwen3-asr-0-6b"/g)).toHaveLength(1);
     expect(shared.match(/Shared artifact/g)).toHaveLength(2);
-    expect(distinct.match(/aria-label="Download [^"]*profile for whisper-large-v3"/g)).toHaveLength(3);
+    expect(distinct.match(/aria-label="Download [^"]*profile for qwen3-asr-0-6b"/g)).toHaveLength(3);
     expect(distinct).not.toContain("Shared artifact");
   });
 
   it("renders one truthful install, repair, or remove control for a shared artifact", () => {
-    const sharedCatalog = catalog({ sharedV3Artifact: true });
+    const sharedCatalog = catalog({ sharedPrimaryArtifact: true });
     const runtimeStatuses = (verificationStatus: "missing" | "invalid" | "verified") => (
       (["high", "medium", "low"] as const).map((tier) => ({
-        familyId: "whisper-large-v3" as const,
+        familyId: "qwen3-asr-0-6b" as const,
         tier,
-        artifactId: "whisper-large-v3-shared",
+        artifactId: "synthetic-qwen3-asr-0-6b-shared",
         qualityNote: "Curated macOS profile.",
         verificationStatus,
       }))
@@ -780,17 +789,17 @@ describe("ModelPerformanceSettings", () => {
     const missing = renderModelSettings({
       catalog: sharedCatalog,
       runtimeTierStatuses: runtimeStatuses("missing"),
-      action: { action: "installing", familyId: "whisper-large-v3", tier: "high" },
+      action: { action: "installing", familyId: "qwen3-asr-0-6b", tier: "high" },
     });
     const invalid = renderModelSettings({
       catalog: sharedCatalog,
       runtimeTierStatuses: runtimeStatuses("invalid"),
-      action: { action: "repairing", familyId: "whisper-large-v3", tier: "high" },
+      action: { action: "repairing", familyId: "qwen3-asr-0-6b", tier: "high" },
     });
     const verified = renderModelSettings({
       catalog: sharedCatalog,
       runtimeTierStatuses: runtimeStatuses("verified"),
-      action: { action: "removing", familyId: "whisper-large-v3", tier: "high" },
+      action: { action: "removing", familyId: "qwen3-asr-0-6b", tier: "high" },
     });
 
     expect(missing.match(/Downloading…/g)).toHaveLength(1);
@@ -799,26 +808,26 @@ describe("ModelPerformanceSettings", () => {
     expect(missing.match(/Shared artifact · managed from High/g)).toHaveLength(2);
     expect(invalid.match(/Shared artifact · managed from High/g)).toHaveLength(2);
     expect(verified.match(/Shared artifact · managed from High/g)).toHaveLength(2);
-    expect(missing.match(/aria-label="Download [^"]*profile for whisper-large-v3"/g)).toHaveLength(1);
-    expect(invalid.match(/aria-label="Repair [^"]*profile for whisper-large-v3"/g)).toHaveLength(1);
-    expect(verified.match(/aria-label="Remove [^"]*profile for whisper-large-v3"/g)).toHaveLength(1);
+    expect(missing.match(/aria-label="Download [^"]*profile for qwen3-asr-0-6b"/g)).toHaveLength(1);
+    expect(invalid.match(/aria-label="Repair [^"]*profile for qwen3-asr-0-6b"/g)).toHaveLength(1);
+    expect(verified.match(/aria-label="Remove [^"]*profile for qwen3-asr-0-6b"/g)).toHaveLength(1);
   });
 
   it("keeps a confirmed artifact operation visible across an early status refresh", () => {
-    const sharedCatalog = catalog({ sharedV3Artifact: true });
+    const sharedCatalog = catalog({ sharedPrimaryArtifact: true });
     const renderAction = (
       verificationStatus: "missing" | "invalid" | "verified",
       action: NonNullable<ModelPerformanceSettingsProps["action"]>["action"],
     ) => renderModelSettings({
       catalog: sharedCatalog,
       runtimeTierStatuses: (["high", "medium", "low"] as const).map((tier) => ({
-        familyId: "whisper-large-v3" as const,
+        familyId: "qwen3-asr-0-6b" as const,
         tier,
-        artifactId: "whisper-large-v3-shared",
+        artifactId: "synthetic-qwen3-asr-0-6b-shared",
         qualityNote: "Curated macOS profile.",
         verificationStatus,
       })),
-      action: { action, familyId: "whisper-large-v3", tier: "high" },
+      action: { action, familyId: "qwen3-asr-0-6b", tier: "high" },
     });
 
     const installAfterVerifiedRefresh = renderAction("verified", "installing");
@@ -833,8 +842,12 @@ describe("ModelPerformanceSettings", () => {
     expect(removeAfterMissingRefresh).not.toContain(">Download</button>");
   });
 
-  it("shows an added v2 family as selectable and keeps artifact management separate", () => {
-    const html = renderModelSettings({ catalog: catalog({ v2InLibrary: true }) });
+  it("shows an added secondary family as selectable and keeps artifact management separate", () => {
+    const modelCatalog = catalog({ secondaryInLibrary: true });
+    // Inject an unreviewed license to preserve the explicit warning regression;
+    // shipped Qwen artifacts carry Apache-2.0.
+    modelCatalog.families[1]!.artifacts[0]!.license = "Undeclared";
+    const html = renderModelSettings({ catalog: modelCatalog });
 
     expect(html).toContain("In your library");
     expect(html).toContain("Select");
@@ -844,7 +857,7 @@ describe("ModelPerformanceSettings", () => {
   });
 
   it("derives family backends and inactive management eligibility from the catalog", () => {
-    const runtimeCatalog = catalog({ activeFamilyId: "whisper-large-v2" });
+    const runtimeCatalog = catalog({ activeFamilyId: "qwen3-asr-1-7b" });
     const inactiveDefaultFamily = runtimeCatalog.families[0]!;
     runtimeCatalog.families[0] = {
       ...inactiveDefaultFamily,
@@ -858,8 +871,8 @@ describe("ModelPerformanceSettings", () => {
       runtimeTierStatuses: [],
     });
     const inactiveDefault = html.slice(
-      html.indexOf("<h3>Whisper large-v3</h3>"),
-      html.indexOf("<h3>Whisper large-v2</h3>"),
+      html.indexOf("<h3>Qwen3-ASR 0.6B</h3>"),
+      html.indexOf("<h3>Qwen3-ASR 1.7B</h3>"),
     );
 
     expect(inactiveDefault).toContain("<dt>Runtime</dt><dd>Catalog-provided macOS backend</dd>");
@@ -871,19 +884,19 @@ describe("ModelPerformanceSettings", () => {
 
   it("shows verified artifact state for an inactive library family, including shared profiles", () => {
     const html = renderModelSettings({
-      catalog: catalog({ v2InLibrary: true }),
+      catalog: catalog({ secondaryInLibrary: true, sharedSecondaryArtifact: true }),
       runtimeTierStatuses: (["high", "medium", "low"] as const).map((tier) => ({
-        familyId: "whisper-large-v2" as const,
+        familyId: "qwen3-asr-1-7b" as const,
         tier,
-        artifactId: "whisper-large-v2-mlx-fp16",
+        artifactId: "synthetic-qwen3-asr-1-7b-shared",
         verificationStatus: "verified" as const,
       })),
     });
-    const inactiveFamily = html.slice(html.indexOf("<h3>Whisper large-v2</h3>"));
+    const inactiveFamily = html.slice(html.indexOf("<h3>Qwen3-ASR 1.7B</h3>"));
 
     expect(inactiveFamily.match(/Verified/g)).toHaveLength(3);
     expect(inactiveFamily).not.toContain("Status unavailable");
-    expect(inactiveFamily).toContain("Remove High profile for whisper-large-v2");
+    expect(inactiveFamily).toContain("Remove High profile for qwen3-asr-1-7b");
   });
 
   it("lists unmanaged and interrupted model storage without offering a destructive action", () => {
@@ -920,8 +933,9 @@ describe("ModelPerformanceSettings", () => {
   it("renders friendly precision, memory evidence, and exact free-memory headroom", () => {
     const html = renderModelSettings();
 
-    expect(html).toContain("FP16");
-    expect(html).toContain("INT8");
+    expect(html).toContain("BF16");
+    expect(html).toContain("8-bit");
+    expect(html).toContain("4-bit");
     expect(html).toContain("3.00 GiB–4.00 GiB estimated");
     expect(html).toContain("requires <strong>9.00 GiB</strong> free unified memory, including 2.00 GiB reserved headroom");
   });

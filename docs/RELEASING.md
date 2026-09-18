@@ -113,9 +113,9 @@ GitHub or change repository visibility.
 
 The release build checks the actual packaged model catalog's license
 declarations and requires its manifest set to match the packaging allowlist.
-There is no environment-variable waiver. Whisper v2 and Whisper v3 Medium/Low
-are excluded pending exact-artifact review, not relabeled as approved. An Apple
-developer account does not grant model redistribution rights. See
+There is no environment-variable waiver. Whisper is excluded from the catalog,
+worker, and packaged manifests. An Apple developer account does not grant model
+redistribution rights. See
 [CLEAN_ROOM.md](CLEAN_ROOM.md).
 
 Check the exact app and DMG with `xcrun stapler validate` and the release

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import sys
 import tomllib
@@ -181,6 +182,27 @@ def main() -> None:
     bom = json.loads(Path(arguments.sbom).read_text(encoding="utf-8"))
     lock = tomllib.loads(Path(arguments.lock).read_text(encoding="utf-8"))
     reconciled = reconcile(bom, lock, installed_distributions(site_packages))
+    # The selected-wheel digest identifies the upstream input, not our pruned
+    # tree. Verify and disclose the deterministic build-time modification.
+    pruning_spec = importlib.util.spec_from_file_location(
+        "localscribe_mlx_pruning", Path(__file__).with_name("prune-mlx-audio-whisper.py")
+    )
+    if pruning_spec is None or pruning_spec.loader is None:
+        raise fail("MLX Audio pruning verifier is unavailable")
+    pruning = importlib.util.module_from_spec(pruning_spec)
+    pruning_spec.loader.exec_module(pruning)
+    marker = pruning.verify_pruned_whisper(site_packages)
+    component = next(
+        (entry for entry in reconciled["components"] if entry["name"] == "mlx-audio"), None
+    )
+    if component is None:
+        raise fail("MLX Audio is missing from the candidate inventory")
+    component["properties"].extend([
+        {"name": "com.localscribe.build-modification", "value": "Unsupported Whisper backend removed by scripts/prune-mlx-audio-whisper.py"},
+        {"name": "com.localscribe.original-initializer-sha256", "value": marker["originalSha256"]},
+        {"name": "com.localscribe.patched-initializer-sha256", "value": marker["patchedSha256"]},
+    ])
+    component["properties"].sort(key=lambda entry: (entry["name"], entry["value"]))
     json.dump(reconciled, sys.stdout, indent=2, sort_keys=True)
     sys.stdout.write("\n")
 

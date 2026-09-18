@@ -35,9 +35,6 @@ MACOS_FAMILY_TIER_MANIFESTS: Final = {
             "coreml-int8",
         ),
     },
-    "whisper-large-v3": {
-        "high": ("whisper-large-v3-mlx.json", "float16"),
-    },
     "qwen3-asr-1-7b": {
         "high": ("qwen3-asr-1-7b-mlx-bf16.json", "bfloat16"),
         "medium": ("qwen3-asr-1-7b-mlx-8bit.json", "int8"),

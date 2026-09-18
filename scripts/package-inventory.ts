@@ -179,17 +179,17 @@ function forbiddenPaths(entries: readonly string[]): string[] {
     .sort();
 }
 
-function removeForbiddenArtifacts(directory: string): void {
+function removeForbiddenArtifacts(directory: string, relativeDirectory = ""): void {
   if (!existsSync(directory)) return;
   for (const child of readdirSync(directory, { withFileTypes: true })) {
     const childPath = path.join(directory, child.name);
-    const normalized = normalizeEntry(child.name);
+    const normalized = normalizeEntry(path.join(relativeDirectory, child.name));
     if (isForbiddenPackagedResourcePath(normalized)) {
       rmSync(childPath, { recursive: true, force: true });
       continue;
     }
     if (child.isDirectory() && !child.isSymbolicLink()) {
-      removeForbiddenArtifacts(childPath);
+      removeForbiddenArtifacts(childPath, normalized);
     }
   }
 }

@@ -32,37 +32,23 @@ import { modelPerformanceTierSchema, type ModelPerformanceTier } from "../../sha
 /**
  * Fixed allowance for a worker start plus a cold model load.
  *
- * Measured cold loads on the packaged runtime, M4 Max: whisper-large-v3 fp16
- * 3.7 s - 16.6 s (page-cache dependent), qwen3-asr-0.6b 8-bit 5.5 s - 6.0 s.
- * 90 s is roughly 5x the slowest observed load and is spent only once per
- * process, so it costs nothing on the warm path this app is built around.
+ * Keep the existing conservative allowance after retiring older runtimes.
+ * It is spent only once per process and costs nothing on the warm path.
  */
 export const TRANSCRIBE_COLD_LOAD_BUDGET_MS = 90_000;
 
 /**
- * Worst REALTIME FACTOR measured across the supported macOS tiers, recorded so
- * the budget below can be checked against evidence rather than intuition.
- *
- * Packaged runtime, Apple M4 Max, 600 s of continuous speech (the longest
- * recording the protocol accepts):
- *
- *   whisper-large-v3 fp16   135.6 s   factor 0.226   (4.4x faster than realtime)
- *   qwen3-asr-0.6b 8-bit     10.5 s   factor 0.018   (57x faster than realtime)
- *
- * Whisper large-v3 fp16 is the heaviest artifact the macOS catalog ships, so
- * 0.226 is the number to size against.
+ * Historical worst measured factor, retained only to avoid tightening the
+ * watchdog during model retirement. This is not a benchmark claim for the
+ * current catalog, other Macs, or any newly added runtime.
  */
 export const MEASURED_WORST_REALTIME_FACTOR = 0.226;
 
 /**
  * REALTIME FACTOR the watchdog tolerates before declaring the worker wedged.
  *
- * 1.0 means "inference may take as long as the recording itself". That is 4.4x
- * the worst factor measured here, which covers Apple silicon several times
- * slower than an M4 Max — an M1 is roughly 3-4x slower for MLX inference, which
- * lands near 0.9 and still fits. It is chosen to be generous to slow hardware
- * and stingy with wedged workers, which is the only trade-off this constant
- * controls.
+ * 1.0 means "inference may take as long as the recording itself". This is a
+ * bounded timeout policy, not a promised throughput on an unmeasured device.
  */
 export const TRANSCRIBE_REALTIME_FACTOR_BUDGET = 1;
 
@@ -99,8 +85,8 @@ export const INSTALL_MAX_ARTIFACT_BYTES = 8 * 1024 * 1024 * 1024;
  * throughput requirement in disguise.
  *
  * The budget was a flat 20 minutes for every artifact. Finishing inside it
- * therefore demanded 20.6 Mbit/s for whisper-large-v3 (3,083,520,685 bytes) and
- * 27.2 Mbit/s for qwen3-asr-1.7b bf16 (4,080,710,353 bytes), with zero margin
+ * therefore demanded 27.2 Mbit/s for qwen3-asr-1.7b bf16
+ * (4,080,710,353 bytes), with zero margin
  * for TLS, verification, or a slow mirror. Below that, the timeout terminated
  * the worker mid-download and the next attempt started over, so the flagship
  * tiers could not be installed at all on an ordinary home or tethered link.
@@ -558,7 +544,7 @@ export function completedLiveText(finalText: string, latestPartialText: string):
 export const WORKER_RUNTIME_IDENTITIES = {
   localscribe_worker: {
     backend: "localscribe-mlx-asr",
-    version: "mlx-whisper/0.4.3;mlx-audio/0.4.6",
+    version: "mlx-audio/0.4.6",
     acceleratorKind: "apple-unified",
   },
 } as const;

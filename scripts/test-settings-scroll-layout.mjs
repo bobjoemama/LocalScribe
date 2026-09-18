@@ -600,6 +600,9 @@ async function exerciseModelOrdering(window) {
       await paint();
     };
     const original = names();
+    if (original.length !== 4 || original.some((name) => /Whisper/i.test(name))) {
+      throw new Error("Available model cards must contain exactly the four supported families");
+    }
     const summary = document.querySelector(".ls-model-apply-card").textContent;
     const calls = JSON.stringify([window.__localScribeSettingsHarness.applyCalls, window.__localScribeSettingsHarness.patchCalls]);
     const orders = {};
@@ -609,9 +612,9 @@ async function exerciseModelOrdering(window) {
       if (names().length !== original.length) throw new Error("Sorting lost model cards");
       if (document.querySelector(".ls-model-apply-card").textContent !== summary) throw new Error("Sorting changed the pending model");
     }
-    if (orders["wer-asc"][0] !== "Qwen3-ASR 1.7B" || orders["wer-desc"][0] !== "Qwen3-ASR 0.6B"
-      || orders["speed-desc"][0] !== "Qwen3-ASR 0.6B" || orders["speed-asc"][0] !== "Whisper large-v3"
-      || orders["memory-asc"][0] !== "Parakeet Unified EN 0.6B" || orders["memory-desc"][0] !== "Qwen3-ASR 1.7B") {
+    if (orders["wer-asc"][0] !== "Canary-Qwen 2.5B" || orders["wer-desc"][0] !== "Qwen3-ASR 0.6B"
+      || orders["speed-desc"][0] !== "Qwen3-ASR 0.6B" || orders["speed-asc"][0] !== "Qwen3-ASR 1.7B"
+      || orders["memory-asc"][0] !== "Parakeet Unified EN 0.6B" || orders["memory-desc"][0] !== "Canary-Qwen 2.5B") {
       throw new Error("Model ordering does not match fixture metrics: " + JSON.stringify(orders));
     }
     await change(profile, "low");
@@ -884,7 +887,7 @@ function assertModelSelection(size) {
     );
   } else {
     assert(evidence.afterApply.persisted.modelPerformanceMode === "high", `Model Apply: failed mode mutated persisted settings: ${serialized}`);
-    assert(evidence.afterApply.persisted.activeModelFamilyId === "whisper-large-v3", `Model Apply: failed family mutated persisted settings: ${serialized}`);
+    assert(evidence.afterApply.persisted.activeModelFamilyId === "qwen3-asr-0-6b", `Model Apply: failed family mutated persisted settings: ${serialized}`);
     assert(evidence.afterApply.persisted.asrMode === "after-stop", `Model Apply: failed experience mutated persisted settings: ${serialized}`);
     assert(evidence.afterApply.checked.join("") === "low", `Model Apply: failed selection was not preserved: ${serialized}`);
     assert(!evidence.afterApply.applyDisabled, `Model Apply: failed pending selection cannot be retried: ${serialized}`);

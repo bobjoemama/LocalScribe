@@ -22,7 +22,7 @@ export function isModelSortOrder(value: string): value is ModelSortOrder {
 export function modelComparisonValues(family: Family, tier: ConcreteModelTier, experience: AsrMode) {
   const profile = family.profiles.find((candidate) => candidate.tier === tier);
   const artifact = family.artifacts.find((candidate) => candidate.artifactId === profile?.artifactId);
-  const reference = experience === "after-stop" ? MODEL_EVIDENCE[family.familyId].reference : null;
+  const reference = experience === "after-stop" ? MODEL_EVIDENCE[family.familyId]?.reference : null;
   return {
     memory: profile?.expectedMemoryMaxBytes ?? null,
     download: artifact?.expectedDownloadBytes ?? null,

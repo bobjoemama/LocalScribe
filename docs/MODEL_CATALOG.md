@@ -5,7 +5,7 @@ LocalScribe ships a fixed catalog for Apple Silicon. **Parakeet Unified EN
 English after-stop and Live dictation through FluidAudio and the Apple Neural
 Engine. Existing valid selections are preserved.
 
-Whisper large-v3 High, Canary-Qwen 2.5B, Qwen3-ASR 0.6B, and Qwen3-ASR 1.7B are
+Canary-Qwen 2.5B, Qwen3-ASR 0.6B, and Qwen3-ASR 1.7B are
 curated after-stop alternatives. Qwen3-ASR 0.6B is a smaller candidate, not a
 claim of measured superiority. Comparative accuracy, latency, and memory
 remain real-device benchmark questions.
@@ -46,7 +46,6 @@ selected model is active.
 | Family | Engine | Supported profiles | Dictation modes | Languages |
 | --- | --- | --- | --- | --- |
 | Parakeet Unified EN 0.6B | FluidAudio / Core ML / ANE | High FP16, Medium INT8 | After-stop, Live | English |
-| Whisper large-v3 | MLX Whisper | High FP16 only | After-stop | Multilingual catalog capabilities |
 | Canary-Qwen 2.5B | transcribe.cpp / Metal | High BF16, Medium Q8, Low Q4 | After-stop | English |
 | Qwen3-ASR 0.6B | MLX Audio | High BF16, Medium 8-bit, Low 4-bit | After-stop | Catalog-declared capabilities |
 | Qwen3-ASR 1.7B | MLX Audio | High BF16, Medium 8-bit, Low 4-bit | After-stop | Catalog-declared capabilities |
@@ -63,7 +62,6 @@ or benchmark measurements:
 | Family | High | Medium | Low |
 | --- | ---: | ---: | ---: |
 | Parakeet Unified EN 0.6B | 0.8-1.3 GiB | 0.6-1.1 GiB | Not offered |
-| Whisper large-v3 | 4.0-5.5 GiB | Not offered | Not offered |
 | Canary-Qwen 2.5B | 6.0-9.0 GiB | 4.0-7.0 GiB | 3.0-6.0 GiB |
 | Qwen3-ASR 0.6B | 2.0-3.0 GiB | 1.4-2.3 GiB | 1.1-2.0 GiB |
 | Qwen3-ASR 1.7B | 4.2-5.4 GiB | 2.6-3.6 GiB | 1.8-2.8 GiB |
@@ -118,7 +116,6 @@ qwen3-asr-0-6b-mlx-4bit.json
 qwen3-asr-1-7b-mlx-bf16.json
 qwen3-asr-1-7b-mlx-8bit.json
 qwen3-asr-1-7b-mlx-4bit.json
-whisper-large-v3-mlx.json
 ```
 
 The package gate removes every other manifest before signing. The source
@@ -130,9 +127,7 @@ The Parakeet Unified Core ML artifact declares CC-BY-4.0 at its pinned
 revision. FluidAudio declares Apache-2.0; that does not replace the model's
 attribution obligations.
 
-The macOS Whisper large-v3 FP16 manifest declares MIT. All Whisper v2 profiles
-and Whisper v3 Medium/Low are excluded from the shipped catalog and worker
-because their exact conversions lack declared license metadata. Historical
+Whisper is removed from the catalog, worker, and packaged manifests. Historical
 manifests remain recoverable in Git history, not in the app. Qwen3-ASR declares
 Apache-2.0 and the curated Canary conversion declares CC-BY-4.0. Each exact
 manifest remains authoritative; do not infer a license from a related runtime.
@@ -141,8 +136,9 @@ An upgrade preserves a retired saved selection and its cached model files.
 The app reports that the selection is unavailable, blocks dictation, and lets
 the user choose and Apply a supported replacement. It does not silently change
 families or quantization. Old cached artifacts appear as unmanaged files; this
-change does not delete them. Whisper v3 Auto can resolve only to High and stays
-blocked if High does not fit memory.
+change does not delete them or existing transcript history. Legacy Whisper
+family IDs remain recognized only to surface the unavailable selection and
+require an explicit replacement Apply; no Whisper profile can load.
 
 ## Future additions
 

@@ -27,12 +27,9 @@ from .model_metadata import is_inert_model_metadata as _is_inert_model_metadata
 
 PROTOCOL_VERSION = 1
 BACKEND_NAME = "localscribe-mlx-asr"
-# Handshake both installed inference engines. The supervisor retains the exact
-# release allowlist, so either dependency drifting fails closed.
-BACKEND_VERSION = (
-    f"mlx-whisper/{package_version('mlx-whisper')};"
-    f"mlx-audio/{package_version('mlx-audio')}"
-)
+# The supervisor retains the exact release allowlist, so dependency drift
+# fails closed before a model can be loaded.
+BACKEND_VERSION = f"mlx-audio/{package_version('mlx-audio')}"
 
 MAX_REQUEST_BYTES = 16 * 1024
 # Keep these literals in sync with resources/audio-protocol.json. They are
@@ -160,7 +157,6 @@ CURATED_PROFILE_POLICIES = (
     ("canary-qwen-2-5b-gguf-bf16.json", "high", "bfloat16", "transcribe.cpp / Metal"),
     ("canary-qwen-2-5b-gguf-q8.json", "medium", "int8", "transcribe.cpp / Metal"),
     ("canary-qwen-2-5b-gguf-q4.json", "low", "int4", "transcribe.cpp / Metal"),
-    ("whisper-large-v3-mlx.json", "high", "float16", "MLX Whisper"),
     ("qwen3-asr-1-7b-mlx-bf16.json", "high", "bfloat16", "MLX Audio"),
     ("qwen3-asr-1-7b-mlx-8bit.json", "medium", "int8", "MLX Audio"),
     ("qwen3-asr-1-7b-mlx-4bit.json", "low", "int4", "MLX Audio"),
@@ -1404,152 +1400,6 @@ def read_apple_hardware_info() -> HardwareInfo:
     )
 
 
-class MLXWhisperRuntime:
-    def __init__(
-        self,
-        *,
-        mlx_module: Any,
-        numpy_module: Any,
-        model_holder: Any,
-        transcribe_function: Callable[..., Any],
-        model: Any,
-        model_path: str,
-    ) -> None:
-        self._mlx = mlx_module
-        self._numpy = numpy_module
-        self._model_holder = model_holder
-        self._transcribe_function = transcribe_function
-        self._model = model
-        self._model_path = model_path
-
-    @classmethod
-    def load(cls, model_directory: Path, _spec: TierSpec) -> MLXWhisperRuntime:
-        if not model_directory.is_absolute():
-            raise WorkerError("model_load_failed", "local model path is invalid")
-        try:
-            with contextlib.redirect_stdout(sys.stderr):
-                import mlx.core as mx
-                import numpy as np
-                from mlx_whisper.load_models import load_model
-                from mlx_whisper.transcribe import ModelHolder, transcribe
-        except Exception as error:
-            raise WorkerError(
-                "runtime_import_failed",
-                "MLX Whisper runtime dependencies are unavailable",
-            ) from error
-        model_path = str(model_directory)
-        try:
-            with contextlib.redirect_stdout(sys.stderr):
-                model = load_model(model_path, dtype=mx.float16)
-        except Exception as error:
-            raise WorkerError(
-                "model_load_failed",
-                "The selected Whisper model could not be loaded with MLX",
-            ) from error
-        # mlx-whisper's public transcribe entrypoint owns this single-process
-        # holder. Pre-populating it makes load_model an actual load boundary and
-        # guarantees transcribe receives only the already-verified local path.
-        ModelHolder.model = model
-        ModelHolder.model_path = model_path
-        return cls(
-            mlx_module=mx,
-            numpy_module=np,
-            model_holder=ModelHolder,
-            transcribe_function=transcribe,
-            model=model,
-            model_path=model_path,
-        )
-
-    def transcribe(
-        self,
-        pcm16: bytes,
-        *,
-        language: str | None,
-        context: str,
-    ) -> TranscriptionResult:
-        if self._model is None:
-            raise WorkerError("model_not_loaded", "ASR model is not loaded")
-        waveform = (
-            self._numpy.frombuffer(pcm16, dtype="<i2").astype(self._numpy.float32)
-            / 32768.0
-        )
-        try:
-            with contextlib.redirect_stdout(sys.stderr):
-                result = self._transcribe_function(
-                    waveform,
-                    path_or_hf_repo=self._model_path,
-                    verbose=None,
-                    language=language,
-                    initial_prompt=context or None,
-                    fp16=True,
-                )
-        except WorkerError:
-            raise
-        except Exception as error:
-            raise WorkerError("transcription_failed", "local transcription failed") from error
-        if not isinstance(result, dict):
-            raise WorkerError(
-                "invalid_model_output",
-                "model returned an invalid transcription",
-            )
-        text = result.get("text")
-        detected_language = result.get("language")
-        if not isinstance(text, str) or len(text) > MAX_RESULT_CHARS:
-            raise WorkerError(
-                "invalid_model_output",
-                "model returned an invalid transcription",
-            )
-        if (
-            detected_language is not None
-            and (
-                not isinstance(detected_language, str)
-                or len(detected_language) > MAX_LANGUAGE_CHARS
-            )
-        ):
-            detected_language = None
-        return TranscriptionResult(
-            text=text,
-            language=detected_language or language,
-        )
-
-    def release_transient_memory(self) -> None:
-        """Frees MLX's scratch buffers while keeping the model weights resident.
-
-        MLX's buffer cache defaults to the device's recommended working set —
-        48.96 GB was reported on the machine this was measured on — and nothing
-        trimmed it between dictations. A 600 s dictation on whisper-large-v3
-        fp16 left 8,976 MB cached, and a 60 s dictation left 5,884 MB, held for
-        the whole life of the resident worker. LocalScribe deliberately keeps
-        that worker warm, so the user's "idle" dictation service sat on several
-        gigabytes of dead Metal buffers.
-
-        Measured cost: none. Alternating clear/keep across nine 60 s runs in one
-        process gave 9.73-10.10 s regardless of policy — the cache refills
-        during the next dictation, so only the idle footprint changes. Weights
-        stay put: active memory held at 2,945 MB across every run.
-        """
-        try:
-            self._mlx.synchronize()
-            self._mlx.clear_cache()
-        except Exception:
-            pass
-
-    def close(self) -> None:
-        try:
-            self._mlx.synchronize()
-        except Exception:
-            pass
-        if self._model_holder.model is self._model:
-            self._model_holder.model = None
-            self._model_holder.model_path = None
-        self._model = None
-        gc.collect()
-        try:
-            self._mlx.clear_cache()
-        except Exception:
-            pass
-
-
 class MLXAudioRuntime:
     def __init__(
         self,
@@ -1646,7 +1496,7 @@ class MLXAudioRuntime:
         )
 
     def release_transient_memory(self) -> None:
-        """Frees MLX scratch buffers between dictations; see MLXWhisperRuntime."""
+        """Free MLX scratch buffers while keeping the model weights resident."""
         try:
             self._mlx.synchronize()
             self._mlx.clear_cache()
@@ -1966,8 +1816,6 @@ def _load_runtime(model_directory: Path, spec: TierSpec) -> InferenceRuntime:
         return FluidAudioParakeetRuntime.load(model_directory, spec)
     if spec.family_id in {"qwen3-asr-1-7b", "qwen3-asr-0-6b"}:
         return MLXAudioRuntime.load(model_directory, spec)
-    if spec.family_id in {"whisper-large-v3", "whisper-large-v2"}:
-        return MLXWhisperRuntime.load(model_directory, spec)
     raise WorkerError("model_not_allowed", "model family is not supported by this worker")
 
 

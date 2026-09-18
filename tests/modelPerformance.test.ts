@@ -232,7 +232,6 @@ describe("automatic model performance resolution", () => {
   it("applies the same telemetry policy to every curated model family", () => {
     for (const familyId of [
       "parakeet-unified-en-0-6b",
-      "whisper-large-v3",
       "qwen3-asr-0-6b",
       "qwen3-asr-1-7b",
       "canary-qwen-2-5b",

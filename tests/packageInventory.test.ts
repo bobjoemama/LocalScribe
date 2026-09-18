@@ -27,7 +27,6 @@ const MAC_MODEL_MANIFESTS = [
   "canary-qwen-2-5b-gguf-bf16.json",
   "canary-qwen-2-5b-gguf-q8.json",
   "canary-qwen-2-5b-gguf-q4.json",
-  "whisper-large-v3-mlx.json",
   "qwen3-asr-1-7b-mlx-bf16.json",
   "qwen3-asr-1-7b-mlx-8bit.json",
   "qwen3-asr-1-7b-mlx-4bit.json",
@@ -275,6 +274,12 @@ describe("packaged dependency inventory", () => {
       "python-runtime/venv/lib/python3.12/site-packages/pip/__init__.py",
       "python-runtime/venv/lib/python3.12/site-packages/pip-26.1.dist-info/METADATA",
       "python-runtime/venv/lib/python3.12/pip-25.0.1-py3-none-any.whl",
+      ...["mlx_whisper", "numba", "llvmlite", "torch", "tiktoken"].flatMap((name) => [
+        `python-runtime/venv/lib/python3.12/site-packages/${name}/__init__.py`,
+        `python-runtime/venv/lib/python3.12/site-packages/${name}-1.0.dist-info/METADATA`,
+        `python-runtime/cpython-3.12/lib/python3.12/site-packages/${name}/__init__.py`,
+      ]),
+      "python-runtime/venv/lib/python3.12/site-packages/mlx_audio/stt/models/whisper/__init__.py",
     ];
     for (const file of forbidden) {
       expect(() => assertPlatformResourceEntries([...valid, file], "darwin", "arm64"))

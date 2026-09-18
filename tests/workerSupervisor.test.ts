@@ -273,7 +273,7 @@ class FakeWorkerProcess extends EventEmitter {
       type: "hello",
       protocol: 1,
       backend: "localscribe-mlx-asr",
-      version: "mlx-whisper/0.4.3;mlx-audio/0.4.6",
+      version: "mlx-audio/0.4.6",
     }));
   }
 
@@ -498,10 +498,7 @@ describe("WorkerSupervisor model lifecycle", () => {
     };
 
     expect(WORKER_RUNTIME_IDENTITIES.localscribe_worker.version).toBe(
-      [
-        `mlx-whisper/${exactPin(macProject, "mlx-whisper")}`,
-        `mlx-audio/${exactPin(macProject, "mlx-audio")}`,
-      ].join(";"),
+      `mlx-audio/${exactPin(macProject, "mlx-audio")}`,
     );
   });
 
@@ -1599,11 +1596,11 @@ describe("model install request budget", () => {
    * inside it below roughly 21 Mbit/s, and each timeout terminated the worker
    * mid-download.
    */
-  const WHISPER_LARGE_V3_BYTES = 3_083_520_685;
+  const QWEN_06B_BF16_BYTES = 1_569_438_434;
   const QWEN_1_7B_BF16_BYTES = 4_080_710_353;
 
   it("gives every catalog artifact more than the old flat 20-minute budget", () => {
-    for (const bytes of [WHISPER_LARGE_V3_BYTES, QWEN_1_7B_BF16_BYTES]) {
+    for (const bytes of [QWEN_06B_BF16_BYTES, QWEN_1_7B_BF16_BYTES]) {
       expect(installTimeoutMs(bytes)).toBeGreaterThan(20 * 60_000);
     }
   });
@@ -1617,7 +1614,7 @@ describe("model install request budget", () => {
 
   it("scales with the artifact instead of holding one cap for every tier", () => {
     expect(installTimeoutMs(QWEN_1_7B_BF16_BYTES))
-      .toBeGreaterThan(installTimeoutMs(WHISPER_LARGE_V3_BYTES));
+      .toBeGreaterThan(installTimeoutMs(QWEN_06B_BF16_BYTES));
     expect(installTimeoutMs(1_000_000_000)).toBeLessThan(installTimeoutMs(3_000_000_000));
   });
 

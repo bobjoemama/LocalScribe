@@ -387,7 +387,7 @@ function acceleratorDiagnostics(): Diagnostics["accelerator"] {
   return {
     kind: acceleratorSnapshot.kind,
     // This is hardware identity only. The selected engine (MLX, CoreML/ANE,
-    // FluidAudio, MLX Whisper, or MLX Audio) is reported separately from its catalog tier.
+    // FluidAudio or MLX Audio) is reported separately from its catalog tier.
     displayName: acceleratorSnapshot.displayName,
     totalMemoryBytes: acceleratorSnapshot.totalMemoryBytes,
     freeMemoryBytes: acceleratorSnapshot.freeMemoryBytes,

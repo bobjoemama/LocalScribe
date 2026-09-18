@@ -35,10 +35,10 @@ async function modelRoot(): Promise<string> {
 
 const BASE = {
   schemaVersion: 1,
-  familyId: "whisper-large-v3",
+  familyId: "qwen3-asr-0-6b",
   artifactId: "test-artifact",
   platform: "darwin-arm64",
-  backend: "MLX Whisper",
+  backend: "MLX Audio",
   displayName: "Test model",
   modelId: "trusted-owner/trusted-model",
   storageDirectory: "test-model",
@@ -80,7 +80,7 @@ describe("the storage directory a manifest may name", () => {
 
   it("still accepts the shapes the shipped manifests use", () => {
     for (const storageDirectory of [
-      "whisper-large-v3-mlx",
+      "qwen3-asr-0-6b-mlx",
       "qwen3-asr-0-6b-mlx-8bit",
       "model.v2",
       "m",

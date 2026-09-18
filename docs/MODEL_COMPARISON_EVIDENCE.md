@@ -28,12 +28,11 @@ loads, or applies a model. Missing values remain last in either direction.
 | --- | ---: | ---: |
 | NVIDIA Canary-Qwen 2.5B | 1.23 | 678.3482 |
 | Qwen3-ASR 1.7B **-hf** | 1.26 | 664.199 |
-| Whisper large-v3 | 1.56 | 485.126 |
 | Qwen3-ASR 0.6B **-hf** | 1.70 | 723.1457 |
 
 The Qwen entries are the Transformers reference checkpoints, **not** the MLX
-artifacts. Parakeet **Unified** and Whisper large-v2 are absent from this snapshot;
-they remain unreported rather than borrowing another variant's results. All Live
+artifacts. Parakeet **Unified** is absent from this snapshot;
+it remains unreported rather than borrowing another variant's results. All Live
 reference metrics are unreported because this dataset measures after-stop runs.
 
 Additional primary sources were reviewed, but deliberately not mixed into that
@@ -42,7 +41,7 @@ sort: [NVIDIA's Unified model card](https://huggingface.co/nvidia/parakeet-unifi
 [FluidAudio's Apple Silicon benchmarks](https://github.com/FluidInference/FluidAudio/blob/main/Documentation/Benchmarks.md),
 and [transcribe.cpp's Canary measurements](https://github.com/handy-computer/transcribe.cpp/blob/main/docs/models/canary-qwen-2.5b.md).
 The latter two contain useful Mac measurements, but not a matched set covering
-our six families, precisions, runtime versions, hardware, and workloads. We do
+our four families, precisions, runtime versions, hardware, and workloads. We do
 not rank an M5 Pro full-corpus result against an M4 Max short-clip result.
 
 ## Artifact provenance
@@ -59,7 +58,6 @@ Hugging Face may deliver large files through its own CDN/Xet infrastructure.
 | Canary-Qwen | [NVIDIA](https://huggingface.co/nvidia/canary-qwen-2.5b) | [handy-computer](https://huggingface.co/handy-computer/canary-qwen-2.5b-gguf), GGUF |
 | Qwen3-ASR 0.6B | [Qwen](https://huggingface.co/Qwen/Qwen3-ASR-0.6B) | MLX Community, separate BF16/INT8/INT4 repositories |
 | Qwen3-ASR 1.7B | [Qwen](https://huggingface.co/Qwen/Qwen3-ASR-1.7B) | MLX Community, separate BF16/INT8/INT4 repositories |
-| Whisper large-v3 | [OpenAI](https://huggingface.co/openai/whisper-large-v3) | MLX Community FP16 only; INT8/INT4 excluded pending license review |
 
 Runtime-maintainer/community conversions are **not original-publisher artifacts**.
 Replacing them with raw original checkpoints would require different runtimes;

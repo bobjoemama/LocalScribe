@@ -41,7 +41,7 @@
     "ci:macos": "bash scripts/verify-local-macos.sh",
     "hooks:install": "git config core.hooksPath .githooks",
     "lint": "eslint . --max-warnings 0",
-    "lint:python:macos": "uv run --project worker --locked --only-dev ruff check --config worker/pyproject.toml worker/localscribe_worker worker/tests scripts/smoke-worker.py",
+    "lint:python:macos": "uv run --project worker --locked --only-dev ruff check --config worker/pyproject.toml worker/localscribe_worker worker/tests scripts/smoke-worker.py scripts/prune-mlx-audio-whisper.py scripts/reconcile-python-sbom.py scripts/test-pip-url-boundary.py",
     "lint:all": "npm run lint && npm run lint:python:macos",
     "typecheck": "tsc --noEmit",
     "test": "node scripts/run-bounded-vitest.mjs",

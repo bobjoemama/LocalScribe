@@ -12,20 +12,14 @@ interface ModelEvidence {
   reference: { modelId: string; wer: number; rtfx: number } | null;
 }
 
-// Do not substitute another Parakeet variant or Whisper turbo for a missing row.
+// Do not substitute another model variant for a missing row.
 // The Qwen leaderboard rows are explicitly the Transformers (-hf) checkpoints.
-export const MODEL_EVIDENCE: Record<ModelFamilyId, ModelEvidence> = {
+export const MODEL_EVIDENCE: Partial<Record<ModelFamilyId, ModelEvidence>> = {
   "parakeet-unified-en-0-6b": {
     originalModelId: "nvidia/parakeet-unified-en-0.6b",
     artifactPublisher: "FluidInference",
     publisherDescription: "FluidInference runtime-maintainer Core ML conversion (not NVIDIA weights published directly).",
     reference: null,
-  },
-  "whisper-large-v3": {
-    originalModelId: "openai/whisper-large-v3",
-    artifactPublisher: "mlx-community",
-    publisherDescription: "MLX Community conversion (not an OpenAI-published Mac artifact).",
-    reference: { modelId: "openai/whisper-large-v3", wer: 1.56, rtfx: 485.126 },
   },
   "qwen3-asr-0-6b": {
     originalModelId: "Qwen/Qwen3-ASR-0.6B",
@@ -44,12 +38,6 @@ export const MODEL_EVIDENCE: Record<ModelFamilyId, ModelEvidence> = {
     artifactPublisher: "handy-computer",
     publisherDescription: "handy-computer runtime-maintainer GGUF conversion (not NVIDIA weights published directly).",
     reference: { modelId: "nvidia/canary-qwen-2.5b", wer: 1.23, rtfx: 678.3482 },
-  },
-  "whisper-large-v2": {
-    originalModelId: "openai/whisper-large-v2",
-    artifactPublisher: "mlx-community",
-    publisherDescription: "MLX Community conversion (not an OpenAI-published Mac artifact).",
-    reference: null,
   },
 };
 

@@ -23,7 +23,6 @@ model-manifest/qwen3-asr-0-6b-mlx-4bit.json
 model-manifest/qwen3-asr-1-7b-mlx-bf16.json
 model-manifest/qwen3-asr-1-7b-mlx-8bit.json
 model-manifest/qwen3-asr-1-7b-mlx-4bit.json
-model-manifest/whisper-large-v3-mlx.json
 ```
 
 No Auto manifest exists. Auto resolves to an installed concrete profile in the

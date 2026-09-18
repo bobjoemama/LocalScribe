@@ -577,6 +577,38 @@ describe("release hardening configuration", () => {
     );
   });
 
+  it("keeps retired Whisper dependencies out of the locked worker environment", () => {
+    const lock = projectFile("worker/uv.lock");
+    const names = [...lock.matchAll(/^name = "([^"]+)"$/gmu)].map((match) => match[1]);
+    expect(names).toContain("mlx-audio");
+    expect(names).toContain("mlx");
+    for (const removed of ["mlx-whisper", "numba", "llvmlite", "torch", "tiktoken"]) {
+      expect(names, `${removed} must not return through a transitive worker dependency`).not.toContain(removed);
+    }
+  });
+
+  it("checks retained inference imports in the signed candidate without loading a model", () => {
+    const gate = projectFile("scripts/verify-python-inference.mjs");
+    const forge = projectFile("forge.config.ts");
+    const postPackage = forge.slice(forge.indexOf("postPackage:"));
+    const entitlementCheck = postPackage.indexOf('path.resolve("scripts/verify-macos-entitlements.mjs")');
+    const inferenceCheck = postPackage.indexOf('path.resolve("scripts/verify-python-inference.mjs")');
+    expect(entitlementCheck).toBeGreaterThanOrEqual(0);
+    expect(inferenceCheck).toBeGreaterThan(entitlementCheck);
+    expect(gate).toContain('["-I", "-B", "-c", probe]');
+    expect(gate).toContain("timeout: 60_000");
+    expect(gate).toContain('python.startsWith(`${resources}${path.sep}`)');
+    for (const dependency of ["mlx_whisper", "numba", "llvmlite", "torch", "tiktoken"]) {
+      expect(gate).toContain(`"${dependency}"`);
+    }
+    expect(gate).toContain("from mlx_audio.stt.models.qwen3_asr import Model");
+    expect(gate).toContain("from mlx_lm.generate import generate_step");
+    expect(gate).toContain("from transformers import AutoTokenizer, WhisperFeatureExtractor");
+    expect(gate).toContain('find_spec("mlx_audio.stt.models.whisper")');
+    expect(gate).not.toContain("from_pretrained(");
+    expect(gate).not.toContain("load_model(");
+  });
+
   it("always removes the renderer permission probe's private temporary directory", () => {
     const probe = projectFile("scripts/measure-renderer-permission-names.mjs");
 
