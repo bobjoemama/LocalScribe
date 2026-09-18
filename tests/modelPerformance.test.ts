@@ -61,7 +61,7 @@ describe("automatic model performance resolution", () => {
     manifestDirectory,
     "darwin",
     "arm64",
-    "whisper-large-v3",
+    "qwen3-asr-1-7b",
   );
 
   it("uses both total and free memory with conservative headroom", () => {
@@ -75,7 +75,7 @@ describe("automatic model performance resolution", () => {
       reason: "auto-highest-fit",
       fitsMemoryBudget: true,
     });
-    // Diagnostics must show the actual decision threshold: 5.5 GiB maximum
+    // Diagnostics must show the actual decision threshold: 5.4 GiB maximum
     // working memory plus 20% of total memory (3.2 GiB) headroom.
     expect(high.reservedHeadroomBytes).toBe(Math.ceil(3.2 * GIBIBYTE));
     expect(high.requiredMemoryBytes).toBe(
@@ -85,7 +85,7 @@ describe("automatic model performance resolution", () => {
     expect(resolveModelPerformance({
       preference: "auto",
       catalog,
-      memory: { totalBytes: 16 * GIBIBYTE, freeBytes: 6 * GIBIBYTE },
+      memory: { totalBytes: 16 * GIBIBYTE, freeBytes: 6.5 * GIBIBYTE },
     })).toMatchObject({
       effectiveTier: "low",
       reason: "auto-highest-fit",
@@ -148,7 +148,7 @@ describe("automatic model performance resolution", () => {
     expect(resolveModelPerformance({
       preference: "auto",
       catalog,
-      memory: { totalBytes: 16 * GIBIBYTE, freeBytes: 6 * GIBIBYTE },
+      memory: { totalBytes: 16 * GIBIBYTE, freeBytes: 6.5 * GIBIBYTE },
       previousTier: "high",
     })).toMatchObject({
       effectiveTier: "low",
@@ -181,7 +181,7 @@ describe("automatic model performance resolution", () => {
       reason: "explicit",
       fitsMemoryBudget: false,
     });
-    expect(result.tier.engine).toBe("mlx-whisper");
+    expect(result.tier.engine).toBe("mlx-audio");
   });
 
   it.each([
@@ -235,7 +235,7 @@ describe("automatic model performance resolution", () => {
       "whisper-large-v3",
       "qwen3-asr-0-6b",
       "qwen3-asr-1-7b",
-      "whisper-large-v2",
+      "canary-qwen-2-5b",
     ] as const) {
       const family = loadRuntimeModelCatalog(
         manifestDirectory,

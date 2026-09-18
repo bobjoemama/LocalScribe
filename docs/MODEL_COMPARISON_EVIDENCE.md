@@ -59,8 +59,7 @@ Hugging Face may deliver large files through its own CDN/Xet infrastructure.
 | Canary-Qwen | [NVIDIA](https://huggingface.co/nvidia/canary-qwen-2.5b) | [handy-computer](https://huggingface.co/handy-computer/canary-qwen-2.5b-gguf), GGUF |
 | Qwen3-ASR 0.6B | [Qwen](https://huggingface.co/Qwen/Qwen3-ASR-0.6B) | MLX Community, separate BF16/INT8/INT4 repositories |
 | Qwen3-ASR 1.7B | [Qwen](https://huggingface.co/Qwen/Qwen3-ASR-1.7B) | MLX Community, separate BF16/INT8/INT4 repositories |
-| Whisper large-v3 | [OpenAI](https://huggingface.co/openai/whisper-large-v3) | MLX Community, separate FP16/INT8/INT4 repositories |
-| Whisper large-v2 | [OpenAI](https://huggingface.co/openai/whisper-large-v2) | MLX Community, separate FP16/INT8/INT4 repositories |
+| Whisper large-v3 | [OpenAI](https://huggingface.co/openai/whisper-large-v3) | MLX Community FP16 only; INT8/INT4 excluded pending license review |
 
 Runtime-maintainer/community conversions are **not original-publisher artifacts**.
 Replacing them with raw original checkpoints would require different runtimes;

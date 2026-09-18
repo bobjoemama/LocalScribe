@@ -11,6 +11,10 @@ worker/localscribe_worker/**
 python-runtime/**
 native/macos/active-target
 native/macos/localscribe-fluidaudio-parakeet
+native/macos/liblocalscribe-canary.dylib
+model-manifest/canary-qwen-2-5b-gguf-bf16.json
+model-manifest/canary-qwen-2-5b-gguf-q8.json
+model-manifest/canary-qwen-2-5b-gguf-q4.json
 model-manifest/parakeet-unified-en-0-6b-coreml-fp16.json
 model-manifest/parakeet-unified-en-0-6b-coreml-int8.json
 model-manifest/qwen3-asr-0-6b-mlx-bf16.json
@@ -19,12 +23,7 @@ model-manifest/qwen3-asr-0-6b-mlx-4bit.json
 model-manifest/qwen3-asr-1-7b-mlx-bf16.json
 model-manifest/qwen3-asr-1-7b-mlx-8bit.json
 model-manifest/qwen3-asr-1-7b-mlx-4bit.json
-model-manifest/whisper-large-v2-mlx.json
-model-manifest/whisper-large-v2-mlx-8bit.json
-model-manifest/whisper-large-v2-mlx-4bit.json
 model-manifest/whisper-large-v3-mlx.json
-model-manifest/whisper-large-v3-mlx-8bit.json
-model-manifest/whisper-large-v3-mlx-4bit.json
 ```
 
 No Auto manifest exists. Auto resolves to an installed concrete profile in the

@@ -38,7 +38,7 @@ def request(message_type: str, **fields: Any) -> dict[str, Any]:
     return {"type": message_type, "id": str(uuid.uuid4()), **fields}
 
 
-def tier_spec(tier: str, *, family: str = "v3") -> TierSpec:
+def tier_spec(tier: str, *, family: str = "qwen") -> TierSpec:
     family_fragment = {
         "qwen": "Qwen3-ASR-1.7B",
         "qwen06": "Qwen3-ASR-0.6B",
@@ -60,7 +60,7 @@ def load_request(
     model_root: Path,
     *,
     allow_download: bool = False,
-    family: str = "v3",
+    family: str = "qwen",
     asr_mode: str = "after-stop",
     **overrides: Any,
 ) -> dict[str, Any]:
@@ -82,7 +82,7 @@ def install_request(
     model_root: Path,
     *,
     allow_download: bool = True,
-    family: str = "v3",
+    family: str = "qwen",
     **overrides: Any,
 ) -> dict[str, Any]:
     spec = tier_spec(tier, family=family)
@@ -587,6 +587,35 @@ class WorkerProtocolTests(unittest.TestCase):
             self.assertEqual(messages[2]["loadMs"], 0)
             self.assertTrue(runtime.closed)
 
+    def test_retired_whisper_profiles_never_load_or_download(self) -> None:
+        retired = [
+            ("whisper-large-v2-mlx", "high", "float16"),
+            ("whisper-large-v2-mlx-8bit", "medium", "int8"),
+            ("whisper-large-v2-mlx-4bit", "low", "int4"),
+            ("whisper-large-v3-mlx-8bit", "medium", "int8"),
+            ("whisper-large-v3-mlx-4bit", "low", "int4"),
+        ]
+        with tempfile.TemporaryDirectory() as temporary:
+            for model, tier, compute in retired:
+                for operation in ("load_model", "install_model"):
+                    with self.subTest(model=model, operation=operation):
+                        fields = {
+                            "modelId": f"mlx-community/{model}",
+                            "tier": tier,
+                            "computeType": compute,
+                            "modelRoot": temporary,
+                            "allowDownload": operation == "install_model",
+                        }
+                        if operation == "load_model":
+                            fields["asrMode"] = "after-stop"
+                        messages, _errors, _exit = self.run_protocol(
+                            encode_requests(request(operation, **fields), request("shutdown")),
+                            worker_role="installer" if operation == "install_model" else "inference",
+                            installer=lambda *_args: self.fail("retired model must not download"),
+                            factory=lambda *_args: self.fail("retired model must not load"),
+                        )
+                        self.assertEqual(messages[1]["code"], "model_not_allowed")
+
     def test_rejects_tier_model_or_compute_mismatch(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             model_root = Path(temporary)
@@ -603,7 +632,7 @@ class WorkerProtocolTests(unittest.TestCase):
             wrong_v2_tier = load_request(
                 "low",
                 model_root,
-                modelId=tier_spec("high", family="v2").model_id,
+                modelId=tier_spec("high", family="qwen06").model_id,
             )
             unknown_tier = load_request("low", model_root)
             unknown_tier["tier"] = "ultra"
@@ -626,12 +655,12 @@ class WorkerProtocolTests(unittest.TestCase):
                 "model_not_allowed",
             ])
 
-    def test_loads_exact_large_v2_catalog_selection(self) -> None:
+    def test_loads_exact_qwen06_catalog_selection(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             model_root = Path(temporary) / "models"
             model_root.mkdir()
-            v2_medium = tier_spec("medium", family="v2")
-            load = load_request("medium", model_root, family="v2")
+            qwen06_medium = tier_spec("medium", family="qwen06")
+            load = load_request("medium", model_root, family="qwen06")
             shutdown = request("shutdown")
             installed: list[ModelManifest] = []
             runtimes: list[FakeRuntime] = []
@@ -647,8 +676,8 @@ class WorkerProtocolTests(unittest.TestCase):
                 return installed_path
 
             def factory(_path: Path, spec: TierSpec) -> FakeRuntime:
-                self.assertEqual(spec, v2_medium)
-                runtime = FakeRuntime("large-v2")
+                self.assertEqual(spec, qwen06_medium)
+                runtime = FakeRuntime("qwen06")
                 runtimes.append(runtime)
                 return runtime
 
@@ -661,7 +690,7 @@ class WorkerProtocolTests(unittest.TestCase):
             self.assertEqual(exit_code, 0)
             self.assertEqual(errors, "")
             expected_manifest = worker_module.MODEL_MANIFESTS[
-                (v2_medium.model_id, v2_medium.tier, v2_medium.compute_type)
+                (qwen06_medium.model_id, qwen06_medium.tier, qwen06_medium.compute_type)
             ]
             self.assertEqual(installed, [expected_manifest])
             self.assertEqual(
@@ -670,7 +699,7 @@ class WorkerProtocolTests(unittest.TestCase):
                     "type": "model_ready",
                     "id": load["id"],
                     "tier": "medium",
-                    "modelId": v2_medium.model_id,
+                    "modelId": qwen06_medium.model_id,
                     "computeType": "int8",
                     "asrMode": "after-stop",
                     "loadMs": messages[1]["loadMs"],
@@ -682,8 +711,8 @@ class WorkerProtocolTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             model_root = Path(temporary) / "models"
             model_root.mkdir()
-            v3_low = tier_spec("low", family="v3")
-            v2_low = tier_spec("low", family="v2")
+            qwen_low = tier_spec("low", family="qwen")
+            qwen06_low = tier_spec("low", family="qwen06")
             runtimes: dict[str, FakeRuntime] = {}
 
             def installer(
@@ -691,8 +720,8 @@ class WorkerProtocolTests(unittest.TestCase):
                 manifest: ModelManifest,
                 _allow_download: bool,
             ) -> Path:
-                if manifest.model_id == v2_low.model_id:
-                    self.assertTrue(runtimes[v3_low.model_id].closed)
+                if manifest.model_id == qwen06_low.model_id:
+                    self.assertTrue(runtimes[qwen_low.model_id].closed)
                 installed_path = path / manifest.storage_directory
                 installed_path.mkdir(exist_ok=True)
                 return installed_path
@@ -702,20 +731,20 @@ class WorkerProtocolTests(unittest.TestCase):
                 runtimes[spec.model_id] = runtime
                 return runtime
 
-            load_v3 = load_request("low", model_root, family="v3")
-            load_v2 = load_request("low", model_root, family="v2")
+            load_qwen = load_request("low", model_root, family="qwen")
+            load_qwen06 = load_request("low", model_root, family="qwen06")
             messages, errors, exit_code = self.run_protocol(
-                encode_requests(load_v3, load_v2, request("shutdown")),
+                encode_requests(load_qwen, load_qwen06, request("shutdown")),
                 installer=installer,
                 factory=factory,
             )
 
             self.assertEqual(exit_code, 0)
             self.assertEqual(errors, "")
-            self.assertEqual(messages[1]["modelId"], v3_low.model_id)
-            self.assertEqual(messages[2]["modelId"], v2_low.model_id)
-            self.assertTrue(runtimes[v3_low.model_id].closed)
-            self.assertTrue(runtimes[v2_low.model_id].closed)
+            self.assertEqual(messages[1]["modelId"], qwen_low.model_id)
+            self.assertEqual(messages[2]["modelId"], qwen06_low.model_id)
+            self.assertTrue(runtimes[qwen_low.model_id].closed)
+            self.assertTrue(runtimes[qwen06_low.model_id].closed)
 
     def test_load_model_requires_explicit_no_download_policy(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1887,7 +1916,7 @@ class ModelInstallationTests(unittest.TestCase):
             self.assertFalse(worker_module._valid_model_directory(model, manifest))
 
     def test_catalog_manifest_rejects_a_url_as_manifest_model_identity(self) -> None:
-        spec = tier_spec("low", family="v2")
+        spec = tier_spec("high", family="v3")
         packaged_path = worker_module._manifest_path(spec.manifest_filename)
         raw = json.loads(packaged_path.read_text(encoding="utf-8"))
         raw["modelId"] = "https://untrusted.invalid/model"
@@ -1901,7 +1930,7 @@ class ModelInstallationTests(unittest.TestCase):
                 worker_module._parse_manifest(tampered, spec.tier, "MLX Whisper")
 
     def test_catalog_manifest_file_entry_ceiling_is_strictly_bounded(self) -> None:
-        spec = tier_spec("low", family="v2")
+        spec = tier_spec("high", family="v3")
         packaged_path = worker_module._manifest_path(spec.manifest_filename)
         raw = json.loads(packaged_path.read_text(encoding="utf-8"))
         raw["files"] = {
@@ -1918,7 +1947,7 @@ class ModelInstallationTests(unittest.TestCase):
                 worker_module._parse_manifest(tampered, spec.tier, "MLX Whisper")
 
     def test_catalog_identity_is_derived_from_the_curated_manifest(self) -> None:
-        spec = tier_spec("low", family="v2")
+        spec = tier_spec("high", family="v3")
         packaged_path = worker_module._manifest_path(spec.manifest_filename)
         raw = json.loads(packaged_path.read_text(encoding="utf-8"))
         raw.update(
@@ -1944,7 +1973,7 @@ class ModelInstallationTests(unittest.TestCase):
         self.assertEqual(manifest.revision, "c" * 40)
 
     def test_packaged_catalog_has_exact_curated_manifests_and_files(self) -> None:
-        self.assertEqual(len(TIER_SPECS), 17)
+        self.assertEqual(len(TIER_SPECS), 12)
         self.assertEqual(
             {spec.manifest_filename for spec in TIER_SPECS.values()},
             {
@@ -1952,11 +1981,6 @@ class ModelInstallationTests(unittest.TestCase):
                 "canary-qwen-2-5b-gguf-q8.json",
                 "canary-qwen-2-5b-gguf-q4.json",
                 "whisper-large-v3-mlx.json",
-                "whisper-large-v3-mlx-8bit.json",
-                "whisper-large-v3-mlx-4bit.json",
-                "whisper-large-v2-mlx.json",
-                "whisper-large-v2-mlx-8bit.json",
-                "whisper-large-v2-mlx-4bit.json",
                 "qwen3-asr-1-7b-mlx-bf16.json",
                 "qwen3-asr-1-7b-mlx-8bit.json",
                 "qwen3-asr-1-7b-mlx-4bit.json",
@@ -1967,14 +1991,7 @@ class ModelInstallationTests(unittest.TestCase):
                 "parakeet-unified-en-0-6b-coreml-int8.json",
             },
         )
-        for family in ("v3", "v2"):
-            self.assertEqual(
-                [
-                    tier_spec(tier, family=family).compute_type
-                    for tier in ("high", "medium", "low")
-                ],
-                ["float16", "int8", "int4"],
-            )
+        self.assertEqual(tier_spec("high", family="v3").compute_type, "float16")
         for family in ("qwen", "qwen06"):
             self.assertEqual(
                 [

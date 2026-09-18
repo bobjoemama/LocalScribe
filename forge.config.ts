@@ -42,6 +42,7 @@ import {
   type PreparedResourceIntegrity,
 } from "./src/main/resourceIntegrity";
 import { assertExpectedMakeResults } from "./scripts/make-result-safety.mts";
+import { assertDistributableModelLicenses } from "./scripts/model-license-policy";
 import {
   promoteProtectedResources,
   type ProtectedResourcePreparation,
@@ -127,11 +128,7 @@ function validatePublicReleaseConfiguration(): void {
       );
     }
     requireReleaseEnvironment("APPLE_KEYCHAIN_PROFILE");
-    if (process.env.LOCALSCRIBE_UNDECLARED_MLX_LICENSE_APPROVED !== "1") {
-      throw new Error(
-        "Public macOS releases require documented legal approval for every packaged MLX artifact with Undeclared license metadata.",
-      );
-    }
+    assertDistributableModelLicenses(path.resolve("."));
     return;
   }
   throw new Error(`Public LocalScribe releases cannot be built on ${process.platform}.`);

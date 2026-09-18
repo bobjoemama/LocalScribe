@@ -427,40 +427,6 @@ const v3Mac: FamilyCatalogDefinition = {
       precision: "fp16",
       memory: [4, 5.5],
     }),
-    medium: mlxTier("whisper-large-v3", {
-      manifestFilename: "whisper-large-v3-mlx-8bit.json",
-      precision: "8-bit",
-      memory: [2.5, 3.5],
-    }),
-    low: mlxTier("whisper-large-v3", {
-      manifestFilename: "whisper-large-v3-mlx-4bit.json",
-      precision: "4-bit",
-      memory: [1.8, 2.7],
-    }),
-  },
-};
-
-const v2Mac: FamilyCatalogDefinition = {
-  familyId: "whisper-large-v2",
-  displayName: "Whisper large-v2",
-  engine: "mlx-whisper",
-  capabilities: WHISPER_CAPABILITIES,
-  tiers: {
-    high: mlxTier("whisper-large-v2", {
-      manifestFilename: "whisper-large-v2-mlx.json",
-      precision: "fp16",
-      memory: [4, 5.5],
-    }),
-    medium: mlxTier("whisper-large-v2", {
-      manifestFilename: "whisper-large-v2-mlx-8bit.json",
-      precision: "8-bit",
-      memory: [2.5, 3.5],
-    }),
-    low: mlxTier("whisper-large-v2", {
-      manifestFilename: "whisper-large-v2-mlx-4bit.json",
-      precision: "4-bit",
-      memory: [1.8, 2.7],
-    }),
   },
 };
 
@@ -554,7 +520,6 @@ export const MODEL_CATALOG_DEFINITIONS = {
       "qwen3-asr-0-6b": qwen06Mac,
       "qwen3-asr-1-7b": qwenMac,
       "canary-qwen-2-5b": canaryMac,
-      "whisper-large-v2": v2Mac,
     },
   },
 } as const satisfies PlatformCatalogDefinition;

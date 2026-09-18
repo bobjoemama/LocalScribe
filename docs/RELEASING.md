@@ -111,10 +111,12 @@ This mode enables hardened runtime, app notarization and stapling, followed by
 DMG notarization, stapling, and Gatekeeper assessment. It does not publish to
 GitHub or change repository visibility.
 
-The existing `LOCALSCRIBE_UNDECLARED_MLX_LICENSE_APPROVED` gate is a separate
-release prerequisite, not a signing credential. Do not set it merely because
-an Apple developer account is available: exact artifact license review must
-be documented first. See [CLEAN_ROOM.md](CLEAN_ROOM.md).
+The release build checks the actual packaged model catalog's license
+declarations and requires its manifest set to match the packaging allowlist.
+There is no environment-variable waiver. Whisper v2 and Whisper v3 Medium/Low
+are excluded pending exact-artifact review, not relabeled as approved. An Apple
+developer account does not grant model redistribution rights. See
+[CLEAN_ROOM.md](CLEAN_ROOM.md).
 
 Check the exact app and DMG with `xcrun stapler validate` and the release
 artifact verifier's `--public-release` mode before describing them as

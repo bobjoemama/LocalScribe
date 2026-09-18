@@ -37,13 +37,6 @@ MACOS_FAMILY_TIER_MANIFESTS: Final = {
     },
     "whisper-large-v3": {
         "high": ("whisper-large-v3-mlx.json", "float16"),
-        "medium": ("whisper-large-v3-mlx-8bit.json", "int8"),
-        "low": ("whisper-large-v3-mlx-4bit.json", "int4"),
-    },
-    "whisper-large-v2": {
-        "high": ("whisper-large-v2-mlx.json", "float16"),
-        "medium": ("whisper-large-v2-mlx-8bit.json", "int8"),
-        "low": ("whisper-large-v2-mlx-4bit.json", "int4"),
     },
     "qwen3-asr-1-7b": {
         "high": ("qwen3-asr-1-7b-mlx-bf16.json", "bfloat16"),

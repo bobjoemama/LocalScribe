@@ -61,6 +61,8 @@ import {
   type SessionSnapshot,
 } from "./shared/contracts";
 import { modelPerformanceTierLabel } from "./shared/modelPerformance";
+import { modelSelectionIsAvailable, UNAVAILABLE_MODEL_SELECTION_MESSAGE } from "./shared/modelAvailability";
+import { unavailableModelDiagnostics } from "./main/unavailableModelDiagnostics";
 import { transcribeAudioAdmission } from "./shared/dictationSession";
 import { discardAudio, prepareTranscription } from "./main/session/transcribePrelude";
 import { createFinalizeWatchdog } from "./main/session/finalizeWatchdog";
@@ -284,6 +286,16 @@ function modelCatalog(
   const catalog = platformModelCatalog().families[familyId];
   if (!catalog) throw new Error(`Model family ${familyId} is unavailable on this platform`);
   return catalog;
+}
+
+function savedModelSelectionIsAvailable(): boolean {
+  const settings = database.getSettings();
+  const family = platformModelCatalog().families[settings.activeModelFamilyId];
+  return modelSelectionIsAvailable({
+    familyId: settings.activeModelFamilyId,
+    asrMode: settings.asrMode,
+    performanceMode: settings.modelPerformanceMode,
+  }, family ? { modes: family.capabilities.modes, tiers: Object.keys(family.tiers) } : undefined);
 }
 
 function assertModelLanguageSupported(
@@ -535,6 +547,7 @@ async function refreshAutoResolutionAtRecordingBoundary(): Promise<ModelPerforma
 }
 
 async function currentModelResolution(): Promise<ModelPerformanceResolution> {
+  if (!savedModelSelectionIsAvailable()) throw new Error(UNAVAILABLE_MODEL_SELECTION_MESSAGE);
   if (
     activeSessionModelResolution
     && activeSessionModelResolution.sessionId === activeSessionId
@@ -687,6 +700,17 @@ async function collectDiagnosticsForResolution(
 }
 
 async function collectDiagnostics(): Promise<Diagnostics> {
+  if (!savedModelSelectionIsAvailable()) {
+    if (!acceleratorSnapshot) await probeUnloadedAccelerator();
+    return unavailableModelDiagnostics(database.getSettings(), {
+      platform: runtimePlatformFor(process.platform),
+      architecture: runtimeArchitectureFor(process.arch),
+      databaseIntegrity: database.integrityCheck(),
+      unreadableRecords: database.unreadableRecordCount(),
+      accelerator: acceleratorDiagnostics(),
+      dataPath: app.getPath("userData"),
+    });
+  }
   return collectDiagnosticsForResolution(await currentModelResolution());
 }
 
@@ -1267,6 +1291,7 @@ function beginListening(activation: "hold" | "toggle" = "toggle"): SessionSnapsh
   if (modelOperationInProgress()) {
     return failSession("Wait for the local model operation to finish before dictating.");
   }
+  if (!savedModelSelectionIsAvailable()) return failSession(UNAVAILABLE_MODEL_SELECTION_MESSAGE);
   const settings = database.getSettings();
   try {
     void workerLanguageForActiveModel(settings);
@@ -1532,10 +1557,10 @@ async function applyModelSelection(
     }
 
     const previousResolution = currentResolutionForSelection ?? modelResolution
-      ?? resolveSelection(
+      ?? (savedModelSelectionIsAvailable() ? resolveSelection(
         previousSettings.activeModelFamilyId,
         previousSettings.modelPerformanceMode,
-      );
+      ) : null);
     const previousWarmSelection = currentWarmSelection;
     const previousAutoTierSnapshot = previousAutoTier;
     const previousAcceleratorSnapshot = acceleratorSnapshot;
@@ -1562,6 +1587,7 @@ async function applyModelSelection(
         else await probeUnloadedAccelerator();
       }
       const warmResolutionMatches = currentWarmSelection !== null
+        && previousResolution !== null
         && workerModelSelectionsMatch(
           currentWarmSelection,
           workerSelection(previousResolution.tier, previousSettings.asrMode),
@@ -2319,9 +2345,9 @@ function registerIpc(): void {
       assertModelSwitchAllowed();
       assertFamilyInLibrary(request.familyId);
       const tier = runtimeModelTier(modelCatalog(request.familyId), request.tier);
-      const activeResolution = await currentModelResolution();
+      const activeResolution = savedModelSelectionIsAvailable() ? await currentModelResolution() : null;
       if (
-        activeResolution.tier.familyId === request.familyId
+        activeResolution?.tier.familyId === request.familyId
         && activeResolution.tier.artifactId === tier.artifactId
       ) {
         throw new Error(
@@ -2579,7 +2605,13 @@ startupPromise = app.whenReady().then(async () => {
   });
   // Startup is an unloaded boundary. Capture one unbiased hardware snapshot;
   // later diagnostics remain observational and dictation keeps models warm.
-  await refreshModelResolution({ reprobeUnloaded: true });
+  if (savedModelSelectionIsAvailable()) {
+    await refreshModelResolution({ reprobeUnloaded: true });
+  } else {
+    // Keep the app and Settings usable after a catalog retirement. Do not
+    // migrate the saved model, touch its cache, or start a replacement runtime.
+    await probeUnloadedAccelerator();
+  }
   // A quit request can interrupt the initial hardware probe. The shutdown
   // path waits for this promise before closing the database; do not construct
   // app windows, IPC handlers, or hotkeys after that request.
