@@ -9,20 +9,24 @@ import { fileURLToPath } from "node:url";
  * The advisories behind the residual, pinned exactly. An advisory whose URL,
  * package, severity, or affected range is not spelled here fails the gate.
  *
- * Reviewed 2026-08-15:
+ * Re-reviewed 2026-09-18:
  *
- * - `image-size` is called by `appdmg` only while Forge builds a DMG from this
- *   repository's committed icon. Reaching its parser loops requires control of
- *   that source input. It is a build-only dependency and absent from the
- *   packaged application, which `audit:production` proves separately.
+ * - `image-size` is called by `appdmg` to read the DMG background dimensions.
+ *   This configuration uses electron-installer-dmg's bundled background.png;
+ *   it does not accept a user-supplied background. This is a build-only path,
+ *   absent from the packaged application. image-size 2.0.4 is patched, but
+ *   appdmg 0.6.6 requires the incompatible 0.7.x path/callback API, so a
+ *   forced major-version override is not a supported fix.
  * - `extract-zip` remains a transitive dependency of the pinned Electron
  *   packager. Its advisory is a symlink traversal during extraction. Our
  *   artifact verifier never calls it. `macos-zip-preflight.mts` validates
  *   canonical paths, Unix modes, collisions, special files, expansion limits,
  *   and every bundle-relative symlink target before macOS `ditto` extracts the
  *   archive while preserving signed `.app` semantics. The remaining transitive
- *   copy is build-only. No patched compatible Electron Forge / packager release
- *   is currently available.
+ *   copy is build-only. Stable Forge 7 still requires packager 18, which uses
+ *   extract-zip 2.0.1. Newer packager 20 uses Electron's maintained fork, but
+ *   overriding Forge's major-version contract or aliasing its extractor needs
+ *   separate compatibility and package verification, not an audit waiver.
  *
  * This narrowly accepts the current build-tool graph only. It is not a waiver
  * for archive extraction in runtime code, arbitrary archives, or new

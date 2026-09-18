@@ -98,7 +98,7 @@ describe("release hardening configuration", () => {
       "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1",
       "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0",
       "actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0",
-      "astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1",
+      "astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0",
     ]) {
       expect(workflow).toContain(`uses: ${action}`);
     }
