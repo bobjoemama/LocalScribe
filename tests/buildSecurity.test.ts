@@ -585,7 +585,7 @@ describe("release hardening configuration", () => {
     expect(probe).toContain("rmSync(probeRoot, { force: true, recursive: true })");
   });
 
-  it("audits every exact worker package with a separately locked pip-audit", () => {
+  it("audits every exact worker and audit-tool package with a separately locked pip-audit", () => {
     const packageJson = projectFile("package.json");
     const auditScript = projectFile("scripts/audit-python-deps.mjs");
     const auditToolProject = projectFile("tools/python-audit/pyproject.toml");
@@ -603,6 +603,8 @@ describe("release hardening configuration", () => {
     expect(auditScript).toContain('"python",\n      "-m",\n      "pip_audit"');
     expect(auditScript).not.toContain('"pip-audit",');
     expect(auditScript).toContain('{ label: "macOS worker", directory: "worker" }');
+    expect(auditScript).toContain('{ label: "Python audit tooling", directory: auditToolProject }');
+    expect(auditScript).toContain('"scripts/test-pip-url-boundary.py"');
     for (const requiredFlag of [
       '"export"',
       '"run"',

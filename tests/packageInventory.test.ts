@@ -251,6 +251,46 @@ describe("packaged dependency inventory", () => {
     ).toThrow(/weights\.npz/);
   });
 
+  it("removes unused Python installers from base and venv trees without removing inference packages", () => {
+    const resources = makeTemporaryProject();
+    const policy = resourcePolicyFor("darwin", "arm64");
+    const valid = [
+      `${policy.workerDirectory}/__init__.py`,
+      `${policy.workerDirectory}/__main__.py`,
+      policy.runtimeExecutable,
+      ...policy.helperFiles, ...policy.manifestFiles, ...policy.licenseFiles, ...policy.legalFiles,
+      "python-runtime/cpython-3.12/bin/python3",
+      "python-runtime/venv/lib/python3.12/site-packages/mlx/__init__.py",
+      "python-runtime/venv/lib/python3.12/site-packages/mlx-1.0.dist-info/METADATA",
+      "python-runtime/venv/lib/python3.12/site-packages/pipelines/__init__.py",
+      "python-runtime/venv/lib/python3.12/site-packages/pip_api/__init__.py",
+    ];
+    const forbidden = [
+      "python-runtime/cpython-3.12/lib/python3.12/site-packages/pip/__init__.py",
+      "python-runtime/cpython-3.12/lib/python3.12/site-packages/pip-26.1.dist-info/METADATA",
+      "python-runtime/cpython-3.12/lib/python3.12/ensurepip/_bundled/pip-25.0.1-py3-none-any.whl",
+      "python-runtime/cpython-3.12/bin/pip",
+      "python-runtime/cpython-3.12/bin/pip3",
+      "python-runtime/cpython-3.12/bin/pip3.12",
+      "python-runtime/venv/lib/python3.12/site-packages/pip/__init__.py",
+      "python-runtime/venv/lib/python3.12/site-packages/pip-26.1.dist-info/METADATA",
+      "python-runtime/venv/lib/python3.12/pip-25.0.1-py3-none-any.whl",
+    ];
+    for (const file of forbidden) {
+      expect(() => assertPlatformResourceEntries([...valid, file], "darwin", "arm64"))
+        .toThrow(/forbidden/);
+    }
+    for (const file of [...valid, ...forbidden]) {
+      const target = path.join(resources, file);
+      mkdirSync(path.dirname(target), { recursive: true });
+      writeFileSync(target, file);
+    }
+    prunePackagedResources(resources, "darwin", "arm64");
+    for (const file of forbidden) expect(existsSync(path.join(resources, file)), file).toBe(false);
+    for (const file of valid) expect(existsSync(path.join(resources, file)), file).toBe(true);
+    expect(() => assertPlatformResourceEntries(valid, "darwin", "arm64")).not.toThrow();
+  });
+
   it("reduces copied resources to one operating system before signing", () => {
     const resources = makeTemporaryProject();
     const files = [

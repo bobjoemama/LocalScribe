@@ -31,6 +31,10 @@ const MAC_MANIFESTS = [
 ] as const;
 
 const FORBIDDEN_PACKAGED_RESOURCE_PATH_PATTERNS: readonly RegExp[] = [
+  // Runtime dependencies are installed by locked uv builds, never by the app.
+  // Exclude both the installer and ensurepip's independently bundled wheel.
+  /(?:^|\/)(?:pip(?:[0-9]+(?:\.[0-9]+)*)?|ensurepip)(?:\/|$)/i,
+  /(?:^|\/)pip-[^/]+\.(?:dist-info|whl)(?:\/|$)/i,
   /(?:^|\/)(?:test|tests|__tests__)(?:\/|$)/i,
   /(?:^|\/)(?:__pycache__|\.pytest_cache|\.mypy_cache|\.ruff_cache|\.cache)(?:\/|$)/i,
   /(?:^|\/)(?:CACHEDIR\.TAG|\.DS_Store|Thumbs\.db)$/i,

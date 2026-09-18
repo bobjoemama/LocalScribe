@@ -13,8 +13,8 @@ cloud transcription, or telemetry.
 The repository is currently private: sign in to a GitHub account that has been
 invited to it. A missing page or 404 usually means you do not have access.
 
-**Distribution status:** dev.18 is Developer ID-signed and Apple-notarized,
-with its DMG staged in a draft release pending hands-on acceptance. Drafts
+**Distribution status:** the latest Developer ID-signed, Apple-notarized Mac
+candidate is staged in a draft release pending hands-on acceptance. Drafts
 require repository write access and are not yet available to all invited
 testers. Older published releases are development previews; do not assume
 they are notarized. Check the release notes for its signing status.
