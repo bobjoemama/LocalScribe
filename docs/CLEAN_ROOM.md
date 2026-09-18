@@ -19,10 +19,7 @@ Current macOS boundaries:
 - the Parakeet Unified Core ML artifact declares CC-BY-4.0 at its pinned
   revision;
 - FluidAudio declares Apache-2.0, which does not replace Parakeet attribution;
-- the Whisper large-v3 FP16 manifest declares MIT;
-- Whisper large-v3 8-bit/4-bit and all previously pinned
-  `mlx-community/whisper-large-v2-mlx` artifacts lack declared licenses and are
-  excluded from the catalog, worker, and package pending separate review;
+- Whisper is excluded from the catalog, worker, and packaged manifests;
 - curated Qwen3-ASR manifests declare Apache-2.0.
 
 Exact identities, revisions, sizes, and file digests are recorded in

@@ -19,7 +19,6 @@ const MAC_MANIFESTS = [
   "canary-qwen-2-5b-gguf-bf16.json",
   "canary-qwen-2-5b-gguf-q8.json",
   "canary-qwen-2-5b-gguf-q4.json",
-  "whisper-large-v3-mlx.json",
   "qwen3-asr-1-7b-mlx-bf16.json",
   "qwen3-asr-1-7b-mlx-8bit.json",
   "qwen3-asr-1-7b-mlx-4bit.json",
@@ -35,6 +34,11 @@ const FORBIDDEN_PACKAGED_RESOURCE_PATH_PATTERNS: readonly RegExp[] = [
   // Exclude both the installer and ensurepip's independently bundled wheel.
   /(?:^|\/)(?:pip(?:[0-9]+(?:\.[0-9]+)*)?|ensurepip)(?:\/|$)/i,
   /(?:^|\/)pip-[^/]+\.(?:dist-info|whl)(?:\/|$)/i,
+  /(?:^|\/)(?:mlx_whisper|numba|llvmlite|torch|tiktoken)(?:\/|$)/i,
+  /(?:^|\/)(?:mlx_whisper|numba|llvmlite|torch|tiktoken)-[^/]+\.dist-info(?:\/|$)/i,
+  // Qwen still needs transformers' shared WhisperFeatureExtractor; only the
+  // independent MLX Audio Whisper model backend is excluded here.
+  /(?:^|\/)mlx_audio\/stt\/models\/whisper(?:\/|$)/i,
   /(?:^|\/)(?:test|tests|__tests__)(?:\/|$)/i,
   /(?:^|\/)(?:__pycache__|\.pytest_cache|\.mypy_cache|\.ruff_cache|\.cache)(?:\/|$)/i,
   /(?:^|\/)(?:CACHEDIR\.TAG|\.DS_Store|Thumbs\.db)$/i,

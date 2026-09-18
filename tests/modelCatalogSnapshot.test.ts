@@ -7,7 +7,7 @@ import {
   modelRootForUserData,
 } from "../src/main/modelCatalogSnapshot";
 import { loadRuntimePlatformModelCatalog } from "../src/main/modelSpec";
-import { modelCatalogSchema } from "../src/shared/contracts";
+import { modelCatalogSchema, RETIRED_MODEL_FAMILY_IDS } from "../src/shared/contracts";
 
 const temporaryRoots: string[] = [];
 
@@ -19,6 +19,39 @@ afterEach(async () => {
 });
 
 describe("main-process model catalog snapshot", () => {
+  it.each(RETIRED_MODEL_FAMILY_IDS)("carries retired %s through the actual renderer contract without substitution", async (retired) => {
+    const modelRoot = await mkdtemp(path.join(os.tmpdir(), "localscribe-retired-snapshot-"));
+    temporaryRoots.push(modelRoot);
+    const catalog = loadRuntimePlatformModelCatalog(path.resolve("resources/model-manifest"), "darwin", "arm64");
+    const settings = { activeModelFamilyId: retired, modelLibraryFamilyIds: [retired] };
+    const before = modelCatalogSchema.parse(await buildModelCatalogSnapshot({ settings, catalog, modelRoot }));
+    expect(before.activeModelFamilyId).toBe(retired);
+    expect(before.modelLibraryFamilyIds).toEqual([retired]);
+    expect(before.families.every((family) => !family.active)).toBe(true);
+    expect(before.families.some((family) => family.familyId === retired)).toBe(false);
+
+    // An explicit replacement may preserve the legacy library entry. Its real
+    // snapshot must still pass the same schema used by preload/Apply results.
+    const after = modelCatalogSchema.parse(await buildModelCatalogSnapshot({
+      settings: {
+        activeModelFamilyId: "parakeet-unified-en-0-6b",
+        modelLibraryFamilyIds: [retired, "parakeet-unified-en-0-6b"],
+      }, catalog, modelRoot,
+    }));
+    expect(after.activeModelFamilyId).toBe("parakeet-unified-en-0-6b");
+    expect(after.modelLibraryFamilyIds).toContain(retired);
+
+    const missingCurrent = {
+      ...after,
+      families: after.families.filter((family) => family.familyId !== "parakeet-unified-en-0-6b"),
+    };
+    expect(() => modelCatalogSchema.parse(missingCurrent)).toThrow(/unavailable|recommendation/);
+    expect(() => modelCatalogSchema.parse({
+      ...before,
+      families: [...before.families, { ...before.families[0], familyId: retired, active: true, inLibrary: true, recommendedDefault: false }],
+    })).toThrow(/Retired families cannot expose runnable profiles/);
+  });
+
   it("reports all supported Mac artifacts and exposes the platform recommendation", async () => {
     const modelRoot = await mkdtemp(path.join(os.tmpdir(), "localscribe-model-snapshot-"));
     temporaryRoots.push(modelRoot);
@@ -30,8 +63,8 @@ describe("main-process model catalog snapshot", () => {
 
     const snapshot = await buildModelCatalogSnapshot({
       settings: {
-        activeModelFamilyId: "whisper-large-v3",
-        modelLibraryFamilyIds: ["whisper-large-v3"],
+        activeModelFamilyId: "qwen3-asr-0-6b",
+        modelLibraryFamilyIds: ["qwen3-asr-0-6b"],
       },
       catalog,
       modelRoot,
@@ -39,7 +72,7 @@ describe("main-process model catalog snapshot", () => {
 
     expect(() => modelCatalogSchema.parse(snapshot)).not.toThrow();
     expect(snapshot.recommendedDefaultFamilyId).toBe("parakeet-unified-en-0-6b");
-    expect(snapshot.verifications).toHaveLength(12);
+    expect(snapshot.verifications).toHaveLength(11);
     expect(snapshot.verifications).toEqual(expect.arrayContaining([
       expect.objectContaining({
         familyId: "parakeet-unified-en-0-6b",
@@ -52,8 +85,8 @@ describe("main-process model catalog snapshot", () => {
         verificationStatus: "missing",
       }),
       expect.objectContaining({
-        familyId: "whisper-large-v3",
-        artifactId: "whisper-large-v3-mlx-fp16",
+        familyId: "qwen3-asr-0-6b",
+        artifactId: "qwen3-asr-0-6b-mlx-bf16",
         verificationStatus: "missing",
       }),
       expect.objectContaining({
@@ -107,8 +140,8 @@ describe("main-process model catalog snapshot", () => {
 
     const snapshot = await buildModelCatalogSnapshot({
       settings: {
-        activeModelFamilyId: "whisper-large-v3",
-        modelLibraryFamilyIds: ["whisper-large-v3"],
+        activeModelFamilyId: "qwen3-asr-0-6b",
+        modelLibraryFamilyIds: ["qwen3-asr-0-6b"],
       },
       catalog,
       modelRoot,

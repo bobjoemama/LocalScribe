@@ -22,7 +22,6 @@ from localscribe_worker.worker import (
     FluidAudioParakeetRuntime,
     HardwareInfo,
     MLXAudioRuntime,
-    MLXWhisperRuntime,
     ModelFile,
     ModelManifest,
     TierSpec,
@@ -44,7 +43,7 @@ def tier_spec(tier: str, *, family: str = "qwen") -> TierSpec:
         "qwen06": "Qwen3-ASR-0.6B",
         "parakeet": "parakeet-unified-en-0.6b-coreml",
         "canary": "canary-qwen-2.5b-gguf",
-    }.get(family, f"whisper-large-{family}-mlx")
+    }[family]
     matches = [
         spec
         for spec in TIER_SPECS.values()
@@ -118,16 +117,16 @@ def write_wav(path: Path, *, sample_rate: int = 16_000, channels: int = 1) -> No
 
 
 def tiny_manifest() -> ModelManifest:
-    config = b'{"model_type":"whisper"}'
+    config = b'{"model_type":"qwen3_asr"}'
     weights = b"tiny-test-weights"
     return ModelManifest(
         tier="low",
-        backend="MLX Whisper",
-        display_name="Test Whisper",
-        model_id="example/whisper",
-        family_id="example-whisper",
-        artifact_id="example-whisper-test",
-        storage_directory="test-whisper",
+        backend="MLX Audio",
+        display_name="Test Qwen",
+        model_id="example/qwen",
+        family_id="example-qwen",
+        artifact_id="example-qwen-test",
+        storage_directory="test-qwen",
         revision="a" * 40,
         license="MIT",
         files={
@@ -145,7 +144,7 @@ def tiny_manifest() -> ModelManifest:
 
 def write_tiny_model(path: Path, manifest: ModelManifest) -> None:
     path.mkdir(parents=True, exist_ok=True)
-    (path / "config.json").write_bytes(b'{"model_type":"whisper"}')
+    (path / "config.json").write_bytes(b'{"model_type":"qwen3_asr"}')
     (path / "weights.npz").write_bytes(b"tiny-test-weights")
 
 
@@ -258,7 +257,7 @@ class WorkerProtocolTests(unittest.TestCase):
                 manifest: ModelManifest,
                 **kwargs: Any,
             ) -> bool:
-                if manifest.model_id == "example/whisper":
+                if manifest.model_id == "example/qwen":
                     return actual_validation(path, manifest, **kwargs)
                 return True
 
@@ -267,11 +266,11 @@ class WorkerProtocolTests(unittest.TestCase):
                 root: Path,
                 manifest: ModelManifest,
             ) -> worker_module.ModelTreeIdentity:
-                if manifest.model_id == "example/whisper":
+                if manifest.model_id == "example/qwen":
                     return actual_identity_capture(path, root, manifest)
                 # These runtime-flow doubles deliberately do not materialize
                 # multi-gigabyte manifests. Identity/race behaviour uses the
-                # real filesystem in the dedicated example/whisper tests.
+                # real filesystem in the dedicated example/qwen tests.
                 marker = sum(manifest.storage_directory.encode("utf-8"))
                 return worker_module.ModelTreeIdentity(
                     root=(marker, 1, stat.S_IFDIR, 1, 1),
@@ -409,7 +408,7 @@ class WorkerProtocolTests(unittest.TestCase):
                 "type": "hello",
                 "protocol": 1,
                 "backend": "localscribe-mlx-asr",
-                "version": "mlx-whisper/0.4.3;mlx-audio/0.4.6",
+                "version": "mlx-audio/0.4.6",
             },
         )
         self.assertEqual(
@@ -589,6 +588,7 @@ class WorkerProtocolTests(unittest.TestCase):
 
     def test_retired_whisper_profiles_never_load_or_download(self) -> None:
         retired = [
+            ("whisper-large-v3-mlx", "high", "float16"),
             ("whisper-large-v2-mlx", "high", "float16"),
             ("whisper-large-v2-mlx-8bit", "medium", "int8"),
             ("whisper-large-v2-mlx-4bit", "low", "int4"),
@@ -596,6 +596,10 @@ class WorkerProtocolTests(unittest.TestCase):
             ("whisper-large-v3-mlx-4bit", "low", "int4"),
         ]
         with tempfile.TemporaryDirectory() as temporary:
+            legacy_cache = Path(temporary) / "whisper-large-v3-mlx"
+            legacy_cache.mkdir()
+            legacy_weights = legacy_cache / "weights.npz"
+            legacy_weights.write_bytes(b"legacy-user-model")
             for model, tier, compute in retired:
                 for operation in ("load_model", "install_model"):
                     with self.subTest(model=model, operation=operation):
@@ -615,6 +619,7 @@ class WorkerProtocolTests(unittest.TestCase):
                             factory=lambda *_args: self.fail("retired model must not load"),
                         )
                         self.assertEqual(messages[1]["code"], "model_not_allowed")
+            self.assertEqual(legacy_weights.read_bytes(), b"legacy-user-model")
 
     def test_rejects_tier_model_or_compute_mismatch(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1916,7 +1921,7 @@ class ModelInstallationTests(unittest.TestCase):
             self.assertFalse(worker_module._valid_model_directory(model, manifest))
 
     def test_catalog_manifest_rejects_a_url_as_manifest_model_identity(self) -> None:
-        spec = tier_spec("high", family="v3")
+        spec = tier_spec("high", family="qwen")
         packaged_path = worker_module._manifest_path(spec.manifest_filename)
         raw = json.loads(packaged_path.read_text(encoding="utf-8"))
         raw["modelId"] = "https://untrusted.invalid/model"
@@ -1927,10 +1932,10 @@ class ModelInstallationTests(unittest.TestCase):
                 RuntimeError,
                 "packaged_model_manifest_invalid",
             ):
-                worker_module._parse_manifest(tampered, spec.tier, "MLX Whisper")
+                worker_module._parse_manifest(tampered, spec.tier, "MLX Audio")
 
     def test_catalog_manifest_file_entry_ceiling_is_strictly_bounded(self) -> None:
-        spec = tier_spec("high", family="v3")
+        spec = tier_spec("high", family="qwen")
         packaged_path = worker_module._manifest_path(spec.manifest_filename)
         raw = json.loads(packaged_path.read_text(encoding="utf-8"))
         raw["files"] = {
@@ -1944,17 +1949,17 @@ class ModelInstallationTests(unittest.TestCase):
                 RuntimeError,
                 "packaged_model_manifest_invalid",
             ):
-                worker_module._parse_manifest(tampered, spec.tier, "MLX Whisper")
+                worker_module._parse_manifest(tampered, spec.tier, "MLX Audio")
 
     def test_catalog_identity_is_derived_from_the_curated_manifest(self) -> None:
-        spec = tier_spec("high", family="v3")
+        spec = tier_spec("high", family="qwen")
         packaged_path = worker_module._manifest_path(spec.manifest_filename)
         raw = json.loads(packaged_path.read_text(encoding="utf-8"))
         raw.update(
             {
-                "modelId": "curated-owner/custom-whisper",
-                "artifactId": "custom-whisper-int4",
-                "storageDirectory": "custom-whisper-int4",
+                "modelId": "curated-owner/custom-qwen",
+                "artifactId": "custom-qwen-int4",
+                "storageDirectory": "custom-qwen-int4",
                 "revision": "c" * 40,
             }
         )
@@ -1964,23 +1969,22 @@ class ModelInstallationTests(unittest.TestCase):
             manifest = worker_module._parse_manifest(
                 curated,
                 spec.tier,
-                "MLX Whisper",
+                "MLX Audio",
             )
 
-        self.assertEqual(manifest.model_id, "curated-owner/custom-whisper")
-        self.assertEqual(manifest.artifact_id, "custom-whisper-int4")
-        self.assertEqual(manifest.storage_directory, "custom-whisper-int4")
+        self.assertEqual(manifest.model_id, "curated-owner/custom-qwen")
+        self.assertEqual(manifest.artifact_id, "custom-qwen-int4")
+        self.assertEqual(manifest.storage_directory, "custom-qwen-int4")
         self.assertEqual(manifest.revision, "c" * 40)
 
     def test_packaged_catalog_has_exact_curated_manifests_and_files(self) -> None:
-        self.assertEqual(len(TIER_SPECS), 12)
+        self.assertEqual(len(TIER_SPECS), 11)
         self.assertEqual(
             {spec.manifest_filename for spec in TIER_SPECS.values()},
             {
                 "canary-qwen-2-5b-gguf-bf16.json",
                 "canary-qwen-2-5b-gguf-q8.json",
                 "canary-qwen-2-5b-gguf-q4.json",
-                "whisper-large-v3-mlx.json",
                 "qwen3-asr-1-7b-mlx-bf16.json",
                 "qwen3-asr-1-7b-mlx-8bit.json",
                 "qwen3-asr-1-7b-mlx-4bit.json",
@@ -1991,7 +1995,6 @@ class ModelInstallationTests(unittest.TestCase):
                 "parakeet-unified-en-0-6b-coreml-int8.json",
             },
         )
-        self.assertEqual(tier_spec("high", family="v3").compute_type, "float16")
         for family in ("qwen", "qwen06"):
             self.assertEqual(
                 [
@@ -2029,7 +2032,7 @@ class ModelInstallationTests(unittest.TestCase):
                 self.assertTrue(any("streaming_70_7_7" in name for name in manifest.files))
                 self.assertFalse(any("streaming_70_13_13" in name for name in manifest.files))
             else:
-                self.assertEqual(set(manifest.files), {"config.json", "weights.npz"})
+                self.fail(f"unexpected model family: {manifest.family_id}")
             for model_file in manifest.files.values():
                 self.assertGreater(model_file.bytes, 0)
                 self.assertRegex(model_file.sha256, r"^[a-f0-9]{64}$")
@@ -2120,18 +2123,27 @@ class RuntimeAndHardwareTests(unittest.TestCase):
         self.assertEqual(wire[offset + 4 + second_length :], b"\x00\x00")
         runtime.close()
 
-    def test_qwen06_runtime_dispatches_only_to_mlx_audio(self) -> None:
-        spec = tier_spec("low", family="qwen06")
+    def test_qwen_families_dispatch_only_to_mlx_audio(self) -> None:
+        for family in ("qwen", "qwen06"):
+            with self.subTest(family=family):
+                spec = tier_spec("low", family=family)
+                with patch.object(MLXAudioRuntime, "load", return_value=family) as qwen_load:
+                    self.assertEqual(worker_module._load_runtime(Path("/qwen"), spec), family)
+                qwen_load.assert_called_once_with(Path("/qwen"), spec)
+
+    def test_retired_whisper_runtime_dispatch_fails_without_substitution(self) -> None:
         with (
-            patch.object(MLXAudioRuntime, "load", return_value="qwen06") as qwen_load,
-            patch.object(MLXWhisperRuntime, "load", return_value="whisper") as whisper_load,
+            patch.object(MLXAudioRuntime, "load") as qwen_load,
+            patch.object(FluidAudioParakeetRuntime, "load") as parakeet_load,
         ):
-            self.assertEqual(
-                worker_module._load_runtime(Path("/qwen06"), spec),
-                "qwen06",
-            )
-        qwen_load.assert_called_once_with(Path("/qwen06"), spec)
-        whisper_load.assert_not_called()
+            for family in ("whisper-large-v2", "whisper-large-v3"):
+                with self.subTest(family=family):
+                    spec = worker_module.replace(tier_spec("high"), family_id=family)
+                    with self.assertRaises(WorkerError) as raised:
+                        worker_module._load_runtime(Path("/legacy-whisper"), spec)
+                    self.assertEqual(raised.exception.code, "model_not_allowed")
+        qwen_load.assert_not_called()
+        parakeet_load.assert_not_called()
 
     def test_parakeet_dispatches_only_to_the_fluid_audio_helper(self) -> None:
         spec = tier_spec("medium", family="parakeet")
@@ -2142,12 +2154,10 @@ class RuntimeAndHardwareTests(unittest.TestCase):
                 return_value="parakeet",
             ) as parakeet_load,
             patch.object(MLXAudioRuntime, "load", return_value="qwen") as qwen_load,
-            patch.object(MLXWhisperRuntime, "load", return_value="whisper") as whisper_load,
         ):
             self.assertEqual(worker_module._load_runtime(Path("/parakeet"), spec), "parakeet")
         parakeet_load.assert_called_once_with(Path("/parakeet"), spec)
         qwen_load.assert_not_called()
-        whisper_load.assert_not_called()
 
     def test_runtime_passes_pcm_array_and_prompt_to_mlx_audio(self) -> None:
         class FakeMetal:
@@ -2200,61 +2210,6 @@ class RuntimeAndHardwareTests(unittest.TestCase):
         runtime.close()
         self.assertIsNone(runtime._model)
 
-    def test_runtime_passes_pcm_array_and_verified_local_path_to_mlx_whisper(self) -> None:
-        class FakeMetal:
-            def clear_cache(self) -> None:
-                pass
-
-        class FakeMlx:
-            metal = FakeMetal()
-
-            @staticmethod
-            def synchronize() -> None:
-                pass
-
-        class Holder:
-            model = None
-            model_path = None
-
-        captured: dict[str, Any] = {}
-        model = object()
-        Holder.model = model
-        Holder.model_path = "/verified/local/model"
-
-        def transcribe(waveform: Any, **kwargs: Any) -> dict[str, Any]:
-            captured["waveform"] = waveform
-            captured["kwargs"] = kwargs
-            return {"text": "Local audio.", "language": "en"}
-
-        runtime = MLXWhisperRuntime(
-            mlx_module=FakeMlx(),
-            numpy_module=np,
-            model_holder=Holder,
-            transcribe_function=transcribe,
-            model=model,
-            model_path="/verified/local/model",
-        )
-        result = runtime.transcribe(
-            b"\x00\x00\xff\x7f",
-            language="en",
-            context="Test User LocalScribe",
-        )
-        self.assertEqual(result, TranscriptionResult("Local audio.", "en"))
-        self.assertIsInstance(captured["waveform"], np.ndarray)
-        self.assertEqual(
-            captured["kwargs"],
-            {
-                "path_or_hf_repo": "/verified/local/model",
-                "verbose": None,
-                "language": "en",
-                "initial_prompt": "Test User LocalScribe",
-                "fp16": True,
-            },
-        )
-        runtime.close()
-        self.assertIsNone(Holder.model)
-        self.assertIsNone(Holder.model_path)
-
     def test_release_transient_memory_clears_the_mlx_buffer_cache(self) -> None:
         """The doubles used above expose ``metal.clear_cache``, which the runtime
         no longer calls, and both call sites swallow every exception — so an
@@ -2271,22 +2226,6 @@ class RuntimeAndHardwareTests(unittest.TestCase):
 
             def clear_cache(self) -> None:
                 self.calls.append("clear_cache")
-
-        class Holder:
-            model = None
-            model_path = None
-
-        whisper_mlx = RecordingMlx()
-        whisper = MLXWhisperRuntime(
-            mlx_module=whisper_mlx,
-            numpy_module=np,
-            model_holder=Holder,
-            transcribe_function=lambda waveform, **kwargs: {"text": "", "language": "en"},
-            model=object(),
-            model_path="/verified/local/model",
-        )
-        whisper.release_transient_memory()
-        self.assertEqual(whisper_mlx.calls, ["synchronize", "clear_cache"])
 
         class Model:
             def generate(self, waveform: Any, **kwargs: Any) -> Any:

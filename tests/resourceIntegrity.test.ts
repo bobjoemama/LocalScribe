@@ -108,7 +108,7 @@ describe("packaged loose-resource integrity", () => {
     ).toThrow(/Resource integrity mismatch/);
 
     rmSync(path.join(resourcesPath, "worker", "localscribe_worker", "extra.py"));
-    rmSync(path.join(resourcesPath, "model-manifest", "whisper-large-v3-mlx.json"));
+    rmSync(path.join(resourcesPath, "model-manifest", "qwen3-asr-0-6b-mlx-bf16.json"));
     expect(() =>
       assertPackagedResourceIntegrity(resourcesPath, "darwin", "arm64", expected),
     ).toThrow(/missing required loose resource|Resource integrity mismatch/);
@@ -178,7 +178,12 @@ describe("packaged loose-resource integrity", () => {
     "python-runtime/cpython-3.12/lib/python3.12/site-packages/pip/__init__.py",
     "python-runtime/cpython-3.12/lib/python3.12/ensurepip/_bundled/pip-25.0.1-py3-none-any.whl",
     "python-runtime/venv/bin/pip3.12",
-  ])("rejects an installer reintroduced after packaging: %s", (installer) => {
+    ...["mlx_whisper", "numba", "llvmlite", "torch", "tiktoken"].flatMap((name) => [
+      `python-runtime/venv/lib/python3.12/site-packages/${name}/__init__.py`,
+      `python-runtime/venv/lib/python3.12/site-packages/${name}-1.0.dist-info/METADATA`,
+    ]),
+    "python-runtime/venv/lib/python3.12/site-packages/mlx_audio/stt/models/whisper/__init__.py",
+  ])("rejects an installer or retired runtime reintroduced after packaging: %s", (installer) => {
     const resourcesPath = makeResourceFixture("darwin", "arm64");
     const expected = buildResourceIntegrityExpectation(resourcesPath, "darwin", "arm64");
     writeFixtureFile(resourcesPath, installer);

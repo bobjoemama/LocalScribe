@@ -42,13 +42,13 @@ function digest(buffer: Buffer): string {
 
 const spec = {
   schemaVersion: 1,
-  familyId: "whisper-large-v3",
-  artifactId: "whisper-large-v3-mlx",
+  familyId: "qwen3-asr-0-6b",
+  artifactId: "qwen3-asr-0-6b-mlx",
   platform: "darwin-arm64",
-  backend: "mlx-whisper",
-  displayName: "Whisper large-v3",
-  modelId: "mlx-community/whisper-large-v3-mlx",
-  storageDirectory: "whisper-large-v3-mlx",
+  backend: "mlx-audio",
+  displayName: "Qwen3-ASR 0.6B",
+  modelId: "mlx-community/qwen3-asr-0-6b-mlx",
+  storageDirectory: "qwen3-asr-0-6b-mlx",
   revision: "a".repeat(40),
   license: "apache-2.0",
   files: {

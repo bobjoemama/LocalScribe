@@ -583,12 +583,12 @@ describe("model and performance presentation", () => {
     expect(resolvedModelEngine(null)).toBe("Checking");
     expect(resolvedModelEngine({
       platform: "darwin",
-      backend: "MLX Whisper from the active manifest",
+      backend: "MLX Audio from the active manifest",
       performance: {
         resolvedTier: "medium",
         options: [{ tier: "medium", engine: "internal-engine-slug" }],
       },
-    } as never)).toBe("MLX Whisper from the active manifest");
+    } as never)).toBe("MLX Audio from the active manifest");
   });
 
   it("distinguishes verified, missing, and damaged installations", () => {
@@ -635,58 +635,58 @@ describe("model and performance presentation", () => {
   });
 
   it("builds strict family-scoped install and remove requests", () => {
-    expect(modelInstallRequest("whisper-large-v2", "medium", true)).toEqual({
+    expect(modelInstallRequest("qwen3-asr-1-7b", "medium", true)).toEqual({
       confirmed: true,
-      familyId: "whisper-large-v2",
+      familyId: "qwen3-asr-1-7b",
       tier: "medium",
       replaceExisting: true,
     });
-    expect(modelRemoveRequest("whisper-large-v3", "low")).toEqual({
+    expect(modelRemoveRequest("qwen3-asr-0-6b", "low")).toEqual({
       confirmed: true,
-      familyId: "whisper-large-v3",
+      familyId: "qwen3-asr-0-6b",
       tier: "low",
     });
   });
 
   it("tags runtime statuses with the diagnostic family instead of stale settings state", () => {
     const statuses = modelRuntimeTierStatuses({
-      model: { familyId: "whisper-large-v2" },
+      model: { familyId: "qwen3-asr-1-7b" },
       performance: {
         options: [{
           tier: "high",
-          artifactId: "whisper-large-v2-mlx-fp16",
-          qualityNote: "Curated v2 profile.",
+          artifactId: "qwen3-asr-1-7b-mlx-bf16",
+          qualityNote: "Curated Qwen 1.7B profile.",
           verificationStatus: "verified",
         }],
       },
     } as never);
     expect(statuses).toEqual([{
-      familyId: "whisper-large-v2",
+      familyId: "qwen3-asr-1-7b",
       tier: "high",
-      artifactId: "whisper-large-v2-mlx-fp16",
-      qualityNote: "Curated v2 profile.",
+      artifactId: "qwen3-asr-1-7b-mlx-bf16",
+      qualityNote: "Curated Qwen 1.7B profile.",
       verificationStatus: "verified",
     }]);
   });
 
   it("calls a runtime resident only when exact saved family, profile, artifact, and mode resolve", () => {
     const settings = {
-      activeModelFamilyId: "whisper-large-v3",
+      activeModelFamilyId: "qwen3-asr-0-6b",
       modelPerformanceMode: "medium",
     } as const;
     const diagnostics = {
       model: {
         loaded: true,
-        familyId: "whisper-large-v3",
-        profileId: "v3-medium",
-        artifactId: "v3-medium-artifact",
+        familyId: "qwen3-asr-0-6b",
+        profileId: "qwen3-asr-0-6b-medium",
+        artifactId: "qwen3-asr-0-6b-mlx-8bit",
       },
       performance: { preference: "medium", resolvedTier: "medium" },
     };
     const catalog = {
       families: [{
-        familyId: "whisper-large-v3",
-        profiles: [{ tier: "medium", profileId: "v3-medium", artifactId: "v3-medium-artifact" }],
+        familyId: "qwen3-asr-0-6b",
+        profiles: [{ tier: "medium", profileId: "qwen3-asr-0-6b-medium", artifactId: "qwen3-asr-0-6b-mlx-8bit" }],
       }],
     };
 
@@ -704,12 +704,12 @@ describe("model and performance presentation", () => {
   it("uses artifact verification for inactive families and every profile sharing model data", () => {
     const statuses = modelRuntimeTierStatuses(
       {
-        model: { familyId: "whisper-large-v3" },
+        model: { familyId: "qwen3-asr-0-6b" },
         performance: {
           options: [{
             tier: "high",
-            artifactId: "whisper-large-v3-high",
-            qualityNote: "Active v3 profile.",
+            artifactId: "qwen3-asr-0-6b-high",
+            qualityNote: "Active Qwen 0.6B profile.",
             verificationStatus: "verified",
           }],
         },
@@ -717,29 +717,29 @@ describe("model and performance presentation", () => {
       {
         families: [
           {
-            familyId: "whisper-large-v3",
+            familyId: "qwen3-asr-0-6b",
             profiles: [{
               tier: "high",
-              artifactId: "whisper-large-v3-high",
+              artifactId: "qwen3-asr-0-6b-high",
             }],
           },
           {
-            familyId: "whisper-large-v2",
+            familyId: "qwen3-asr-1-7b",
             profiles: (["high", "medium", "low"] as const).map((tier) => ({
               tier,
-              artifactId: "whisper-large-v2-shared",
+              artifactId: "synthetic-qwen3-asr-1-7b-shared",
             })),
           },
         ],
         verifications: [
           {
-            familyId: "whisper-large-v3",
-            artifactId: "whisper-large-v3-high",
+            familyId: "qwen3-asr-0-6b",
+            artifactId: "qwen3-asr-0-6b-high",
             verificationStatus: "verified",
           },
           {
-            familyId: "whisper-large-v2",
-            artifactId: "whisper-large-v2-shared",
+            familyId: "qwen3-asr-1-7b",
+            artifactId: "synthetic-qwen3-asr-1-7b-shared",
             verificationStatus: "invalid",
           },
         ],
@@ -748,30 +748,30 @@ describe("model and performance presentation", () => {
 
     expect(statuses).toEqual([
       {
-        familyId: "whisper-large-v3",
+        familyId: "qwen3-asr-0-6b",
         tier: "high",
-        artifactId: "whisper-large-v3-high",
-        qualityNote: "Active v3 profile.",
+        artifactId: "qwen3-asr-0-6b-high",
+        qualityNote: "Active Qwen 0.6B profile.",
         verificationStatus: "verified",
       },
       {
-        familyId: "whisper-large-v2",
+        familyId: "qwen3-asr-1-7b",
         tier: "high",
-        artifactId: "whisper-large-v2-shared",
+        artifactId: "synthetic-qwen3-asr-1-7b-shared",
         qualityNote: undefined,
         verificationStatus: "invalid",
       },
       {
-        familyId: "whisper-large-v2",
+        familyId: "qwen3-asr-1-7b",
         tier: "medium",
-        artifactId: "whisper-large-v2-shared",
+        artifactId: "synthetic-qwen3-asr-1-7b-shared",
         qualityNote: undefined,
         verificationStatus: "invalid",
       },
       {
-        familyId: "whisper-large-v2",
+        familyId: "qwen3-asr-1-7b",
         tier: "low",
-        artifactId: "whisper-large-v2-shared",
+        artifactId: "synthetic-qwen3-asr-1-7b-shared",
         qualityNote: undefined,
         verificationStatus: "invalid",
       },
@@ -781,40 +781,40 @@ describe("model and performance presentation", () => {
   it("explains when one physical model artifact is shared by every performance profile", () => {
     const shared = modelArtifactScopePresentation({
       families: [{
-        familyId: "whisper-large-v3",
-        displayName: "Whisper large-v3",
+        familyId: "qwen3-asr-0-6b",
+        displayName: "Qwen3-ASR 0.6B",
         profiles: (["high", "medium", "low"] as const).map((tier) => ({
           tier,
-          artifactId: "whisper-large-v3-shared",
+          artifactId: "synthetic-qwen3-asr-0-6b-shared",
         })),
         artifacts: [{
-          artifactId: "whisper-large-v3-shared",
+          artifactId: "synthetic-qwen3-asr-0-6b-shared",
         }],
       }],
-    } as never, "whisper-large-v3", "high");
+    } as never, "qwen3-asr-0-6b", "high");
     const distinct = modelArtifactScopePresentation({
       families: [{
-        familyId: "whisper-large-v3",
-        displayName: "Whisper large-v3",
+        familyId: "qwen3-asr-0-6b",
+        displayName: "Qwen3-ASR 0.6B",
         profiles: [{
           tier: "high",
-          artifactId: "whisper-large-v3-high",
+          artifactId: "qwen3-asr-0-6b-high",
         }],
         artifacts: [{
-          artifactId: "whisper-large-v3-high",
+          artifactId: "qwen3-asr-0-6b-high",
         }],
       }],
-    } as never, "whisper-large-v3", "high");
+    } as never, "qwen3-asr-0-6b", "high");
 
     expect(shared).toMatchObject({
       sharedAcrossTiers: true,
-      confirmationTarget: "Whisper large-v3 shared model data for all performance profiles",
-      removalTarget: "the Whisper large-v3 shared local model data used by all performance profiles",
+      confirmationTarget: "Qwen3-ASR 0.6B shared model data for all performance profiles",
+      removalTarget: "the Qwen3-ASR 0.6B shared local model data used by all performance profiles",
     });
     expect(distinct).toMatchObject({
       sharedAcrossTiers: false,
-      confirmationTarget: "Whisper large-v3 High profile",
-      removalTarget: "the Whisper large-v3 High profile",
+      confirmationTarget: "Qwen3-ASR 0.6B High profile",
+      removalTarget: "the Qwen3-ASR 0.6B High profile",
     });
   });
 
@@ -834,14 +834,14 @@ describe("model operation status", () => {
   it("accepts measured transfer updates only for the in-flight profile", () => {
     const active = {
       action: "installing" as const,
-      familyId: "whisper-large-v3" as const,
+      familyId: "qwen3-asr-0-6b" as const,
       tier: "medium" as const,
       progress: { phase: "preparing" as const },
     };
     const progress = {
-      familyId: "whisper-large-v3" as const,
+      familyId: "qwen3-asr-0-6b" as const,
       tier: "medium" as const,
-      artifactId: "whisper-large-v3-medium",
+      artifactId: "qwen3-asr-0-6b-medium",
       phase: "verifying" as const,
       completedBytes: 300,
       totalBytes: 600,
@@ -854,20 +854,20 @@ describe("model operation status", () => {
     expect(modelActionWithInstallProgress(active, { ...progress, tier: "high" })).toBe(active);
     expect(modelActionWithInstallProgress({
       action: "removing",
-      familyId: "whisper-large-v3",
+      familyId: "qwen3-asr-0-6b",
       tier: "medium",
     }, progress)).toMatchObject({ action: "removing" });
   });
 
   it("confirms the exact loaded artifact and resolved mode returned by Apply", () => {
     expect(appliedModelSelectionMessage({
-      families: [{ familyId: "whisper-large-v3", displayName: "Whisper large-v3" }],
+      families: [{ familyId: "qwen3-asr-0-6b", displayName: "Qwen3-ASR 0.6B" }],
     } as never, {
-      familyId: "whisper-large-v3",
-      artifactId: "whisper-large-v3-medium",
+      familyId: "qwen3-asr-0-6b",
+      artifactId: "qwen3-asr-0-6b-medium",
       tier: "medium",
       asrMode: "after-stop",
-    })).toBe("Whisper large-v3 · Medium · After I stop is applied, loaded, and ready.");
+    })).toBe("Qwen3-ASR 0.6B · Medium · After I stop is applied, loaded, and ready.");
   });
 });
 

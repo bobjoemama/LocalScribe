@@ -6,7 +6,7 @@ import { z } from "zod";
 import {
   DEFAULT_SETTINGS,
   DEFAULT_MODEL_FAMILY_ID,
-  MODEL_FAMILY_IDS,
+  AVAILABLE_MODEL_FAMILY_IDS,
   type AsrMode,
   type AppSettings,
   type ModelCapabilities,
@@ -77,7 +77,6 @@ export type ModelSpec = z.infer<typeof modelSpecSchema>;
 export type ModelVerificationStatus = "missing" | "invalid" | "verified";
 export type ModelCatalogPlatform = ModelSpec["platform"];
 export type ModelEngine =
-  | "mlx-whisper"
   | "mlx-audio"
   | "fluid-audio"
   | "transcribe-cpp";
@@ -298,24 +297,6 @@ const estimatedMemory = (source: string, minimumGiB: number, maximumGiB: number)
   },
 });
 
-const mlxTier = (
-  familyId: ModelFamilyId,
-  input: {
-    manifestFilename: string;
-    precision: "fp16" | "8-bit" | "4-bit";
-    memory: readonly [number, number];
-  },
-): CatalogTierDefinition => ({
-  manifestFilename: input.manifestFilename,
-  engine: "mlx-whisper",
-  precision: input.precision,
-  acceleratorMemory: estimatedMemory(
-    `MLX Whisper ${familyId} ${input.precision} artifact size plus conservative inference overhead; physical benchmark pending`,
-    input.memory[0],
-    input.memory[1],
-  ),
-});
-
 const mlxAudioTier = (
   familyLabel: string,
   input: {
@@ -368,19 +349,6 @@ const QWEN_CAPABILITIES: ModelCapabilities = {
   supportedLanguages: ["auto", "en", "es", "fr", "de", "hi"],
 };
 
-/*
- * MLX Whisper accepts explicit language codes and an initial prompt. Keep
- * this separate from the generic final-only default:
- * reporting English-only/no-context here would make the settings UI reject
- * real, supported Whisper requests before they reached either runtime.
- */
-const WHISPER_CAPABILITIES: ModelCapabilities = {
-  ...AFTER_STOP_CAPABILITIES,
-  languageDetection: true,
-  promptContext: true,
-  supportedLanguages: ["auto", "en", "es", "fr", "de", "hi"],
-};
-
 const PARAKEET_UNIFIED_CAPABILITIES: ModelCapabilities = {
   modes: ["after-stop", "live"],
   partialResults: true,
@@ -412,20 +380,6 @@ const parakeetUnifiedMac: FamilyCatalogDefinition = {
       manifestFilename: "parakeet-unified-en-0-6b-coreml-int8.json",
       precision: "coreml-int8",
       memory: [0.6, 1.1],
-    }),
-  },
-};
-
-const v3Mac: FamilyCatalogDefinition = {
-  familyId: "whisper-large-v3",
-  displayName: "Whisper large-v3",
-  engine: "mlx-whisper",
-  capabilities: WHISPER_CAPABILITIES,
-  tiers: {
-    high: mlxTier("whisper-large-v3", {
-      manifestFilename: "whisper-large-v3-mlx.json",
-      precision: "fp16",
-      memory: [4, 5.5],
     }),
   },
 };
@@ -516,7 +470,6 @@ export const MODEL_CATALOG_DEFINITIONS = {
     recommendedDefaultFamilyId: "parakeet-unified-en-0-6b",
     families: {
       "parakeet-unified-en-0-6b": parakeetUnifiedMac,
-      "whisper-large-v3": v3Mac,
       "qwen3-asr-0-6b": qwen06Mac,
       "qwen3-asr-1-7b": qwenMac,
       "canary-qwen-2-5b": canaryMac,
@@ -576,7 +529,7 @@ export function loadModelSpec(
   return manifest;
 }
 
-/** Legacy single-family loader; default remains the cross-platform v3 family. */
+/** Single-family loader; defaults to the recommended Parakeet family. */
 export function loadRuntimeModelSpec(
   manifestDirectory: string,
   platform: NodeJS.Platform = process.platform,
@@ -609,7 +562,7 @@ export function loadRuntimePlatformModelCatalog(
   const catalogPlatform = manifestPlatformForRuntime(platform, architecture);
   const platformDefinition = platformCatalogDefinition(catalogPlatform);
   const familyEntries: Array<[ModelFamilyId, RuntimeModelCatalog]> = [];
-  for (const familyId of MODEL_FAMILY_IDS) {
+  for (const familyId of AVAILABLE_MODEL_FAMILY_IDS) {
     const definition = platformDefinition.families[familyId];
     if (!definition) continue;
     const entries: Array<[ModelPerformanceTier, RuntimeModelTierSpec]> = [];
@@ -861,7 +814,6 @@ function assertManifestMatchesCatalog(
   tier: ModelPerformanceTier,
 ): void {
   const expectedBackends: Record<ModelEngine, string> = {
-    "mlx-whisper": "MLX Whisper",
     "mlx-audio": "MLX Audio",
     "fluid-audio": "FluidAudio CoreML / ANE",
     "transcribe-cpp": "transcribe.cpp / Metal",

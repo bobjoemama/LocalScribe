@@ -47,11 +47,12 @@ activate it until you press Apply.
 - **History and scratchpad:** keep encrypted local transcripts and notes.
 - **Copy fallback:** copy the result when automatic insertion is unavailable.
 
-Parakeet, Whisper, Qwen3-ASR, and Canary-Qwen speech models are available in the
+Parakeet, Qwen3-ASR, and Canary-Qwen speech models are available in the
 curated catalog. Language support, download size, memory estimates, and profiles
 are shown in Settings. Canary-Qwen is English-only and **After I stop** only.
-Whisper large-v3 offers High only. Whisper v2 and v3 Medium/Low are excluded
-pending exact-artifact license review; existing cached files are not deleted.
+Whisper is no longer supported. An older saved Whisper selection stays
+unavailable until you choose and Apply a supported replacement; cached model
+files and history are preserved, and the app never silently switches families.
 See the [model catalog](docs/MODEL_CATALOG.md) for details.
 
 ## Included—no dependency setup required

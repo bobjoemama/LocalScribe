@@ -45,7 +45,7 @@ const sha256 = (value: string): string => createHash("sha256").update(value).dig
 
 const model = modelSpecSchema.parse({
   schemaVersion: 1,
-  familyId: "whisper-large-v2",
+  familyId: "qwen3-asr-1-7b",
   artifactId: "digest-cache-artifact",
   platform: "darwin-arm64",
   backend: "test",

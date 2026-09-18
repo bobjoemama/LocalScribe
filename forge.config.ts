@@ -577,6 +577,11 @@ const config: ForgeConfig = {
           );
           execFileSync(
             process.execPath,
+            [path.resolve("scripts/verify-python-inference.mjs"), appPath],
+            { stdio: "inherit" },
+          );
+          execFileSync(
+            process.execPath,
             [
               path.resolve("scripts/verify-macos-bundle.mjs"),
               appPath,

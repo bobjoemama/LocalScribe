@@ -16,17 +16,15 @@ together; do not add a runtime cross-language source import.
 ## Dictionary recognizer hints
 
 `maxAsrContextChars` (4,000) is the protocol ceiling for a dictionary hint, not
-a promise that every backend consumes it. MLX Whisper passes the hint as
-`initial_prompt` and its decoder retains the tail of the permitted prompt
-window.
+a promise that every backend consumes it. Qwen3-ASR through MLX Audio passes
+the hint as `system_prompt`.
 
-`buildDictionaryAsrContext` therefore emits selected terms lowest-priority
-first so the highest-priority terms remain at the end. Changing that order can
-cause the decoder to discard the newest/highest-priority entries;
-`tests/dictionaryContext.test.ts` pins the surviving tail.
+`buildDictionaryAsrContext` emits selected terms lowest-priority first so the
+highest-priority terms remain at the end. `tests/dictionaryContext.test.ts`
+pins this ordering; it is not a guarantee of decoder-specific prompt retention.
 
-Parakeet does not advertise recognizer-context support, so LocalScribe sends it
-an empty context. Deterministic Dictionary and snippet correction still runs
-after transcription. Capability-aware routing must remain authoritative: a
+Parakeet and Canary-Qwen do not advertise recognizer-context support, so
+LocalScribe sends them an empty context. Deterministic Dictionary and snippet
+correction still runs after transcription. Capability-aware routing must remain authoritative: a
 backend never receives an unsupported prompt merely because the protocol has a
 global ceiling.

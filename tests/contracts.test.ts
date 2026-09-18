@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   DEFAULT_SETTINGS,
+  AVAILABLE_MODEL_FAMILY_IDS,
   HISTORY_RETENTION_OPTIONS,
   MAX_PERSISTED_PRIVATE_TEXT_UTF8_BYTES,
   MODEL_FAMILY_IDS,
@@ -54,12 +55,15 @@ describe("IPC contracts", () => {
   });
 
   it("keeps active model selection inside a unique curated local library", () => {
-    expect(MODEL_FAMILY_IDS).toEqual([
+    expect(AVAILABLE_MODEL_FAMILY_IDS).toEqual([
       "parakeet-unified-en-0-6b",
-      "whisper-large-v3",
       "qwen3-asr-0-6b",
       "qwen3-asr-1-7b",
       "canary-qwen-2-5b",
+    ]);
+    expect(MODEL_FAMILY_IDS).toEqual([
+      ...AVAILABLE_MODEL_FAMILY_IDS,
+      "whisper-large-v3",
       "whisper-large-v2",
     ]);
     expect(DEFAULT_SETTINGS).toMatchObject({
@@ -219,44 +223,44 @@ describe("IPC contracts", () => {
     expect(modelInstallRequestSchema.parse({
       confirmed: true,
       replaceExisting: false,
-      familyId: "whisper-large-v3",
+      familyId: "qwen3-asr-0-6b",
       tier: "medium",
     })).toEqual({
       confirmed: true,
       replaceExisting: false,
-      familyId: "whisper-large-v3",
+      familyId: "qwen3-asr-0-6b",
       tier: "medium",
     });
     expect(modelRemoveRequestSchema.parse({
       confirmed: true,
-      familyId: "whisper-large-v2",
+      familyId: "qwen3-asr-1-7b",
       tier: "low",
     })).toEqual({
       confirmed: true,
-      familyId: "whisper-large-v2",
+      familyId: "qwen3-asr-1-7b",
       tier: "low",
     });
     expect(() => modelInstallRequestSchema.parse({
       confirmed: false,
       replaceExisting: false,
-      familyId: "whisper-large-v3",
+      familyId: "qwen3-asr-0-6b",
       tier: "medium",
     })).toThrow();
     expect(() => modelInstallRequestSchema.parse({
       confirmed: true,
       replaceExisting: false,
-      familyId: "whisper-large-v3",
+      familyId: "qwen3-asr-0-6b",
       tier: "auto",
     })).toThrow();
     expect(() => modelRemoveRequestSchema.parse({
       confirmed: true,
-      familyId: "whisper-large-v3",
+      familyId: "qwen3-asr-0-6b",
       tier: "other",
     })).toThrow();
     expect(() => modelInstallRequestSchema.parse({
       confirmed: true,
       replaceExisting: false,
-      familyId: "whisper-large-v3",
+      familyId: "qwen3-asr-0-6b",
       tier: "medium",
       extra: true,
     })).toThrow();
@@ -266,8 +270,8 @@ describe("IPC contracts", () => {
       familyId: "untrusted/model",
       tier: "medium",
     })).toThrow();
-    expect(modelFamilyLibraryRequestSchema.parse({ familyId: "whisper-large-v2" })).toEqual({
-      familyId: "whisper-large-v2",
+    expect(modelFamilyLibraryRequestSchema.parse({ familyId: "qwen3-asr-1-7b" })).toEqual({
+      familyId: "qwen3-asr-1-7b",
     });
     expect(() => modelFamilyLibraryRequestSchema.parse({
       familyId: "https://untrusted.invalid/model",

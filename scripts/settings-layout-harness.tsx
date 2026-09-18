@@ -49,19 +49,7 @@ Object.defineProperty(navigator, "platform", {
 });
 const modelPresent = harnessVerification !== "missing";
 const modelVerified = harnessVerification === "verified";
-const engine = "mlx-whisper" as const;
-const backend = "MLX Whisper";
-const activeArtifactIds = ["whisper-large-v3-high", "whisper-large-v3-medium", "whisper-large-v3-low"];
-const activeArtifacts = activeArtifactIds.map((artifactId, index) => ({
-  artifactId,
-  displayName: `Whisper large-v3 ${["high", "medium", "low"][index]}`,
-  backend,
-  modelId: `curated/whisper-large-v3-${["high", "medium", "low"][index]}`,
-  storageDirectory: `whisper-large-v3-${["high", "medium", "low"][index]}`,
-  revision: `${index + 1}`.repeat(40),
-  license: "MIT",
-  expectedDownloadBytes: (3 - index) * 1_000_000_000,
-}));
+const backend = "MLX Audio";
 const qwenArtifactPrecisions = ["bf16", "8bit", "4bit"] as const;
 const qwenArtifactIds = qwenArtifactPrecisions.map(
   (precision) => `qwen3-asr-1-7b-mlx-${precision}`,
@@ -89,6 +77,19 @@ const qwen06Artifacts = qwen06ArtifactIds.map((artifactId, index) => ({
   license: "Apache-2.0",
   expectedDownloadBytes: [1_569_438_434, 1_010_773_761, 712_781_279][index]!,
 }));
+const activeArtifactIds = qwen06ArtifactIds;
+const activeArtifacts = qwen06Artifacts;
+const canaryPrecisions = ["bf16", "q8", "q4"] as const;
+const canaryArtifacts = canaryPrecisions.map((precision, index) => ({
+  artifactId: `canary-qwen-2-5b-gguf-${precision}`,
+  displayName: `Canary-Qwen 2.5B · GGUF ${precision}`,
+  backend: "transcribe.cpp / Metal",
+  modelId: "handy-computer/canary-qwen-2.5b-gguf",
+  storageDirectory: `canary-qwen-2-5b-${precision}`,
+  revision: "3370d4e2f28cc70eea79dfc9f2f43fb91eef3163",
+  license: "CC-BY-4.0",
+  expectedDownloadBytes: [5_076_107_136, 2_797_548_928, 1_737_575_808][index]!,
+}));
 const parakeetArtifactIds = [
   "parakeet-unified-en-0-6b-coreml-fp16",
   "parakeet-unified-en-0-6b-coreml-int8",
@@ -113,8 +114,8 @@ let persistedSettings: AppSettings = appSettingsSchema.parse(usesCustomSettings
       keepHistory: false,
       language: "Italian",
       microphoneId: "disconnected-usb-microphone",
-      activeModelFamilyId: "whisper-large-v3",
-      modelLibraryFamilyIds: ["whisper-large-v3"],
+      activeModelFamilyId: "qwen3-asr-0-6b",
+      modelLibraryFamilyIds: ["qwen3-asr-0-6b"],
       modelPerformanceMode: "low",
       historyRetentionDays: 90,
       removeFillers: false,
@@ -127,14 +128,14 @@ let persistedSettings: AppSettings = appSettingsSchema.parse(usesCustomSettings
 if (harnessParams.has("apply")) {
   persistedSettings = appSettingsSchema.parse({
     ...persistedSettings,
-    // The Apply scenario begins with the exact verified Whisper runtime in
-    // the diagnostics fixture, then proves a staged switch to Qwen. Keep the
+    // The Apply scenario begins with the exact verified Qwen 0.6B runtime in
+    // the diagnostics fixture, then proves a staged switch to Qwen 1.7B. Keep the
     // saved selection and resident runtime coherent before the click.
-    activeModelFamilyId: "whisper-large-v3",
+    activeModelFamilyId: "qwen3-asr-0-6b",
     asrMode: "after-stop",
     modelPerformanceMode: "high",
     modelLibraryFamilyIds: [
-      "whisper-large-v3",
+      "qwen3-asr-0-6b",
       "qwen3-asr-1-7b",
     ],
   });
@@ -207,11 +208,11 @@ const parakeetCapabilities: ModelCapabilities = {
 
 const catalog: ModelCatalog = {
   platform: "darwin-arm64",
-  activeModelFamilyId: "whisper-large-v3",
+  activeModelFamilyId: "qwen3-asr-0-6b",
   recommendedDefaultFamilyId: "parakeet-unified-en-0-6b",
   modelLibraryFamilyIds: harnessParams.has("apply")
-    ? ["whisper-large-v3", "qwen3-asr-1-7b"]
-    : ["whisper-large-v3"],
+    ? ["qwen3-asr-0-6b", "qwen3-asr-1-7b"]
+    : ["qwen3-asr-0-6b"],
   families: [
     ...[{
       familyId: "parakeet-unified-en-0-6b" as const,
@@ -233,31 +234,12 @@ const catalog: ModelCatalog = {
       })),
     }],
     {
-      familyId: "whisper-large-v3",
-      displayName: "Whisper large-v3",
-      capabilities: afterStopCapabilities,
-      recommendedDefault: false,
-      active: true,
-      inLibrary: true,
-      artifacts: activeArtifacts,
-      profiles: ["high", "medium", "low"].map((tier, index) => ({
-        profileId: `whisper-large-v3-${tier}`,
-        tier: tier as "high" | "medium" | "low",
-        artifactId: `whisper-large-v3-${tier}`,
-        engine,
-        precision: tier === "high" ? "float16" : tier === "medium" ? "int8_float16" : "int8",
-        expectedMemoryMinBytes: (3 - index) * GIBIBYTE,
-        expectedMemoryMaxBytes: (4 - index) * GIBIBYTE,
-        memoryBasis: "estimated" as const,
-      })),
-    },
-    {
       familyId: "qwen3-asr-0-6b",
       displayName: "Qwen3-ASR 0.6B",
       capabilities: afterStopCapabilities,
       recommendedDefault: false,
-      active: false,
-      inLibrary: false,
+      active: true,
+      inLibrary: true,
       artifacts: qwen06Artifacts,
       profiles: ["high", "medium", "low"].map((tier, index) => ({
         profileId: `qwen3-asr-0-6b-${tier}`,
@@ -290,30 +272,21 @@ const catalog: ModelCatalog = {
       })),
     },
     {
-      familyId: "whisper-large-v2",
-      displayName: "Whisper large-v2",
-      capabilities: afterStopCapabilities,
+      familyId: "canary-qwen-2-5b",
+      displayName: "Canary-Qwen 2.5B",
+      capabilities: { ...afterStopCapabilities, languageDetection: false, promptContext: false, supportedLanguages: ["en"] },
       recommendedDefault: false,
       active: false,
       inLibrary: false,
-      artifacts: [{
-        artifactId: "whisper-large-v2-shared",
-        displayName: "Whisper large-v2 shared model data",
-        backend,
-        modelId: "curated/whisper-large-v2",
-        storageDirectory: "whisper-large-v2",
-        revision: "f".repeat(40),
-        license: "Undeclared",
-        expectedDownloadBytes: 3_000_000_000,
-      }],
+      artifacts: canaryArtifacts,
       profiles: ["high", "medium", "low"].map((tier, index) => ({
-        profileId: `whisper-large-v2-${tier}`,
+        profileId: `canary-qwen-2-5b-${tier}`,
         tier: tier as "high" | "medium" | "low",
-        artifactId: "whisper-large-v2-shared",
-        engine,
-        precision: tier === "high" ? "float16" : tier === "medium" ? "int8_float16" : "int8",
-        expectedMemoryMinBytes: (3 - index) * GIBIBYTE,
-        expectedMemoryMaxBytes: (4 - index) * GIBIBYTE,
+        artifactId: canaryArtifacts[index]!.artifactId,
+        engine: "transcribe-cpp" as const,
+        precision: (["bf16", "8-bit", "4-bit"] as const)[index]!,
+        expectedMemoryMinBytes: [6, 4, 3][index]! * GIBIBYTE,
+        expectedMemoryMaxBytes: [9, 7, 6][index]! * GIBIBYTE,
         memoryBasis: "estimated" as const,
       })),
     },
@@ -331,7 +304,7 @@ const catalog: ModelCatalog = {
       expectedFiles: 18,
     })),
     ...activeArtifacts.map((artifact) => ({
-      familyId: "whisper-large-v3" as const,
+      familyId: "qwen3-asr-0-6b" as const,
       artifactId: artifact.artifactId,
       present: modelPresent,
       verified: modelVerified,
@@ -352,8 +325,8 @@ const catalog: ModelCatalog = {
       verifiedFiles: harnessParams.has("apply") ? 1 : 0,
       expectedFiles: 1,
     })),
-    ...qwen06Artifacts.map((artifact) => ({
-      familyId: "qwen3-asr-0-6b" as const,
+    ...canaryArtifacts.map((artifact) => ({
+      familyId: "canary-qwen-2-5b" as const,
       artifactId: artifact.artifactId,
       present: false,
       verified: false,
@@ -363,17 +336,6 @@ const catalog: ModelCatalog = {
       verifiedFiles: 0,
       expectedFiles: 1,
     })),
-    {
-      familyId: "whisper-large-v2" as const,
-      artifactId: "whisper-large-v2-shared",
-      present: false,
-      verified: false,
-      verificationStatus: "missing" as const,
-      sizeBytes: 0,
-      expectedBytes: 3_000_000_000,
-      verifiedFiles: 0,
-      expectedFiles: 1,
-    },
   ],
   unmanagedEntries: [],
 };
@@ -390,11 +352,11 @@ const diagnostics: Diagnostics = {
    */
   unreadableRecords: 0,
   model: {
-    familyId: "whisper-large-v3",
+    familyId: "qwen3-asr-0-6b",
     artifactId: activeArtifactIds[0]!,
-    profileId: "whisper-large-v3-high",
-    displayName: "Whisper large-v3 High",
-    modelId: "curated/whisper-large-v3-high",
+    profileId: "qwen3-asr-0-6b-high",
+    displayName: "Qwen3-ASR 0.6B High",
+    modelId: activeArtifacts[0]!.modelId,
     storageDirectory: activeArtifacts[0]!.storageDirectory,
     installed: modelVerified,
     // Both Apply scenarios begin with a warm verified model. Success switches
@@ -407,8 +369,8 @@ const diagnostics: Diagnostics = {
     expectedBytes: activeArtifacts[0]!.expectedDownloadBytes,
     verifiedFiles: modelVerified ? 1 : 0,
     expectedFiles: 1,
-    revision: "1".repeat(40),
-    license: "MIT",
+    revision: activeArtifacts[0]!.revision,
+    license: activeArtifacts[0]!.license,
   },
   accelerator: {
     kind: "apple-unified",
@@ -429,17 +391,15 @@ const diagnostics: Diagnostics = {
     options: ["high", "medium", "low"].map((tier, index) => ({
       tier: tier as "high" | "medium" | "low",
       modelKey: tier,
-      profileId: `whisper-large-v3-${tier}`,
-      artifactId: `whisper-large-v3-${tier}`,
-      displayName: `Whisper large-v3 ${tier}`,
+      profileId: `qwen3-asr-0-6b-${tier}`,
+      artifactId: activeArtifactIds[index]!,
+      displayName: `Qwen3-ASR 0.6B ${tier}`,
       engine: backend,
-      precision: tier === "high" ? "float16" : tier === "medium" ? "int8_float16" : "int8",
-      expectedMemoryMinBytes: (3 - index) * GIBIBYTE,
-      expectedMemoryMaxBytes: (4 - index) * GIBIBYTE,
+      precision: (["bf16", "8-bit", "4-bit"] as const)[index]!,
+      expectedMemoryMinBytes: [2, 1.4, 1.1][index]! * GIBIBYTE,
+      expectedMemoryMaxBytes: [3, 2.3, 2][index]! * GIBIBYTE,
       memoryBasis: "estimated" as const,
-      expectedDownloadBytes: activeArtifacts.find((artifact) => (
-        artifact.artifactId === `whisper-large-v3-${tier}`
-      ))!.expectedDownloadBytes,
+      expectedDownloadBytes: activeArtifacts[index]!.expectedDownloadBytes,
       qualityNote: "Curated local speech profile.",
       verificationStatus: harnessVerification,
       installed: modelVerified,

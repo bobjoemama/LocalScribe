@@ -110,16 +110,6 @@ export function modelFamilyPresentation(family: CatalogFamily): ModelFamilyPrese
       latencyLabel: "Balanced after stop",
     };
   }
-  if (identity.includes("whisper") && identity.includes("v2")) {
-    return {
-      experience: "after-stop",
-      experiences: ["after-stop"],
-      recommendation: "legacy",
-      summary: "Older Whisper generation retained for compatibility.",
-      languageLabel,
-      latencyLabel: "After stop",
-    };
-  }
   return {
     experience: "after-stop",
     experiences,
@@ -1115,10 +1105,10 @@ function ModelComparisonDetails({ family, tier, experience }: {
 }) {
   const evidence = MODEL_EVIDENCE[family.familyId];
   const values = modelComparisonValues(family, tier, experience);
-  const originalUrl = `https://huggingface.co/${evidence.originalModelId}`;
+  const originalUrls = evidence ? [`https://huggingface.co/${evidence.originalModelId}`] : [];
   const sourceUrls = family.artifacts.map((artifact) => modelArtifactSourceUrl(artifact.modelId, artifact.revision))
     .filter((url): url is string => url !== null);
-  const sources = [...new Set([originalUrl, ...sourceUrls, ...(evidence.reference ? [REFERENCE_BENCHMARK_URL] : [])])];
+  const sources = [...new Set([...originalUrls, ...sourceUrls, ...(evidence?.reference ? [REFERENCE_BENCHMARK_URL] : [])])];
   const [copyStatus, setCopyStatus] = useState("");
   const copySources = async () => {
     try {
@@ -1138,8 +1128,8 @@ function ModelComparisonDetails({ family, tier, experience }: {
         <div><dt>Reference speed · server</dt><dd>{values.speed === null ? "Not reported" : `${values.speed.toFixed(1)}× real time`}</dd></div>
       </dl>
       <div className="ls-model-source-list">
-        <p>{REFERENCE_BENCHMARK_CONTEXT} {evidence.reference ? `Reference checkpoint: ${evidence.reference.modelId}.` : "This exact family is absent from that snapshot; no substitute score is used."} Reviewed {MODEL_EVIDENCE_REVIEWED}.</p>
-        <p>{evidence.publisherDescription} Downloads use the pinned publisher revisions below, require an explicit download action, and are SHA-256 verified before installation. The original model page is provenance, not an alternate download used by the app.</p>
+        <p>{REFERENCE_BENCHMARK_CONTEXT} {evidence?.reference ? `Reference checkpoint: ${evidence.reference.modelId}.` : "This exact family is absent from that snapshot; no substitute score is used."} Reviewed {MODEL_EVIDENCE_REVIEWED}.</p>
+        <p>{evidence?.publisherDescription ?? "Publisher comparison metadata is unavailable."} Downloads use the pinned publisher revisions below, require an explicit download action, and are SHA-256 verified before installation. The original model page is provenance, not an alternate download used by the app.</p>
         <ul>{sources.map((url) => <li key={url}><code>{url}</code></li>)}</ul>
         <button type="button" className="ls-small-button" onClick={() => void copySources()}>Copy source URLs</button>
         <span role="status">{copyStatus}</span>

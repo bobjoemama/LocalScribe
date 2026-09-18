@@ -69,7 +69,7 @@ describe("Apply recovery from retired saved selections", () => {
     modelLibraryFamilyIds: [family, "parakeet-unified-en-0-6b"],
   });
 
-  it.each([ ["whisper-large-v2", "auto"], ["whisper-large-v3", "low"] ] as const)(
+  it.each([ ["whisper-large-v2", "auto"], ["whisper-large-v3", "auto"], ["whisper-large-v3", "high"], ["whisper-large-v3", "low"] ] as const)(
     "loads only the explicit replacement for %s/%s and persists after load", async (family, mode) => {
       const fixture = harness(settings(family, mode));
       const result = await fixture.apply();

@@ -26,7 +26,6 @@ const MAC_MANIFEST_FILENAMES = [
   "canary-qwen-2-5b-gguf-q4.json",
   "parakeet-unified-en-0-6b-coreml-fp16.json",
   "parakeet-unified-en-0-6b-coreml-int8.json",
-  "whisper-large-v3-mlx.json",
   "qwen3-asr-0-6b-mlx-bf16.json",
   "qwen3-asr-0-6b-mlx-8bit.json",
   "qwen3-asr-0-6b-mlx-4bit.json",
@@ -69,11 +68,11 @@ describe("packaged model specifications", () => {
     expect(manifestForWorkerSelection(catalog, exact)).toBe(medium.manifest);
     expect(manifestForWorkerSelection(catalog, { ...exact, computeType: "int8" })).toBeNull();
     expect(manifestForWorkerSelection(catalog, { ...exact, tier: "high" })).toBeNull();
-    const whisper = runtimeModelTier(catalog.families["whisper-large-v3"]!, "high");
+    const qwen = runtimeModelTier(catalog.families["qwen3-asr-0-6b"]!, "high");
     expect(manifestForWorkerSelection(catalog, {
-      modelId: whisper.manifest.modelId,
+      modelId: qwen.manifest.modelId,
       tier: "high",
-      computeType: "float16",
+      computeType: "bfloat16",
       asrMode: "live",
     })).toBeNull();
   });
@@ -94,10 +93,10 @@ describe("packaged model specifications", () => {
   it("accepts repository IDs but rejects manifest-supplied URLs and local paths", () => {
     const base = {
       schemaVersion: 1,
-      familyId: "whisper-large-v3",
+      familyId: "qwen3-asr-0-6b",
       artifactId: "test-artifact",
       platform: "darwin-arm64",
-      backend: "MLX Whisper",
+      backend: "MLX Audio",
       displayName: "Test model",
       storageDirectory: "test-model",
       revision: "a".repeat(40),
@@ -122,20 +121,19 @@ describe("packaged model specifications", () => {
     }
   });
 
-  it("loads the Mac-recommended Parakeet family while retaining pinned Whisper and Qwen families", () => {
+  it("loads exactly the supported Parakeet, Qwen, and Canary families", () => {
     const manifestDirectory = path.resolve("resources/model-manifest");
     const mac = loadRuntimeModelCatalog(
       manifestDirectory,
       "darwin",
       "arm64",
-      "whisper-large-v3",
+      "qwen3-asr-0-6b",
     );
     const platformMac = loadRuntimePlatformModelCatalog(manifestDirectory, "darwin", "arm64");
 
-    expect(platformMac.families["whisper-large-v3"]).toMatchObject({ familyId: mac.familyId });
+    expect(platformMac.families["qwen3-asr-0-6b"]).toMatchObject({ familyId: mac.familyId });
     expect(Object.keys(platformMac.families)).toEqual([
       "parakeet-unified-en-0-6b",
-      "whisper-large-v3",
       "qwen3-asr-0-6b",
       "qwen3-asr-1-7b",
       "canary-qwen-2-5b",
@@ -153,20 +151,21 @@ describe("packaged model specifications", () => {
 
     expect(mac).toMatchObject({
       platform: "darwin-arm64",
-      engine: "mlx-whisper",
+      engine: "mlx-audio",
       tiers: {
         high: {
           tier: "high",
-          precision: "fp16",
+          precision: "bf16",
           manifest: {
-            modelId: "mlx-community/whisper-large-v3-mlx",
-            revision: "49e6aa286ad60c14352c404340ded53710378a11",
+            modelId: "mlx-community/Qwen3-ASR-0.6B-bf16",
+            revision: "eae2b51f96265328f1e7beced788adb0e4536f92",
           },
         },
       },
     });
-    expect(supportedTiers(mac)).toEqual(["high"]);
-    expect(runtimeModelTier(mac, "high").manifest.license).toBe("MIT");
+    expect(supportedTiers(mac)).toEqual(["high", "medium", "low"]);
+    expect(runtimeModelTier(mac, "high").manifest.license).toBe("Apache-2.0");
+    expect(platformMac.families["whisper-large-v3"]).toBeUndefined();
     expect(platformMac.families["whisper-large-v2"]).toBeUndefined();
     expect(platformMac.families["qwen3-asr-1-7b"]).toMatchObject({
       displayName: "Qwen3-ASR 1.7B",
@@ -248,7 +247,6 @@ describe("packaged model specifications", () => {
     ).resolves.toEqual([
       expect.objectContaining({ familyId: "parakeet-unified-en-0-6b", artifactId: "parakeet-unified-en-0-6b-coreml-fp16" }),
       expect.objectContaining({ familyId: "parakeet-unified-en-0-6b", artifactId: "parakeet-unified-en-0-6b-coreml-int8" }),
-      expect.objectContaining({ familyId: "whisper-large-v3", artifactId: "whisper-large-v3-mlx-fp16" }),
       expect.objectContaining({ familyId: "qwen3-asr-0-6b", artifactId: "qwen3-asr-0-6b-mlx-bf16" }),
       expect.objectContaining({ familyId: "qwen3-asr-0-6b", artifactId: "qwen3-asr-0-6b-mlx-8bit" }),
       expect.objectContaining({ familyId: "qwen3-asr-0-6b", artifactId: "qwen3-asr-0-6b-mlx-4bit" }),
@@ -259,13 +257,13 @@ describe("packaged model specifications", () => {
       expect.objectContaining({ familyId: "canary-qwen-2-5b", artifactId: "canary-qwen-2-5b-gguf-q8" }),
       expect.objectContaining({ familyId: "canary-qwen-2-5b", artifactId: "canary-qwen-2-5b-gguf-q4" }),
     ]);
-    expect(macVerifier).toHaveBeenCalledTimes(12);
+    expect(macVerifier).toHaveBeenCalledTimes(11);
   });
 
   it("rejects cross-family storage aliasing before verification or removal can target it", async () => {
     const manifestDirectory = path.resolve("resources/model-manifest");
     const mac = loadRuntimePlatformModelCatalog(manifestDirectory, "darwin", "arm64");
-    const sharedDirectory = runtimeModelTier(mac.families["whisper-large-v3"]!, "high").manifest.storageDirectory;
+    const sharedDirectory = runtimeModelTier(mac.families["qwen3-asr-0-6b"]!, "high").manifest.storageDirectory;
     const v2 = mac.families["qwen3-asr-1-7b"]!;
     const crossed = {
       ...mac,
@@ -357,7 +355,7 @@ describe("packaged model specifications", () => {
     temporaryRoots.push(root);
     const model = modelSpecSchema.parse({
       schemaVersion: 1,
-      familyId: "whisper-large-v2",
+      familyId: "qwen3-asr-1-7b",
       artifactId: "test-model-artifact",
       platform: "darwin-arm64",
       backend: "test",

@@ -6,7 +6,6 @@ requires-python = ">=3.12,<3.13"
 dependencies = [
   "mlx==0.32.0",
   "mlx-audio[stt]==0.4.6",
-  "mlx-whisper==0.4.3",
 ]
 
 [build-system]
