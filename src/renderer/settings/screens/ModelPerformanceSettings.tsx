@@ -6,6 +6,7 @@ import {
 } from "../../../shared/contracts";
 import { useLayoutEffect, useRef, useState } from "react";
 import { modelPerformanceTierLabel } from "../../../shared/modelPerformance";
+import { modelSelectionIsAvailable, UNAVAILABLE_MODEL_SELECTION_MESSAGE } from "../../../shared/modelAvailability";
 import { dictationLanguagePresentation } from "../dictationLanguages";
 import { MODEL_EVIDENCE, MODEL_EVIDENCE_REVIEWED, REFERENCE_BENCHMARK_CONTEXT, REFERENCE_BENCHMARK_URL, modelArtifactSourceUrl } from "../../../shared/modelEvidence";
 import { MODEL_SORT_OPTIONS, isModelSortOrder, modelComparisonValues, orderModelFamilies, type ModelSortOrder } from "./modelOrdering";
@@ -130,7 +131,7 @@ export function modelFamilyPresentation(family: CatalogFamily): ModelFamilyPrese
 }
 
 export function supportedModeChoices(family: CatalogFamily | undefined): readonly typeof MODEL_MODE_CHOICES[number][] {
-  if (!family) return MODEL_MODE_CHOICES;
+  if (!family) return [];
   const profileTiers = new Set(family.profiles.map((profile) => profile.tier));
   return MODEL_MODE_CHOICES.filter((choice) => choice.id === "auto" || profileTiers.has(choice.id));
 }
@@ -623,13 +624,17 @@ export function ModelPerformanceSettings({
     (family) => modelFamilyPresentation(family).experiences.includes("live"),
   ) ?? false;
   const visibleFamilies = orderModelFamilies(catalog?.families ?? [], sortOrder, comparisonTier, browsingExperience);
+  const savedSelectionUnavailable = Boolean(catalog) && !modelSelectionIsAvailable(
+    currentSelection,
+    currentFamily ? { modes: currentFamily.capabilities.modes, tiers: currentFamily.profiles.map((profile) => profile.tier) } : undefined,
+  );
   const applyState = applying
     ? "Applying model change"
     : selectionChanged
       ? "Pending model change"
       : currentModelLoaded
         ? "Applied and ready"
-        : "Selected model is not loaded";
+        : savedSelectionUnavailable ? "Saved selection unavailable" : "Selected model is not loaded";
   const applyStatus = applying
     ? "LocalScribe is safely unloading the previous runtime and loading this selection."
     : selectionChanged
@@ -666,6 +671,7 @@ export function ModelPerformanceSettings({
           <p>{applyStatus}</p>
           </details>
           <p id="model-apply-status">{applyEligibility.reason}</p>
+          {savedSelectionUnavailable && <p role="alert">{UNAVAILABLE_MODEL_SELECTION_MESSAGE}</p>}
         </div>
         <div className="ls-model-apply-actions">
           <button

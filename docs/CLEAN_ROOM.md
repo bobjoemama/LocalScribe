@@ -20,9 +20,9 @@ Current macOS boundaries:
   revision;
 - FluidAudio declares Apache-2.0, which does not replace Parakeet attribution;
 - the Whisper large-v3 FP16 manifest declares MIT;
-- pinned Whisper large-v3 8-bit/4-bit and all pinned
-  `mlx-community/whisper-large-v2-mlx` artifacts have `Undeclared` license
-  metadata and require separate distribution review;
+- Whisper large-v3 8-bit/4-bit and all previously pinned
+  `mlx-community/whisper-large-v2-mlx` artifacts lack declared licenses and are
+  excluded from the catalog, worker, and package pending separate review;
 - curated Qwen3-ASR manifests declare Apache-2.0.
 
 Exact identities, revisions, sizes, and file digests are recorded in

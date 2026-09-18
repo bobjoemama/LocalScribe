@@ -672,18 +672,14 @@ describe("release hardening configuration", () => {
     expect(packageJson.scripts?.typecheck).toBe("tsc --noEmit");
   });
 
-  it("scopes explicit MLX license approval to the signed macOS build", () => {
+  it("checks the shipped model licenses without an environment waiver", () => {
     const localMacVerification = projectFile("scripts/verify-local-macos.sh");
     const forgeConfig = projectFile("forge.config.ts");
 
     expect(localMacVerification).not.toContain(
       "LOCALSCRIBE_UNDECLARED_MLX_LICENSE_APPROVED",
     );
-    expect(forgeConfig).toContain(
-      'process.env.LOCALSCRIBE_UNDECLARED_MLX_LICENSE_APPROVED !== "1"',
-    );
-    expect(forgeConfig).toContain(
-      "Public macOS releases require documented legal approval",
-    );
+    expect(forgeConfig).not.toContain("LOCALSCRIBE_UNDECLARED_MLX_LICENSE_APPROVED");
+    expect(forgeConfig).toContain('assertDistributableModelLicenses(path.resolve("."))');
   });
 });
