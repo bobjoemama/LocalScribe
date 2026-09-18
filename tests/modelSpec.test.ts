@@ -27,17 +27,12 @@ const MAC_MANIFEST_FILENAMES = [
   "parakeet-unified-en-0-6b-coreml-fp16.json",
   "parakeet-unified-en-0-6b-coreml-int8.json",
   "whisper-large-v3-mlx.json",
-  "whisper-large-v3-mlx-8bit.json",
-  "whisper-large-v3-mlx-4bit.json",
   "qwen3-asr-0-6b-mlx-bf16.json",
   "qwen3-asr-0-6b-mlx-8bit.json",
   "qwen3-asr-0-6b-mlx-4bit.json",
   "qwen3-asr-1-7b-mlx-bf16.json",
   "qwen3-asr-1-7b-mlx-8bit.json",
   "qwen3-asr-1-7b-mlx-4bit.json",
-  "whisper-large-v2-mlx.json",
-  "whisper-large-v2-mlx-8bit.json",
-  "whisper-large-v2-mlx-4bit.json",
 ] as const;
 
 afterEach(async () => {
@@ -144,7 +139,6 @@ describe("packaged model specifications", () => {
       "qwen3-asr-0-6b",
       "qwen3-asr-1-7b",
       "canary-qwen-2-5b",
-      "whisper-large-v2",
     ]);
     expect(platformMac.recommendedDefaultFamilyId).toBe("parakeet-unified-en-0-6b");
     expect(platformMac.families["parakeet-unified-en-0-6b"]).toMatchObject({
@@ -169,65 +163,11 @@ describe("packaged model specifications", () => {
             revision: "49e6aa286ad60c14352c404340ded53710378a11",
           },
         },
-        medium: {
-          tier: "medium",
-          precision: "8-bit",
-          manifest: {
-            modelId: "mlx-community/whisper-large-v3-mlx-8bit",
-            revision: "04ca5b03c22d72ddf4f4b2d808a28bf9902fb71a",
-            license: "Undeclared",
-          },
-        },
-        low: {
-          tier: "low",
-          precision: "4-bit",
-          manifest: {
-            modelId: "mlx-community/whisper-large-v3-mlx-4bit",
-            revision: "d12b5d0043a6fe0c59af321617fba041d4e8e0c8",
-            license: "Undeclared",
-          },
-        },
       },
     });
-    expect(supportedTiers(mac).map((name) => runtimeModelTier(mac, name).engine)).toEqual([
-      "mlx-whisper",
-      "mlx-whisper",
-      "mlx-whisper",
-    ]);
-    expect(new Set(supportedTiers(mac).map((name) => runtimeModelTier(mac, name).manifest.modelId)).size).toBe(3);
-    expect(new Set(supportedTiers(mac).map((name) => runtimeModelTier(mac, name).manifest.storageDirectory)).size).toBe(3);
-
-    const macV2 = platformMac.families["whisper-large-v2"]!;
-    expect(macV2).toMatchObject({
-      familyId: "whisper-large-v2",
-      tiers: {
-        high: { artifactId: "whisper-large-v2-mlx-fp16", profileId: "whisper-large-v2-high" },
-        medium: { artifactId: "whisper-large-v2-mlx-int8", profileId: "whisper-large-v2-medium" },
-        low: { artifactId: "whisper-large-v2-mlx-int4", profileId: "whisper-large-v2-low" },
-      },
-    });
-    expect(runtimeModelTier(macV2, "high").manifest).toMatchObject({
-      modelId: "mlx-community/whisper-large-v2-mlx",
-      storageDirectory: "whisper-large-v2-mlx-cce8622",
-      revision: "cce86229e2765266197fef869ce9f7e2550067ab",
-      license: "Undeclared",
-      files: {
-        "config.json": { bytes: 268, sha256: "77d68bd8db0be90465fd7d35f8e4fa418297e449a27525060517a7e0df432c4b" },
-        "weights.npz": { bytes: 3_083_149_424, sha256: "c9888a2d03b4e9906c2864151f56dc21e58d617938da0eb818152e3f99adc3f1" },
-      },
-    });
-    expect(runtimeModelTier(macV2, "medium").manifest).toMatchObject({
-      modelId: "mlx-community/whisper-large-v2-mlx-8bit",
-      storageDirectory: "whisper-large-v2-mlx-8bit-ee1ab58",
-      revision: "ee1ab587ec0827941f04d9bb0ff9c2005444ef80",
-      license: "Undeclared",
-    });
-    expect(runtimeModelTier(macV2, "low").manifest).toMatchObject({
-      modelId: "mlx-community/whisper-large-v2-mlx-4bit",
-      storageDirectory: "whisper-large-v2-mlx-4bit-79e71f0",
-      revision: "79e71f0c4946290e517db80c7a5cba6f91bdfcaf",
-      license: "Undeclared",
-    });
+    expect(supportedTiers(mac)).toEqual(["high"]);
+    expect(runtimeModelTier(mac, "high").manifest.license).toBe("MIT");
+    expect(platformMac.families["whisper-large-v2"]).toBeUndefined();
     expect(platformMac.families["qwen3-asr-1-7b"]).toMatchObject({
       displayName: "Qwen3-ASR 1.7B",
       engine: "mlx-audio",
@@ -285,12 +225,8 @@ describe("packaged model specifications", () => {
     expect(() => modelManifestPath(manifestDirectory, "darwin", "arm64", "low")).toThrow(
       /no low profile/u,
     );
-    expect(modelManifestPath(manifestDirectory, "darwin", "arm64", "low", "whisper-large-v3")).toBe(
-      path.join(manifestDirectory, "whisper-large-v3-mlx-4bit.json"),
-    );
-    expect(modelManifestPath(manifestDirectory, "darwin", "arm64", "low", "whisper-large-v2")).toBe(
-      path.join(manifestDirectory, "whisper-large-v2-mlx-4bit.json"),
-    );
+    expect(() => modelManifestPath(manifestDirectory, "darwin", "arm64", "low", "whisper-large-v3")).toThrow();
+    expect(() => modelManifestPath(manifestDirectory, "darwin", "arm64", "low", "whisper-large-v2")).toThrow();
   });
 
   it("reports one verification per distinct Mac family artifact", async () => {
@@ -313,8 +249,6 @@ describe("packaged model specifications", () => {
       expect.objectContaining({ familyId: "parakeet-unified-en-0-6b", artifactId: "parakeet-unified-en-0-6b-coreml-fp16" }),
       expect.objectContaining({ familyId: "parakeet-unified-en-0-6b", artifactId: "parakeet-unified-en-0-6b-coreml-int8" }),
       expect.objectContaining({ familyId: "whisper-large-v3", artifactId: "whisper-large-v3-mlx-fp16" }),
-      expect.objectContaining({ familyId: "whisper-large-v3", artifactId: "whisper-large-v3-mlx-int8" }),
-      expect.objectContaining({ familyId: "whisper-large-v3", artifactId: "whisper-large-v3-mlx-int4" }),
       expect.objectContaining({ familyId: "qwen3-asr-0-6b", artifactId: "qwen3-asr-0-6b-mlx-bf16" }),
       expect.objectContaining({ familyId: "qwen3-asr-0-6b", artifactId: "qwen3-asr-0-6b-mlx-8bit" }),
       expect.objectContaining({ familyId: "qwen3-asr-0-6b", artifactId: "qwen3-asr-0-6b-mlx-4bit" }),
@@ -324,23 +258,20 @@ describe("packaged model specifications", () => {
       expect.objectContaining({ familyId: "canary-qwen-2-5b", artifactId: "canary-qwen-2-5b-gguf-bf16" }),
       expect.objectContaining({ familyId: "canary-qwen-2-5b", artifactId: "canary-qwen-2-5b-gguf-q8" }),
       expect.objectContaining({ familyId: "canary-qwen-2-5b", artifactId: "canary-qwen-2-5b-gguf-q4" }),
-      expect.objectContaining({ familyId: "whisper-large-v2", artifactId: "whisper-large-v2-mlx-fp16" }),
-      expect.objectContaining({ familyId: "whisper-large-v2", artifactId: "whisper-large-v2-mlx-int8" }),
-      expect.objectContaining({ familyId: "whisper-large-v2", artifactId: "whisper-large-v2-mlx-int4" }),
     ]);
-    expect(macVerifier).toHaveBeenCalledTimes(17);
+    expect(macVerifier).toHaveBeenCalledTimes(12);
   });
 
   it("rejects cross-family storage aliasing before verification or removal can target it", async () => {
     const manifestDirectory = path.resolve("resources/model-manifest");
     const mac = loadRuntimePlatformModelCatalog(manifestDirectory, "darwin", "arm64");
     const sharedDirectory = runtimeModelTier(mac.families["whisper-large-v3"]!, "high").manifest.storageDirectory;
-    const v2 = mac.families["whisper-large-v2"]!;
+    const v2 = mac.families["qwen3-asr-1-7b"]!;
     const crossed = {
       ...mac,
       families: {
         ...mac.families,
-        "whisper-large-v2": {
+        "qwen3-asr-1-7b": {
           ...v2,
           tiers: Object.fromEntries(Object.entries(v2.tiers).map(([tier, spec]) => [
             tier,
@@ -374,7 +305,7 @@ describe("packaged model specifications", () => {
         await readFile(path.join(sourceDirectory, filename)),
       );
     }
-    const mediumPath = path.join(root, "whisper-large-v3-mlx-8bit.json");
+    const mediumPath = path.join(root, "qwen3-asr-1-7b-mlx-8bit.json");
     const medium = JSON.parse(await readFile(mediumPath, "utf8")) as Record<string, unknown>;
     medium.backend = "FluidAudio CoreML / ANE";
     await writeFile(mediumPath, JSON.stringify(medium));
@@ -394,11 +325,11 @@ describe("packaged model specifications", () => {
         await readFile(path.join(sourceDirectory, filename)),
       );
     }
-    const lowPath = path.join(root, "whisper-large-v2-mlx-4bit.json");
+    const lowPath = path.join(root, "qwen3-asr-1-7b-mlx-4bit.json");
     const low = JSON.parse(await readFile(lowPath, "utf8")) as Record<string, unknown>;
-    low.modelId = "curated-owner/whisper-large-v2-custom";
-    low.artifactId = "whisper-large-v2-mlx-int4-custom";
-    low.storageDirectory = "whisper-large-v2-mlx-int4-custom";
+    low.modelId = "curated-owner/qwen3-asr-custom";
+    low.artifactId = "qwen3-asr-int4-custom";
+    low.storageDirectory = "qwen3-asr-int4-custom";
     low.revision = "c".repeat(40);
     await writeFile(lowPath, JSON.stringify(low));
 
@@ -406,19 +337,18 @@ describe("packaged model specifications", () => {
       root,
       "darwin",
       "arm64",
-      "whisper-large-v2",
+      "qwen3-asr-1-7b",
     ), "low");
     expect(tier).toMatchObject({
-      artifactId: "whisper-large-v2-mlx-int4-custom",
-      expectedDownloadBytes: 973_192_389,
+      artifactId: "qwen3-asr-int4-custom",
       manifest: {
-        modelId: "curated-owner/whisper-large-v2-custom",
-        storageDirectory: "whisper-large-v2-mlx-int4-custom",
+        modelId: "curated-owner/qwen3-asr-custom",
+        storageDirectory: "qwen3-asr-int4-custom",
         revision: "c".repeat(40),
       },
     });
     expect(tier.downloadEvidence.source).toContain(
-      "curated-owner/whisper-large-v2-custom/tree/",
+      "curated-owner/qwen3-asr-custom/tree/",
     );
   });
 

@@ -85,12 +85,50 @@ Developer ID signing, notarization, stapling, or general Gatekeeper trust.
 The gate never sets release credentials or model-license approval. Do not add
 secrets to scripts, repository files, npm configuration, or shell history.
 
-If notarized distribution is authorized in the future, provision the
-Keychain profile separately with `xcrun notarytool store-credentials` and
-Apple's interactive prompts. The build must consume only the profile name: it
+For an authorized notarized build, provision the Keychain profile separately
+with `xcrun notarytool store-credentials` and Apple's interactive prompts:
+
+```sh
+xcrun notarytool store-credentials "localscribe-notary"
+```
+
+Use the Apple Developer account and team associated with the intended
+Developer ID Application certificate. Enter an Apple app-specific password
+only at the local password prompt, never in chat, shell history, or a repository
+file. An installed signing certificate alone does not authenticate the notary
+service. If a profile already exists, reuse its name after validating access:
+
+```sh
+xcrun notarytool history --keychain-profile "localscribe-notary"
+```
+
+The build must consume only the profile name: it
 never places a notarization password in process arguments or accepts one as a
-release-script parameter. That future path remains outside the current
-private-validation scope.
+release-script parameter. Select the intended `Developer ID Application:`
+identity with `LOCALSCRIBE_CODESIGN_IDENTITY`, set `APPLE_KEYCHAIN_PROFILE` to
+the validated profile name, and use `LOCALSCRIBE_RELEASE=1` for the build.
+This mode enables hardened runtime, app notarization and stapling, followed by
+DMG notarization, stapling, and Gatekeeper assessment. It does not publish to
+GitHub or change repository visibility.
+
+The release build checks the actual packaged model catalog's license
+declarations and requires its manifest set to match the packaging allowlist.
+There is no environment-variable waiver. Whisper v2 and Whisper v3 Medium/Low
+are excluded pending exact-artifact review, not relabeled as approved. An Apple
+developer account does not grant model redistribution rights. See
+[CLEAN_ROOM.md](CLEAN_ROOM.md).
+
+Check the exact app and DMG with `xcrun stapler validate` and the release
+artifact verifier's `--public-release` mode before describing them as
+notarized. Apple signing is an identity/trust mechanism, not a replacement for
+the Apache or third-party software licenses. See Apple's
+[Developer ID overview](https://developer.apple.com/developer-id/) and
+[notarization workflow](https://developer.apple.com/documentation/security/customizing-the-notarization-workflow).
+
+Changing from an Apple Development identity to a different Developer ID team
+can require renewed macOS Accessibility consent on existing installations.
+Preserve user data and explain the identity transition; never reset TCC or
+disable system protections automatically.
 
 ## Optional packaged real-model smoke
 
@@ -168,12 +206,14 @@ reconcile it; do not delete or replace a reviewed asset in place.
 
 ## Binary trust boundary
 
-The current intended distribution class is private/local validation, not Mac
-App Store distribution. Publishing source on GitHub does not make an
-Apple Development or ad-hoc signed binary publicly trusted. If broad binary
-distribution is later desired, Developer ID signing, hardened runtime,
-notarization, stapling, Gatekeeper assessment, and clean-machine testing remain
-separate requirements for the exact artifact.
+Repository access and binary trust are independent. The repository remains
+private unless separately authorized; invited testers can download its release
+assets. Developer ID signing and notarization support direct downloads outside
+the Mac App Store and do not require making the repository public. Existing
+Apple Development or ad-hoc signed releases do not gain trust retroactively.
+Developer ID signing, hardened runtime, notarization, stapling, Gatekeeper
+assessment, and clean-machine testing are separate requirements for each
+artifact intended for straightforward distribution.
 
 If automatic updates remain disabled, document manual replacement and data
 preservation behavior. Never weaken a fail-closed gate to make a validation

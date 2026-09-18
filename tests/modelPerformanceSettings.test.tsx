@@ -222,6 +222,28 @@ function storageButtonTags(html: string): string[] {
 }
 
 describe("ModelPerformanceSettings", () => {
+  it("explains a retired saved family while allowing an explicit supported replacement", () => {
+    const reduced = catalog({ activeFamilyId: "whisper-large-v2" });
+    reduced.families = reduced.families.filter((family) => family.familyId !== "whisper-large-v2")
+      .map((family) => ({ ...family, profiles: family.profiles.filter((profile) => profile.tier === "high") }));
+    const html = renderModelSettings({
+      catalog: reduced,
+      currentSelection: { familyId: "whisper-large-v2", asrMode: "after-stop", performanceMode: "medium" },
+      pendingSelection: { familyId: "whisper-large-v3", asrMode: "after-stop", performanceMode: "high" },
+      currentModelLoaded: false,
+      mode: "high",
+      resolvedTier: null,
+      residentRuntimeLabel: null,
+      runtimeTierStatuses: [{ familyId: "whisper-large-v3", tier: "high", artifactId: "whisper-large-v3-high",
+        qualityNote: "Original precision", verificationStatus: "verified" }],
+    });
+    expect(html).toContain('role="alert"');
+    expect(html).toContain("Your saved selection and model files have not been changed");
+    expect(applyButtonTag(html)).toContain('aria-disabled="false"');
+    expect(supportedModeChoices(reduced.families[0]).map((choice) => choice.id)).toEqual(["auto", "high"]);
+    expect(supportedModeChoices(undefined)).toEqual([]);
+  });
+
   it("puts status first and collapses secondary details without hiding the selected profiles", () => {
     const html = renderModelSettings();
     expect(html).toMatch(/^<div class="ls-model-performance"><section class="ls-model-apply-card"/);

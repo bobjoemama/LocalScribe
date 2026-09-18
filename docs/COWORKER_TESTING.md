@@ -10,8 +10,11 @@ DMG or ZIP and checksum manifest produced together by
 - The repository and validation releases are currently private. Invite the
   tester to the repository before sharing the GitHub Release URL.
 - The supported target is an Apple Silicon Mac running macOS 14 or newer.
-- This is a native macOS validation build, not a Docker service and not a
-  notarized public release.
+- This is a native macOS app, not a Docker service. Python, Node.js, Docker,
+  Homebrew, and Xcode are not required on the tester's Mac; runtime dependencies
+  are bundled. Speech-model weights are a separate, explicit in-app download.
+- Check the exact release notes for signing and notarization status. Private
+  repository access does not itself establish or prevent Apple notarization.
 - The tester should use a non-critical macOS account or back up existing
   LocalScribe data before testing rollback or migration behavior.
 

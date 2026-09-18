@@ -25,7 +25,7 @@ describe("model ordering", () => {
   it.each(MODEL_SORT_OPTIONS)("orders $id without mutating the catalog or selecting models", ({ id }) => {
     const before = JSON.stringify(families);
     const ordered = orderModelFamilies(families, id, "high", "after-stop");
-    expect(new Set(ordered.map((family) => family.familyId))).toEqual(new Set(MODEL_FAMILY_IDS));
+    expect(new Set(ordered.map((family) => family.familyId))).toEqual(new Set(families.map((family) => family.familyId)));
     expect(JSON.stringify(families)).toBe(before);
     expect(ordered).not.toBe(families);
   });

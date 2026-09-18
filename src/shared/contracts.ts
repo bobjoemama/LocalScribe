@@ -194,7 +194,7 @@ export function historyRetentionLabel(days: HistoryRetentionDays): string {
   return days === 0 ? "Forever" : `${days} days`;
 }
 
-/** Curated local ASR families shipped with this application. */
+/** Persisted family IDs, including retired families so upgrades preserve settings. */
 export const MODEL_FAMILY_IDS = [
   "parakeet-unified-en-0-6b",
   "whisper-large-v3",
@@ -381,11 +381,11 @@ const modelDiagnosticsSchema = z.object({
   loaded: z.boolean(),
   present: z.boolean(),
   verified: z.boolean(),
-  verificationStatus: modelVerificationStatusSchema,
+  verificationStatus: modelVerificationStatusSchema.or(z.literal("unavailable")),
   sizeBytes: z.number().int().nonnegative(),
   expectedBytes: z.number().int().nonnegative(),
   verifiedFiles: z.number().int().nonnegative(),
-  expectedFiles: z.number().int().positive(),
+  expectedFiles: z.number().int().nonnegative(),
   revision: z.string(),
   license: z.string(),
 });
@@ -435,9 +435,21 @@ export const diagnosticsSchema = z.object({
       installed: z.boolean(),
       present: z.boolean(),
       verified: z.boolean(),
-    })).min(1).max(MODEL_PERFORMANCE_TIERS.length),
+    })).max(MODEL_PERFORMANCE_TIERS.length),
   }),
   dataPath: z.string(),
+}).superRefine((value, context) => {
+  if (value.model.verificationStatus === "unavailable") {
+    if (value.model.loaded || value.model.installed || value.model.verified || value.model.present
+      || value.model.expectedFiles !== 0 || value.model.verifiedFiles !== 0
+      || value.model.sizeBytes !== 0 || value.model.expectedBytes !== 0
+      || value.performance.resolvedTier !== null || value.performance.fitsMemoryBudget
+      || value.performance.options.length !== 0 || !value.performance.resolutionReason) {
+      context.addIssue({ code: "custom", message: "Unavailable selections cannot claim a resolved or verified runtime" });
+    }
+  } else if (value.model.expectedFiles < 1 || value.performance.options.length < 1) {
+    context.addIssue({ code: "custom", message: "Available selections require concrete artifact and profile metadata" });
+  }
 });
 export type Diagnostics = z.infer<typeof diagnosticsSchema>;
 
