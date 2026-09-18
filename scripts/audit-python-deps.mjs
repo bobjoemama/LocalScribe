@@ -10,6 +10,7 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const auditToolProject = "tools/python-audit";
 const projects = [
   { label: "macOS worker", directory: "worker" },
+  { label: "Python audit tooling", directory: auditToolProject },
 ];
 
 function run(command, args, captureStdout = false) {
@@ -84,6 +85,10 @@ function exportAuditRequirements(project) {
 const auditDirectory = mkdtempSync(join(tmpdir(), "localscribe-python-audit-"));
 
 try {
+  run("uv", [
+    "run", "--project", auditToolProject, "--locked", "python", "-B",
+    "scripts/test-pip-url-boundary.py",
+  ]);
   for (const project of projects) {
     const auditRequirements = exportAuditRequirements(project);
     const requirementsPath = join(

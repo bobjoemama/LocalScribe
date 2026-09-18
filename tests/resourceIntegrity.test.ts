@@ -174,6 +174,19 @@ describe("packaged loose-resource integrity", () => {
     ).toThrow(/unexpected loose resource/);
   });
 
+  it.each([
+    "python-runtime/cpython-3.12/lib/python3.12/site-packages/pip/__init__.py",
+    "python-runtime/cpython-3.12/lib/python3.12/ensurepip/_bundled/pip-25.0.1-py3-none-any.whl",
+    "python-runtime/venv/bin/pip3.12",
+  ])("rejects an installer reintroduced after packaging: %s", (installer) => {
+    const resourcesPath = makeResourceFixture("darwin", "arm64");
+    const expected = buildResourceIntegrityExpectation(resourcesPath, "darwin", "arm64");
+    writeFixtureFile(resourcesPath, installer);
+    expect(() => verifyPackagedResourceIntegrity({
+      isPackaged: true, resourcesPath, platform: "darwin", arch: "arm64", expected,
+    })).toThrow(/unexpected loose resource/);
+  });
+
   it("restores the committed generated placeholder after preparing a package", () => {
     const resourcesPath = makeResourceFixture("darwin", "arm64");
     const generatedModulePath = path.join(makeTemporaryDirectory(), "generatedResourceIntegrity.ts");

@@ -98,6 +98,12 @@ UV_PROJECT_ENVIRONMENT="$venv_root" "$uv_bin" sync \
 # Python distributions and wheels frequently include their own tests, bytecode,
 # activation scripts, and developer CLIs. None are required by LocalScribe's
 # import-only worker and none belong in a public desktop artifact.
+# pip is not used by uv or by inference. Remove its base-interpreter copy,
+# metadata, launchers, and ensurepip's separate installer wheel after uv sync.
+find "$runtime_root" -type d \( -name pip -o -name ensurepip -o -name 'pip-*.dist-info' \) \
+  -prune -exec rm -rf -- {} +
+find -E "$runtime_root" \( -type f -o -type l \) \
+  \( -regex '.*/pip([0-9]+(\.[0-9]+)*)?' -o -name 'pip-*.whl' \) -delete
 find "$runtime_root" -type d \( \
   -name __pycache__ -o \
   -name .pytest_cache -o \
