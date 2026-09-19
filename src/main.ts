@@ -829,7 +829,7 @@ type ReadyVisibility = "active" | "inactive" | "hidden";
 function showWhenReady(window: BrowserWindow, visibility: ReadyVisibility): void {
   if (visibility === "hidden") return;
   window.once("ready-to-show", () => {
-    if (window.isDestroyed()) return;
+    if (quitting || window.isDestroyed()) return;
     if (visibility === "active") window.show();
     else window.showInactive();
   });
@@ -1042,7 +1042,7 @@ function positionPill(window: BrowserWindow): void {
 }
 
 function resizePill(): void {
-  if (!pillWindow || pillWindow.isDestroyed()) return;
+  if (quitting || !pillWindow || pillWindow.isDestroyed()) return;
   const { width, height } = pillSizeFor(
     session.state,
     pillMode,
@@ -1157,7 +1157,9 @@ function createPillWindow(): BrowserWindow {
 }
 
 function syncPillVisibility(): void {
-  if (!pillWindow || pillWindow.isDestroyed()) return;
+  // Renderer readiness can arrive while shutdown is awaiting worker cleanup,
+  // after the database has closed but before the native window is destroyed.
+  if (quitting || !pillWindow || pillWindow.isDestroyed()) return;
   const shouldShow = session.state !== "idle" || database.getSettings().showPillWhenIdle;
   if (shouldShow) {
     positionPill(pillWindow);
