@@ -1,7 +1,7 @@
 {
   "name": "localscribe",
   "productName": "LocalScribe",
-  "version": "0.1.0-dev.19",
+  "version": "0.1.0-dev.20",
   "description": "Local-first desktop dictation for Apple Silicon Macs.",
   "author": "Devesh",
   "license": "Apache-2.0",

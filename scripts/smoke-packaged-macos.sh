@@ -374,6 +374,7 @@ for _ in {1..50}; do
   sleep 0.1
 done
 if [[ ! -e "$app_exit_path" ]]; then
+  cat "$stdout_path" "$stderr_path" >&2
   echo "Packaged macOS app leader did not exit after shutdown." >&2
   exit 1
 fi
