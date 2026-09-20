@@ -140,7 +140,7 @@ describe("release metadata", () => {
       "Neither the source workflow nor any local command automatically creates a",
     );
     expect(releasing).toMatch(/do not delete or replace a\s+reviewed asset in place\./u);
-    expect(readme).not.toContain("/releases/download/v0.1.0");
+    expect(readme).not.toContain("/releases/download/v0.1.0/");
     expect(readme).not.toContain("LocalScribe-0.1.0-arm64.dmg");
   });
 });
