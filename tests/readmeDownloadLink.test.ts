@@ -3,16 +3,18 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 /*
- * Publication is a separate, explicit step. The README therefore describes
- * approved releases and source builds without presenting an unapproved local
- * candidate as a published tag, asset, checksum, or visibility promise.
+ * Publication is a separate, explicit step. This approved published version
+ * deliberately does not follow package.json when the next candidate is built.
+ * Update it only after publication and remote asset verification.
  */
 const projectRoot = path.resolve(__dirname, "..");
 const readme = readFileSync(path.join(projectRoot, "README.md"), "utf8");
+const publishedVersion = "0.1.0-dev.20";
+const releasesUrl = "https://github.com/bobjoemama/LocalScribe/releases";
 
 describe("README download section", () => {
   it("directs readers to an approved release or a source build", () => {
-    expect(readme).toContain("GitHub Releases page");
+    expect(readme).toContain(`${releasesUrl}/tag/v${publishedVersion}`);
     expect(readme).toContain("## Build and verify from source");
   });
 
@@ -27,7 +29,7 @@ describe("README download section", () => {
     expect(readme).toContain("**Microphone**");
     expect(readme).toContain("**Accessibility**");
     expect(readme).toContain("Press **Apply model**");
-    expect(readme).toContain("Check the release notes for its signing status");
+    expect(readme).toContain("Older previews may not be notarized");
   });
 
   it("requires a new version and tag instead of overwriting a release", () => {
@@ -35,10 +37,11 @@ describe("README download section", () => {
     expect(readme).toMatch(/do\s+not replace or overwrite an existing release asset/iu);
   });
 
-  it("does not claim that the current package version is already published", () => {
-    const packageVersion = JSON.parse(
-      readFileSync(path.join(projectRoot, "package.json"), "utf8"),
-    ) as { version: string };
-    expect(readme).not.toContain(`/releases/tag/v${packageVersion.version}`);
+  it("links the explicitly published DMG and explains private repository access", () => {
+    expect(readme).toContain(`${releasesUrl}/download/v${publishedVersion}/LocalScribe-${publishedVersion}-arm64.dmg`);
+    expect(readme).toContain("published prerelease");
+    expect(readme).toContain("available to invited repository members");
+    expect(readme).toContain("sign in to a GitHub account");
+    expect(readme).not.toContain("staged in a draft release");
   });
 });

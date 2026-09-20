@@ -8,21 +8,20 @@ cloud transcription, or telemetry.
 
 ## Download and install
 
-### [Download for Mac — GitHub Releases page](https://github.com/bobjoemama/LocalScribe/releases)
+### [Download LocalScribe for Mac](https://github.com/bobjoemama/LocalScribe/releases/download/v0.1.0-dev.20/LocalScribe-0.1.0-dev.20-arm64.dmg)
 
 The repository is currently private: sign in to a GitHub account that has been
 invited to it. A missing page or 404 usually means you do not have access.
 
-**Distribution status:** the latest Developer ID-signed, Apple-notarized Mac
-candidate is staged in a draft release pending hands-on acceptance. Drafts
-require repository write access and are not yet available to all invited
-testers. Older published releases are development previews; do not assume
-they are notarized. Check the release notes for its signing status.
+**Distribution status:** [dev.20 is a published prerelease](https://github.com/bobjoemama/LocalScribe/releases/tag/v0.1.0-dev.20),
+Developer ID-signed and Apple-notarized, available to invited repository members.
+It remains a validation build; hands-on checks and known limitations are listed
+in the release notes. Older previews may not be notarized.
 If macOS blocks a download, stop and report the message rather than disabling
 security protections.
 
-1. On the release page, expand **Assets** and download the file ending in
-   **`-arm64.dmg`**. You do not need the source-code ZIP or TAR files.
+1. Use **Download LocalScribe for Mac** above, or open the release page and
+   download the **`-arm64.dmg`** from **Assets**. You do not need the source-code ZIP or TAR files.
 2. Open the DMG and drag **LocalScribe** into **Applications**.
 3. Open LocalScribe from Applications. Allow **Microphone** access to dictate
    and **Accessibility** access if you want automatic text insertion.
