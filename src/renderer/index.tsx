@@ -4,6 +4,7 @@ import { Pill } from "./pill/Pill";
 import { ScratchpadWindow } from "./scratchpad/ScratchpadWindow";
 import { SettingsApp } from "./settings/SettingsApp";
 import "./styles.css";
+import "./workspace-theme.css";
 
 const surface = new URLSearchParams(window.location.search).get("surface");
 document.documentElement.dataset.surface = surface ?? "settings";

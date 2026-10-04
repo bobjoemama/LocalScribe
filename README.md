@@ -10,11 +10,8 @@ cloud transcription, or telemetry.
 
 ### [Download LocalScribe for Mac](https://github.com/bobjoemama/LocalScribe/releases/download/v0.1.0-dev.20/LocalScribe-0.1.0-dev.20-arm64.dmg)
 
-The repository is currently private: sign in to a GitHub account that has been
-invited to it. A missing page or 404 usually means you do not have access.
-
 **Distribution status:** [dev.20 is a published prerelease](https://github.com/bobjoemama/LocalScribe/releases/tag/v0.1.0-dev.20),
-Developer ID-signed and Apple-notarized, available to invited repository members.
+Developer ID-signed and Apple-notarized.
 It remains a validation build; hands-on checks and known limitations are listed
 in the release notes. Older previews may not be notarized.
 If macOS blocks a download, stop and report the message rather than disabling
@@ -34,6 +31,10 @@ security protections.
 Internet access is needed to download the app and your chosen model. Once the
 model is installed, dictation works offline. Downloading a model does not
 activate it until you press Apply.
+
+## iOS
+
+The native iPhone app and keyboard are in [LocalScribeiOS](https://github.com/bobjoemama/LocalScribeiOS). They run local speech models; physical-device performance and keyboard validation are still in progress.
 
 ## What you can do
 

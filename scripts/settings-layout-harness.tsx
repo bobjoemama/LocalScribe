@@ -18,8 +18,10 @@ import {
   type ModelSelectionApplyRequest,
   type PermissionSnapshot,
 } from "../src/shared/contracts";
+import { SettingsApp } from "../src/renderer/settings/SettingsApp";
 import { SettingsModal } from "../src/renderer/settings/screens/StyleSettings";
 import "../src/renderer/styles.css";
+import "../src/renderer/workspace-theme.css";
 
 const GIBIBYTE = 1_073_741_824;
 const harnessParams = new URLSearchParams(window.location.search);
@@ -445,7 +447,21 @@ window.localScribe = {
       createdAt: 1,
     }] : [],
   },
+  history: {
+    list: async () => ({ items: [
+      { id: "11111111-1111-4111-8111-111111111111", createdAt: Date.now(), durationMs: 12000,
+        text: "Please send the updated meeting notes by Friday. I’ll review them before our next discussion.",
+        language: "en", modelId: "fixture", status: "complete", sourceAppId: "com.apple.mail" },
+      { id: "22222222-2222-4222-8222-222222222222", createdAt: Date.now() - 3600000, durationMs: 7000,
+        text: "Remember to pick up coffee on the way home.",
+        language: "en", modelId: "fixture", status: "complete", sourceAppId: "com.apple.Notes" },
+    ], skippedUnreadable: 0 }),
+    onChanged: () => () => undefined,
+  },
+  dictionary: { list: async () => [] },
+  snippets: { list: async () => [] },
   system: {
+    appInfo: async () => ({ version: "0.1.0-dev.20", platform: "darwin" }),
     getPermissions: async () => {
       permissionPollCount += 1;
       return permissions;
@@ -550,6 +566,8 @@ window.localScribe = {
     removeModel: async () => diagnostics,
   },
   windows: {
+    onNavigate: () => () => undefined,
+    showSettings: async () => undefined,
     /*
      * Main pushes native window visibility because the renderer cannot derive
      * it: backgroundThrottling: false pins document.visibilityState to
@@ -575,6 +593,7 @@ const renderSettings = () => {
     applyCalls: ModelSelectionApplyRequest[];
     persisted(): AppSettings;
     remount(): void;
+    showWorkspace(): void;
     permissionPolls(): number;
     setWindowVisible(visible: boolean): void;
   };
@@ -587,5 +606,6 @@ const renderSettings = () => {
   },
   persisted: () => persistedSettings,
   remount: renderSettings,
+  showWorkspace: () => root.render(<SettingsApp />),
 };
 renderSettings();

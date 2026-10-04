@@ -1,40 +1,51 @@
 # LocalScribe Wispr-parity redesign
 
-This document records a clean-room product/UI inventory made by observing the installed
-Wispr Flow application through macOS Accessibility and screenshots. LocalScribe may reuse
-the interaction model, information architecture, and broad visual language, but it must use
-the LocalScribe name, an original black `L` mark, original icons, original copy, and no Wispr
-assets or source code.
+The original product inventory was made by observing the installed Wispr Flow application
+through macOS Accessibility and screenshots. The October 2026 workspace refresh gives
+LocalScribe its own visual system while retaining the implemented local features. It uses
+the LocalScribe name, original icons, original copy, and no Wispr assets or source code.
+The installed application is not updated by a source-code edit; deployment is a separate step.
+
+## Accepted direction: minimal, functional, system appearance
+
+The first October 2026 concept was rejected as decorative. This revision removes
+promotional slogans, decorative waveform/brand artwork, sidebar category labels,
+and repeated local/privacy badges. Screen names and controls describe their function.
+The earlier signed candidate in `out/ui-redesign-20261004` is superseded and preserved;
+Devesh subsequently authorized rebuilding and replacing the installed app without restarting macOS.
 
 ## Design system
 
-- Warm off-white application canvas (`#f5f3ef`) with a slightly darker fixed sidebar.
-- White content surface with a 24px top-left radius and thin warm-gray dividers.
-- Black primary actions, warm-gray secondary actions, restrained teal for local/privacy state.
-- System sans-serif for controls and headings; a restrained serif display face only for
-  editorial hero copy and insight callouts.
-- Compact 14px navigation, 15px body copy, 24-30px page titles, 12px metadata.
-- Cards use 12-16px radii, 1px borders, almost no shadow. Promotional/reference heroes use
-  original blurred CSS gradients instead of copied imagery.
-- Brand: black rounded-square `L` mark plus `LocalScribe`; never use Wispr's waveform/logo.
+- Native system sans-serif; 24px page titles, 13px controls and transcript text.
+- Neutral light canvas (`#f3f3f5`) and white content; dark canvas (`#202022`) and
+  dark content (`#1c1c1e`). Thin gray separators and 6–12px corner radii.
+- Blue marks actionable primary controls, links, and selected tabs. Success,
+  warning and error states retain distinct colors in both appearances.
+- CSS `color-scheme: light dark` and `light-dark()` follow macOS system appearance
+  and respond when it changes. There was no persisted appearance setting in the
+  application; this revision adds no new preference or IPC contract.
+- Shared tokens live in `src/renderer/workspace-theme.css`. Existing settings,
+  history, library and scratchpad colors also have explicit dark equivalents so
+  dark appearance covers nested controls, menus, dialogs and model status.
+- The floating bar retains its established presentation, dimensions and behavior.
 
 ## Application shell
 
-- Fixed 196px sidebar: Dictation, Insights, Dictionary, Snippets, Style, Transforms,
-  Scratchpad; Settings and Local-only status at the bottom.
-- Main content sits in a large white rounded panel and scrolls independently.
-- Window target: about 1220x760, responsive down to 900px.
-- No team invites, referrals, account billing, or cloud-sync upsells. Those cloud-only areas
-  are replaced by an always-visible `Local only` privacy status and local model information.
+- A 190px text sidebar lists Dictation, Insights, Scratchpad, Dictionary, Snippets,
+  Style and Transforms. Settings and the application version remain below.
+- Main content scrolls independently. The supported sizes remain 1220×760 and
+  900×640. Existing model apply, focus, dismissal and save boundaries remain intact.
 
 ## Screens
 
 ### Dictation
 
-- `Welcome back` heading, local-processing hero, today-grouped transcript rows, search toggle,
-  copy and overflow actions, and right-side statistics/profile cards.
-- Transcript actions stay local: copy, delete, export, clear. Never expose transcript bodies
-  to the network.
+- Direct `Dictation` title and existing settings-dependent history status.
+- Actual saved hold and toggle shortcuts are visible at both supported sizes;
+  `Edit shortcuts…` opens the existing guarded Settings modal.
+- Search, export, copy and overflow actions; today-grouped selectable transcript
+  text; compact Today and Summary statistics. No promotional banner or privacy badge.
+- Transcripts and actions retain the existing local persistence and encryption paths.
 
 ### Insights
 
@@ -47,8 +58,8 @@ assets or source code.
 
 ### Dictionary and snippets
 
-- Header with black `Add new` action, search, a dismissible original onboarding hero, and
-  bordered list rows.
+- Header with `Add new`, search, bordered list rows, and a dismissible concise
+  introduction with useful examples. Decorative onboarding artwork is hidden.
 - Add/edit surfaces are centered modals. Dictionary supports heard phrase and preferred
   spelling. Snippets support spoken trigger and expansion.
 - No sharing/team controls.
@@ -72,14 +83,19 @@ assets or source code.
 
 ### Scratchpad
 
-- Wispr-like hero, search/new controls, recent-note cards, and a full-height encrypted editor.
-- Local-only banner replaces cloud-sync marketing.
+- Scratchpad opens in its existing dedicated compact note window with search/new controls,
+  a note list, and encrypted editor. The palette and native sans-serif editor match the hub.
+- Save behavior, independent window dimensions, and local storage remain unchanged.
 
 ### Settings modal
 
-- Modal overlay with internal sidebar: General, System, Writing, Experimental, Data & Privacy.
+- Modal overlay with internal sidebar: General, System, Model & Performance, Writing,
+  Experimental, Data & Privacy. Navigation, scroll ownership, fixed footer, focus trapping,
+  and guarded dismissal remain in the existing implementation.
 - General: hold-to-talk shortcut, microphone, dictation language, app language, permissions.
-- System: login item, floating bar, automatic paste, history, retention, cleanup, model status.
+- System: login item, floating bar, automatic paste, history, retention.
+- Model & Performance: curated model catalog, profile comparison, download/verification,
+  and explicit model Apply. Workspace styling does not change model selection behavior.
 - Writing: app profiles, style/cleanup explanation, dictionary/snippet shortcuts.
 - Experimental: command mode, press-enter command, stacked messages, bulk import (only mark a
   switch active when its behavior exists).
@@ -104,3 +120,17 @@ assets or source code.
   wording into LocalScribe.
 - UI controls must either call an existing local implementation or clearly communicate that
   they are informational; no deceptive functional parity.
+
+## Verification and activation boundary
+
+`npm run typecheck`, `npm run lint`, renderer UI tests, and the isolated settings
+layout harness verify source behavior and rendering. Optional fixture captures use
+`LOCALSCRIBE_LAYOUT_SCREENSHOT_DIR` and `LOCALSCRIBE_LAYOUT_APPEARANCE=light|dark`.
+The same complete hidden test package renders actual workspace pages with synthetic
+history; it does not launch the product app, access user history or change macOS appearance.
+
+A separately packaged candidate reuses the existing Developer ID, bundle identifier
+and hardened runtime. Packaging validates source provenance, resources, entitlements
+and signatures. On 4 October 2026, the fresh signed build from `out/ui-installed-20261004/` replaced `/Applications/LocalScribe.app`. Only LocalScribe restarted; macOS did not. Strict signature and installed archive checks passed, startup completed, and hold/toggle shortcut registration succeeded. The saved toggle remains Control–Space. The old installed bundle was removed after these checks; user data and downloaded models were left in place.
+
+This local update has no new notarization ticket and is not a new published binary release. Physical microphone-to-target dictation and encrypted-history/OS permission continuity still require hands-on verification; successful startup and shortcut registration alone do not prove those workflows. The native iOS counterpart is in [LocalScribeiOS](https://github.com/bobjoemama/LocalScribeiOS).

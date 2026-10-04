@@ -85,6 +85,38 @@ Developer ID signing, notarization, stapling, or general Gatekeeper trust.
 The gate never sets release credentials or model-license approval. Do not add
 secrets to scripts, repository files, npm configuration, or shell history.
 
+## Local signed UI candidate without notarization
+
+For an authorized local review build, `LOCALSCRIBE_LOCAL_SIGNED_CANDIDATE=1`
+enables hardened-runtime signing for the app, helpers, and bundled Python while
+`LOCALSCRIBE_RELEASE=0` keeps notarization and timestamp service calls disabled.
+Set `LOCALSCRIBE_CODESIGN_IDENTITY` to the existing Developer ID Application
+identity used by the installed app; this mode refuses Apple Development or
+ad-hoc identities. Keep the bundle ID and app name unchanged. Verify the
+candidate's designated code requirement against the installed app before any
+replacement; matching identity is necessary but does not prove that runtime
+permissions and encrypted storage will work after activation.
+
+When only renderer source changed and the existing pinned Python runtime and
+staged native helpers are present, Forge's package API can reuse them without
+running `worker:bundle`. It still builds fresh main/preload/renderer code and
+the Accessibility helper, signs the candidate, and checks source provenance,
+resources, entitlements, native imports, fuses, and the bundle. Native modules
+rebuild sequentially using the shared Electron header cache; no module is
+excluded from rebuild checks. Pass an explicit,
+unused `outDir` beneath `out/` to preserve earlier artifacts. This build must
+not target `/Applications` or any running application bundle.
+
+Invoke the package API from a regular Node script or CommonJS `node -e`
+expression. `--input-type=module` is an eval-only flag that propagates to
+Forge's forked file-based rebuild workers and prevents those workers from
+starting. The normal Forge CLI does not use that flag.
+
+Local signed candidates have no new notarization ticket and are not public
+release artifacts. Building one does not install or launch it. Installing,
+activating, real dictation testing, and notarization remain separate authorized
+steps. The same model files and user data must stay in place during an update.
+
 For an authorized notarized build, provision the Keychain profile separately
 with `xcrun notarytool store-credentials` and Apple's interactive prompts:
 
