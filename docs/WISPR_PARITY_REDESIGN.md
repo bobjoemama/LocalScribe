@@ -146,7 +146,17 @@ and signatures. On 4 October 2026, the fresh signed build from `out/ui-installed
 
 This local update has no new notarization ticket and is not a new published binary release. Physical microphone-to-target dictation and encrypted-history/OS permission continuity still require hands-on verification; successful startup and shortcut registration alone do not prove those workflows. The native iOS counterpart is in [LocalScribeiOS](https://github.com/bobjoemama/LocalScribeiOS).
 
-The subsequent surface and interaction refinement is source work awaiting deployment.
-Its isolated renderer checks cover open header and row menus, keyboard focus, dismissal,
-copy feedback, bounded transcripts and library dialogs at both supported sizes and
-appearances. Fixture clipboard writes stay in memory; no user transcript or model is used.
+The subsequent surface and interaction refinement was built from commit `31bcdeb`
+in `out/ui-refined-20261004/` with Electron 43.7.7 and activated on 4 October 2026.
+The installed archive matches the reviewed candidate; strict signature checks and
+startup/hold/toggle registration passed. Only LocalScribe restarted, and the replaced
+bundle was deleted after verification. User data, models and shortcut settings stayed
+in place. Earlier in this session, the prior installed redesign recorded successful
+transcription and insertion events; those do not establish speech accuracy or full
+verification of this later refinement.
+
+The isolated renderer checks pass for open header and row menus, keyboard focus,
+dismissal, copy feedback, bounded transcripts and library dialogs at both supported
+sizes and appearances. Fixture clipboard writes stay in memory; no user transcript
+or model is used. Full source gates passed with 1,500 tests and two skipped tests;
+the exact unpatched build-only audit residual is documented in `docs/RELEASING.md`.
