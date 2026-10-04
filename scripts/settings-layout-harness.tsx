@@ -23,6 +23,11 @@ import { SettingsModal } from "../src/renderer/settings/screens/StyleSettings";
 import "../src/renderer/styles.css";
 import "../src/renderer/workspace-theme.css";
 
+const clipboardWrites: string[] = [];
+Object.defineProperty(navigator, "clipboard", {
+  configurable: true,
+  value: { writeText: async (text: string) => { clipboardWrites.push(text); } },
+});
 const GIBIBYTE = 1_073_741_824;
 const harnessParams = new URLSearchParams(window.location.search);
 const harnessPlatform = "darwin" as const;
@@ -455,6 +460,9 @@ window.localScribe = {
       { id: "22222222-2222-4222-8222-222222222222", createdAt: Date.now() - 3600000, durationMs: 7000,
         text: "Remember to pick up coffee on the way home.",
         language: "en", modelId: "fixture", status: "complete", sourceAppId: "com.apple.Notes" },
+      { id: "33333333-3333-4333-8333-333333333333", createdAt: Date.now() - 86_400_000, durationMs: 125000,
+        text: Array.from({ length: 12 }, (_, index) => `Note ${index + 1}: The project review will cover the latest changes, the remaining questions, and the next steps. Please keep the feedback specific and include the reason for each suggestion.`).join("\n\n"),
+        language: "en", modelId: "fixture", status: "complete", sourceAppId: "com.apple.TextEdit" },
     ], skippedUnreadable: 0 }),
     onChanged: () => () => undefined,
   },
@@ -594,6 +602,7 @@ const renderSettings = () => {
     persisted(): AppSettings;
     remount(): void;
     showWorkspace(): void;
+    clipboardWrites: string[];
     permissionPolls(): number;
     setWindowVisible(visible: boolean): void;
   };
@@ -607,5 +616,6 @@ const renderSettings = () => {
   persisted: () => persistedSettings,
   remount: renderSettings,
   showWorkspace: () => root.render(<SettingsApp />),
+  clipboardWrites,
 };
 renderSettings();

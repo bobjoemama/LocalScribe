@@ -142,17 +142,18 @@
   padding: 5px;
   border: 1px solid var(--hi-border);
   border-radius: 11px;
-  background: rgba(255, 255, 255, .98);
-  box-shadow: 0 14px 36px rgba(40, 35, 28, .12);
+  background: var(--surface-raised, var(--hi-surface));
+  box-shadow: var(--floating-shadow, 0 14px 36px rgba(0, 0, 0, .18));
 }
 
 .hi-overflow-menu button {
+  background: transparent;
   min-height: 32px;
   padding: 7px 9px;
   border: 0;
   border-radius: 7px;
   text-align: left;
-  color: light-dark(#47423c, #f5f5f7);
+  color: var(--hi-ink);
   font-size: 12px;
 }
 
@@ -352,9 +353,8 @@
 .hi-loading--insights span { height: 145px; }
 @keyframes hi-shimmer { to { background-position: -240% 0; } }
 /*
- * Action failures render here, in the document flow. This must never gain the
- * off-screen treatment `.hi-live-region` uses — that is the defect it exists to
- * fix — so it is deliberately positioned like any other card.
+ * Action failures remain persistent cards in the document flow, separate from
+ * the transient polite copy confirmation styled by the workspace theme.
  */
 .hi-action-notice { margin-bottom: 18px; }
 .hi-live-region { position: fixed; left: -9999px; }

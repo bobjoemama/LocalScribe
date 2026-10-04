@@ -16,11 +16,14 @@ Devesh subsequently authorized rebuilding and replacing the installed app withou
 
 ## Design system
 
-- Native system sans-serif; 24px page titles, 13px controls and transcript text.
-- Neutral light canvas (`#f3f3f5`) and white content; dark canvas (`#202022`) and
-  dark content (`#1c1c1e`). Thin gray separators and 6–12px corner radii.
-- Blue marks actionable primary controls, links, and selected tabs. Success,
-  warning and error states retain distinct colors in both appearances.
+- Native system sans-serif; 26px page titles, 13px controls and 14px transcript text.
+- Light canvas (`#edf1f6`) with white content; dark canvas (`#171c24`) with
+  content (`#202631`) and elevated surfaces (`#2a3443`). Thin gray separators,
+  restrained shadows and 6–14px corner radii communicate surface hierarchy.
+- Blue marks actionable primary controls, links, selected navigation and keyboard
+  focus. Hover and pressed states remain distinct without moving controls. Success,
+  warning and error states retain distinct colors in both appearances. Primary
+  action text remains at least 4.5:1 in normal, hover and pressed states.
 - CSS `color-scheme: light dark` and `light-dark()` follow macOS system appearance
   and respond when it changes. There was no persisted appearance setting in the
   application; this revision adds no new preference or IPC contract.
@@ -31,7 +34,7 @@ Devesh subsequently authorized rebuilding and replacing the installed app withou
 
 ## Application shell
 
-- A 190px text sidebar lists Dictation, Insights, Scratchpad, Dictionary, Snippets,
+- A 196px text sidebar lists Dictation, Insights, Scratchpad, Dictionary, Snippets,
   Style and Transforms. Settings and the application version remain below.
 - Main content scrolls independently. The supported sizes remain 1220×760 and
   900×640. Existing model apply, focus, dismissal and save boundaries remain intact.
@@ -45,6 +48,14 @@ Devesh subsequently authorized rebuilding and replacing the installed app withou
   `Edit shortcuts…` opens the existing guarded Settings modal.
 - Search, export, copy and overflow actions; today-grouped selectable transcript
   text; compact Today and Summary statistics. No promotional banner or privacy badge.
+- Short transcripts fit their text; long transcripts retain a bounded, scrollable
+  read-only field containing the complete value. Row hover and focus emphasize
+  the current record. Copy feedback is visible and announced without interrupting.
+- Native overflow disclosures use the same adaptive raised surface as dialogs.
+  Only one opens at a time. Escape closes and restores trigger focus; outside click
+  and action selection close it. Arrow keys, Home and End navigate its ordinary
+  buttons, and focused actions have a small blue outline. Popup placement adapts
+  above or below its trigger within the content viewport.
 - Transcripts and actions retain the existing local persistence and encryption paths.
 
 ### Insights
@@ -134,3 +145,8 @@ and hardened runtime. Packaging validates source provenance, resources, entitlem
 and signatures. On 4 October 2026, the fresh signed build from `out/ui-installed-20261004/` replaced `/Applications/LocalScribe.app`. Only LocalScribe restarted; macOS did not. Strict signature and installed archive checks passed, startup completed, and hold/toggle shortcut registration succeeded. The saved toggle remains Control–Space. The old installed bundle was removed after these checks; user data and downloaded models were left in place.
 
 This local update has no new notarization ticket and is not a new published binary release. Physical microphone-to-target dictation and encrypted-history/OS permission continuity still require hands-on verification; successful startup and shortcut registration alone do not prove those workflows. The native iOS counterpart is in [LocalScribeiOS](https://github.com/bobjoemama/LocalScribeiOS).
+
+The subsequent surface and interaction refinement is source work awaiting deployment.
+Its isolated renderer checks cover open header and row menus, keyboard focus, dismissal,
+copy feedback, bounded transcripts and library dialogs at both supported sizes and
+appearances. Fixture clipboard writes stay in memory; no user transcript or model is used.

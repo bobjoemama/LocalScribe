@@ -37,11 +37,12 @@ describe("README download section", () => {
     expect(readme).toMatch(/do\s+not replace or overwrite an existing release asset/iu);
   });
 
-  it("links the explicitly published DMG and explains private repository access", () => {
+  it("links the explicitly published DMG without obsolete access restrictions", () => {
     expect(readme).toContain(`${releasesUrl}/download/v${publishedVersion}/LocalScribe-${publishedVersion}-arm64.dmg`);
     expect(readme).toContain("published prerelease");
-    expect(readme).toContain("available to invited repository members");
-    expect(readme).toContain("sign in to a GitHub account");
+    expect(readme).toContain("Developer ID-signed and Apple-notarized");
+    expect(readme).not.toContain("repository is currently private");
+    expect(readme).not.toContain("available to invited repository members");
     expect(readme).not.toContain("staged in a draft release");
   });
 });

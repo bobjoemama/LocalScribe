@@ -234,12 +234,99 @@ function HistoryIntegrityWarning({ skippedUnreadable }: { skippedUnreadable: num
 
 export function HistoryScreen({ onOpenSettings }: { onOpenSettings?: () => void } = {}) {
   const [{ items, skippedUnreadable, loading, error }, load] = useLocalHistory("History could not be loaded.");
+  const screenRef = useRef<HTMLDivElement>(null);
   const [query, setQuery] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
   const [notice, setNotice] = useState<HistoryNotice | null>(null);
   const [shortcuts, setShortcuts] = useState<Pick<AppSettings, "holdShortcut" | "toggleShortcut"> | null>(null);
   const [shortcutSettingsStatus, setShortcutSettingsStatus] = useState<ShortcutRuntimeStatus>("loading");
   const [historySavingEnabled, setHistorySavingEnabled] = useState<HistorySavingState>("loading");
+
+  useEffect(() => {
+    const screen = screenRef.current;
+    if (!screen) return;
+    const openMenus = () => [...screen.querySelectorAll<HTMLDetailsElement>(".hi-overflow[open]")];
+    const onPointerDown = (event: PointerEvent) => {
+      for (const menu of openMenus()) {
+        if (event.target instanceof Node && !menu.contains(event.target)) menu.open = false;
+      }
+    };
+    const onFocusOut = (event: FocusEvent) => {
+      for (const menu of openMenus()) {
+        if (event.relatedTarget instanceof Node && !menu.contains(event.relatedTarget)) menu.open = false;
+      }
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        for (const menu of openMenus()) {
+          event.preventDefault();
+          menu.open = false;
+          menu.querySelector<HTMLElement>("summary")?.focus();
+        }
+        return;
+      }
+      if (!(event.target instanceof HTMLElement)) return;
+      const menu = event.target.closest<HTMLDetailsElement>(".hi-overflow");
+      if (!menu || !screen.contains(menu)) return;
+      const controls = [...menu.querySelectorAll<HTMLButtonElement>(".hi-overflow-menu button:not(:disabled)")];
+      if (controls.length === 0) return;
+      const index = controls.indexOf(event.target as HTMLButtonElement);
+      if (event.target.tagName === "SUMMARY" && (event.key === "ArrowDown" || event.key === "ArrowUp")) {
+        event.preventDefault();
+        menu.open = true;
+        controls[event.key === "ArrowDown" ? 0 : controls.length - 1]?.focus();
+      } else if (index >= 0 && ["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) {
+        event.preventDefault();
+        const next = event.key === "Home" ? 0 : event.key === "End" ? controls.length - 1
+          : (index + (event.key === "ArrowDown" ? 1 : -1) + controls.length) % controls.length;
+        controls[next]?.focus();
+      }
+    };
+    const onAction = (event: MouseEvent) => {
+      if (!(event.target instanceof Element)) return;
+      const action = event.target.closest(".hi-overflow-menu button");
+      if (action) {
+        const menu = action.closest<HTMLDetailsElement>("details")!;
+        menu.open = false;
+        menu.querySelector<HTMLElement>("summary")?.focus();
+      }
+    };
+    const onToggle = (event: Event) => {
+      if (!(event.target instanceof HTMLDetailsElement) || !event.target.open || !event.target.classList.contains("hi-overflow")) return;
+      const menu = event.target;
+      const popup = menu.querySelector<HTMLElement>(".hi-overflow-menu");
+      if (!popup) return;
+      menu.classList.remove("hi-overflow--below", "hi-overflow--above");
+      const viewport = screen.closest(".hub-content")?.getBoundingClientRect();
+      const top = Math.max(0, viewport?.top ?? 0) + 8;
+      const bottom = Math.min(window.innerHeight, viewport?.bottom ?? window.innerHeight) - 8;
+      if (popup.getBoundingClientRect().top < top) menu.classList.add("hi-overflow--below");
+      if (popup.getBoundingClientRect().bottom > bottom) {
+        menu.classList.remove("hi-overflow--below");
+        menu.classList.add("hi-overflow--above");
+      }
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    screen.addEventListener("focusout", onFocusOut);
+    screen.addEventListener("keydown", onKeyDown);
+    screen.addEventListener("click", onAction);
+    screen.addEventListener("toggle", onToggle, true);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      screen.removeEventListener("focusout", onFocusOut);
+      screen.removeEventListener("keydown", onKeyDown);
+      screen.removeEventListener("click", onAction);
+      screen.removeEventListener("toggle", onToggle, true);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (notice?.tone !== "success") return;
+    const timeout = window.setTimeout(() => {
+      setNotice(current => current === notice ? null : current);
+    }, 4000);
+    return () => window.clearTimeout(timeout);
+  }, [notice]);
 
   useEffect(() => {
     const setShortcutSettings = (
@@ -332,7 +419,7 @@ export function HistoryScreen({ onOpenSettings }: { onOpenSettings?: () => void 
   }, []);
 
   return (
-    <div className="hi-screen hi-history-screen">
+    <div className="hi-screen hi-history-screen" ref={screenRef}>
       <header className="hi-welcome">
         <div>
           <h1>Dictation</h1>
@@ -356,7 +443,7 @@ export function HistoryScreen({ onOpenSettings }: { onOpenSettings?: () => void 
               <button className="hi-secondary-button" type="button" onClick={() => void exportHistory()}>
                 <ExportIcon /> Export
               </button>
-              <details className="hi-overflow hi-overflow--header">
+              <details className="hi-overflow hi-overflow--header" name="history-actions">
                 <summary aria-label="More history actions"><MoreIcon /></summary>
                 <div className="hi-overflow-menu">
                   <button
@@ -480,7 +567,7 @@ export function HistoryScreen({ onOpenSettings }: { onOpenSettings?: () => void 
                     >
                       <CopyIcon />
                     </button>
-                    <details className="hi-overflow hi-overflow--row">
+                    <details className="hi-overflow hi-overflow--row" name="history-actions">
                       <summary aria-label="More transcript actions"><MoreIcon /></summary>
                       <div className="hi-overflow-menu">
                         <button type="button" onClick={() => void copyText(item.text, "Transcript copied.")}>Copy text</button>

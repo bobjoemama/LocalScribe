@@ -16,7 +16,7 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import process from "node:process";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { build } from "vite";
 import react from "@vitejs/plugin-react";
 import { SETTINGS_WINDOW_LAYOUT } from "../src/shared/windowLayout.mts";
@@ -49,6 +49,7 @@ const electronMain = `
 import { app, BrowserWindow, nativeTheme, protocol, session } from "electron";
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { inspectSettingsAppearance, inspectWorkspace } from ${JSON.stringify(pathToFileURL(resolve(repository, "scripts/workspace-layout-inspection.mjs")).href)};
 
 const harnessFile = process.env.LOCALSCRIBE_SCROLL_HARNESS_FILE;
 const resultFile = process.env.LOCALSCRIBE_SCROLL_RESULT_FILE;
@@ -729,27 +730,17 @@ async function inspectSize(width, height, platform, verification, settingsPreset
       nativeTheme.themeSource = appearance;
       await sleep(100);
     }
+    const settingsInteractionAppearance = await inspectSettingsAppearance(window);
     if (screenshotDirectory) {
       mkdirSync(screenshotDirectory, { recursive: true });
       const filename = ["settings", appearance, width + "x" + height, verification, settingsPreset,
         applyResult ?? "no-apply", saveResult ?? "no-save"].join("-") + ".png";
       const screenshot = await window.webContents.capturePage();
       writeFileSync(join(screenshotDirectory, filename), screenshot.toPNG());
-      // Review the actual workspace with synthetic history, through the same
-      // complete isolated package and IPC fixture. Never launch the product app.
-      if (verification === "missing" && settingsPreset === "default" && !applyResult && !saveResult) {
-        await window.webContents.executeJavaScript("window.__localScribeSettingsHarness.showWorkspace()");
-        await sleep(150);
-        for (const section of ["Dictation", "Insights", "Dictionary", "Snippets", "Style", "Transforms"]) {
-          await window.webContents.executeJavaScript(\`[...document.querySelectorAll('.hub-navigation button')].find(button => button.textContent.trim() === \${JSON.stringify(section)}).click()\`);
-          await sleep(150);
-          const shot = await window.webContents.capturePage();
-          writeFileSync(join(screenshotDirectory, ["workspace", appearance, width + "x" + height, section.toLowerCase()].join("-") + ".png"), shot.toPNG());
-        }
-        await window.webContents.executeJavaScript("window.__localScribeSettingsHarness.remount()");
-        await sleep(150);
-      }
     }
+    const workspace = verification === "missing" && settingsPreset === "default" && !applyResult && !saveResult
+      ? await inspectWorkspace(window, { screenshotDirectory, appearance, width, height })
+      : null;
     const tabs = [
       await inspectTab(window, "General", "Accessibility"),
       await inspectTab(window, "System", "History retention"),
@@ -794,6 +785,8 @@ async function inspectSize(width, height, platform, verification, settingsPreset
       requestedSize: { width, height },
       contentSize,
       appearanceEvidence,
+      settingsInteractionAppearance,
+      workspace,
       tabs,
       sidebar,
       modelOrdering,
