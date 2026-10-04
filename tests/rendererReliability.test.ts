@@ -2,10 +2,8 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 const sharedCss = readFileSync("src/renderer/styles.css", "utf8");
-const historyCss = readFileSync("src/renderer/settings/screens/history-insights.css", "utf8");
+const workspaceCss = readFileSync("src/renderer/workspace-theme.css", "utf8");
 const styleCss = readFileSync("src/renderer/settings/screens/style-settings.css", "utf8");
-const libraryCss = readFileSync("src/renderer/settings/screens/library-notes.css", "utf8");
-const scratchpadCss = readFileSync("src/renderer/scratchpad/scratchpad-window.css", "utf8");
 const settingsSource = readFileSync("src/renderer/settings/screens/StyleSettings.tsx", "utf8");
 const librarySource = readFileSync("src/renderer/settings/screens/LibraryNotes.tsx", "utf8");
 
@@ -24,28 +22,42 @@ function contrast(foreground: string, background: string): number {
     / (Math.min(foregroundLuminance, backgroundLuminance) + 0.05);
 }
 
-describe("renderer contrast contract", () => {
-  it("keeps essential normal text at or above WCAG AA", () => {
-    const pairs = [
-      ["#476d64", "#eef6f1", sharedCss],
-      ["#68635d", "#ffffff", historyCss],
-      ["#3f6e63", "#e6f0ec", historyCss],
-      ["#68625b", "#fbfaf8", styleCss],
-      ["#68625b", "#f8f6f3", libraryCss],
-      ["#666660", "#f6f6f5", scratchpadCss],
-    ] as const;
-    for (const [foreground, background, stylesheet] of pairs) {
-      expect(stylesheet).toContain(foreground);
-      expect(contrast(foreground, background)).toBeGreaterThanOrEqual(4.5);
-    }
-  });
+function appearanceColor(token: string, appearance: "light" | "dark"): string {
+  const match = workspaceCss.match(new RegExp(`--${token}:\\s*light-dark\\(\\s*(#[a-f0-9]{3,6}),\\s*(#[a-f0-9]{3,6})\\s*\\)`, "iu"));
+  expect(match, `Missing semantic appearance token: ${token}`).not.toBeNull();
+  const color = match![appearance === "light" ? 1 : 2]!;
+  return color.length === 4 ? `#${[...color.slice(1)].map(channel => channel + channel).join("")}` : color;
+}
 
-  it("keeps enabled custom control boundaries above the 3:1 non-text floor", () => {
-    for (const foreground of ["#77716a", "#76716a"]) {
-      expect(styleCss).toContain(foreground);
-      expect(contrast(foreground, "#ffffff")).toBeGreaterThanOrEqual(3);
-    }
-  });
+describe("renderer contrast contract", () => {
+  for (const appearance of ["light", "dark"] as const) {
+    it(`keeps essential semantic ${appearance} text at or above WCAG AA`, () => {
+      const pairs = [
+        ["ink", "surface"], ["muted", "surface"], ["faint", "surface-soft"], ["faint", "canvas"],
+        ["ink", "surface-raised"], ["muted", "surface-raised"],
+        ["selection-ink", "accent-soft"], ["accent", "surface-raised"],
+        ["local", "local-soft"], ["danger", "danger-soft"], ["warning", "warning-soft"],
+      ];
+      for (const [foreground, background] of pairs) {
+        expect(contrast(appearanceColor(foreground!, appearance), appearanceColor(background!, appearance)), `${appearance}: ${foreground} on ${background}`).toBeGreaterThanOrEqual(4.5);
+      }
+      for (const action of ["action-fill", "action-hover", "action-pressed"]) {
+        expect(contrast("#ffffff", appearanceColor(action, appearance)), `${appearance}: primary action ${action}`).toBeGreaterThanOrEqual(4.5);
+      }
+    });
+
+    it(`keeps enabled custom ${appearance} control boundaries above the 3:1 floor`, () => {
+      for (const background of ["surface", "surface-soft", "surface-raised"]) {
+        for (const foreground of ["control-line", "accent"]) {
+          expect(contrast(appearanceColor(foreground, appearance), appearanceColor(background, appearance)), `${appearance}: ${foreground} on ${background}`).toBeGreaterThanOrEqual(3);
+        }
+      }
+      // Switch knobs remain identifiable against both enabled states.
+      for (const background of ["control-line", "action-fill"]) {
+        expect(contrast("#ffffff", appearanceColor(background, appearance))).toBeGreaterThanOrEqual(3);
+      }
+    });
+  }
 });
 
 describe("renderer operation latches", () => {

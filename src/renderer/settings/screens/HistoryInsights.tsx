@@ -232,14 +232,101 @@ function HistoryIntegrityWarning({ skippedUnreadable }: { skippedUnreadable: num
   );
 }
 
-export function HistoryScreen() {
+export function HistoryScreen({ onOpenSettings }: { onOpenSettings?: () => void } = {}) {
   const [{ items, skippedUnreadable, loading, error }, load] = useLocalHistory("History could not be loaded.");
+  const screenRef = useRef<HTMLDivElement>(null);
   const [query, setQuery] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
   const [notice, setNotice] = useState<HistoryNotice | null>(null);
   const [shortcuts, setShortcuts] = useState<Pick<AppSettings, "holdShortcut" | "toggleShortcut"> | null>(null);
   const [shortcutSettingsStatus, setShortcutSettingsStatus] = useState<ShortcutRuntimeStatus>("loading");
   const [historySavingEnabled, setHistorySavingEnabled] = useState<HistorySavingState>("loading");
+
+  useEffect(() => {
+    const screen = screenRef.current;
+    if (!screen) return;
+    const openMenus = () => [...screen.querySelectorAll<HTMLDetailsElement>(".hi-overflow[open]")];
+    const onPointerDown = (event: PointerEvent) => {
+      for (const menu of openMenus()) {
+        if (event.target instanceof Node && !menu.contains(event.target)) menu.open = false;
+      }
+    };
+    const onFocusOut = (event: FocusEvent) => {
+      for (const menu of openMenus()) {
+        if (event.relatedTarget instanceof Node && !menu.contains(event.relatedTarget)) menu.open = false;
+      }
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        for (const menu of openMenus()) {
+          event.preventDefault();
+          menu.open = false;
+          menu.querySelector<HTMLElement>("summary")?.focus();
+        }
+        return;
+      }
+      if (!(event.target instanceof HTMLElement)) return;
+      const menu = event.target.closest<HTMLDetailsElement>(".hi-overflow");
+      if (!menu || !screen.contains(menu)) return;
+      const controls = [...menu.querySelectorAll<HTMLButtonElement>(".hi-overflow-menu button:not(:disabled)")];
+      if (controls.length === 0) return;
+      const index = controls.indexOf(event.target as HTMLButtonElement);
+      if (event.target.tagName === "SUMMARY" && (event.key === "ArrowDown" || event.key === "ArrowUp")) {
+        event.preventDefault();
+        menu.open = true;
+        controls[event.key === "ArrowDown" ? 0 : controls.length - 1]?.focus();
+      } else if (index >= 0 && ["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) {
+        event.preventDefault();
+        const next = event.key === "Home" ? 0 : event.key === "End" ? controls.length - 1
+          : (index + (event.key === "ArrowDown" ? 1 : -1) + controls.length) % controls.length;
+        controls[next]?.focus();
+      }
+    };
+    const onAction = (event: MouseEvent) => {
+      if (!(event.target instanceof Element)) return;
+      const action = event.target.closest(".hi-overflow-menu button");
+      if (action) {
+        const menu = action.closest<HTMLDetailsElement>("details")!;
+        menu.open = false;
+        menu.querySelector<HTMLElement>("summary")?.focus();
+      }
+    };
+    const onToggle = (event: Event) => {
+      if (!(event.target instanceof HTMLDetailsElement) || !event.target.open || !event.target.classList.contains("hi-overflow")) return;
+      const menu = event.target;
+      const popup = menu.querySelector<HTMLElement>(".hi-overflow-menu");
+      if (!popup) return;
+      menu.classList.remove("hi-overflow--below", "hi-overflow--above");
+      const viewport = screen.closest(".hub-content")?.getBoundingClientRect();
+      const top = Math.max(0, viewport?.top ?? 0) + 8;
+      const bottom = Math.min(window.innerHeight, viewport?.bottom ?? window.innerHeight) - 8;
+      if (popup.getBoundingClientRect().top < top) menu.classList.add("hi-overflow--below");
+      if (popup.getBoundingClientRect().bottom > bottom) {
+        menu.classList.remove("hi-overflow--below");
+        menu.classList.add("hi-overflow--above");
+      }
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    screen.addEventListener("focusout", onFocusOut);
+    screen.addEventListener("keydown", onKeyDown);
+    screen.addEventListener("click", onAction);
+    screen.addEventListener("toggle", onToggle, true);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      screen.removeEventListener("focusout", onFocusOut);
+      screen.removeEventListener("keydown", onKeyDown);
+      screen.removeEventListener("click", onAction);
+      screen.removeEventListener("toggle", onToggle, true);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (notice?.tone !== "success") return;
+    const timeout = window.setTimeout(() => {
+      setNotice(current => current === notice ? null : current);
+    }, 4000);
+    return () => window.clearTimeout(timeout);
+  }, [notice]);
 
   useEffect(() => {
     const setShortcutSettings = (
@@ -332,11 +419,10 @@ export function HistoryScreen() {
   }, []);
 
   return (
-    <div className="hi-screen hi-history-screen">
+    <div className="hi-screen hi-history-screen" ref={screenRef}>
       <header className="hi-welcome">
         <div>
-          <p className="hi-eyebrow">Dictation</p>
-          <h1>Welcome back</h1>
+          <h1>Dictation</h1>
           <p>{storagePresentation.intro}</p>
         </div>
         <div className="hi-header-actions">
@@ -357,7 +443,7 @@ export function HistoryScreen() {
               <button className="hi-secondary-button" type="button" onClick={() => void exportHistory()}>
                 <ExportIcon /> Export
               </button>
-              <details className="hi-overflow hi-overflow--header">
+              <details className="hi-overflow hi-overflow--header" name="history-actions">
                 <summary aria-label="More history actions"><MoreIcon /></summary>
                 <div className="hi-overflow-menu">
                   <button
@@ -399,34 +485,24 @@ export function HistoryScreen() {
         </label>
       )}
 
-      <section className="hi-local-hero" aria-labelledby="hi-local-hero-title">
-        <div className="hi-local-hero__glow" aria-hidden="true"><span>L</span></div>
-        <div className="hi-local-hero__copy">
-          <span className="hi-local-chip"><span /> Private by design</span>
-          <h2 id="hi-local-hero-title">Your voice stays close to home.</h2>
-          <p>LocalScribe turns speech into text on this computer. Raw recordings are discarded after each transcription.</p>
-          <div className="hi-hero-meta">
-            <span><ShieldIcon /> Local model</span>
-            <span><LockIcon /> {storagePresentation.status}</span>
-          </div>
-        </div>
+      <section className="hi-local-hero" aria-label="Dictation shortcuts">
         <div
           className="hi-shortcut-card"
           role="group"
           aria-label={shortcutPresentation.ariaLabel}
         >
-          <span>Start dictating anywhere</span>
-          <div>
+          <span className="hi-shortcut-card__title">Shortcuts</span>
+          <div className="hi-shortcut-card__keys">
             {shortcutPresentation.toggleLabel
               ? (
                   <>
-                    <kbd>{shortcutPresentation.holdLabel}</kbd>
-                    <span>or</span>
-                    <kbd>{shortcutPresentation.toggleLabel}</kbd>
+                    <div><span>Hold to talk</span><kbd>{shortcutPresentation.holdLabel.replace(/^Hold /, "")}</kbd></div>
+                    <div><span>Press to toggle</span><kbd>{shortcutPresentation.toggleLabel}</kbd></div>
                   </>
                 )
               : <span className="hi-shortcut-status" role="status">{shortcutPresentation.holdLabel}</span>}
           </div>
+          {onOpenSettings && <button type="button" className="hi-shortcut-edit" onClick={onOpenSettings}>Edit shortcuts…</button>}
         </div>
       </section>
 
@@ -448,13 +524,12 @@ export function HistoryScreen() {
           {!loading && error && (
             <div className="hi-state-card" role="alert">
               <span className="hi-state-icon">!</span>
-              <div><strong>We hit a local snag</strong><p>{error}</p></div>
+              <div><strong>History is unavailable</strong><p>{error}</p></div>
               <button className="hi-secondary-button" type="button" onClick={() => void load()}>Try again</button>
             </div>
           )}
           {!loading && !error && groups.length === 0 && (
             <div className="hi-empty-state">
-              <div className="hi-empty-mark">L</div>
               <h3>{query ? "No dictations match" : storagePresentation.emptyTitle}</h3>
               <p>{query ? "Try a different word or clear the search." : storagePresentation.emptyBody}</p>
               {query && <button className="hi-secondary-button" type="button" onClick={() => setQuery("")}>Clear search</button>}
@@ -492,7 +567,7 @@ export function HistoryScreen() {
                     >
                       <CopyIcon />
                     </button>
-                    <details className="hi-overflow hi-overflow--row">
+                    <details className="hi-overflow hi-overflow--row" name="history-actions">
                       <summary aria-label="More transcript actions"><MoreIcon /></summary>
                       <div className="hi-overflow-menu">
                         <button type="button" onClick={() => void copyText(item.text, "Transcript copied.")}>Copy text</button>
@@ -508,7 +583,7 @@ export function HistoryScreen() {
 
         <aside className="hi-history-aside" aria-label="Dictation statistics">
           <section className="hi-aside-card">
-            <div className="hi-aside-card__title"><h2>Today</h2><span className="hi-dot-status"><span /> Local</span></div>
+            <div className="hi-aside-card__title"><h2>Today</h2></div>
             <div className="hi-stat-pair">
               <Stat value={formatNumber(todayStats.words)} label="words" />
               <Stat value={formatDuration(todayStats.durationMs)} label="dictated" />
@@ -518,17 +593,13 @@ export function HistoryScreen() {
             </div>
           </section>
           <section className="hi-aside-card">
-            <div className="hi-aside-card__title"><h2>Your rhythm</h2><span>{historySampleLabel(items.length)}</span></div>
+            <div className="hi-aside-card__title"><h2>Summary</h2><span>{historySampleLabel(items.length)}</span></div>
             <div className="hi-large-stat"><strong>{allStats.wpm || "—"}</strong><span>average words per minute</span></div>
             <div className="hi-mini-rows">
               <div><span>Active streak</span><strong>{calculateStreak(items)} {calculateStreak(items) === 1 ? "day" : "days"}</strong></div>
               <div><span>Most-used category</span><strong>{primaryCategory}</strong></div>
               <div><span>Time dictated</span><strong>{formatDuration(allStats.durationMs)}</strong></div>
             </div>
-          </section>
-          <section className="hi-privacy-note">
-            <LockIcon />
-            <div><strong>Only you can see this</strong><p>These statistics are calculated from encrypted history on your device.</p></div>
           </section>
         </aside>
       </div>
@@ -581,11 +652,8 @@ export function InsightsScreen() {
     <div className="hi-screen hi-insights-screen">
       <header className="hi-insights-header">
         <div>
-          <p className="hi-eyebrow">Insights</p>
-          <h1>Your speaking patterns</h1>
-          <p>A private, local view of how you use dictation.</p>
+          <h1>Insights</h1>
         </div>
-        <span className="hi-local-chip"><span /> Calculated locally</span>
       </header>
 
       <HistoryIntegrityWarning skippedUnreadable={skippedUnreadable} />
@@ -643,7 +711,6 @@ export function InsightsScreen() {
         {!loading && !error && (
           rangedItems.length === 0 ? (
             <div className="hi-empty-state hi-empty-state--insights">
-              <div className="hi-empty-mark">L</div>
               <h2>No activity in this period</h2>
               <p>{storagePresentation.insightsEmptyBody}</p>
             </div>
@@ -677,14 +744,7 @@ export function InsightsScreen() {
                 </section>
               </div>
 
-              <section className="hi-insight-card hi-momentum-card">
-                <div>
-                  <p className="hi-eyebrow">Your momentum</p>
-                  <h2>{momentumHeadline(stats.words, calculateStreak(rangedItems))}</h2>
-                  <p>Each number here comes from transcript metadata stored on this computer.</p>
-                </div>
-                <div className="hi-momentum-orb" aria-hidden="true"><strong>{calculateStreak(rangedItems)}</strong><span>day streak</span></div>
-              </section>
+
             </>
           )
         )}
@@ -708,8 +768,7 @@ export function InsightsScreen() {
 
             {rangedItems.length === 0 ? (
               <div className="hi-empty-state hi-empty-state--insights">
-                <div className="hi-empty-mark">L</div>
-                <h2>Your voice profile is waiting</h2>
+                  <h2>No voice data</h2>
                 <p>{historySavingEnabled === true
                   ? "Dictate a few passages to build a private, factual summary."
                   : storagePresentation.insightsEmptyBody}</p>
@@ -723,11 +782,7 @@ export function InsightsScreen() {
                     <p>{voice.summary}</p>
                     <span>{rangeLabel(range)} · {formatNumber(stats.words)} locally stored words</span>
                   </div>
-                  <div className="hi-voice-shape" aria-hidden="true">
-                    <span style={{ "--voice-level": `${voice.pacePercent}%` } as React.CSSProperties} />
-                    <span style={{ "--voice-level": `${voice.sentencePercent}%` } as React.CSSProperties} />
-                    <span style={{ "--voice-level": `${voice.varietyPercent}%` } as React.CSSProperties} />
-                  </div>
+
                 </section>
 
                 <div className="hi-voice-grid">
@@ -746,7 +801,7 @@ export function InsightsScreen() {
                     </div>
                   </section>
                   <section className="hi-insight-card">
-                    <div className="hi-card-heading"><div><p className="hi-eyebrow">Context</p><h2>Where your voice goes</h2></div></div>
+                    <div className="hi-card-heading"><div><p className="hi-eyebrow">Context</p><h2>App categories</h2></div></div>
                     <CategoryList categories={categories} />
                   </section>
                 </div>
@@ -1042,13 +1097,6 @@ function createVoiceProfile(items: Transcription[]) {
   };
 }
 
-function momentumHeadline(wordCount: number, streak: number): string {
-  if (streak >= 7) return `${streak} days of keeping ideas moving.`;
-  if (wordCount >= 5_000) return `${formatNumber(wordCount)} words without sending audio away.`;
-  if (wordCount > 0) return `${formatNumber(wordCount)} words captured in your own flow.`;
-  return "Your local dictation story starts here.";
-}
-
 function clamp(value: number, minimum: number, maximum: number): number {
   return Math.min(Math.max(value, minimum), maximum);
 }
@@ -1057,8 +1105,6 @@ function SearchIcon() { return <svg viewBox="0 0 20 20" aria-hidden="true"><circ
 function ExportIcon() { return <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 2v10m0-10L6.5 5.5M10 2l3.5 3.5M4 10v6a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2v-6" /></svg>; }
 function MoreIcon() { return <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="4" cy="10" r="1" /><circle cx="10" cy="10" r="1" /><circle cx="16" cy="10" r="1" /></svg>; }
 function CopyIcon() { return <svg viewBox="0 0 20 20" aria-hidden="true"><rect x="6" y="6" width="10" height="10" rx="2" /><path d="M14 6V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h1" /></svg>; }
-function ShieldIcon() { return <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 2.5 16 5v4.4c0 3.7-2.3 6.5-6 8.1-3.7-1.6-6-4.4-6-8.1V5l6-2.5Z" /><path d="m7.5 10 1.7 1.7 3.5-4" /></svg>; }
-function LockIcon() { return <svg viewBox="0 0 20 20" aria-hidden="true"><rect x="4" y="8" width="12" height="9" rx="2" /><path d="M7 8V6a3 3 0 0 1 6 0v2" /></svg>; }
 function WordIcon() { return <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 5h14M3 10h10M3 15h7" /></svg>; }
 function TimerIcon() { return <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="11" r="6.5" /><path d="M10 11 13 9M8 2h4" /></svg>; }
 function ClockIcon() { return <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="7" /><path d="M10 6v4l3 2" /></svg>; }

@@ -47,6 +47,35 @@ The hook runs the same source CI before a push. Neither source-CI path runs the
 slower macOS package gate, which must be run separately before a binary is
 staged.
 
+## Dependency audit review, 4 October 2026
+
+The compatible refresh pins Electron 43.7.7 and updates existing brace-expansion,
+fast-uri, http-cache-semantics and Undici lock entries. The separate Python audit
+project updates only urllib3 to 2.8.0; the speech worker's dependency lock and
+bundled inference runtime are unchanged. The production audit must stay clean,
+and the full audit gate rejects any runtime/Electron advisory even though npm
+classifies Electron as a development dependency.
+
+The full audit still reports an exact build-only residual. The gate records
+specific nodes, ancestors, severities, affected ranges and advisory URLs rather
+than accepting arbitrary build dependencies. Braces 3.0.3 has no published fix;
+Forge's inspected glob caller uses its own build path and the fixed
+`**/.bin/**/*` pattern, with no dictation/user-input pattern. Existing
+extract-zip and image-size build paths retain their scoped review. The corrected
+image-size JXL/HEIF range excludes locked 0.7.5; its ICNS advisory remains.
+
+Sources: [Electron release](https://github.com/electron/electron/releases/tag/v43.7.7),
+[unpatched braces advisory](https://github.com/advisories/GHSA-vfj7-8cjw-p6xm),
+[image-size ICNS](https://github.com/advisories/GHSA-w3rx-r6r6-pgpr),
+[corrected JXL/HEIF range](https://github.com/advisories/GHSA-5p2g-fcmc-qvqq),
+[urllib3 security fixes](https://github.com/urllib3/urllib3/releases/tag/2.8.0).
+Http-cache-semantics 4.3.0 falls outside the current audit range, but the
+[maintainer disputes the advisory](https://github.com/kornelski/http-cache-semantics/issues/56);
+do not describe the version refresh as verified remediation of that report.
+Full-audit success means the exact reviewed residual was recognized, not that
+all build tooling is vulnerability-free. Any changed node/advisory/path fails
+and requires another investigation.
+
 ## Complete macOS verification
 
 Run on an Apple Silicon Mac:
@@ -84,6 +113,38 @@ Developer ID signing, notarization, stapling, or general Gatekeeper trust.
 
 The gate never sets release credentials or model-license approval. Do not add
 secrets to scripts, repository files, npm configuration, or shell history.
+
+## Local signed UI candidate without notarization
+
+For an authorized local review build, `LOCALSCRIBE_LOCAL_SIGNED_CANDIDATE=1`
+enables hardened-runtime signing for the app, helpers, and bundled Python while
+`LOCALSCRIBE_RELEASE=0` keeps notarization and timestamp service calls disabled.
+Set `LOCALSCRIBE_CODESIGN_IDENTITY` to the existing Developer ID Application
+identity used by the installed app; this mode refuses Apple Development or
+ad-hoc identities. Keep the bundle ID and app name unchanged. Verify the
+candidate's designated code requirement against the installed app before any
+replacement; matching identity is necessary but does not prove that runtime
+permissions and encrypted storage will work after activation.
+
+When only renderer source changed and the existing pinned Python runtime and
+staged native helpers are present, Forge's package API can reuse them without
+running `worker:bundle`. It still builds fresh main/preload/renderer code and
+the Accessibility helper, signs the candidate, and checks source provenance,
+resources, entitlements, native imports, fuses, and the bundle. Native modules
+rebuild sequentially using the shared Electron header cache; no module is
+excluded from rebuild checks. Pass an explicit,
+unused `outDir` beneath `out/` to preserve earlier artifacts. This build must
+not target `/Applications` or any running application bundle.
+
+Invoke the package API from a regular Node script or CommonJS `node -e`
+expression. `--input-type=module` is an eval-only flag that propagates to
+Forge's forked file-based rebuild workers and prevents those workers from
+starting. The normal Forge CLI does not use that flag.
+
+Local signed candidates have no new notarization ticket and are not public
+release artifacts. Building one does not install or launch it. Installing,
+activating, real dictation testing, and notarization remain separate authorized
+steps. The same model files and user data must stay in place during an update.
 
 For an authorized notarized build, provision the Keychain profile separately
 with `xcrun notarytool store-credentials` and Apple's interactive prompts:
@@ -206,9 +267,7 @@ reconcile it; do not delete or replace a reviewed asset in place.
 
 ## Binary trust boundary
 
-Repository access and binary trust are independent. The repository remains
-private unless separately authorized; invited testers can download its release
-assets. Developer ID signing and notarization support direct downloads outside
+Repository access and binary trust are independent. The repository is currently public; changing its visibility requires separate authorization. Developer ID signing and notarization support direct downloads outside
 the Mac App Store and do not require making the repository public. Existing
 Apple Development or ad-hoc signed releases do not gain trust retroactively.
 Developer ID signing, hardened runtime, notarization, stapling, Gatekeeper

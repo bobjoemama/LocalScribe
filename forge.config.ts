@@ -77,6 +77,8 @@ const MAC_STAGED_FLUID_AUDIO_HELPER = path.join(
   "localscribe-fluidaudio-parakeet",
 );
 const PUBLIC_RELEASE = process.env.LOCALSCRIBE_RELEASE === "1";
+const LOCAL_SIGNED_CANDIDATE = process.env.LOCALSCRIBE_LOCAL_SIGNED_CANDIDATE === "1";
+const HARDENED_RUNTIME = PUBLIC_RELEASE || LOCAL_SIGNED_CANDIDATE;
 
 function requireReleaseEnvironment(name: string): string {
   const value = process.env[name]?.trim();
@@ -102,6 +104,9 @@ function resolveSigningIdentity(): string {
 }
 
 const MAC_SIGNING_IDENTITY = resolveSigningIdentity();
+if (LOCAL_SIGNED_CANDIDATE && !MAC_SIGNING_IDENTITY.startsWith("Developer ID Application:")) {
+  throw new Error("Local signed candidates require an explicit Developer ID Application identity.");
+}
 let resourceIntegrityPreparation: PreparedResourceIntegrity | null = null;
 let packageProvenanceExpectation: PackageProvenance | null = null;
 let packageBuildStartedAtMs = 0;
@@ -245,7 +250,7 @@ function signProtectedMacResources(): void {
       MAC_SIGNING_IDENTITY,
       "--force",
       PUBLIC_RELEASE ? "--timestamp" : "--timestamp=none",
-      ...(PUBLIC_RELEASE ? ["--options", "runtime"] : []),
+      ...(HARDENED_RUNTIME ? ["--options", "runtime"] : []),
       "--entitlements",
       signingEntitlementsFor(binary),
       binary,
@@ -454,7 +459,7 @@ const config: ForgeConfig = {
             ignore: isPreSignedProtectedMacResource,
             optionsForFile: (filePath: string) => ({
               entitlements: signingEntitlementsFor(filePath),
-              hardenedRuntime: PUBLIC_RELEASE,
+              hardenedRuntime: HARDENED_RUNTIME,
               timestamp: PUBLIC_RELEASE ? undefined : "none",
             }),
           },
@@ -643,7 +648,9 @@ const config: ForgeConfig = {
       }
     },
   },
-  rebuildConfig: {},
+  // Parallel rebuilds use separate per-module header caches. Sequential mode
+  // reuses the existing shared Electron headers without skipping native checks.
+  rebuildConfig: { mode: "sequential" },
   makers: [
     new MakerDMG({
       format: "ULFO",

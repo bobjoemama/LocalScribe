@@ -220,7 +220,7 @@ export function DictionaryScreen() {
         {showHero && (
           <OnboardingHero
             eyebrow="A vocabulary that stays yours"
-            title="Make every proper noun land correctly."
+            title="Preferred spellings"
             body="Add a phrase as it may be recognized, then choose the spelling you want. Entries are applied on this computer after transcription."
             onDismiss={dismissHero}
             artwork={<DictionaryArtwork />}
@@ -390,7 +390,7 @@ export function SnippetsScreen() {
         {showHero && (
           <OnboardingHero
             eyebrow="A shorter route to repeatable writing"
-            title="Say the cue. Get the full thought."
+            title="Spoken shortcuts"
             body="Create memorable triggers for signatures, links, directions, or recurring replies. LocalScribe expands them after local transcription."
             onDismiss={dismissHero}
             artwork={<SnippetArtwork />}

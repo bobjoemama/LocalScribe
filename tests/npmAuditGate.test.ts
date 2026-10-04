@@ -13,7 +13,7 @@ import {
  * leaving this test asserting a stale residual.
  */
 const ADVISORY_URLS: readonly string[] = Object.keys(EXPECTED_BUILD_TOOL_ADVISORIES).sort();
-const MULTI_ADVISORY_HOST = "image-size";
+const MULTI_ADVISORY_HOST = "extract-zip";
 
 function advisoryObject(url: string, index = 0): Record<string, unknown> {
   const reviewed = EXPECTED_BUILD_TOOL_ADVISORIES[url];
@@ -100,7 +100,7 @@ describe("full npm audit exact-residual gate", () => {
     via[via.length - 1] = { ...via[0]! };
 
     expect(() => evaluateFullNpmAudit(report)).toThrow(
-      "dependency path changed for reviewed build tool image-size",
+      "dependency path changed for reviewed build tool extract-zip",
     );
   });
 
@@ -159,7 +159,7 @@ describe("full npm audit exact-residual gate", () => {
     const changedPath = reportWithKnownResidual() as {
       vulnerabilities: Record<string, { nodes: string[] }>;
     };
-    changedPath.vulnerabilities[MULTI_ADVISORY_HOST]!.nodes = ["node_modules/other/image-size"];
+    changedPath.vulnerabilities[MULTI_ADVISORY_HOST]!.nodes = ["node_modules/other/extract-zip"];
     expect(() => evaluateFullNpmAudit(changedPath)).toThrow(
       `entry changed for reviewed build tool ${MULTI_ADVISORY_HOST}`,
     );
@@ -173,6 +173,17 @@ describe("full npm audit exact-residual gate", () => {
     expect(() => evaluateFullNpmAudit(report)).toThrow(
       "dependency path changed for reviewed build tool @electron-forge/cli",
     );
+  });
+
+  it("rejects Electron even when npm classifies the bundled runtime as a development dependency", () => {
+    expect(EXPECTED_BUILD_TOOL_VULNERABILITIES).not.toHaveProperty("electron");
+    const report = reportWithKnownResidual() as { vulnerabilities: Record<string, unknown> };
+    report.vulnerabilities.electron = {
+      name: "electron", severity: "high", nodes: ["node_modules/electron"],
+      via: [{ name: "electron", dependency: "electron", severity: "high",
+        url: "https://github.com/advisories/GHSA-qmv3-fv6v-rmhq", range: "<43.5.0" }],
+    };
+    expect(() => evaluateFullNpmAudit(report)).toThrow("outside the exact reviewed build-tool residual");
   });
 
   it("rejects malformed audit JSON", () => {

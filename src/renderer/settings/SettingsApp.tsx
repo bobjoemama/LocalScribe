@@ -3,7 +3,6 @@ import type { AppInfo } from "../../shared/contracts";
 import { HistoryScreen, InsightsScreen } from "./screens/HistoryInsights";
 import { DictionaryScreen, SnippetsScreen } from "./screens/LibraryNotes";
 import { SettingsModal, StyleScreen, TransformsScreen } from "./screens/StyleSettings";
-import { Icon, type IconName } from "./icons";
 
 type Section =
   | "dictation"
@@ -14,14 +13,14 @@ type Section =
   | "transforms"
   | "scratchpad";
 
-const primaryNavigation: Array<{ id: Section; label: string; icon: IconName }> = [
-  { id: "dictation", label: "Dictation", icon: "mic" },
-  { id: "insights", label: "Insights", icon: "chart" },
-  { id: "dictionary", label: "Dictionary", icon: "book" },
-  { id: "snippets", label: "Snippets", icon: "scissors" },
-  { id: "style", label: "Style", icon: "type" },
-  { id: "transforms", label: "Transforms", icon: "wand" },
-  { id: "scratchpad", label: "Scratchpad", icon: "note" },
+const primaryNavigation: Array<{ id: Section; label: string }> = [
+  { id: "dictation", label: "Dictation" },
+  { id: "insights", label: "Insights" },
+  { id: "scratchpad", label: "Scratchpad" },
+  { id: "dictionary", label: "Dictionary" },
+  { id: "snippets", label: "Snippets" },
+  { id: "style", label: "Style" },
+  { id: "transforms", label: "Transforms" },
 ];
 
 export function SettingsApp() {
@@ -77,31 +76,25 @@ export function SettingsApp() {
       <aside className="hub-sidebar" inert={settingsOpen}>
         <div className="window-drag-region" aria-hidden="true" />
         <button type="button" className="local-brand" onClick={() => openSection("dictation")} aria-label="Open LocalScribe dictation history">
-          <span className="local-brand__mark">L</span>
           <span className="local-brand__name">LocalScribe</span>
-          <span className="local-brand__local">Local</span>
         </button>
 
         <nav className="hub-navigation" aria-label="Main navigation">
           {primaryNavigation.map((item) => (
-            <button
-              key={item.id}
-              type="button"
-              className={section === item.id ? "hub-nav-item hub-nav-item--active" : "hub-nav-item"}
-              onClick={() => openSection(item.id)}
-              aria-current={section === item.id ? "page" : undefined}
-            >
-              <Icon name={item.icon} />
-              <span>{item.label}</span>
-            </button>
+            <div className="hub-nav-entry" key={item.id}>
+              <button
+                type="button"
+                className={section === item.id ? "hub-nav-item hub-nav-item--active" : "hub-nav-item"}
+                onClick={() => openSection(item.id)}
+                aria-current={section === item.id ? "page" : undefined}
+              >
+                <span>{item.label}</span>
+              </button>
+            </div>
           ))}
         </nav>
 
         <div className="hub-sidebar__bottom">
-          <div className="local-status" aria-label="Local-only processing enabled">
-            <span className="local-status__dot" />
-            <span><strong>Local only</strong><small>No audio uploads</small></span>
-          </div>
           <button
             className="hub-nav-item"
             type="button"
@@ -109,7 +102,6 @@ export function SettingsApp() {
             aria-haspopup="dialog"
             aria-expanded={settingsOpen}
           >
-            <Icon name="settings" />
             <span>Settings</span>
           </button>
           <p className="hub-version">{appInfo ? `LocalScribe v${appInfo.version}` : "LocalScribe"}</p>
@@ -127,7 +119,7 @@ export function SettingsApp() {
         * where an announcement can say what actually changed.
         */}
       <section className="hub-content" inert={settingsOpen}>
-        {section === "dictation" && <HistoryScreen />}
+        {section === "dictation" && <HistoryScreen onOpenSettings={() => setSettingsOpen(true)} />}
         {section === "insights" && <InsightsScreen />}
         {section === "dictionary" && <DictionaryScreen />}
         {section === "snippets" && <SnippetsScreen />}

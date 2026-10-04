@@ -5,6 +5,10 @@
  * Vite bundles the actual React SettingsModal and CSS, then Electron's
  * Chromium renderer measures scrolling at the supported desktop dimensions.
  * It deliberately does not drive the product app or make network calls.
+ * Set LOCALSCRIBE_LAYOUT_SCREENSHOT_DIR to also capture the loaded General
+ * settings screen for each fixture scenario and workspace screens. Captures use
+ * only mocked data. LOCALSCRIBE_LAYOUT_APPEARANCE=light|dark overrides only this
+ * test process, without changing macOS or the installed app’s appearance.
  */
 import { spawn } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -12,7 +16,7 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import process from "node:process";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { build } from "vite";
 import react from "@vitejs/plugin-react";
 import { SETTINGS_WINDOW_LAYOUT } from "../src/shared/windowLayout.mts";
@@ -42,11 +46,17 @@ if (typeof electronBinary !== "string" || electronBinary.length === 0) {
 }
 
 const electronMain = `
-import { app, BrowserWindow, protocol, session } from "electron";
-import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
+import { app, BrowserWindow, nativeTheme, protocol, session } from "electron";
+import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { inspectSettingsAppearance, inspectWorkspace } from ${JSON.stringify(pathToFileURL(resolve(repository, "scripts/workspace-layout-inspection.mjs")).href)};
 
 const harnessFile = process.env.LOCALSCRIBE_SCROLL_HARNESS_FILE;
 const resultFile = process.env.LOCALSCRIBE_SCROLL_RESULT_FILE;
+const screenshotDirectory = process.env.LOCALSCRIBE_LAYOUT_SCREENSHOT_DIR?.trim();
+const appearance = process.env.LOCALSCRIBE_LAYOUT_APPEARANCE ?? "system";
+if (!["system", "light", "dark"].includes(appearance)) throw new Error("Invalid layout appearance");
+nativeTheme.themeSource = appearance;
 const stageFile = \`${resultFile}.stage\`;
 const stage = (message) => appendFileSync(stageFile, \`${new Date().toISOString()} \${message}\\n\`);
 stage("module-loaded");
@@ -689,6 +699,48 @@ async function inspectSize(width, height, platform, verification, settingsPreset
     stage("harness-finish-load-observed");
     await sleep(100);
     const contentSize = await window.webContents.executeJavaScript(\`({ width: window.innerWidth, height: window.innerHeight })\`);
+    const appearanceEvidence = await window.webContents.executeJavaScript(\`(() => {
+      const rgb = (value) => value.match(/[0-9.]+/g).map(Number);
+      const luminance = (value) => {
+        const channels = rgb(value).slice(0, 3).map(channel => {
+          const normalized = channel / 255;
+          return normalized <= .04045 ? normalized / 12.92 : ((normalized + .055) / 1.055) ** 2.4;
+        });
+        return channels[0] * .2126 + channels[1] * .7152 + channels[2] * .0722;
+      };
+      const samples = [".ls-settings-header h1", ".ls-settings-row strong", ".ls-settings-row small", ".ls-settings-row select", ".ls-settings-footer .ls-primary-button"].map(selector => {
+        const element = document.querySelector(selector);
+        if (!element) throw new Error("Missing appearance sample: " + selector);
+        let ancestor = element;
+        while (ancestor && rgb(getComputedStyle(ancestor).backgroundColor)[3] === 0) ancestor = ancestor.parentElement;
+        const foreground = getComputedStyle(element).color;
+        const background = getComputedStyle(ancestor ?? document.documentElement).backgroundColor;
+        const a = luminance(foreground), b = luminance(background);
+        return { selector, foreground, background, contrast: (Math.max(a,b) + .05) / (Math.min(a,b) + .05) };
+      });
+      return { dark: matchMedia("(prefers-color-scheme: dark)").matches, surface: getComputedStyle(document.querySelector(".ls-settings-modal")).backgroundColor, samples };
+    })()\`);
+    if (appearance !== "system" && appearanceEvidence.dark !== (appearance === "dark")) throw new Error("Requested test appearance was not applied");
+    if (appearanceEvidence.samples.some(sample => sample.contrast < 4.5)) throw new Error("Settings text contrast below 4.5: " + JSON.stringify(appearanceEvidence));
+    if (appearance !== "system") {
+      nativeTheme.themeSource = appearance === "dark" ? "light" : "dark";
+      await sleep(100);
+      const switchedSurface = await window.webContents.executeJavaScript("getComputedStyle(document.querySelector('.ls-settings-modal')).backgroundColor");
+      if (switchedSurface === appearanceEvidence.surface) throw new Error("Settings did not respond to a live system appearance change");
+      nativeTheme.themeSource = appearance;
+      await sleep(100);
+    }
+    const settingsInteractionAppearance = await inspectSettingsAppearance(window);
+    if (screenshotDirectory) {
+      mkdirSync(screenshotDirectory, { recursive: true });
+      const filename = ["settings", appearance, width + "x" + height, verification, settingsPreset,
+        applyResult ?? "no-apply", saveResult ?? "no-save"].join("-") + ".png";
+      const screenshot = await window.webContents.capturePage();
+      writeFileSync(join(screenshotDirectory, filename), screenshot.toPNG());
+    }
+    const workspace = verification === "missing" && settingsPreset === "default" && !applyResult && !saveResult
+      ? await inspectWorkspace(window, { screenshotDirectory, appearance, width, height })
+      : null;
     const tabs = [
       await inspectTab(window, "General", "Accessibility"),
       await inspectTab(window, "System", "History retention"),
@@ -706,6 +758,16 @@ async function inspectSize(width, height, platform, verification, settingsPreset
       ),
       await inspectTab(window, "Data & Privacy", "Automatic paste reads the active app identity and hashes limited focused-window metadata to confirm the dictation target. LocalScribe does not read field or document contents from other applications."),
     ];
+    if (screenshotDirectory && verification === "missing" && settingsPreset === "default" && !applyResult && !saveResult) {
+      for (const label of ["System", "Model & Performance", "Writing", "Experimental", "Data & Privacy"]) {
+        await window.webContents.executeJavaScript(\`[...document.querySelectorAll('.ls-settings-sidebar nav button')].find(button => button.textContent.trim() === \${JSON.stringify(label)}).click()\`);
+        await sleep(100);
+        await window.webContents.executeJavaScript("document.querySelector('.ls-settings-scroll').scrollTop = 0");
+        await sleep(50);
+        const shot = await window.webContents.capturePage();
+        writeFileSync(join(screenshotDirectory, ["settings", appearance, width + "x" + height, label.toLowerCase().replaceAll(' ', '-')].join('-') + '.png'), shot.toPNG());
+      }
+    }
     const sidebar = await inspectSidebarReach(window);
     const modelOrdering = await exerciseModelOrdering(window);
     const saveReload = settingsPreset === "custom"
@@ -722,6 +784,9 @@ async function inspectSize(width, height, platform, verification, settingsPreset
       saveResult,
       requestedSize: { width, height },
       contentSize,
+      appearanceEvidence,
+      settingsInteractionAppearance,
+      workspace,
       tabs,
       sidebar,
       modelOrdering,

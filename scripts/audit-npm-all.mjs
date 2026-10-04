@@ -28,6 +28,20 @@ import { fileURLToPath } from "node:url";
  *   overriding Forge's major-version contract or aliasing its extractor needs
  *   separate compatibility and package verification, not an audit waiver.
  *
+ * - `braces` 3.0.3 has no published patched version (GHSA-vfj7-8cjw-p6xm).
+ *   It appears only through micromatch/fast-glob in Forge packaging. The inspected
+ *   Forge caller supplies its generated build directory plus a fixed .bin descendant glob,
+ *   not a pattern derived from dictation, history, downloads or renderer input.
+ *   These build packages are absent from the application runtime inventory.
+ * - The corrected image-size JXL/HEIF range begins at 1.2.0, so it does not
+ *   affect the locked 0.7.5 package; the ICNS advisory remains applicable.
+ *
+ * Re-review on 2026-10-04 keeps exact package nodes, ancestors, advisory URLs,
+ * severities and affected ranges. It never permits Electron/runtime advisories.
+ * Compatible updates remove newly reported runtime/transitive advisories;
+ * http-cache-semantics 4.3.0 is a refresh outside a disputed advisory range,
+ * not evidence of a source-level fix (maintainer issue 56).
+ *
  * This narrowly accepts the current build-tool graph only. It is not a waiver
  * for archive extraction in runtime code, arbitrary archives, or new
  * ancestors introduced by a dependency update.
@@ -47,13 +61,13 @@ export const EXPECTED_BUILD_TOOL_ADVISORIES = Object.freeze({
     name: "image-size",
     dependency: "image-size",
     severity: "high",
-    range: "<=2.0.2",
+    range: ">=0.6.3 <=2.0.2",
   }),
-  "https://github.com/advisories/GHSA-5p2g-fcmc-qvqq": Object.freeze({
-    name: "image-size",
-    dependency: "image-size",
+  "https://github.com/advisories/GHSA-vfj7-8cjw-p6xm": Object.freeze({
+    name: "braces",
+    dependency: "braces",
     severity: "high",
-    range: "<=2.0.2",
+    range: "<=3.0.3",
   }),
   "https://github.com/advisories/GHSA-jmr9-qjv8-65gv": Object.freeze({
     name: "extract-zip",
@@ -68,7 +82,7 @@ export const EXPECTED_BUILD_TOOL_ADVISORIES = Object.freeze({
  * exact node inventory deliberately narrow: a new package, path, or advisory
  * must fail the gate and receive a fresh review.
  *
- * Re-recorded 2026-08-15. `extract-zip` appears through the pinned Electron
+ * Re-recorded 2026-10-04 after compatible patched dependency updates. `extract-zip` appears through the pinned Electron
  * packager, so npm reports the exact Forge ancestors below as affected too.
  * Each ancestor has its exact `via` set recorded; accepting only the terminal
  * packages would let a new affected Forge path pass review unnoticed.
@@ -80,7 +94,7 @@ export const EXPECTED_BUILD_TOOL_VULNERABILITIES = Object.freeze({
   }),
   "@electron-forge/core": Object.freeze({
     nodes: Object.freeze(["node_modules/@electron-forge/core"]),
-    via: Object.freeze(["@electron-forge/core-utils", "@electron-forge/maker-base", "@electron-forge/plugin-base", "@electron-forge/publisher-base", "@electron-forge/shared-types", "@electron-forge/template-base", "@electron-forge/template-vite", "@electron-forge/template-vite-typescript", "@electron-forge/template-webpack", "@electron-forge/template-webpack-typescript", "@electron/packager"]),
+    via: Object.freeze(["@electron-forge/core-utils", "@electron-forge/maker-base", "@electron-forge/plugin-base", "@electron-forge/publisher-base", "@electron-forge/shared-types", "@electron-forge/template-base", "@electron-forge/template-vite", "@electron-forge/template-vite-typescript", "@electron-forge/template-webpack", "@electron-forge/template-webpack-typescript", "@electron/packager", "fast-glob"]),
   }),
   "@electron-forge/core-utils": Object.freeze({ nodes: Object.freeze(["node_modules/@electron-forge/core-utils"]), via: Object.freeze(["@electron-forge/shared-types"]) }),
   "@electron-forge/maker-base": Object.freeze({ nodes: Object.freeze(["node_modules/@electron-forge/maker-base"]), via: Object.freeze(["@electron-forge/shared-types"]) }),
@@ -98,10 +112,13 @@ export const EXPECTED_BUILD_TOOL_VULNERABILITIES = Object.freeze({
   "@electron-forge/template-webpack": Object.freeze({ nodes: Object.freeze(["node_modules/@electron-forge/template-webpack"]), via: Object.freeze(["@electron-forge/shared-types", "@electron-forge/template-base"]) }),
   "@electron-forge/template-webpack-typescript": Object.freeze({ nodes: Object.freeze(["node_modules/@electron-forge/template-webpack-typescript"]), via: Object.freeze(["@electron-forge/shared-types", "@electron-forge/template-base"]) }),
   "@electron/packager": Object.freeze({ nodes: Object.freeze(["node_modules/@electron/packager"]), via: Object.freeze(["extract-zip"]) }),
+  braces: Object.freeze({ nodes: Object.freeze(["node_modules/braces"]), via: Object.freeze(["https://github.com/advisories/GHSA-vfj7-8cjw-p6xm"]) }),
+  "fast-glob": Object.freeze({ nodes: Object.freeze(["node_modules/fast-glob"]), via: Object.freeze(["micromatch"]) }),
+  micromatch: Object.freeze({ nodes: Object.freeze(["node_modules/micromatch"]), via: Object.freeze(["braces"]) }),
   appdmg: Object.freeze({ nodes: Object.freeze(["node_modules/appdmg"]), via: Object.freeze(["image-size"]) }),
   "electron-installer-dmg": Object.freeze({ nodes: Object.freeze(["node_modules/electron-installer-dmg"]), via: Object.freeze(["appdmg"]) }),
   "extract-zip": Object.freeze({ nodes: Object.freeze(["node_modules/extract-zip"]), via: Object.freeze(["https://github.com/advisories/GHSA-jmr9-qjv8-65gv", "https://github.com/advisories/GHSA-7pqw-9j4j-h8q3"]) }),
-  "image-size": Object.freeze({ nodes: Object.freeze(["node_modules/image-size"]), via: Object.freeze(["https://github.com/advisories/GHSA-w3rx-r6r6-pgpr", "https://github.com/advisories/GHSA-5p2g-fcmc-qvqq"]) }),
+  "image-size": Object.freeze({ nodes: Object.freeze(["node_modules/image-size"]), via: Object.freeze(["https://github.com/advisories/GHSA-w3rx-r6r6-pgpr"]) }),
 });
 
 export const EXPECTED_BUILD_TOOL_VULNERABILITY_NODES = Object.freeze(
