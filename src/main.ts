@@ -964,7 +964,11 @@ function createScratchpadWindow(readyVisibility: ReadyVisibility = "active"): Br
   reportWindowVisibility(window);
   window.setWindowButtonVisibility(false);
   window.setAlwaysOnTop(true, "floating");
-  window.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  // Spaces visibility belongs to this panel, not the application's Dock.
+  window.setVisibleOnAllWorkspaces(true, {
+    visibleOnFullScreen: true,
+    skipTransformProcessType: true,
+  });
   hardenWindow(window);
   installRendererFailureHandlers(window, "scratchpad");
   void window.loadURL(rendererUrl("scratchpad"));
@@ -1117,7 +1121,13 @@ function createPillWindow(): BrowserWindow {
   window.setAlwaysOnTop(true, "floating");
   hardenWindow(window);
   installRendererFailureHandlers(window, "pill");
-  window.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  // The pill is already a nonactivating panel. Keep its Spaces behavior local
+  // to this window: Electron's default also hides the app's Dock icon and
+  // turns the entire process into an accessory app during normal startup.
+  window.setVisibleOnAllWorkspaces(true, {
+    visibleOnFullScreen: true,
+    skipTransformProcessType: true,
+  });
   window.setHiddenInMissionControl(true);
   void window.loadURL(rendererUrl("pill"));
   window.once("ready-to-show", () => {
@@ -1309,7 +1319,7 @@ function beginListening(activation: "hold" | "toggle" = "toggle"): SessionSnapsh
   pillWindow?.showInactive();
   diagnostics.record({
     stage: "session",
-    event: "begin_listening",
+    event: "listening_requested",
     outcome: "ok",
     sessionId,
     hotkeyMode: activation,

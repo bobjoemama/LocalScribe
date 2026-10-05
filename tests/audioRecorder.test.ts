@@ -19,6 +19,7 @@ interface AudioHarness {
   port: { onmessage: ((event: MessageEvent<Float32Array>) => void) | null };
   stream: MediaStream;
   stopTrack: ReturnType<typeof vi.fn>;
+  track: MediaStreamTrack;
 }
 
 function installAudioHarness(
@@ -30,8 +31,9 @@ function installAudioHarness(
   const disconnectNode = vi.fn();
   const closeContext = vi.fn().mockResolvedValue(undefined);
   const port: AudioHarness["port"] = { onmessage: null };
+  const track = Object.assign(new EventTarget(), { stop: stopTrack, readyState: "live" }) as unknown as MediaStreamTrack;
   const stream = {
-    getTracks: () => [{ stop: stopTrack }],
+    getTracks: () => [track],
   } as unknown as MediaStream;
   const source = {
     connect: vi.fn(),
@@ -67,6 +69,7 @@ function installAudioHarness(
     port,
     stream,
     stopTrack,
+    track,
   };
 }
 
@@ -105,6 +108,95 @@ describe("speech energy gate", () => {
 
 describe("AudioRecorder capture bounds", () => {
   afterEach(() => vi.unstubAllGlobals());
+
+  it("fails capture and releases the microphone when its input track ends", async () => {
+    const harness = installAudioHarness(16_000);
+    const recorder = new AudioRecorder();
+    const onFailure = vi.fn();
+    await recorder.start(null, { onFailure });
+
+    harness.track.dispatchEvent(new Event("ended"));
+    expect(onFailure).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ message: expect.stringContaining("microphone disconnected") }));
+    expect(harness.stopTrack).toHaveBeenCalledOnce();
+    expect(harness.port.onmessage).toBeNull();
+    await vi.waitFor(() => expect(harness.closeContext).toHaveBeenCalledOnce());
+    await expect(recorder.stop()).rejects.toThrow("microphone disconnected");
+  });
+
+  it("does not fail a later recording from an ended event on a cancelled input", async () => {
+    const harness = installAudioHarness(16_000);
+    const recorder = new AudioRecorder();
+    const onFailure = vi.fn();
+    await recorder.start(null, { onFailure });
+    await recorder.cancel();
+
+    const replacement = Object.assign(new EventTarget(), { stop: vi.fn(), readyState: "live" }) as unknown as MediaStreamTrack;
+    harness.getUserMedia.mockResolvedValueOnce({ getTracks: () => [replacement] });
+    await recorder.start(null, { onFailure });
+    harness.track.dispatchEvent(new Event("ended"));
+    expect(onFailure).not.toHaveBeenCalled();
+    expect(replacement.stop).not.toHaveBeenCalled();
+    await recorder.cancel();
+  });
+
+  it("rejects a microphone that is already ended during acquisition", async () => {
+    const harness = installAudioHarness(16_000);
+    const recorder = new AudioRecorder();
+    Object.assign(harness.track, { readyState: "ended" });
+
+    await expect(recorder.start(null)).rejects.toThrow("microphone disconnected");
+    expect(harness.stopTrack).toHaveBeenCalledOnce();
+    expect(harness.addModule).not.toHaveBeenCalled();
+  });
+
+  it("does not start a worklet after the microphone ends during setup", async () => {
+    let finishSetup!: () => void;
+    const harness = installAudioHarness(16_000, vi.fn(() => new Promise<void>((resolve) => { finishSetup = resolve; })));
+    const recorder = new AudioRecorder();
+    const onFailure = vi.fn();
+    const start = recorder.start(null, { onFailure });
+    await vi.waitFor(() => expect(harness.addModule).toHaveBeenCalledOnce());
+    harness.track.dispatchEvent(new Event("ended"));
+    finishSetup();
+
+    await expect(start).rejects.toThrow("microphone disconnected");
+    expect(harness.port.onmessage).toBeNull();
+    expect(onFailure).toHaveBeenCalledOnce();
+    expect(harness.stopTrack).toHaveBeenCalledOnce();
+  });
+
+  it("removes input-failure listeners before an ordinary Stop", async () => {
+    const harness = installAudioHarness(16_000);
+    const recorder = new AudioRecorder();
+    const onFailure = vi.fn();
+    harness.stopTrack.mockImplementation(() => harness.track.dispatchEvent(new Event("ended")));
+    await recorder.start(null, { onFailure });
+    harness.port.onmessage?.({ data: new Float32Array(1_600).fill(0.025) } as MessageEvent<Float32Array>);
+    await recorder.stop();
+
+    expect(onFailure).not.toHaveBeenCalled();
+  });
+
+  it("fences a rapid retry until a failed worklet startup settles", async () => {
+    let finishSetup!: () => void;
+    const setup = vi.fn().mockImplementationOnce(() => new Promise<void>((resolve) => { finishSetup = resolve; })).mockResolvedValue(undefined);
+    const harness = installAudioHarness(16_000, setup);
+    const recorder = new AudioRecorder();
+    const first = recorder.start(null);
+    await vi.waitFor(() => expect(harness.addModule).toHaveBeenCalledOnce());
+    harness.track.dispatchEvent(new Event("ended"));
+    const retry = recorder.start(null);
+    await Promise.resolve();
+    expect(harness.getUserMedia).toHaveBeenCalledOnce();
+    finishSetup();
+    const settled = await Promise.allSettled([first, retry]);
+    expect(settled.map((result) => result.status)).toEqual(["rejected", "rejected"]);
+
+    await recorder.start(null);
+    expect(harness.getUserMedia).toHaveBeenCalledTimes(2);
+    expect(harness.port.onmessage).not.toBeNull();
+    await recorder.cancel();
+  });
 
   it("stops accepting worklet chunks at the configured source sample and byte ceiling", async () => {
     const sampleRate = 100;
@@ -444,9 +536,10 @@ describe("AudioRecorder cancellation", () => {
       { onmessage: null as ((event: MessageEvent<Float32Array>) => void) | null },
     ];
     const tracks = [vi.fn(), vi.fn()];
-    const streams = tracks.map((stop) => ({
-      getTracks: () => [{ stop }],
-    })) as unknown as MediaStream[];
+    const streams = tracks.map((stop) => {
+      const track = Object.assign(new EventTarget(), { stop, readyState: "live" });
+      return { getTracks: () => [track] };
+    }) as unknown as MediaStream[];
     const sources = [0, 1].map(() => ({
       connect: vi.fn(),
       disconnect: vi.fn(),

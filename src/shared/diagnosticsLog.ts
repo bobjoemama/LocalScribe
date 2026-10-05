@@ -43,6 +43,7 @@ export type DiagnosticOutcome = "ok" | "failed" | "cancelled" | "skipped";
 export const DIAGNOSTIC_EVENTS = [
   "auto_tier_held",
   "begin_listening",
+  "listening_requested",
   "copied",
   "fallback_register",
   "finalize_watchdog",

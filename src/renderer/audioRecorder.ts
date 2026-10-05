@@ -78,6 +78,7 @@ export class AudioRecorder {
   private liveActiveSamples = 0;
   private startedAt = 0;
   private startPromise: Promise<void> | null = null;
+  private startPendingGeneration: number | null = null;
   private stopPromise: Promise<CapturedAudio> | null = null;
   private cancelPromise: Promise<void> | null = null;
   private captureFailureCleanup: Promise<void> | null = null;
@@ -91,6 +92,7 @@ export class AudioRecorder {
   private liveEncoder: LivePcmFrameEncoder | null = null;
   private failureListener: ((error: Error) => void) | null = null;
   private failureNotified = false;
+  private inputTrackListeners: Array<{ track: MediaStreamTrack; onEnded: () => void }> = [];
 
   setLevelListener(listener: (level: number) => void): void {
     this.levelListener = listener;
@@ -128,12 +130,15 @@ export class AudioRecorder {
       if (this.context) return;
 
       const generation = ++this.generation;
+      this.startPendingGeneration = generation;
       const operation = this.startInternal(deviceId, generation, options);
       const tracked = operation.catch(async (error: unknown) => {
         await this.teardown();
         if (this.startPromise === tracked) this.startPromise = null;
         if (generation !== this.generation) throw new RecorderCancelledError();
         throw error;
+      }).finally(() => {
+        if (this.startPendingGeneration === generation) this.startPendingGeneration = null;
       });
       this.startPromise = tracked;
       await tracked;
@@ -155,12 +160,14 @@ export class AudioRecorder {
       throw new RecorderCancelledError();
     }
     this.stream = stream;
+    this.observeInputTracks(stream, generation);
     // Request the protocol rate so the usual macOS path needs no resampling.
     // `context.sampleRate` remains authoritative: some hardware cannot honour
     // the request and Live frames are canonicalized by LivePcmFrameEncoder.
     const context = new AudioContext({ latencyHint: "interactive", sampleRate: AUDIO_SAMPLE_RATE_HZ });
     this.context = context;
     await context.audioWorklet.addModule(pcmWorkletUrl);
+    if (this.captureLimitError) throw this.captureLimitError;
     if (generation !== this.generation) {
       await this.teardown();
       throw new RecorderCancelledError();
@@ -258,6 +265,7 @@ export class AudioRecorder {
     const inputRate = this.context.sampleRate;
     this.source?.disconnect();
     this.node?.disconnect();
+    this.removeInputTrackListeners();
     for (const track of this.stream.getTracks()) track.stop();
     try {
       await this.context.close();
@@ -359,6 +367,7 @@ export class AudioRecorder {
     if (this.node) this.node.port.onmessage = null;
     this.source?.disconnect();
     this.node?.disconnect();
+    this.removeInputTrackListeners();
     for (const track of this.stream?.getTracks() ?? []) track.stop();
     this.context = null;
     this.stream = null;
@@ -398,9 +407,29 @@ export class AudioRecorder {
     if (this.node) this.node.port.onmessage = null;
     this.source?.disconnect();
     this.node?.disconnect();
+    this.removeInputTrackListeners();
     for (const track of this.stream?.getTracks() ?? []) track.stop();
     this.smoothedLevel = 0;
     this.levelListener(0);
+  }
+
+  private observeInputTracks(stream: MediaStream, generation: number): void {
+    for (const track of stream.getTracks()) {
+      if (track.readyState === "ended") {
+        throw new Error("The microphone disconnected. Choose an available microphone and try again.");
+      }
+      const onEnded = () => {
+        if (generation !== this.generation || this.stream !== stream || this.stopping) return;
+        this.failCapture(new Error("The microphone disconnected. Choose an available microphone and try again."));
+      };
+      track.addEventListener("ended", onEnded);
+      this.inputTrackListeners.push({ track, onEnded });
+    }
+  }
+
+  private removeInputTrackListeners(): void {
+    for (const { track, onEnded } of this.inputTrackListeners) track.removeEventListener("ended", onEnded);
+    this.inputTrackListeners = [];
   }
 
   private failCapture(error: Error): void {
@@ -433,7 +462,9 @@ export class AudioRecorder {
     this.source = null;
     this.node = null;
     this.chunks = [];
-    this.startPromise = null;
+    // A track can end while addModule is still pending. Keep that startup
+    // fenced until it settles so its late teardown cannot close a new input.
+    if (this.startPendingGeneration === null) this.startPromise = null;
     this.liveTransport = null;
     this.liveEncoder = null;
     this.transport = "finalized";
