@@ -181,9 +181,24 @@ sizes and appearances. Fixture clipboard writes stay in memory; no user transcri
 or model is used. Full source gates passed with 1,500 tests and two skipped tests;
 the exact unpatched build-only audit residual is documented in `docs/RELEASING.md`.
 
-The subsequent dictionary/snippet editing and direct model-settings navigation
-are source changes pending packaging and activation. Their isolated renderer
-fixture uses synthetic library entries and an in-memory save stub; real database
+The dictionary/snippet editors, direct model-settings navigation, advisory memory
+policy and plain Dictation page were built from commit `2d9b242` in
+`out/ui-memory-controls-20261004/` and activated on 4 October 2026. The installed
+archive matches the reviewed signed candidate. Strict signature, complete
+designated-requirement identity, resource integrity, signed Python imports and
+startup checks passed. Hold and toggle shortcuts registered successfully, with
+Control–Space retained. The activation review showed Canary High selected.
+Only LocalScribe restarted; macOS did not. The replaced bundle was removed after
+verification, while model files and user data stayed in place.
+
+The functional source gate passed with 1,519 tests and two skipped tests. The final
+copy-only cleanup passed typecheck, 23 focused history tests, and the complete
+light/dark renderer harness at both supported sizes. These checks do not measure
+actual Canary allocation, speech accuracy or microphone-to-target dictation after
+activation. This local build has no new notarization ticket and is not a new
+published binary release.
+
+The isolated renderer fixture uses synthetic library entries and an in-memory save stub; real database
 tests separately verify encrypted, identity-aware persistence and reopen behavior.
 Neither fixture accesses user records, changes the system clipboard or invokes
 the installed application. Scratchpad already has encrypted note persistence,
