@@ -1319,7 +1319,7 @@ function beginListening(activation: "hold" | "toggle" = "toggle"): SessionSnapsh
   pillWindow?.showInactive();
   diagnostics.record({
     stage: "session",
-    event: "begin_listening",
+    event: "listening_requested",
     outcome: "ok",
     sessionId,
     hotkeyMode: activation,
