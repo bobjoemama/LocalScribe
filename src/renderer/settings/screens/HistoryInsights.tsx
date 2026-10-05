@@ -27,9 +27,16 @@ import "./history-insights.css";
 type HistoryState = {
   items: Transcription[];
   skippedUnreadable: number;
+  hasLoaded: boolean;
   loading: boolean;
   error: string | null;
 };
+
+export function startHistoryRefresh(current: HistoryState): HistoryState {
+  // Returning to the window also refreshes history. Keep the last successful
+  // result mounted so that a refresh does not discard selection or focus.
+  return { ...current, loading: !current.hasLoaded, error: null };
+}
 
 export type InsightTab = "usage" | "voice";
 type ShortcutRuntimeStatus = "loading" | "unavailable" | "ready";
@@ -167,9 +174,10 @@ const STOP_WORDS = new Set([
 ]);
 
 function useLocalHistory(fallbackError: string): readonly [HistoryState, () => Promise<void>] {
-  const [{ items, skippedUnreadable, loading, error }, setHistory] = useState<HistoryState>({
+  const [{ items, skippedUnreadable, hasLoaded, loading, error }, setHistory] = useState<HistoryState>({
     items: [],
     skippedUnreadable: 0,
+    hasLoaded: false,
     loading: true,
     error: null,
   });
@@ -177,13 +185,14 @@ function useLocalHistory(fallbackError: string): readonly [HistoryState, () => P
 
   const load = useCallback(async () => {
     const request = requestGate.current.begin();
-    setHistory((current) => ({ ...current, loading: true, error: null }));
+    setHistory(startHistoryRefresh);
     try {
       const result = await window.localScribe.history.list(MAX_HISTORY_ITEMS);
       if (!requestGate.current.isLatest(request)) return;
       setHistory({
         items: result.items,
         skippedUnreadable: result.skippedUnreadable,
+        hasLoaded: true,
         loading: false,
         error: null,
       });
@@ -212,12 +221,12 @@ function useLocalHistory(fallbackError: string): readonly [HistoryState, () => P
     };
   }, [load]);
 
-  return [{ items, skippedUnreadable, loading, error }, load] as const;
+  return [{ items, skippedUnreadable, hasLoaded, loading, error }, load] as const;
 }
 
 export function historyIntegrityWarningMessage(skippedUnreadable: number): string | null {
   if (skippedUnreadable === 0) return null;
-  return `${skippedUnreadable.toLocaleString()} encrypted ${skippedUnreadable === 1 ? "record was" : "records were"} skipped. The readable history below is unchanged; LocalScribe will not overwrite the unreadable records.`;
+  return `${skippedUnreadable.toLocaleString()} saved ${skippedUnreadable === 1 ? "record" : "records"} could not be opened. LocalScribe will not overwrite the unreadable records.`;
 }
 
 function HistoryIntegrityWarning({ skippedUnreadable }: { skippedUnreadable: number }) {
@@ -229,6 +238,7 @@ function HistoryIntegrityWarning({ skippedUnreadable }: { skippedUnreadable: num
       <div>
         <strong>Some saved history could not be opened</strong>
         <p>{message}</p>
+        <button type="button" className="hi-secondary-button" onClick={() => void window.localScribe.windows.showSettings("data")}>Manage saved data…</button>
       </div>
     </div>
   );
@@ -539,7 +549,7 @@ export function HistoryScreen({ onOpenSettings, onChooseModel }: { onOpenSetting
           {!loading && error && (
             <div className="hi-state-card" role="alert">
               <span className="hi-state-icon">!</span>
-              <div><strong>History is unavailable</strong><p>{error}</p></div>
+              <div><strong>{items.length > 0 ? "History could not refresh" : "History is unavailable"}</strong><p>{error}</p></div>
               <button className="hi-secondary-button" type="button" onClick={() => void load()}>Try again</button>
             </div>
           )}
@@ -550,7 +560,7 @@ export function HistoryScreen({ onOpenSettings, onChooseModel }: { onOpenSetting
               {query && <button className="hi-secondary-button" type="button" onClick={() => setQuery("")}>Clear search</button>}
             </div>
           )}
-          {!loading && !error && groups.map((group) => (
+          {!loading && groups.map((group) => (
             <section className="hi-day-group" key={group.key} aria-labelledby={`history-${group.key}`}>
               <div className="hi-day-heading">
                 <h3 id={`history-${group.key}`}>{group.label}</h3>
@@ -723,7 +733,7 @@ export function InsightsScreen() {
         hidden={tab !== "usage"}
         tabIndex={tab === "usage" ? 0 : -1}
       >
-        {!loading && !error && (
+        {!loading && (!error || items.length > 0) && (
           rangedItems.length === 0 ? (
             <div className="hi-empty-state hi-empty-state--insights">
               <h2>No activity in this period</h2>
@@ -774,7 +784,7 @@ export function InsightsScreen() {
         hidden={tab !== "voice"}
         tabIndex={tab === "voice" ? 0 : -1}
       >
-        {!loading && !error && (
+        {!loading && (!error || items.length > 0) && (
           <>
             <div className="hi-profile-disclosure">
               <InfoIcon />

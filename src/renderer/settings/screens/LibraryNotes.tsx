@@ -47,20 +47,6 @@ export const SNIPPET_EXPANSION_MAX_LENGTH = requiredMaxLength(
   "Snippet expansion",
 );
 
-const LIBRARY_HERO_DISMISSAL_KEYS: Record<LibraryKind, string> = {
-  dictionary: "localscribe.library.dictionary-introduction-dismissed",
-  snippets: "localscribe.library.snippets-introduction-dismissed",
-};
-
-export function shouldShowLibraryHero(
-  itemCount: number,
-  loading: boolean,
-  unavailable: boolean,
-  dismissed: boolean,
-): boolean {
-  return !loading && !unavailable && !dismissed && itemCount === 0;
-}
-
 export function libraryCountLabel(
   kind: LibraryKind,
   count: number,
@@ -70,28 +56,6 @@ export function libraryCountLabel(
   if (state === "unavailable") return "Unavailable";
   const itemName = kind === "dictionary" ? "term" : "snippet";
   return `${count.toLocaleString()} ${itemName}${count === 1 ? "" : "s"}`;
-}
-
-function useLibraryHeroDismissal(kind: LibraryKind): [boolean, () => void] {
-  const [dismissed, setDismissed] = useState(() => {
-    if (typeof window === "undefined") return false;
-    try {
-      return window.localStorage.getItem(LIBRARY_HERO_DISMISSAL_KEYS[kind]) === "true";
-    } catch {
-      return false;
-    }
-  });
-
-  const dismiss = useCallback(() => {
-    setDismissed(true);
-    try {
-      window.localStorage.setItem(LIBRARY_HERO_DISMISSAL_KEYS[kind], "true");
-    } catch {
-      // The current view still honors dismissal when storage is unavailable.
-    }
-  }, [kind]);
-
-  return [dismissed, dismiss];
 }
 
 export function libraryListMessage(
@@ -112,12 +76,12 @@ export function libraryListMessage(
   }
   return kind === "dictionary"
     ? {
-        title: "Your dictionary is ready for its first term",
+        title: "No dictionary terms",
         body: "Add a name or phrase that your speech model may spell differently.",
       }
     : {
-        title: "Create your first spoken snippet",
-        body: "A short cue can expand into any reusable block of local text.",
+        title: "No snippets",
+        body: "Add a spoken phrase and the text it should insert.",
       };
 }
 
@@ -132,8 +96,8 @@ export function DictionaryScreen() {
   const [editingEntry, setEditingEntry] = useState<DictionaryEntry | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<LibraryError | null>(null);
+  const [unreadableCount, setUnreadableCount] = useState(0);
   const [deletingIds, setDeletingIds] = useState<ReadonlySet<string>>(() => new Set());
-  const [heroDismissed, dismissHero] = useLibraryHeroDismissal("dictionary");
   const loadSequence = useRef(0);
   const mounted = useRef(false);
 
@@ -160,6 +124,10 @@ export function DictionaryScreen() {
   useEffect(() => {
     mounted.current = true;
     void load();
+    void window.localScribe.system.savedDataStatus().then(
+      (status) => { if (mounted.current) setUnreadableCount(status.dictionary); },
+      () => undefined,
+    );
     return () => {
       mounted.current = false;
       loadSequence.current += 1;
@@ -179,7 +147,6 @@ export function DictionaryScreen() {
     Boolean(error?.canReload && items.length === 0),
   );
   const unavailable = Boolean(error?.canReload && items.length === 0);
-  const showHero = shouldShowLibraryHero(items.length, loading, unavailable, heroDismissed);
   const countState: LibraryCountState = loading
     ? "loading"
     : unavailable
@@ -193,7 +160,7 @@ export function DictionaryScreen() {
     try {
       setError(null);
       await window.localScribe.dictionary.delete(entry.id);
-      await load();
+      setItems((current) => current.filter((item) => item.id !== entry.id));
     } catch (removeError) {
       setError({
         message: libraryErrorMessage(removeError, "That term could not be removed."),
@@ -213,21 +180,11 @@ export function DictionaryScreen() {
       <div inert={showAdd}>
         <LibraryPage
           title="Dictionary"
-          subtitle="Help LocalScribe recognize names, products, and specialized language the way you write them."
-          actionLabel="Add new"
+          subtitle="Replace recognized words with your preferred spelling."
+          actionLabel="Add term"
           actionDisabled={loading || unavailable}
           onAction={() => { setEditingEntry(null); setShowAdd(true); }}
         >
-        {showHero && (
-          <OnboardingHero
-            eyebrow="A vocabulary that stays yours"
-            title="Preferred spellings"
-            body="Add a phrase as it may be recognized, then choose the spelling you want. Entries are applied on this computer after transcription."
-            onDismiss={dismissHero}
-            artwork={<DictionaryArtwork />}
-          />
-        )}
-
         <LibraryToolbar
           count={items.length}
           countState={countState}
@@ -237,6 +194,11 @@ export function DictionaryScreen() {
           placeholder="Search dictionary"
         />
 
+        {unreadableCount > 0 && (
+          <InlineError actionLabel="Manage saved data…" onAction={() => void window.localScribe.windows.showSettings("data")}>
+            {unreadableCount.toLocaleString()} saved {unreadableCount === 1 ? "record could" : "records could"} not be opened. Manage saved data to resolve this before adding terms.
+          </InlineError>
+        )}
         {error && (
           <InlineError
             actionLabel={error.canReload ? "Try again" : undefined}
@@ -281,8 +243,9 @@ export function DictionaryScreen() {
         <DictionaryModal
           entry={editingEntry ?? undefined}
           onClose={() => setShowAdd(false)}
-          onSaved={async () => {
-            await load();
+          onSaved={async (saved) => {
+            setItems((current) => [saved, ...current.filter((item) => item.id !== saved.id)]);
+            setQuery("");
             setShowAdd(false);
           }}
         />
@@ -298,8 +261,8 @@ export function SnippetsScreen() {
   const [editingEntry, setEditingEntry] = useState<Snippet | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<LibraryError | null>(null);
+  const [unreadableCount, setUnreadableCount] = useState(0);
   const [deletingIds, setDeletingIds] = useState<ReadonlySet<string>>(() => new Set());
-  const [heroDismissed, dismissHero] = useLibraryHeroDismissal("snippets");
   const loadSequence = useRef(0);
   const mounted = useRef(false);
 
@@ -326,6 +289,10 @@ export function SnippetsScreen() {
   useEffect(() => {
     mounted.current = true;
     void load();
+    void window.localScribe.system.savedDataStatus().then(
+      (status) => { if (mounted.current) setUnreadableCount(status.snippets); },
+      () => undefined,
+    );
     return () => {
       mounted.current = false;
       loadSequence.current += 1;
@@ -345,7 +312,6 @@ export function SnippetsScreen() {
     Boolean(error?.canReload && items.length === 0),
   );
   const unavailable = Boolean(error?.canReload && items.length === 0);
-  const showHero = shouldShowLibraryHero(items.length, loading, unavailable, heroDismissed);
   const countState: LibraryCountState = loading
     ? "loading"
     : unavailable
@@ -359,7 +325,7 @@ export function SnippetsScreen() {
     try {
       setError(null);
       await window.localScribe.snippets.delete(snippet.id);
-      await load();
+      setItems((current) => current.filter((item) => item.id !== snippet.id));
     } catch (removeError) {
       setError({
         message: libraryErrorMessage(removeError, "That snippet could not be removed."),
@@ -379,21 +345,11 @@ export function SnippetsScreen() {
       <div inert={showAdd}>
         <LibraryPage
           title="Snippets"
-          subtitle="Turn short spoken cues into text you use often, without sending the cue or expansion anywhere."
-          actionLabel="Add new"
+          subtitle="Insert saved text when you say a trigger phrase."
+          actionLabel="Add snippet"
           actionDisabled={loading || unavailable}
           onAction={() => { setEditingEntry(null); setShowAdd(true); }}
         >
-        {showHero && (
-          <OnboardingHero
-            eyebrow="A shorter route to repeatable writing"
-            title="Spoken shortcuts"
-            body="Create memorable triggers for signatures, links, directions, or recurring replies. LocalScribe expands them after local transcription."
-            onDismiss={dismissHero}
-            artwork={<SnippetArtwork />}
-          />
-        )}
-
         <LibraryToolbar
           count={items.length}
           countState={countState}
@@ -403,6 +359,11 @@ export function SnippetsScreen() {
           placeholder="Search snippets"
         />
 
+        {unreadableCount > 0 && (
+          <InlineError actionLabel="Manage saved data…" onAction={() => void window.localScribe.windows.showSettings("data")}>
+            {unreadableCount.toLocaleString()} saved {unreadableCount === 1 ? "record could" : "records could"} not be opened. Manage saved data to resolve this before adding snippets.
+          </InlineError>
+        )}
         {error && (
           <InlineError
             actionLabel={error.canReload ? "Try again" : undefined}
@@ -447,8 +408,9 @@ export function SnippetsScreen() {
         <SnippetModal
           entry={editingEntry ?? undefined}
           onClose={() => setShowAdd(false)}
-          onSaved={async () => {
-            await load();
+          onSaved={async (saved) => {
+            setItems((current) => [saved, ...current.filter((item) => item.id !== saved.id)]);
+            setQuery("");
             setShowAdd(false);
           }}
         />
@@ -487,34 +449,6 @@ function LibraryPage({
         {children}
       </div>
     </div>
-  );
-}
-
-function OnboardingHero({
-  eyebrow,
-  title,
-  body,
-  artwork,
-  onDismiss,
-}: {
-  eyebrow: string;
-  title: string;
-  body: string;
-  artwork: ReactNode;
-  onDismiss(): void;
-}) {
-  return (
-    <section className="ln-hero">
-      <button className="ln-hero__dismiss" type="button" aria-label="Dismiss introduction" onClick={onDismiss}>
-        <CloseIcon />
-      </button>
-      <div className="ln-hero__copy">
-        <span>{eyebrow}</span>
-        <h2>{title}</h2>
-        <p>{body}</p>
-      </div>
-      <div className="ln-hero__art" aria-hidden="true">{artwork}</div>
-    </section>
   );
 }
 
@@ -559,7 +493,7 @@ function LibraryToolbar({
   );
 }
 
-export function DictionaryModal({ entry, onClose, onSaved }: { entry?: DictionaryEntry; onClose(): void; onSaved(): Promise<void> }) {
+export function DictionaryModal({ entry, onClose, onSaved }: { entry?: DictionaryEntry; onClose(): void; onSaved(saved: DictionaryEntry): Promise<void> }) {
   const [phrase, setPhrase] = useState(entry?.phrase ?? "");
   const [replacement, setReplacement] = useState(entry?.replacement ?? "");
   const [saving, setSaving] = useState(false);
@@ -576,8 +510,8 @@ export function DictionaryModal({ entry, onClose, onSaved }: { entry?: Dictionar
     setSaving(true);
     setError(null);
     try {
-      await window.localScribe.dictionary.save({ ...(entry ? { id: entry.id } : {}), phrase, replacement });
-      await onSaved();
+      const saved = await window.localScribe.dictionary.save({ ...(entry ? { id: entry.id } : {}), phrase, replacement });
+      await onSaved(saved);
     } catch (saveError) {
       setError(libraryErrorMessage(
         saveError,
@@ -590,30 +524,30 @@ export function DictionaryModal({ entry, onClose, onSaved }: { entry?: Dictionar
   };
 
   return (
-    <LibraryModal title={entry ? "Edit dictionary term" : "Add a dictionary term"} description="Choose what LocalScribe should write when it recognizes this phrase." onClose={requestClose} busy={saving}>
+    <LibraryModal title={entry ? "Edit dictionary term" : "Add dictionary term"} description="Replace a recognized phrase with the text you want." onClose={requestClose} busy={saving}>
       <form className="ln-modal__form" onSubmit={(event) => void submit(event)}>
         <label>
           <span>Phrase it may hear</span>
           <input
             autoFocus
             value={phrase}
-            onChange={(event) => setPhrase(event.target.value)}
+            disabled={saving}
+            onChange={(event) => { setPhrase(event.target.value); setError(null); }}
             placeholder="For example, local scribe"
             maxLength={DICTIONARY_PHRASE_MAX_LENGTH}
             required
           />
-          <small>Use a likely phonetic or alternate spelling.</small>
         </label>
         <label>
           <span>Preferred spelling</span>
           <input
             value={replacement}
-            onChange={(event) => setReplacement(event.target.value)}
+            disabled={saving}
+            onChange={(event) => { setReplacement(event.target.value); setError(null); }}
             placeholder="For example, LocalScribe"
             maxLength={DICTIONARY_REPLACEMENT_MAX_LENGTH}
             required
           />
-          <small>This exact text replaces the recognized phrase.</small>
         </label>
         {error && <InlineError>{error}</InlineError>}
         <div className="ln-modal__actions">
@@ -627,7 +561,7 @@ export function DictionaryModal({ entry, onClose, onSaved }: { entry?: Dictionar
   );
 }
 
-export function SnippetModal({ entry, onClose, onSaved }: { entry?: Snippet; onClose(): void; onSaved(): Promise<void> }) {
+export function SnippetModal({ entry, onClose, onSaved }: { entry?: Snippet; onClose(): void; onSaved(saved: Snippet): Promise<void> }) {
   const [trigger, setTrigger] = useState(entry?.trigger ?? "");
   const [expansion, setExpansion] = useState(entry?.expansion ?? "");
   const [saving, setSaving] = useState(false);
@@ -644,8 +578,8 @@ export function SnippetModal({ entry, onClose, onSaved }: { entry?: Snippet; onC
     setSaving(true);
     setError(null);
     try {
-      await window.localScribe.snippets.save({ ...(entry ? { id: entry.id } : {}), trigger, expansion });
-      await onSaved();
+      const saved = await window.localScribe.snippets.save({ ...(entry ? { id: entry.id } : {}), trigger, expansion });
+      await onSaved(saved);
     } catch (saveError) {
       setError(libraryErrorMessage(
         saveError,
@@ -658,25 +592,26 @@ export function SnippetModal({ entry, onClose, onSaved }: { entry?: Snippet; onC
   };
 
   return (
-    <LibraryModal title={entry ? "Edit snippet" : "Create a snippet"} description="Pair a memorable spoken cue with the complete text you want inserted." onClose={requestClose} busy={saving}>
+    <LibraryModal title={entry ? "Edit snippet" : "Create a snippet"} description="Say the trigger to insert the saved text." onClose={requestClose} busy={saving}>
       <form className="ln-modal__form" onSubmit={(event) => void submit(event)}>
         <label>
           <span>Spoken trigger</span>
           <input
             autoFocus
             value={trigger}
-            onChange={(event) => setTrigger(event.target.value)}
+            disabled={saving}
+            onChange={(event) => { setTrigger(event.target.value); setError(null); }}
             placeholder="For example, my sign off"
             maxLength={SNIPPET_TRIGGER_MAX_LENGTH}
             required
           />
-          <small>Choose a distinct phrase that is easy to remember.</small>
         </label>
         <label>
           <span>Expansion</span>
           <textarea
             value={expansion}
-            onChange={(event) => setExpansion(event.target.value)}
+            disabled={saving}
+            onChange={(event) => { setExpansion(event.target.value); setError(null); }}
             placeholder="Thanks,&#10;Your name"
             maxLength={SNIPPET_EXPANSION_MAX_LENGTH}
             required
@@ -824,27 +759,6 @@ function ListMessage({ title, body, status = false }: { title: string; body?: st
       <span><NoteIcon /></span>
       <strong>{title}</strong>
       {body && <p>{body}</p>}
-    </div>
-  );
-}
-
-function DictionaryArtwork() {
-  return (
-    <div className="ln-art ln-art--dictionary">
-      <span className="ln-art__orb" />
-      <span className="ln-word-card ln-word-card--one"><small>Heard</small>local scribe</span>
-      <span className="ln-word-card ln-word-card--two"><small>Write</small>LocalScribe</span>
-      <span className="ln-art__arrow">→</span>
-    </div>
-  );
-}
-
-function SnippetArtwork() {
-  return (
-    <div className="ln-art ln-art--snippets">
-      <span className="ln-art__orb" />
-      <span className="ln-trigger-pill">“meeting link”</span>
-      <span className="ln-expansion-sheet"><i /><i /><i /><small>Expanded locally</small></span>
     </div>
   );
 }

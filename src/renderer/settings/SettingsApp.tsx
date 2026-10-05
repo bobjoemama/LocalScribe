@@ -28,6 +28,7 @@ export function SettingsApp() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsInitialTab, setSettingsInitialTab] = useState<SettingsTab>("general");
   const [appInfo, setAppInfo] = useState<AppInfo | null>(null);
+  const [dataRevision, setDataRevision] = useState(0);
 
   const openSection = (target: Section) => {
     if (target === "scratchpad") {
@@ -51,8 +52,9 @@ export function SettingsApp() {
   }, []);
 
   useEffect(() => window.localScribe.windows.onNavigate((target) => {
-    if (target === "settings") {
-      setSettingsInitialTab("general");
+    if (target === "settings" || target === "data") {
+      if (dismissalGate.current && !dismissalGate.current()) return;
+      setSettingsInitialTab(target === "data" ? "privacy" : "general");
       setSettingsOpen(true);
       return;
     }
@@ -120,7 +122,7 @@ export function SettingsApp() {
         * targeted role="status" / role="alert" / aria-live elements; that is
         * where an announcement can say what actually changed.
         */}
-      <section className="hub-content" inert={settingsOpen}>
+      <section className="hub-content" inert={settingsOpen} key={dataRevision}>
         {section === "dictation" && <HistoryScreen
           onOpenSettings={() => { setSettingsInitialTab("general"); setSettingsOpen(true); }}
           onChooseModel={() => { setSettingsInitialTab("model"); setSettingsOpen(true); }}
@@ -135,6 +137,7 @@ export function SettingsApp() {
       {settingsOpen && (
         <SettingsModal
           initialTab={settingsInitialTab}
+          onSavedDataReset={() => setDataRevision((value) => value + 1)}
           onClose={() => setSettingsOpen(false)}
           registerDismissalGate={registerDismissalGate}
         />

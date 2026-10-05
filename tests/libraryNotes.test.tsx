@@ -16,7 +16,6 @@ import {
   libraryErrorMessage,
   libraryListMessage,
   modalTabTarget,
-  shouldShowLibraryHero,
   SnippetModal,
   SnippetsScreen,
 } from "../src/renderer/settings/screens/LibraryNotes";
@@ -102,12 +101,13 @@ describe("library page states", () => {
     expect(snippetHtml).toContain("Cancel");
   });
 
-  it("shows onboarding only after a successful empty load and honors dismissal", () => {
-    expect(shouldShowLibraryHero(0, true, false, false)).toBe(false);
-    expect(shouldShowLibraryHero(0, false, true, false)).toBe(false);
-    expect(shouldShowLibraryHero(2, false, false, false)).toBe(false);
-    expect(shouldShowLibraryHero(0, false, false, true)).toBe(false);
-    expect(shouldShowLibraryHero(0, false, false, false)).toBe(true);
+  it("uses concise functional copy without an introductory panel", () => {
+    const dictionaryHtml = renderToStaticMarkup(createElement(DictionaryScreen));
+    const snippetsHtml = renderToStaticMarkup(createElement(SnippetsScreen));
+    expect(dictionaryHtml).toContain("Replace recognized words with your preferred spelling.");
+    expect(snippetsHtml).toContain("Insert saved text when you say a trigger phrase.");
+    expect(dictionaryHtml).not.toContain("A vocabulary that stays yours");
+    expect(snippetsHtml).not.toContain("A shorter route to repeatable writing");
   });
 
   it("does not claim zero persisted items while counts are unresolved", () => {
@@ -138,7 +138,7 @@ describe("library page states", () => {
       body: "Try another search.",
     });
     expect(libraryListMessage("snippets", "", false).title).toBe(
-      "Create your first spoken snippet",
+      "No snippets",
     );
   });
 

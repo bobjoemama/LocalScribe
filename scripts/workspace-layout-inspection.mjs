@@ -254,7 +254,18 @@ async function inspectFocusedWorkspace(appWindow, { screenshotDirectory, appeara
     const failedDraft = await draft();
     assert(failed.message?.includes("already uses") && JSON.stringify(failed.entries) === JSON.stringify(before.entries) && failedDraft.values[0] === changedFirst && failedDraft.values[1] === changedSecond && !failedDraft.saveDisabled, `${kind}: failed save lost the draft or changed stored data: ${JSON.stringify({ failed, failedDraft, expected: { changedFirst, changedSecond } })}`);
     await capture(`${kind}-edit-error`);
+    await fill(first, changedFirst + " retry");
+    assert(await evaluate(() => !document.querySelector(".ln-modal [role=alert]")), `${kind}: obsolete validation message persisted after correcting the draft`);
+    await fill(first, changedFirst);
+    await evaluate(() => window.__localScribeSettingsHarness.delayLibrarySave());
     await click('.ln-modal__form button[type="submit"]');
+    const pending = await evaluate(() => ({
+      controlsDisabled: [...document.querySelectorAll(".ln-modal input, .ln-modal textarea, .ln-modal button")].every(control => control.disabled),
+      saving: document.querySelector('.ln-modal button[type="submit"]')?.textContent,
+    }));
+    assert(pending.controlsDisabled && pending.saving === "Saving…", `${kind}: an in-flight save allowed draft changes or closing: ${JSON.stringify(pending)}`);
+    await evaluate(() => window.__localScribeSettingsHarness.finishLibrarySave());
+    await wait();
     const saved = await evaluate(kind => ({ visibleEditor: !!document.querySelector(".ln-modal"), entries: window.__localScribeSettingsHarness.library()[kind], lastCall: window.__localScribeSettingsHarness.librarySaveCalls.at(-1), overflow: document.querySelector(".hub-content").scrollWidth - document.querySelector(".hub-content").clientWidth }), kind);
     const result = saved.entries.find(candidate => candidate.id === entry.id);
     assert(!saved.visibleEditor && saved.entries.length === before.entries.length && result.createdAt === entry.createdAt && result[firstField] === changedFirst && result[secondField] === changedSecond && saved.lastCall.input.id === entry.id && saved.overflow <= 1, `${kind}: edited Save did not preserve identity, formatting or layout`);
@@ -263,7 +274,20 @@ async function inspectFocusedWorkspace(appWindow, { screenshotDirectory, appeara
     const blank = await draft();
     assert(blank.values.every(value => value === "") && blank.saveDisabled, `${kind}: Add new reused the previous edit draft`);
     await click('.ln-modal__actions button[type="button"]');
-    evidence.libraryEditors.push({ kind, initial, dialogLayout, keyboardFocusTrapped: true, cancelNoWrites: true, failedDraftPreserved: true, saved, addDraftIsBlank: true });
+    await fill(".ln-search input", "does not match the new entry");
+    await click(".ln-page__topbar .ln-primary");
+    const createdFirst = `fixture new ${kind}`;
+    await fill(first, createdFirst);
+    await fill(second, "New saved content");
+    await click('.ln-modal__form button[type="submit"]');
+    const created = await evaluate(kind => ({
+      query: document.querySelector(".ln-search input").value,
+      text: document.querySelector(".ln-list").textContent,
+      entries: window.__localScribeSettingsHarness.library()[kind],
+      editorOpen: !!document.querySelector(".ln-modal"),
+    }), kind);
+    assert(!created.editorOpen && created.query === "" && created.text.includes(createdFirst) && created.entries.length === before.entries.length + 1, `${kind}: successful create remained hidden behind the previous search`);
+    evidence.libraryEditors.push({ kind, initial, dialogLayout, keyboardFocusTrapped: true, cancelNoWrites: true, failedDraftPreserved: true, saved, addDraftIsBlank: true, staleErrorCleared: true, busyDraftLocked: true, createdUnderSearchVisible: true });
   }
   await evaluate(() => window.__localScribeSettingsHarness.remount());
   await wait();

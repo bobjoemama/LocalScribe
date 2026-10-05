@@ -247,6 +247,45 @@ describe("AudioRecorder input selection", () => {
 describe("AudioRecorder cancellation", () => {
   afterEach(() => vi.unstubAllGlobals());
 
+  it("ignores queued audio from a cancelled recorder after the next dictation starts", async () => {
+    const harness = installAudioHarness(16_000);
+    const recorder = new AudioRecorder();
+    await recorder.start(null);
+    const oldMessage = harness.port.onmessage;
+    await recorder.cancel();
+    await recorder.start(null);
+
+    oldMessage?.({ data: new Float32Array(1_600).fill(0.025) } as MessageEvent<Float32Array>);
+    await expect(recorder.stop()).rejects.toThrow("No usable audio was captured");
+    expect(harness.getUserMedia).toHaveBeenCalledTimes(2);
+  });
+
+  it("can acquire a fresh microphone after AudioContext.close fails during Stop", async () => {
+    const harness = installAudioHarness(16_000);
+    const recorder = new AudioRecorder();
+    await recorder.start(null);
+    harness.closeContext.mockRejectedValueOnce(new Error("Audio context close failed"));
+    await expect(recorder.stop()).rejects.toThrow("Audio context close failed");
+    await recorder.start(null);
+
+    expect(harness.getUserMedia).toHaveBeenCalledTimes(2);
+    expect(harness.stopTrack).toHaveBeenCalledOnce();
+    await recorder.cancel();
+  });
+
+  it("releases cancellation state even when AudioContext.close fails", async () => {
+    const harness = installAudioHarness(16_000);
+    const recorder = new AudioRecorder();
+    await recorder.start(null);
+    harness.closeContext.mockRejectedValueOnce(new Error("Audio context close failed"));
+    await recorder.cancel();
+    await recorder.start(null);
+
+    expect(harness.getUserMedia).toHaveBeenCalledTimes(2);
+    expect(harness.stopTrack).toHaveBeenCalledOnce();
+    await recorder.cancel();
+  });
+
   it("stops a microphone stream that resolves after cancellation", async () => {
     const stopTrack = vi.fn();
     let resolveStream!: (stream: MediaStream) => void;

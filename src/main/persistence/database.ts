@@ -386,6 +386,52 @@ export class LocalDatabase {
     this.db.close();
   }
 
+  /** Consistent encrypted recovery copy, including committed WAL writes. */
+  async backupSavedData(destination: string): Promise<void> {
+    const guard = prepareDatabasePath(destination);
+    try {
+      if (guard.existingDatabaseIdentity !== null) throw new Error("Recovery copy already exists.");
+      const descriptor = openSync(destination, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, USER_ONLY_FILE_MODE);
+      try {
+        const info = fstatSync(descriptor);
+        guard.existingDatabaseIdentity = { dev: info.dev, ino: info.ino };
+      } finally { closeSync(descriptor); }
+      await this.db.backup(destination);
+      revalidateDatabasePathAfterOpen(destination, guard);
+    } finally {
+      closeSync(guard.parentDescriptor);
+    }
+  }
+
+  savedDataStatus(): { history: number; dictionary: number; snippets: number; notes: number } {
+    const history = this.listTranscriptionsWithIntegrity(1).skippedUnreadable;
+    let before = this.unreadableRecords;
+    this.listDictionary();
+    const dictionary = this.unreadableRecords - before;
+    before = this.unreadableRecords;
+    this.listSnippets();
+    const snippets = this.unreadableRecords - before;
+    const notes = this.listScratchpadNotesWithIntegrity().skippedUnreadable;
+    return { history, dictionary, snippets, notes };
+  }
+
+  /** Call only after a successful backup and user confirmation. */
+  resetSavedData(): { cleanupComplete: boolean } {
+    this.db.transaction(() => {
+      for (const table of ["transcriptions", "dictionary_entries", "snippets", "scratchpad_notes"]) {
+        this.db.prepare(`DELETE FROM ${table}`).run();
+      }
+    })();
+    this.unreadableRecords = 0;
+    try {
+      this.checkpointDeletedHistory("saved data reset");
+      return { cleanupComplete: true };
+    } catch {
+      // The reset committed; a busy external reader can delay WAL cleanup.
+      return { cleanupComplete: false };
+    }
+  }
+
   integrityCheck(): string {
     const row = this.db.pragma("integrity_check", { simple: true });
     return String(row);

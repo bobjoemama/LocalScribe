@@ -260,6 +260,8 @@ export function ScratchpadWindow() {
       persistedBodiesRef.current.set(note.id, note.body);
       noteSaveStatesRef.current.set(note.id, "saved");
       replaceNotes([note, ...notesRef.current.filter((current) => current.id !== note.id)]);
+      setQuery("");
+      setNotesCollapsed(false);
       selectNote(note.id);
     } catch {
       setStatus("create-error");
