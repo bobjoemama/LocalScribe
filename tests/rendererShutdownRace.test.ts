@@ -7,7 +7,7 @@ import { describe, expect, it, vi } from "vitest";
 // Exercise the real main-process callbacks without starting Electron. In the
 // shutdown race the window still exists, but SQLite has already been closed.
 const source = ts.createSourceFile("main.ts", readFileSync("src/main.ts", "utf8"), ts.ScriptTarget.Latest, true);
-const functionNames = ["showWhenReady", "createPillWindow", "syncPillVisibility", "resizePill"];
+const functionNames = ["showWhenReady", "createPillWindow", "createScratchpadWindow", "syncPillVisibility", "resizePill"];
 const functions = source.statements.filter((node): node is ts.FunctionDeclaration =>
   ts.isFunctionDeclaration(node) && functionNames.includes(node.name?.text ?? ""));
 const executable = ts.transpileModule(functions.map((node) => node.getText(source)).join("\n"), {
@@ -23,6 +23,8 @@ class FakeWindow extends EventEmitter {
   getSize = vi.fn(() => [100, 40]);
   setSize = vi.fn();
   setHasShadow = vi.fn();
+  removeMenu = vi.fn();
+  setWindowButtonVisibility = vi.fn();
   setAlwaysOnTop = vi.fn();
   setVisibleOnAllWorkspaces = vi.fn();
   setHiddenInMissionControl = vi.fn();
@@ -41,6 +43,7 @@ function harness() {
   const context = {
     quitting: false,
     pillWindow: null as FakeWindow | null,
+    scratchpadWindow: null as FakeWindow | null,
     session: { state: "idle", activation: "toggle" },
     pillMode: "collapsed",
     database: { getSettings },
@@ -50,12 +53,15 @@ function harness() {
     PILL_LAYOUT: { idle: { collapsed: { width: 100, height: 40 } } },
     commonWebPreferences: () => ({}),
     hardenWindow: vi.fn(),
+    hideWindowInsteadOfClosing: vi.fn(),
+    reportWindowVisibility: vi.fn(),
     installRendererFailureHandlers: vi.fn(),
     rendererUrl: () => "http://fixture/pill",
   };
   const api = vm.runInNewContext(`${executable}\n({ ${functionNames.join(", ")} });`, context) as {
     showWhenReady: (window: FakeWindow, visibility: "active" | "inactive" | "hidden") => void;
     createPillWindow: () => FakeWindow;
+    createScratchpadWindow: (visibility?: "active" | "inactive" | "hidden") => FakeWindow;
     syncPillVisibility: () => void;
     resizePill: () => void;
   };
@@ -76,6 +82,27 @@ function expectNoWindowChanges(fixture: ReturnType<typeof harness>) {
 }
 
 describe("renderer callbacks during shutdown", () => {
+  it("keeps the pill on all Spaces without hiding the app from the Dock", () => {
+    const fixture = harness();
+
+    expect(fixture.window.setVisibleOnAllWorkspaces).toHaveBeenCalledExactlyOnceWith(true, {
+      visibleOnFullScreen: true,
+      skipTransformProcessType: true,
+    });
+    expect(fixture.window.show).not.toHaveBeenCalled();
+  });
+
+  it("opening a scratchpad does not hide the app from the Dock", () => {
+    const fixture = harness();
+    const scratchpad = fixture.createScratchpadWindow("hidden");
+
+    expect(scratchpad.setVisibleOnAllWorkspaces).toHaveBeenCalledExactlyOnceWith(true, {
+      visibleOnFullScreen: true,
+      skipTransformProcessType: true,
+    });
+    expect(scratchpad.show).not.toHaveBeenCalled();
+  });
+
   it("ignores a pill ready-to-show event delivered after the database closes", () => {
     const fixture = harness();
     fixture.beginShutdown();
