@@ -265,6 +265,14 @@ let activeSessionModelResolution: {
 let acceleratorSnapshot: WorkerAcceleratorSnapshot | null = null;
 let modelOperationTail: Promise<void> = Promise.resolve();
 let modelOperationCount = 0;
+let resettingSavedData = false;
+const SAVED_DATA_MUTATIONS = new Set<string>([
+  IPC.historyDelete, IPC.historyClear, IPC.dictionarySave, IPC.dictionaryDelete,
+  IPC.snippetsSave, IPC.snippetsDelete, IPC.profilesSave, IPC.profilesDelete,
+  IPC.scratchpadCreate, IPC.scratchpadUpdate, IPC.scratchpadDelete,
+  IPC.settingsPatch, IPC.shortcutsUpdate, IPC.systemApplyModelSelection,
+  IPC.systemInstallModel, IPC.systemRemoveModel, IPC.systemAddModelFamily,
+]);
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
 if (!hasSingleInstanceLock) app.quit();
 
@@ -1255,6 +1263,7 @@ function notifySettingsChanged(settings: ReturnType<LocalDatabase["getSettings"]
 
 function beginListening(activation: "hold" | "toggle" = "toggle"): SessionSnapshot {
   if (session.state !== "idle" && session.state !== "success" && session.state !== "error") return session;
+  if (resettingSavedData) return failSession("Finish resetting saved data before dictating.");
   if (modelOperationInProgress()) {
     return failSession("Wait for the local model operation to finish before dictating.");
   }
@@ -1663,6 +1672,9 @@ function registerIpc(): void {
     ipcMain.handle(channel, (event, ...args: T) => {
       const surface = trustedSurfaceForEvent(event);
       assertRendererSurfaceCanInvoke(surface, channel);
+      if (resettingSavedData && SAVED_DATA_MUTATIONS.has(channel)) {
+        throw new Error("Saved data is being reset. Try again when it finishes.");
+      }
       return handler(event, ...args);
     });
   };
@@ -1935,12 +1947,13 @@ function registerIpc(): void {
     database.listTranscriptionsWithIntegrity(limitSchema.parse(limit)),
   );
   handle(IPC.historyDelete, (_event, id: unknown) => {
-    database.deleteTranscription(uuidSchema.parse(id));
-    notifyHistoryChanged();
+    const validated = uuidSchema.parse(id);
+    try { database.deleteTranscription(validated); }
+    finally { notifyHistoryChanged(); }
   });
   handle(IPC.historyClear, () => {
-    database.clearTranscriptions();
-    notifyHistoryChanged();
+    try { database.clearTranscriptions(); }
+    finally { notifyHistoryChanged(); }
   });
   handle(IPC.historyExport, async () => {
     const options = {
@@ -2057,6 +2070,7 @@ function registerIpc(): void {
       const purged = database.purgeExpiredTranscriptions(settings.historyRetentionDays);
       if (purged > 0) notifyHistoryChanged();
     } catch (error) {
+      notifyHistoryChanged();
       console.warn("LocalScribe could not apply transcript retention immediately after saving", error);
     }
     try {
@@ -2137,6 +2151,48 @@ function registerIpc(): void {
   handle(IPC.systemDiagnostics, () => collectDiagnostics());
   handle(IPC.systemDiagnosticsLog, () => diagnostics.read());
   handle(IPC.systemClearDiagnostics, () => diagnostics.clear());
+  handle(IPC.systemSavedDataStatus, () => database.savedDataStatus());
+  handle(IPC.systemShowDataBackups, async () => {
+    const folder = path.join(app.getPath("userData"), "recovery");
+    await mkdir(folder, { recursive: true, mode: 0o700 });
+    const error = await shell.openPath(folder);
+    if (error) throw new Error("Could not open recovery copies in Finder.");
+  });
+  handle(IPC.systemResetSavedData, async () => {
+    if (resettingSavedData || modelOperationInProgress()) {
+      throw new Error("Wait for the current operation to finish before resetting saved data.");
+    }
+    if (!["idle", "success", "error"].includes(session.state)) {
+      throw new Error("Stop dictating before resetting saved data.");
+    }
+    resettingSavedData = true;
+    try {
+      const options = {
+        type: "warning" as const,
+        title: "Reset saved data?",
+        message: "Clear history, dictionary, snippets and saved notes?",
+        detail: "LocalScribe will first save an encrypted recovery copy. Models, shortcuts, settings and app profiles stay unchanged. No app restart is needed.",
+        buttons: ["Cancel", "Reset saved data"], defaultId: 0, cancelId: 0, noLink: true,
+      };
+      const answer = settingsWindow
+        ? await dialog.showMessageBox(settingsWindow, options)
+        : await dialog.showMessageBox(options);
+      if (answer.response !== 1) return { reset: false, cleanupComplete: true };
+      if (quitting) throw new Error("LocalScribe is shutting down.");
+      return await runExclusiveModelOperation(async () => {
+        const backup = path.join(app.getPath("userData"), "recovery", `LocalScribe-data-${Date.now()}-${randomUUID()}.db`);
+        await database.backupSavedData(backup);
+        if (quitting) throw new Error("LocalScribe is shutting down; saved data was kept.");
+        scratchpadWindow?.close();
+        const result = database.resetSavedData();
+        notifyHistoryChanged();
+        notifySettingsChanged(database.getSettings());
+        return { reset: true, ...result };
+      });
+    } finally {
+      resettingSavedData = false;
+    }
+  });
   handle(IPC.systemModelCatalog, () => collectModelCatalog());
   handle(IPC.systemAddModelFamily, async (_event, rawRequest: unknown) => {
     const request = modelFamilyLibraryRequestSchema.parse(rawRequest);

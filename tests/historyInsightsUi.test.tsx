@@ -21,6 +21,7 @@ import {
   historySuccessNotice,
   historyStoragePresentation,
   insightTabForKey,
+  startHistoryRefresh,
   summarizeTranscriptions,
 } from "../src/renderer/settings/screens/HistoryInsights";
 
@@ -46,7 +47,7 @@ function transcript(overrides: Partial<Transcription> = {}): Transcription {
 describe("History Insights interaction and data presentation", () => {
   it("keeps partial-history integrity warnings persistent and recovery-safe", () => {
     expect(historyIntegrityWarningMessage(0)).toBeNull();
-    expect(historyIntegrityWarningMessage(1)).toContain("1 encrypted record was skipped");
+    expect(historyIntegrityWarningMessage(1)).toContain("1 saved record could not be opened");
     expect(historyIntegrityWarningMessage(2)).toContain("will not overwrite the unreadable records");
   });
 
@@ -60,6 +61,36 @@ describe("History Insights interaction and data presentation", () => {
 
     gate.invalidate();
     expect(gate.isLatest(changedLoad)).toBe(false);
+  });
+
+  it("keeps saved transcripts and their integrity warning available during a refresh", () => {
+    const saved = [transcript()];
+    const refreshed = startHistoryRefresh({
+      items: saved,
+      skippedUnreadable: 2,
+      hasLoaded: true,
+      loading: false,
+      error: "A previous refresh failed.",
+    });
+
+    expect(refreshed.items).toBe(saved);
+    expect(refreshed.skippedUnreadable).toBe(2);
+    expect(refreshed.loading).toBe(false);
+    expect(refreshed.error).toBeNull();
+  });
+
+  it("still shows initial loading and retry feedback until a first read succeeds", () => {
+    const retry = startHistoryRefresh({
+      items: [],
+      skippedUnreadable: 0,
+      hasLoaded: false,
+      loading: false,
+      error: "History is unavailable.",
+    });
+
+    expect(retry.loading).toBe(true);
+    expect(retry.error).toBeNull();
+    expect(startHistoryRefresh({ ...retry, hasLoaded: true }).loading).toBe(false);
   });
 
   it("refreshes durable history when the user returns to the window", () => {

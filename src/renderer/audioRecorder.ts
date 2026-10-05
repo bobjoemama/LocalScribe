@@ -177,7 +177,9 @@ export class AudioRecorder {
       : null;
     this.node.port.onmessage = (event: MessageEvent<Float32Array>) => {
       const chunk = event.data;
-      if (this.captureLimitError) return;
+      // A queued worklet event can outlive its node and arrive after another
+      // dictation has acquired the same recorder instance.
+      if (generation !== this.generation || this.context !== context || this.captureLimitError) return;
       const remainingSamples = this.maxCapturedSamples - this.capturedSamples;
       const remainingBytes = this.maxCapturedBytes - this.capturedBytes;
       if (chunk.length > remainingSamples || chunk.byteLength > remainingBytes) {
@@ -257,7 +259,15 @@ export class AudioRecorder {
     this.source?.disconnect();
     this.node?.disconnect();
     for (const track of this.stream.getTracks()) track.stop();
-    await this.context.close();
+    try {
+      await this.context.close();
+    } catch (error) {
+      // Tracks are already stopped. Preserve the error while releasing the
+      // references that would otherwise make the next Start look active.
+      await this.cancelLiveTransport();
+      this.resetAfterStop();
+      throw error;
+    }
 
     const stoppedCaptureError = this.captureLimitError;
     if (stoppedCaptureError) {
@@ -345,16 +355,22 @@ export class AudioRecorder {
   }
 
   private async teardown(): Promise<void> {
+    const context = this.context;
+    if (this.node) this.node.port.onmessage = null;
     this.source?.disconnect();
     this.node?.disconnect();
     for (const track of this.stream?.getTracks() ?? []) track.stop();
-    await this.context?.close();
     this.context = null;
     this.stream = null;
     this.source = null;
     this.node = null;
     this.chunks = [];
-    await this.cancelLiveTransport();
+    // Cancellation must release both resources even if the browser refuses
+    // to close an already failing audio context.
+    await Promise.allSettled([
+      context?.close() ?? Promise.resolve(),
+      this.cancelLiveTransport(),
+    ]);
     this.resetCaptureLimit();
     this.stopping = false;
     this.smoothedLevel = 0;

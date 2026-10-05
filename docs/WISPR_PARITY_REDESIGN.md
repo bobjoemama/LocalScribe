@@ -74,8 +74,8 @@ Devesh subsequently authorized rebuilding and replacing the installed app withou
 
 ### Dictionary and snippets
 
-- Header with `Add new`, search, bordered list rows, and a dismissible concise
-  introduction with useful examples. Decorative onboarding artwork is hidden.
+- Header with `Add new`, search and bordered list rows. Empty states describe
+  the action directly; redundant introductory cards are removed.
 - Add/edit surfaces are centered modals. Dictionary supports heard phrase and preferred
   spelling. Snippets support spoken trigger and expansion.
 - Each saved row has explicit `Edit` and `Delete` actions. Editing opens the same
@@ -204,3 +204,25 @@ Neither fixture accesses user records, changes the system clipboard or invokes
 the installed application. Scratchpad already has encrypted note persistence,
 autosave, search, New note and Copy; Style already has application categories and
 concrete before/after examples, so those surfaces need no parity-only additions.
+
+## Desktop recovery and recording fixes
+
+Settings → Data & Privacy provides **Reset saved data…** and **Show recovery copies**.
+Reset uses a native confirmation, first saves a consistent encrypted SQLite backup,
+then clears history, dictionary, snippets and saved notes in one transaction.
+Models, settings, shortcuts and app profiles remain unchanged. Active dictation
+and model operations must finish first; competing saved-data writes are blocked
+until reset completes. Backup failures preserve the original store. The recovery
+copies use the same Keychain key; they cannot restore a previously lost key.
+Unreadable dictionary/snippet entries show their count and a direct recovery link.
+
+New library items are revealed even under an active search. Saving locks editor
+fields; correcting a failed draft clears its stale error. History refreshes keep
+existing readable rows and focus visible, including when refresh fails. Deletion
+notifications also refresh other views when deletion committed but WAL cleanup
+could not finish. New notes clear search and expand the notes list.
+
+Recorder generations reject stale queued audio. Stop/Cancel release microphone
+and recorder state even if audio-context closure fails. Recorder teardown also
+runs on session errors and pill unmount; late settings responses cannot restart
+capture after disposal. Focused regression tests cover these failure paths.

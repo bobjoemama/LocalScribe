@@ -38,6 +38,14 @@ let snippetEntries: Snippet[] = [
 ];
 const librarySaveCalls: Array<{ kind: "dictionary" | "snippets"; input: DictionarySaveInput | SnippetSaveInput }> = [];
 let failNextLibrarySave = false;
+let releaseLibrarySave: (() => void) | null = null;
+let nextLibrarySaveWait: Promise<void> | null = null;
+let nextLibraryId = 1;
+const waitForLibrarySave = async () => {
+  const waiting = nextLibrarySaveWait;
+  nextLibrarySaveWait = null;
+  if (waiting) await waiting;
+};
 Object.defineProperty(navigator, "clipboard", {
   configurable: true,
   value: { writeText: async (text: string) => { clipboardWrites.push(text); } },
@@ -484,11 +492,14 @@ window.localScribe = {
     list: async () => dictionaryEntries.map(entry => ({ ...entry })),
     save: async (input: DictionarySaveInput) => {
       librarySaveCalls.push({ kind: "dictionary", input: { ...input } });
+      await waitForLibrarySave();
       if (failNextLibrarySave) { failNextLibrarySave = false; throw new Error("Another dictionary term already uses that heard phrase."); }
       const old = dictionaryEntries.find(entry => entry.id === input.id);
-      if (!old) throw new Error("Fixture edit identity missing");
-      const saved = { ...old, ...input };
-      dictionaryEntries = dictionaryEntries.map(entry => entry.id === saved.id ? saved : entry);
+      if (input.id && !old) throw new Error("Fixture edit identity missing");
+      const saved: DictionaryEntry = old
+        ? { ...old, ...input }
+        : { ...input, id: `00000000-0000-4000-8000-${String(nextLibraryId++).padStart(12, "0")}`, createdAt: Date.now() };
+      dictionaryEntries = [saved, ...dictionaryEntries.filter(entry => entry.id !== saved.id)];
       return saved;
     },
   },
@@ -496,15 +507,21 @@ window.localScribe = {
     list: async () => snippetEntries.map(entry => ({ ...entry })),
     save: async (input: SnippetSaveInput) => {
       librarySaveCalls.push({ kind: "snippets", input: { ...input } });
+      await waitForLibrarySave();
       if (failNextLibrarySave) { failNextLibrarySave = false; throw new Error("Another snippet already uses that spoken trigger."); }
       const old = snippetEntries.find(entry => entry.id === input.id);
-      if (!old) throw new Error("Fixture edit identity missing");
-      const saved = { ...old, ...input };
-      snippetEntries = snippetEntries.map(entry => entry.id === saved.id ? saved : entry);
+      if (input.id && !old) throw new Error("Fixture edit identity missing");
+      const saved: Snippet = old
+        ? { ...old, ...input }
+        : { ...input, id: `00000000-0000-4000-8000-${String(nextLibraryId++).padStart(12, "0")}`, createdAt: Date.now() };
+      snippetEntries = [saved, ...snippetEntries.filter(entry => entry.id !== saved.id)];
       return saved;
     },
   },
   system: {
+    savedDataStatus: async () => ({ history: 0, dictionary: 0, snippets: 0, notes: 0 }),
+    resetSavedData: async () => ({ reset: true, cleanupComplete: true }),
+    showDataBackups: async () => undefined,
     appInfo: async () => ({ version: "0.1.0-dev.20", platform: "darwin" }),
     getPermissions: async () => {
       permissionPollCount += 1;
@@ -642,6 +659,8 @@ const renderSettings = () => {
     librarySaveCalls: typeof librarySaveCalls;
     library(): { dictionary: DictionaryEntry[]; snippets: Snippet[] };
     failLibrarySave(): void;
+    delayLibrarySave(): void;
+    finishLibrarySave(): void;
     permissionPolls(): number;
     setWindowVisible(visible: boolean): void;
   };
@@ -659,5 +678,7 @@ const renderSettings = () => {
   librarySaveCalls,
   library: () => ({ dictionary: dictionaryEntries.map(entry => ({ ...entry })), snippets: snippetEntries.map(entry => ({ ...entry })) }),
   failLibrarySave: () => { failNextLibrarySave = true; },
+  delayLibrarySave: () => { nextLibrarySaveWait = new Promise(resolve => { releaseLibrarySave = resolve; }); },
+  finishLibrarySave: () => { releaseLibrarySave?.(); releaseLibrarySave = null; },
 };
 renderSettings();

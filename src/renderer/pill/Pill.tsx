@@ -213,11 +213,14 @@ export function Pill() {
   const failedRecorderSessionId = useRef<string | null>(null);
 
   useEffect(() => {
-    recorder.current.setLevelListener((level) => {
+    let disposed = false;
+    const activeRecorder = recorder.current;
+    activeRecorder.setLevelListener((level) => {
       setWaveform((current) => [...current.slice(1), level]);
     });
     let sawLiveEvent = false;
     const handleFailure = async (sessionId: string, error: unknown) => {
+      if (disposed) return;
       if (error instanceof RecorderCancelledError) return;
       if (failedRecorderSessionId.current === sessionId) return;
       failedRecorderSessionId.current = sessionId;
@@ -242,6 +245,7 @@ export function Pill() {
       }
     };
     const startListeningRecorder = async () => {
+      if (disposed) return;
       const start = listeningRecorderStart(
         latestSnapshot.current,
         settingsStatusRef.current,
@@ -289,6 +293,7 @@ export function Pill() {
       }
     };
     const applySnapshot = (next: SessionSnapshot) => {
+      if (disposed) return;
       const previous = previousState.current;
       previousState.current = next.state;
       latestSnapshot.current = next;
@@ -328,7 +333,7 @@ export function Pill() {
             }
           });
       } else if (
-        next.state === "idle" &&
+        (next.state === "idle" || next.state === "error") &&
         (previous === "listening" || previous === "finalizing")
       ) {
         recorderSessionId.current = null;
@@ -347,6 +352,7 @@ export function Pill() {
     });
     let sawSettingsChange = false;
     const applySettings = (settings: Pick<AppSettings, "microphoneId" | "holdShortcut" | "asrMode">) => {
+      if (disposed) return;
       settingsStatusRef.current = "ready";
       microphoneIdRef.current = settings.microphoneId;
       asrModeRef.current = settings.asrMode;
@@ -363,6 +369,7 @@ export function Pill() {
     void window.localScribe.settings.get().then((settings) => {
       if (!sawSettingsChange) applySettings(settings);
     }).catch(() => {
+      if (disposed) return;
       if (!sawSettingsChange) {
         settingsStatusRef.current = "unavailable";
         setShortcutSettingsStatus("unavailable");
@@ -373,6 +380,11 @@ export function Pill() {
       if (!sawLiveEvent) applySnapshot(initial);
     });
     return () => {
+      disposed = true;
+      latestSnapshot.current = { state: "idle" };
+      recorderSessionId.current = null;
+      activeRecorder.setLevelListener(() => undefined);
+      void activeRecorder.cancel();
       unsubscribe();
       unsubscribeLivePartial();
       unsubscribeSettings();

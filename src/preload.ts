@@ -175,6 +175,9 @@ const api: LocalScribeApi = {
     },
   },
   system: {
+    savedDataStatus: async () => z.object({ history: z.number().int().nonnegative(), dictionary: z.number().int().nonnegative(), snippets: z.number().int().nonnegative(), notes: z.number().int().nonnegative() }).parse(await ipcRenderer.invoke(IPC.systemSavedDataStatus)),
+    resetSavedData: async () => z.object({ reset: z.boolean(), cleanupComplete: z.boolean() }).parse(await ipcRenderer.invoke(IPC.systemResetSavedData)),
+    showDataBackups: async () => { await ipcRenderer.invoke(IPC.systemShowDataBackups); },
     getPermissions: async () =>
       permissionSnapshotSchema.parse(await ipcRenderer.invoke(IPC.systemGetPermissions)),
     getLaunchAtLoginStatus: async () =>

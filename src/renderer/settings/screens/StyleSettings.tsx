@@ -924,9 +924,10 @@ export function TransformsScreen() {
   );
 }
 
-export function SettingsModal({ onClose, registerDismissalGate, initialTab = "general" }: {
+export function SettingsModal({ onClose, registerDismissalGate, initialTab = "general", onSavedDataReset }: {
   onClose(): void;
   initialTab?: SettingsTab;
+  onSavedDataReset?(): void;
   /**
    * Publishes the dialog's own dismissal gate so the hub can consult it before
    * unmounting the dialog on a navigation request. Called with `null` on
@@ -1283,6 +1284,32 @@ export function SettingsModal({ onClose, registerDismissalGate, initialTab = "ge
     } catch (error) {
       setStatus(`Could not clear the diagnostics log: ${errorDetail(error)}`);
     }
+  };
+
+  const resetSavedData = async () => {
+    if (settingsSaveInFlight.current || modelOperationInFlight.current) return;
+    settingsSaveInFlight.current = true;
+    setBusy(true);
+    setStatus("");
+    try {
+      const result = await window.localScribe.system.resetSavedData();
+      if (!result.reset) return;
+      onSavedDataReset?.();
+      setStatus(result.cleanupComplete
+        ? "Saved data reset. An encrypted recovery copy was saved."
+        : "Saved data reset. Recovery copy saved; storage cleanup will finish when other database readers close.");
+      void refresh().catch(() => undefined);
+    } catch (error) {
+      setStatus(`Could not reset saved data: ${errorDetail(error)}`);
+    } finally {
+      settingsSaveInFlight.current = false;
+      setBusy(false);
+    }
+  };
+
+  const showDataBackups = async () => {
+    try { await window.localScribe.system.showDataBackups(); }
+    catch (error) { setStatus(`Could not open recovery copies: ${errorDetail(error)}`); }
   };
 
   /*
@@ -1795,7 +1822,7 @@ export function SettingsModal({ onClose, registerDismissalGate, initialTab = "ge
 
             {tab === "privacy" && (
               <>
-                <div className="ls-privacy-hero"><LockIcon /><div><span>Private by design</span><h2>Your voice stays on this computer.</h2><p>Audio is sent only to the selected local speech runtime and removed after transcription. Transcripts, snippet expansions, and scratchpad text are encrypted with the operating system key store.</p></div></div>
+                <div className="ls-settings-note"><LockIcon /><span>Speech is processed locally. Saved text is encrypted using macOS Keychain.</span></div>
                 <SettingsGroup title="Storage and diagnostics">
                   <SettingsReadOnly label="Processing" detail="No listening server or transcription API." value={resolvedModelEngine(diagnostics)} />
                   <SettingsReadOnly label="Database" detail="Encrypted transcript and scratchpad storage." value={diagnostics?.databaseIntegrity ?? "Checking"} />
@@ -1803,6 +1830,8 @@ export function SettingsModal({ onClose, registerDismissalGate, initialTab = "ge
                   <SettingsReadOnly label="Model revision" detail="Resolved local speech model" value={diagnostics?.model.revision.slice(0, 10) ?? "Checking"} monospace />
                 </SettingsGroup>
                 <div className="ls-data-actions">
+                  <button type="button" disabled={busy || modelApplying || modelRefreshing || modelAction !== null} onClick={() => void resetSavedData()} className="is-danger"><TrashIcon /><span><strong>{busy ? "Please wait…" : "Reset saved data…"}</strong><small>Clear history, dictionary, snippets and notes. Keeps settings and models.</small></span></button>
+                  <button type="button" onClick={() => void showDataBackups()}><FolderIcon /><span><strong>Show recovery copies</strong><small>Open encrypted database backups in Finder.</small></span></button>
                   <button type="button" onClick={() => void exportHistory()}><DownloadIcon /><span><strong>Export history</strong><small>Save a local copy of your transcripts.</small></span></button>
                   <button type="button" onClick={() => void clearHistory()} className="is-danger"><TrashIcon /><span><strong>Clear history</strong><small>Delete encrypted transcripts from LocalScribe history.</small></span></button>
                   <button type="button" onClick={() => void refreshWithStatus()}><RefreshIcon /><span><strong>Refresh diagnostics</strong><small>Recheck permissions, storage, and model.</small></span></button>
@@ -2155,6 +2184,7 @@ function DesktopIcon(props: IconProps) { return <Icon {...props}><rect x="3" y="
 function PenIcon(props: IconProps) { return <Icon {...props}><path d="m4 20 4.2-1 10.5-10.5a2.1 2.1 0 0 0-3-3L5.2 16Z"/><path d="m14.5 6.5 3 3"/></Icon>; }
 function FlaskIcon(props: IconProps) { return <Icon {...props}><path d="M9 3h6M10 3v6l-5.5 9.2A1.8 1.8 0 0 0 6 21h12a1.8 1.8 0 0 0 1.5-2.8L14 9V3"/><path d="M7 15h10"/></Icon>; }
 function LockIcon(props: IconProps) { return <Icon {...props}><rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></Icon>; }
+function FolderIcon(props: IconProps) { return <Icon {...props}><path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/></Icon>; }
 function SparkIcon(props: IconProps) { return <Icon {...props}><path d="m12 3 1.4 4.1L17.5 8.5l-4.1 1.4L12 14l-1.4-4.1-4.1-1.4 4.1-1.4Z"/><path d="m18.5 14 .7 2.3 2.3.7-2.3.7-.7 2.3-.7-2.3-2.3-.7 2.3-.7Z"/></Icon>; }
 function TrashIcon(props: IconProps) { return <Icon {...props}><path d="M4 7h16M9 7V4h6v3M7 7l1 14h8l1-14M10 11v6M14 11v6"/></Icon>; }
 function CompressIcon(props: IconProps) { return <Icon {...props}><path d="M8 3v5H3M16 3v5h5M8 21v-5H3M16 21v-5h5"/></Icon>; }

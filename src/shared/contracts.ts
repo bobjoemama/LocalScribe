@@ -852,6 +852,7 @@ export const NAVIGATION_TARGETS = [
   "transforms",
   "scratchpad",
   "settings",
+  "data",
 ] as const;
 export const navigationTargetSchema = z.enum(NAVIGATION_TARGETS);
 export type NavigationTarget = (typeof NAVIGATION_TARGETS)[number];
@@ -1022,6 +1023,9 @@ export const IPC = {
   systemDiagnostics: "system:diagnostics",
   systemDiagnosticsLog: "system:diagnostics-log",
   systemClearDiagnostics: "system:clear-diagnostics",
+  systemSavedDataStatus: "system:saved-data-status",
+  systemResetSavedData: "system:reset-saved-data",
+  systemShowDataBackups: "system:show-data-backups",
   systemModelCatalog: "system:model-catalog",
   systemAddModelFamily: "system:add-model-family",
   systemApplyModelSelection: "system:apply-model-selection",
@@ -1120,6 +1124,9 @@ export interface LocalScribeApi {
     diagnosticsLog(): Promise<string>;
     /** Clear the local diagnostics trail. Available only to Settings. */
     clearDiagnostics(): Promise<void>;
+    savedDataStatus(): Promise<{ history: number; dictionary: number; snippets: number; notes: number }>;
+    resetSavedData(): Promise<{ reset: boolean; cleanupComplete: boolean }>;
+    showDataBackups(): Promise<void>;
     modelCatalog(): Promise<ModelCatalog>;
     addModelFamily(request: ModelFamilyLibraryRequest): Promise<ModelCatalog>;
     applyModelSelection(request: ModelSelectionApplyRequest): Promise<ModelSelectionApplyResult>;
