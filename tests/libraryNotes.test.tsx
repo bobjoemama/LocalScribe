@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { dictionaryEntrySchema, snippetSchema } from "../src/shared/contracts";
+import { dictionaryEntrySchema, dictionarySaveInputSchema, snippetSaveInputSchema, snippetSchema } from "../src/shared/contracts";
 import {
   DICTIONARY_PHRASE_MAX_LENGTH,
   DICTIONARY_REPLACEMENT_MAX_LENGTH,
@@ -27,6 +27,19 @@ const libraryCss = readFileSync(
 );
 
 describe("library page states", () => {
+  it("accepts creates and identity edits without accepting renderer-controlled metadata", () => {
+    const id = "00000000-0000-4000-8000-000000000001";
+    for (const [schema, input] of [
+      [dictionarySaveInputSchema, { phrase: "heard", replacement: "Written" }],
+      [snippetSaveInputSchema, { trigger: "cue", expansion: "\n  Preserved\n" }],
+    ] as const) {
+      expect(schema.parse(input)).toEqual(input);
+      expect(schema.parse({ ...input, id })).toEqual({ ...input, id });
+      expect(schema.safeParse({ ...input, id: "invalid" }).success).toBe(false);
+      expect(schema.safeParse({ ...input, id, createdAt: 1 }).success).toBe(false);
+    }
+  });
+
   it("presents safe library failures without Windows or macOS local paths", () => {
     expect(libraryErrorMessage(
       new Error("SQLITE_CANTOPEN at C:\\Users\\Alice\\AppData\\Local\\LocalScribe\\localscribe.db"),
@@ -69,6 +82,24 @@ describe("library page states", () => {
     expect(snippetsHtml).toContain(
       `/ ${SNIPPET_EXPANSION_MAX_LENGTH.toLocaleString()} characters`,
     );
+  });
+
+  it("prefills identity editors and keeps Save disabled until their draft changes", () => {
+    const actions = { onClose: () => undefined, onSaved: async () => undefined };
+    const term = { id: "00000000-0000-4000-8000-000000000001", phrase: "heard phrase", replacement: "Preferred spelling", createdAt: 1 };
+    const snippet = { id: "00000000-0000-4000-8000-000000000002", trigger: "spoken cue", expansion: "\n  Best,\n    Alice\n", createdAt: 1 };
+    const dictionaryHtml = renderToStaticMarkup(createElement(DictionaryModal, { ...actions, entry: term }));
+    const snippetHtml = renderToStaticMarkup(createElement(SnippetModal, { ...actions, entry: snippet }));
+    expect(dictionaryHtml).toContain("Edit dictionary term");
+    expect(dictionaryHtml).toContain('value="heard phrase"');
+    expect(dictionaryHtml).toContain('value="Preferred spelling"');
+    expect(dictionaryHtml).toMatch(/type="submit" disabled="">Save changes/u);
+    expect(snippetHtml).toContain("Edit snippet");
+    expect(snippetHtml).toContain('value="spoken cue"');
+    expect(snippetHtml).toContain(snippet.expansion);
+    expect(snippetHtml).toMatch(/type="submit" disabled="">Save changes/u);
+    expect(dictionaryHtml).toContain("Cancel");
+    expect(snippetHtml).toContain("Cancel");
   });
 
   it("shows onboarding only after a successful empty load and honors dismissal", () => {

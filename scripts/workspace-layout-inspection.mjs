@@ -30,9 +30,9 @@ async function inspectFocusedWorkspace(appWindow, { screenshotDirectory, appeara
     const shot = await appWindow.webContents.capturePage();
     writeFileSync(join(screenshotDirectory, `workspace-${appearance}-${width}x${height}-${name}.png`), shot.toPNG());
   };
-  const key = async (keyCode) => {
-    appWindow.webContents.sendInputEvent({ type: "keyDown", keyCode });
-    appWindow.webContents.sendInputEvent({ type: "keyUp", keyCode });
+  const key = async (keyCode, modifiers = []) => {
+    appWindow.webContents.sendInputEvent({ type: "keyDown", keyCode, modifiers });
+    appWindow.webContents.sendInputEvent({ type: "keyUp", keyCode, modifiers });
     await wait();
   };
   const click = async (selector) => {
@@ -49,10 +49,37 @@ async function inspectFocusedWorkspace(appWindow, { screenshotDirectory, appeara
     await evaluate(name => [...document.querySelectorAll(".hub-navigation button")].find(button => button.textContent.trim() === name).click(), name);
     await wait();
   };
+  const fill = async (selector, text) => {
+    await click(selector);
+    // Hidden fixtures do not receive macOS menu accelerators. Select the field
+    // range, then use Chromium's editing path so React receives a real input.
+    await evaluate(selector => {
+      const field = document.querySelector(selector);
+      field.setSelectionRange(0, field.value.length);
+    }, selector);
+    appWindow.webContents.insertText(text);
+    await wait();
+  };
   await evaluate(() => window.__localScribeSettingsHarness.showWorkspace());
   await wait();
   await wait();
   const evidence = { menus: [], pages: [], reading: null };
+  const modelBefore = await evaluate(() => ({ label: document.querySelector(".hi-model-choice").textContent, settings: window.__localScribeSettingsHarness.persisted(), writes: window.__localScribeSettingsHarness.patchCalls.length, applies: window.__localScribeSettingsHarness.applyCalls.length }));
+  assert(!modelBefore.label.includes("Loading") && !modelBefore.label.includes("unavailable"), "Saved model choice did not load");
+  await click(".hi-model-choice button");
+  const modelNavigation = await evaluate(() => ({
+    title: document.querySelector(".ls-settings-header h1")?.textContent,
+    tab: document.querySelector(".ls-settings-sidebar nav button.is-active")?.textContent.trim(),
+    settings: window.__localScribeSettingsHarness.persisted(),
+    writes: window.__localScribeSettingsHarness.patchCalls.length,
+    applies: window.__localScribeSettingsHarness.applyCalls.length,
+  }));
+  assert(modelNavigation.title === "Model & Performance" && modelNavigation.tab === "Model & Performance", "Choose model did not open the existing model settings");
+  assert(modelBefore.writes === modelNavigation.writes && modelBefore.applies === modelNavigation.applies && JSON.stringify(modelBefore.settings) === JSON.stringify(modelNavigation.settings), "Choose model unexpectedly changed saved selection or applied a model");
+  await capture("choose-model-settings");
+  await click(".ls-close-button");
+  assert(await evaluate(() => document.activeElement === document.querySelector(".hi-model-choice button")), "Closing model settings did not restore Choose model focus");
+  evidence.modelChoice = { before: modelBefore, navigation: modelNavigation, focusRestored: true };
   for (const page of ["Dictation", "Insights", "Dictionary", "Snippets", "Style", "Transforms"]) {
     await selectPage(page);
     await capture(page.toLowerCase());
@@ -63,7 +90,7 @@ async function inspectFocusedWorkspace(appWindow, { screenshotDirectory, appeara
         const channels = value.match(/[0-9.]+/g).slice(0, 3).map(Number).map(n => n / 255).map(n => n <= .04045 ? n / 12.92 : ((n + .055) / 1.055) ** 2.4);
         return channels[0] * .2126 + channels[1] * .7152 + channels[2] * .0722;
       };
-      const samples = [...document.querySelectorAll(".hub-nav-item--active, .hub-version, .hi-welcome h1, .hi-welcome p, .hi-transcript-text, .hi-transcript-meta, .hi-time strong, .hi-section-title h2, .ln-page__topbar h1, .ln-page__topbar p, .ls-screen-header h1, .ls-screen-header p")].map(node => {
+      const samples = [...document.querySelectorAll(".hub-nav-item--active, .hub-version, .hi-welcome h1, .hi-welcome p, .hi-model-choice span, .hi-model-choice strong, .hi-model-choice button, .hi-transcript-text, .hi-transcript-meta, .hi-time strong, .hi-section-title h2, .ln-page__topbar h1, .ln-page__topbar p, .ln-row__actions button, .ls-screen-header h1, .ls-screen-header p")].map(node => {
         let ancestor = node;
         while (ancestor && getComputedStyle(ancestor).backgroundColor === "rgba(0, 0, 0, 0)") ancestor = ancestor.parentElement;
         const foreground = getComputedStyle(node).color;
@@ -178,6 +205,66 @@ async function inspectFocusedWorkspace(appWindow, { screenshotDirectory, appeara
   evidence.dictionaryDialog = dialog;
   await click(".ln-modal__close");
   assert(await evaluate(() => document.activeElement === document.querySelector(".ln-primary")), "Closing dictionary editor did not restore trigger focus");
+  evidence.libraryEditors = [];
+  for (const [page, kind, firstField, secondField] of [
+    ["Dictionary", "dictionary", "phrase", "replacement"],
+    ["Snippets", "snippets", "trigger", "expansion"],
+  ]) {
+    await selectPage(page);
+    const before = await evaluate(kind => ({ entries: window.__localScribeSettingsHarness.library()[kind], attempts: window.__localScribeSettingsHarness.librarySaveCalls.length }), kind);
+    const entry = before.entries[0];
+    const first = ".ln-modal__form input";
+    const second = kind === "dictionary" ? ".ln-modal__form label:nth-child(2) input" : ".ln-modal__form textarea";
+    const draft = () => evaluate(() => ({ values: [...document.querySelectorAll(".ln-modal__form input, .ln-modal__form textarea")].map(node => node.value), saveDisabled: document.querySelector('.ln-modal__form button[type="submit"]').disabled }));
+    await click(".ln-edit-button");
+    const initial = await draft();
+    assert(initial.values[0] === entry[firstField] && initial.values[1] === entry[secondField] && initial.saveDisabled, `${kind}: editor was not prefilled with unchanged Save disabled`);
+    const dialogLayout = await evaluate(() => {
+      const modal = document.querySelector(".ln-modal");
+      const bounds = modal.getBoundingClientRect();
+      const focusable = [...modal.querySelectorAll("button:not(:disabled), input, textarea")];
+      return { left: bounds.left, right: bounds.right, top: bounds.top, bottom: bounds.bottom, width: window.innerWidth, height: window.innerHeight, focused: modal.contains(document.activeElement), first: focusable[0].className, last: focusable.at(-1).className };
+    });
+    assert(dialogLayout.focused && dialogLayout.left >= 0 && dialogLayout.right <= dialogLayout.width && dialogLayout.top >= 0 && dialogLayout.bottom <= dialogLayout.height, `${kind}: editor is clipped or focus is outside: ${JSON.stringify(dialogLayout)}`);
+    await evaluate(() => document.querySelector(".ln-modal button:not(:disabled)").focus());
+    await key("Tab", ["shift"]);
+    assert(await evaluate(() => {
+      const controls = [...document.querySelectorAll(".ln-modal button:not(:disabled), .ln-modal input, .ln-modal textarea")];
+      return document.activeElement === controls.at(-1);
+    }), `${kind}: Shift-Tab escaped the editor`);
+    await key("Tab");
+    assert(await evaluate(() => document.activeElement === document.querySelector(".ln-modal button:not(:disabled)")), `${kind}: Tab escaped the editor`);
+    await click(first);
+    await capture(`${kind}-edit-dialog`);
+    await fill(first, "Cancelled draft");
+    await fill(second, "Cancelled content");
+    await click('.ln-modal__actions button[type="button"]');
+    const cancelled = await evaluate(kind => ({ entries: window.__localScribeSettingsHarness.library()[kind], attempts: window.__localScribeSettingsHarness.librarySaveCalls.length, focusRestored: document.activeElement === document.querySelector(".ln-edit-button") }), kind);
+    assert(cancelled.attempts === before.attempts && JSON.stringify(cancelled.entries) === JSON.stringify(before.entries) && cancelled.focusRestored, `${kind}: Cancel wrote data or lost trigger focus`);
+    await click(".ln-edit-button");
+    const reopened = await draft();
+    assert(reopened.values[0] === entry[firstField] && reopened.values[1] === entry[secondField], `${kind}: Cancel draft leaked into the next editor`);
+    const changedFirst = entry[firstField] + " updated";
+    const changedSecond = kind === "dictionary" ? "LocalScribe Desktop" : "\n  Regards,\n    Morgan\n";
+    await fill(first, changedFirst);
+    await fill(second, changedSecond);
+    await evaluate(() => window.__localScribeSettingsHarness.failLibrarySave());
+    await click('.ln-modal__form button[type="submit"]');
+    const failed = await evaluate(kind => ({ message: document.querySelector(".ln-modal [role=alert]")?.textContent, entries: window.__localScribeSettingsHarness.library()[kind] }), kind);
+    const failedDraft = await draft();
+    assert(failed.message?.includes("already uses") && JSON.stringify(failed.entries) === JSON.stringify(before.entries) && failedDraft.values[0] === changedFirst && failedDraft.values[1] === changedSecond && !failedDraft.saveDisabled, `${kind}: failed save lost the draft or changed stored data: ${JSON.stringify({ failed, failedDraft, expected: { changedFirst, changedSecond } })}`);
+    await capture(`${kind}-edit-error`);
+    await click('.ln-modal__form button[type="submit"]');
+    const saved = await evaluate(kind => ({ visibleEditor: !!document.querySelector(".ln-modal"), entries: window.__localScribeSettingsHarness.library()[kind], lastCall: window.__localScribeSettingsHarness.librarySaveCalls.at(-1), overflow: document.querySelector(".hub-content").scrollWidth - document.querySelector(".hub-content").clientWidth }), kind);
+    const result = saved.entries.find(candidate => candidate.id === entry.id);
+    assert(!saved.visibleEditor && saved.entries.length === before.entries.length && result.createdAt === entry.createdAt && result[firstField] === changedFirst && result[secondField] === changedSecond && saved.lastCall.input.id === entry.id && saved.overflow <= 1, `${kind}: edited Save did not preserve identity, formatting or layout`);
+    await capture(`${kind}-edited-list`);
+    await click(".ln-page__topbar .ln-primary");
+    const blank = await draft();
+    assert(blank.values.every(value => value === "") && blank.saveDisabled, `${kind}: Add new reused the previous edit draft`);
+    await click('.ln-modal__actions button[type="button"]');
+    evidence.libraryEditors.push({ kind, initial, dialogLayout, keyboardFocusTrapped: true, cancelNoWrites: true, failedDraftPreserved: true, saved, addDraftIsBlank: true });
+  }
   await evaluate(() => window.__localScribeSettingsHarness.remount());
   await wait();
   return evidence;

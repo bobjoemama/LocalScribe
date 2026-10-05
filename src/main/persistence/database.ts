@@ -21,19 +21,23 @@ import {
   appProfileSchema,
   appSettingsSchema,
   dictionaryEntrySchema,
+  dictionarySaveInputSchema,
   migratePersistedAppSettings,
   sanitizeSourceApplicationId,
   sourceApplicationIdSchema,
   scratchpadNoteSchema,
   snippetSchema,
+  snippetSaveInputSchema,
   transcriptionSchema,
   type AppSettings,
   type AppProfile,
   type DictionaryEntry,
+  type DictionarySaveInput,
   type HistoryListResult,
   type ScratchpadNote,
   type ScratchpadListResult,
   type Snippet,
+  type SnippetSaveInput,
   type Transcription,
 } from "../../shared/contracts";
 import { applicationIdsMatch } from "../../shared/appIdentity";
@@ -597,8 +601,8 @@ export class LocalDatabase {
     }).sort((left, right) => left.phrase.localeCompare(right.phrase));
   }
 
-  saveDictionary(input: Pick<DictionaryEntry, "phrase" | "replacement">): DictionaryEntry {
-    const validated = dictionaryEntrySchema.pick({ phrase: true, replacement: true }).parse(input);
+  saveDictionary(input: DictionarySaveInput): DictionaryEntry {
+    const validated = dictionarySaveInputSchema.parse(input);
     const phrase = validated.phrase.normalize("NFC");
     const now = Date.now();
     const unreadableBefore = this.unreadableRecords;
@@ -606,13 +610,20 @@ export class LocalDatabase {
     if (this.unreadableRecords !== unreadableBefore) {
       throw new Error("A stored dictionary rule is unreadable; refusing a potentially duplicate save.");
     }
+    const editing = validated.id ? dictionary.find(entry => entry.id === validated.id) : undefined;
+    if (validated.id && !editing) {
+      throw new Error("This dictionary term no longer exists. Close the editor and reload.");
+    }
     const matches = dictionary.filter((entry) =>
       canonicalRuleKey(entry.phrase) === canonicalRuleKey(phrase),
     );
+    if (editing && matches.some(entry => entry.id !== editing.id)) {
+      throw new Error("Another dictionary term already uses that heard phrase.");
+    }
     if (matches.length > 1) {
       throw new Error("Multiple legacy dictionary rules have the same canonical phrase; delete one before saving.");
     }
-    const existing = matches[0];
+    const existing = editing ?? matches[0];
     const entry: DictionaryEntry = {
       id: existing?.id ?? randomUUID(),
       phrase,
@@ -685,8 +696,8 @@ export class LocalDatabase {
     }).sort((left, right) => left.trigger.localeCompare(right.trigger));
   }
 
-  saveSnippet(input: Pick<Snippet, "trigger" | "expansion">): Snippet {
-    const validated = snippetSchema.pick({ trigger: true, expansion: true }).parse(input);
+  saveSnippet(input: SnippetSaveInput): Snippet {
+    const validated = snippetSaveInputSchema.parse(input);
     const trigger = validated.trigger.normalize("NFC");
     const now = Date.now();
     const unreadableBefore = this.unreadableRecords;
@@ -694,13 +705,20 @@ export class LocalDatabase {
     if (this.unreadableRecords !== unreadableBefore) {
       throw new Error("A stored snippet is unreadable; refusing a potentially duplicate save.");
     }
+    const editing = validated.id ? snippets.find(snippet => snippet.id === validated.id) : undefined;
+    if (validated.id && !editing) {
+      throw new Error("This snippet no longer exists. Close the editor and reload.");
+    }
     const matches = snippets.filter((snippet) =>
       canonicalRuleKey(snippet.trigger) === canonicalRuleKey(trigger),
     );
+    if (editing && matches.some(snippet => snippet.id !== editing.id)) {
+      throw new Error("Another snippet already uses that spoken trigger.");
+    }
     if (matches.length > 1) {
       throw new Error("Multiple legacy snippets have the same canonical trigger; delete one before saving.");
     }
-    const existing = matches[0];
+    const existing = editing ?? matches[0];
     const snippet: Snippet = {
       id: existing?.id ?? randomUUID(),
       trigger,

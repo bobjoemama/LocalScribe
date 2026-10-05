@@ -46,6 +46,11 @@ Devesh subsequently authorized rebuilding and replacing the installed app withou
 - Direct `Dictation` title and existing settings-dependent history status.
 - Actual saved hold and toggle shortcuts are visible at both supported sizes;
   `Edit shortcuts…` opens the existing guarded Settings modal.
+- The saved dictation model and performance preference are visible below the
+  shortcuts. `Choose model…` opens Model & Performance directly. Opening it does
+  not apply a model or change saved settings; the label does not claim model
+  readiness or an effective Auto tier. It reads the existing settings snapshot,
+  without hashing downloaded model files or starting a worker.
 - Search, export, copy and overflow actions; today-grouped selectable transcript
   text; compact Today and Summary statistics. No promotional banner or privacy badge.
 - Short transcripts fit their text; long transcripts retain a bounded, scrollable
@@ -73,6 +78,14 @@ Devesh subsequently authorized rebuilding and replacing the installed app withou
   introduction with useful examples. Decorative onboarding artwork is hidden.
 - Add/edit surfaces are centered modals. Dictionary supports heard phrase and preferred
   spelling. Snippets support spoken trigger and expansion.
+- Each saved row has explicit `Edit` and `Delete` actions. Editing opens the same
+  accessible dialog with its existing values; unchanged drafts cannot be saved.
+  Cancel writes nothing and returns focus to Edit. Add new starts a blank draft.
+- Saves address the entry by identity, preserving its creation time when a phrase
+  or trigger is renamed. A case- or Unicode-equivalent collision with another
+  entry, a stale identity, or an unreadable potentially duplicate rule rejects
+  the save. The draft remains available for correction or retry. Encryption
+  failure preserves the prior stored fields, and snippet whitespace is retained.
 - No sharing/team controls.
 
 ### Style
@@ -107,6 +120,13 @@ Devesh subsequently authorized rebuilding and replacing the installed app withou
 - System: login item, floating bar, automatic paste, history, retention.
 - Model & Performance: curated model catalog, profile comparison, download/verification,
   and explicit model Apply. Workspace styling does not change model selection behavior.
+- Memory ranges and reported availability are advisory. Apply is gated by verified
+  installed artifacts, supported capabilities and language, and operation state;
+  an exceeded estimate or missing telemetry does not block explicit or Auto loading.
+  Auto starts with the highest supported profile estimated to fit reported memory,
+  falling back to the lowest supported profile if telemetry is unknown or no
+  estimate fits. The UI does not invent memory released by a resident model.
+  Actual loading failures remain visible, with the saved selection retained.
 - Writing: app profiles, style/cleanup explanation, dictionary/snippet shortcuts.
 - Experimental: command mode, press-enter command, stacked messages, bulk import (only mark a
   switch active when its behavior exists).
@@ -160,3 +180,12 @@ dismissal, copy feedback, bounded transcripts and library dialogs at both suppor
 sizes and appearances. Fixture clipboard writes stay in memory; no user transcript
 or model is used. Full source gates passed with 1,500 tests and two skipped tests;
 the exact unpatched build-only audit residual is documented in `docs/RELEASING.md`.
+
+The subsequent dictionary/snippet editing and direct model-settings navigation
+are source changes pending packaging and activation. Their isolated renderer
+fixture uses synthetic library entries and an in-memory save stub; real database
+tests separately verify encrypted, identity-aware persistence and reopen behavior.
+Neither fixture accesses user records, changes the system clipboard or invokes
+the installed application. Scratchpad already has encrypted note persistence,
+autosave, search, New note and Copy; Style already has application categories and
+concrete before/after examples, so those surfaces need no parity-only additions.

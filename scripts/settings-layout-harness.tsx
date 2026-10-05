@@ -11,12 +11,16 @@ import {
   type AppSettings,
   type AppSettingsPatch,
   type Diagnostics,
+  type DictionaryEntry,
+  type DictionarySaveInput,
   type LaunchAtLoginStatus,
   type LocalScribeApi,
   type ModelCatalog,
   type ModelCapabilities,
   type ModelSelectionApplyRequest,
   type PermissionSnapshot,
+  type Snippet,
+  type SnippetSaveInput,
 } from "../src/shared/contracts";
 import { SettingsApp } from "../src/renderer/settings/SettingsApp";
 import { SettingsModal } from "../src/renderer/settings/screens/StyleSettings";
@@ -24,6 +28,16 @@ import "../src/renderer/styles.css";
 import "../src/renderer/workspace-theme.css";
 
 const clipboardWrites: string[] = [];
+let dictionaryEntries: DictionaryEntry[] = [
+  { id: "44444444-4444-4444-8444-444444444444", phrase: "local scribe", replacement: "LocalScribe", createdAt: 1 },
+  { id: "55555555-5555-4555-8555-555555555555", phrase: "project name", replacement: "NovaOS", createdAt: 2 },
+];
+let snippetEntries: Snippet[] = [
+  { id: "66666666-6666-4666-8666-666666666666", trigger: "my sign off", expansion: "\n  Best,\n    Alex\n", createdAt: 1 },
+  { id: "77777777-7777-4777-8777-777777777777", trigger: "meeting link", expansion: "https://example.com/meeting", createdAt: 2 },
+];
+const librarySaveCalls: Array<{ kind: "dictionary" | "snippets"; input: DictionarySaveInput | SnippetSaveInput }> = [];
+let failNextLibrarySave = false;
 Object.defineProperty(navigator, "clipboard", {
   configurable: true,
   value: { writeText: async (text: string) => { clipboardWrites.push(text); } },
@@ -466,8 +480,30 @@ window.localScribe = {
     ], skippedUnreadable: 0 }),
     onChanged: () => () => undefined,
   },
-  dictionary: { list: async () => [] },
-  snippets: { list: async () => [] },
+  dictionary: {
+    list: async () => dictionaryEntries.map(entry => ({ ...entry })),
+    save: async (input: DictionarySaveInput) => {
+      librarySaveCalls.push({ kind: "dictionary", input: { ...input } });
+      if (failNextLibrarySave) { failNextLibrarySave = false; throw new Error("Another dictionary term already uses that heard phrase."); }
+      const old = dictionaryEntries.find(entry => entry.id === input.id);
+      if (!old) throw new Error("Fixture edit identity missing");
+      const saved = { ...old, ...input };
+      dictionaryEntries = dictionaryEntries.map(entry => entry.id === saved.id ? saved : entry);
+      return saved;
+    },
+  },
+  snippets: {
+    list: async () => snippetEntries.map(entry => ({ ...entry })),
+    save: async (input: SnippetSaveInput) => {
+      librarySaveCalls.push({ kind: "snippets", input: { ...input } });
+      if (failNextLibrarySave) { failNextLibrarySave = false; throw new Error("Another snippet already uses that spoken trigger."); }
+      const old = snippetEntries.find(entry => entry.id === input.id);
+      if (!old) throw new Error("Fixture edit identity missing");
+      const saved = { ...old, ...input };
+      snippetEntries = snippetEntries.map(entry => entry.id === saved.id ? saved : entry);
+      return saved;
+    },
+  },
   system: {
     appInfo: async () => ({ version: "0.1.0-dev.20", platform: "darwin" }),
     getPermissions: async () => {
@@ -603,6 +639,9 @@ const renderSettings = () => {
     remount(): void;
     showWorkspace(): void;
     clipboardWrites: string[];
+    librarySaveCalls: typeof librarySaveCalls;
+    library(): { dictionary: DictionaryEntry[]; snippets: Snippet[] };
+    failLibrarySave(): void;
     permissionPolls(): number;
     setWindowVisible(visible: boolean): void;
   };
@@ -617,5 +656,8 @@ const renderSettings = () => {
   remount: renderSettings,
   showWorkspace: () => root.render(<SettingsApp />),
   clipboardWrites,
+  librarySaveCalls,
+  library: () => ({ dictionary: dictionaryEntries.map(entry => ({ ...entry })), snippets: snippetEntries.map(entry => ({ ...entry })) }),
+  failLibrarySave: () => { failNextLibrarySave = true; },
 };
 renderSettings();

@@ -19,7 +19,9 @@ const executable = ts.transpileModule(functions.map((node) => node.getText(sourc
 const catalog = loadRuntimePlatformModelCatalog(path.resolve("resources/model-manifest"), "darwin", "arm64");
 const memory = { totalBytes: 48 * 1024 ** 3, freeBytes: 32 * 1024 ** 3 };
 
-function harness(saved: AppSettings, verified = true, failLoad = false) {
+function harness(saved: AppSettings, verified = true, failLoad = false,
+  snapshot: { totalBytes: number | null; freeBytes: number | null } = memory,
+  request = { familyId: "parakeet-unified-en-0-6b", asrMode: "after-stop", performanceMode: "medium" }) {
   let current = saved;
   const save = vi.fn((settings: AppSettings) => (current = settings));
   const shutdown = vi.fn(async () => undefined);
@@ -42,11 +44,8 @@ function harness(saved: AppSettings, verified = true, failLoad = false) {
     previousAutoTier: undefined,
     acceleratorSnapshot: {},
     appSettingsSchema,
-    memorySnapshot: () => memory,
+    memorySnapshot: () => snapshot,
     resolveModelPerformance,
-    assertResolutionFitsMemory: (resolution: { fitsMemoryBudget: boolean }) => {
-      if (!resolution.fitsMemoryBudget) throw new Error("Insufficient memory");
-    },
     app: { getPath: () => "/fixture" },
     modelRootForUserData: () => "/fixture/models",
     verifyModelDirectory: vi.fn(async () => ({ verified, present: false, verificationStatus: verified ? "verified" : "missing" })),
@@ -59,14 +58,14 @@ function harness(saved: AppSettings, verified = true, failLoad = false) {
   };
   const apply = vm.runInNewContext(`${executable}\napplyModelSelection;`, context) as
     (request: { familyId: string; asrMode: string; performanceMode: string }) => Promise<ModelSelectionApplyResult>;
-  return { apply: () => apply({ familyId: "parakeet-unified-en-0-6b", asrMode: "after-stop", performanceMode: "medium" }),
+  return { apply: () => apply(request),
     getSettings: () => current, save, shutdown, ensureReady, resolveOldSelection };
 }
 
 describe("Apply recovery from retired saved selections", () => {
   const settings = (family: AppSettings["activeModelFamilyId"], mode: AppSettings["modelPerformanceMode"]) => appSettingsSchema.parse({
     ...DEFAULT_SETTINGS, activeModelFamilyId: family, modelPerformanceMode: mode, language: "en",
-    modelLibraryFamilyIds: [family, "parakeet-unified-en-0-6b"],
+    modelLibraryFamilyIds: [family, "parakeet-unified-en-0-6b", "canary-qwen-2-5b"],
   });
 
   it.each([ ["whisper-large-v2", "auto"], ["whisper-large-v3", "auto"], ["whisper-large-v3", "high"], ["whisper-large-v3", "low"] ] as const)(
@@ -80,6 +79,29 @@ describe("Apply recovery from retired saved selections", () => {
       expect(fixture.getSettings().activeModelFamilyId).toBe("parakeet-unified-en-0-6b");
     },
   );
+
+  it.each([
+    { totalBytes: 48 * 1024 ** 3, freeBytes: 8 * 1024 ** 3 },
+    { totalBytes: null, freeBytes: null },
+  ])("attempts exact Canary High despite advisory or unknown memory: %j", async (snapshot) => {
+    const fixture = harness(settings("whisper-large-v2", "high"), true, false, snapshot,
+      { familyId: "canary-qwen-2-5b", asrMode: "after-stop", performanceMode: "high" });
+    const result = await fixture.apply();
+    expect(result.appliedSelection).toMatchObject({ familyId: "canary-qwen-2-5b", tier: "high" });
+    expect(fixture.ensureReady).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ tier: "high" }));
+    expect(fixture.save.mock.invocationCallOrder[0]).toBeGreaterThan(fixture.ensureReady.mock.invocationCallOrder[0]!);
+  });
+
+  it("preserves settings and reports actual Canary load failure rather than a memory estimate", async () => {
+    const saved = settings("whisper-large-v2", "high");
+    const fixture = harness(saved, true, true,
+      { totalBytes: 48 * 1024 ** 3, freeBytes: 8 * 1024 ** 3 },
+      { familyId: "canary-qwen-2-5b", asrMode: "after-stop", performanceMode: "high" });
+    await expect(fixture.apply()).rejects.toThrow(/fixture load failed/);
+    expect(fixture.ensureReady).toHaveBeenCalled();
+    expect(fixture.save).not.toHaveBeenCalled();
+    expect(fixture.getSettings()).toBe(saved);
+  });
 
   it("keeps the retired settings and performs no unload when replacement verification fails", async () => {
     const saved = settings("whisper-large-v2", "medium");

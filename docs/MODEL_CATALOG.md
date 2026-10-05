@@ -66,11 +66,7 @@ or benchmark measurements:
 | Qwen3-ASR 0.6B | 2.0-3.0 GiB | 1.4-2.3 GiB | 1.1-2.0 GiB |
 | Qwen3-ASR 1.7B | 4.2-5.4 GiB | 2.6-3.6 GiB | 1.8-2.8 GiB |
 
-Every mode reserves the greater of 2 GiB or 20% of total accelerator memory
-above the tier's conservative maximum. Explicit profiles fail closed when they
-do not fit. Auto samples unified-memory telemetry at each recording boundary,
-does not count a warm model against itself, requires 1 GiB of additional free
-memory before an upgrade, and pins its result for that dictation.
+Working-memory ranges are catalog estimates, not minimum free-memory requirements or allocation caps. Explicit High/Medium/Low attempts the exact selected model even when availability is unknown or below its estimate. Auto uses raw estimated availability to choose the highest estimated fit, otherwise the smallest supported profile; estimates do not veto loading. A known warm model remains usable when telemetry is unavailable. The application adds no fixed or physical-RAM-scaled reserve and does not project reclaimed memory from an unmeasured model allocation. Native allocation/load failures remain visible, and Apply commits its selection only after the exact runtime loads successfully.
 
 Parakeet Live uses FluidAudio's upstream streaming encoder. Upstream model-card
 benchmarks are not LocalScribe end-to-end guarantees: microphone capture,

@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { lstat, open, readdir, stat } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
+import { modelFamilyDisplayName } from "../shared/modelAvailability";
 import {
   DEFAULT_SETTINGS,
   DEFAULT_MODEL_FAMILY_ID,
@@ -225,7 +226,7 @@ export interface ModelPerformanceResolution {
   reason: ModelPerformanceResolutionReason;
   fitsMemoryBudget: boolean;
   reservedHeadroomBytes: number | null;
-  /** Required free accelerator memory including reserved system headroom. */
+  /** Advisory upper working-set estimate; never a runtime admission threshold. */
   requiredMemoryBytes: number | null;
 }
 
@@ -248,12 +249,9 @@ export interface RuntimeModelArtifactVerification extends ModelVerification {
 }
 
 const GIBIBYTE = 1024 ** 3;
-// Deliberate safety policy for every mode: model working-memory estimates do
-// not include the OS, Electron, other apps, or transient allocator peaks.
-// Explicit tiers never fall back, but they still fail closed below this
-// reserve. Auto additionally applies upgrade hysteresis.
-const MINIMUM_ACCELERATOR_HEADROOM_BYTES = 2 * GIBIBYTE;
-const ACCELERATOR_HEADROOM_FRACTION = 0.2;
+// Catalog working sets and host availability are estimates, not allocation
+// limits. Auto uses them for a preference; the native runtime decides whether
+// the requested model can actually load. Never scale a reserve by physical RAM.
 const AUTO_UPGRADE_HYSTERESIS_BYTES = GIBIBYTE;
 
 interface CatalogTierDefinition {
@@ -367,7 +365,7 @@ const PARAKEET_UNIFIED_CAPABILITIES: ModelCapabilities = {
  */
 const parakeetUnifiedMac: FamilyCatalogDefinition = {
   familyId: "parakeet-unified-en-0-6b",
-  displayName: "Parakeet Unified EN 0.6B",
+  displayName: modelFamilyDisplayName("parakeet-unified-en-0-6b"),
   engine: "fluid-audio",
   capabilities: PARAKEET_UNIFIED_CAPABILITIES,
   tiers: {
@@ -386,7 +384,7 @@ const parakeetUnifiedMac: FamilyCatalogDefinition = {
 
 const qwenMac: FamilyCatalogDefinition = {
   familyId: "qwen3-asr-1-7b",
-  displayName: "Qwen3-ASR 1.7B",
+  displayName: modelFamilyDisplayName("qwen3-asr-1-7b"),
   engine: "mlx-audio",
   capabilities: QWEN_CAPABILITIES,
   tiers: {
@@ -410,7 +408,7 @@ const qwenMac: FamilyCatalogDefinition = {
 
 const qwen06Mac: FamilyCatalogDefinition = {
   familyId: "qwen3-asr-0-6b",
-  displayName: "Qwen3-ASR 0.6B",
+  displayName: modelFamilyDisplayName("qwen3-asr-0-6b"),
   engine: "mlx-audio",
   capabilities: QWEN_CAPABILITIES,
   tiers: {
@@ -454,7 +452,7 @@ const canaryTier = (
 
 const canaryMac: FamilyCatalogDefinition = {
   familyId: "canary-qwen-2-5b",
-  displayName: "Canary-Qwen 2.5B",
+  displayName: modelFamilyDisplayName("canary-qwen-2-5b"),
   engine: "transcribe-cpp",
   capabilities: { ...AFTER_STOP_CAPABILITIES, supportedLanguages: ["en"] },
   tiers: {
@@ -617,12 +615,7 @@ export function resolveModelPerformance(
 ): ModelPerformanceResolution {
   assertCatalogRouting(input.catalog);
   const memory = normalizeMemorySnapshot(input.memory);
-  const headroom = memory.totalBytes === null
-    ? null
-    : Math.max(
-        MINIMUM_ACCELERATOR_HEADROOM_BYTES,
-        Math.ceil(memory.totalBytes * ACCELERATOR_HEADROOM_FRACTION),
-      );
+  const headroom = 0;
 
   if (input.activeDictationTier) {
     requiredTier(input.catalog, input.activeDictationTier);

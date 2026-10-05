@@ -223,9 +223,9 @@
 .ln-list__heading,
 .ln-row { display: grid; align-items: center; column-gap: 24px; }
 .ln-list__heading--dictionary,
-.ln-row--dictionary { grid-template-columns: minmax(150px, .75fr) minmax(190px, 1fr) 36px; }
+.ln-row--dictionary { grid-template-columns: minmax(150px, .75fr) minmax(190px, 1fr) max-content; }
 .ln-list__heading--snippets,
-.ln-row--snippets { grid-template-columns: minmax(150px, .65fr) minmax(220px, 1.35fr) 36px; }
+.ln-row--snippets { grid-template-columns: minmax(150px, .65fr) minmax(220px, 1.35fr) max-content; }
 .ln-list__heading { min-height: 38px; padding: 0 17px; color: light-dark(#68625b, #c7c7cc); border-bottom: 1px solid light-dark(#ebe7e1, #242426); background: light-dark(#f8f6f3, #1c1c1e); font-size: 10px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; }
 .ln-row { min-height: 72px; padding: 13px 17px; border-bottom: 1px solid light-dark(#ebe7e1, #242426); }
 .ln-row:last-child { border-bottom: 0; }
@@ -239,6 +239,13 @@
 .ln-icon-button:hover:not(:disabled) { color: var(--danger); border-color: light-dark(#efd4d0, #303033); background: light-dark(#fff4f2, #1c1c1e); }
 .ln-icon-button:disabled { cursor: wait; opacity: .45; }
 .ln-icon-button svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.ln-row__actions { display: flex; align-items: center; gap: 4px; }
+.ln-edit-button, .ln-delete-button { min-height: 32px; padding: 6px 9px; border: 0; border-radius: 6px; background: transparent; font: inherit; font-size: 12px; }
+.ln-row__actions .ln-edit-button { color: var(--accent); }
+.ln-row__actions .ln-delete-button { color: var(--muted); }
+.ln-edit-button:hover:not(:disabled) { background: var(--accent-soft); }
+.ln-delete-button:hover:not(:disabled) { color: var(--danger); background: var(--danger-soft); }
+.ln-row__actions button:disabled { opacity: .45; }
 
 .ln-list-message { min-height: 190px; display: flex; align-items: center; justify-content: center; flex-direction: column; padding: 32px; text-align: center; }
 .ln-list-message > span { width: 42px; height: 42px; display: grid; place-items: center; margin-bottom: 14px; color: light-dark(#7a9189, #c7c7cc); border-radius: 13px; background: light-dark(#e9f0ed, #242426); }
@@ -303,10 +310,11 @@
   .ln-hero__art { display: none; }
   .ln-list__heading { display: none; }
   .ln-row--dictionary,
-  .ln-row--snippets { grid-template-columns: minmax(0, 1fr) 36px; row-gap: 13px; }
+  .ln-row--snippets { grid-template-columns: minmax(0, 1fr) max-content; row-gap: 13px; }
   .ln-row__cell { grid-column: 1; }
   .ln-row__label { display: block; }
   .ln-row .ln-icon-button { grid-column: 2; grid-row: 1 / 3; }
+  .ln-row__actions { grid-column: 2; grid-row: 1 / 3; }
 }
 
 @container (max-width: 650px) {

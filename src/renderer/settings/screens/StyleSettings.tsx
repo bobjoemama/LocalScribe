@@ -44,7 +44,7 @@ import {
 import "./style-settings.css";
 
 type StyleTab = "personal" | "work" | "email" | "other" | "cleanup";
-type SettingsTab = "general" | "system" | "model" | "writing" | "experimental" | "privacy";
+export type SettingsTab = "general" | "system" | "model" | "writing" | "experimental" | "privacy";
 type CleanupLevel = "none" | "light" | "medium";
 export type CleanupSelection = CleanupLevel | "custom";
 export {
@@ -312,11 +312,8 @@ export function modelPerformanceSaveMessage(
   performance: Pick<Diagnostics["performance"], "fitsMemoryBudget" | "resolvedTier">,
 ): string {
   if (mode !== "auto") return `${tierLabel(mode)} performance mode saved.`;
-  if (!performance.fitsMemoryBudget) {
-    return "Auto saved, but no tier fits the current memory budget. Dictation stays blocked until enough memory is available.";
-  }
   if (performance.resolvedTier) {
-    return `Auto saved and resolved to ${tierLabel(performance.resolvedTier)} using the available unified memory.`;
+    return `Auto saved and resolved to ${tierLabel(performance.resolvedTier)}. Memory estimates are advisory.`;
   }
   return "Auto performance mode saved.";
 }
@@ -927,8 +924,9 @@ export function TransformsScreen() {
   );
 }
 
-export function SettingsModal({ onClose, registerDismissalGate }: {
+export function SettingsModal({ onClose, registerDismissalGate, initialTab = "general" }: {
   onClose(): void;
+  initialTab?: SettingsTab;
   /**
    * Publishes the dialog's own dismissal gate so the hub can consult it before
    * unmounting the dialog on a navigation request. Called with `null` on
@@ -936,7 +934,7 @@ export function SettingsModal({ onClose, registerDismissalGate }: {
    */
   registerDismissalGate?(gate: (() => boolean) | null): void;
 }) {
-  const [tab, setTab] = useState<SettingsTab>("general");
+  const [tab, setTab] = useState<SettingsTab>(initialTab);
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [settingsLoadError, setSettingsLoadError] = useState<unknown | null>(null);
   const [permissions, setPermissions] = useState<PermissionSnapshot | null>(null);
@@ -2071,21 +2069,10 @@ export function appliedModelSelectionMessage(
 export function modelActionFailureMessage(
   action: "install" | "repair",
   error: unknown,
-  diagnostics: Diagnostics | null,
+  _diagnostics: Diagnostics | null,
 ): string {
   const detail = errorDetail(error);
   const verb = action === "install" ? "download" : "repair";
-  const requirement = diagnostics?.performance.requiredFreeMemoryBytes;
-  const headroom = diagnostics?.performance.reservedHeadroomBytes;
-  const available = diagnostics?.accelerator.freeMemoryBytes;
-  if (/free accelerator memory|reserved headroom|accelerator memory could not be measured/i.test(detail)) {
-    if (requirement !== null && requirement !== undefined && available !== null && available !== undefined) {
-      return `Could not ${verb} this profile. It requires ${formatAcceleratorBytesForMessage(requirement)} free accelerator memory${headroom === null || headroom === undefined ? "" : `, including ${formatAcceleratorBytesForMessage(headroom)} reserved headroom`}; LocalScribe currently reports ${formatAcceleratorBytesForMessage(available)} available. ${detail}`;
-    }
-    if (requirement !== null && requirement !== undefined) {
-      return `Could not ${verb} this profile because run eligibility cannot be measured. It requires ${formatAcceleratorBytesForMessage(requirement)} free accelerator memory${headroom === null || headroom === undefined ? "" : `, including ${formatAcceleratorBytesForMessage(headroom)} reserved headroom`}. ${detail}`;
-    }
-  }
   return `Could not ${verb} this curated model profile: ${detail}`;
 }
 
@@ -2101,9 +2088,6 @@ export function modelRemoveRequest(familyId: ModelFamilyId, tier: ModelPerforman
   return { confirmed: true as const, familyId, tier };
 }
 
-function formatAcceleratorBytesForMessage(bytes: number): string {
-  return `${(bytes / 1_073_741_824).toFixed(bytes >= 10 * 1_073_741_824 ? 1 : 2)} GiB`;
-}
 
 function tierLabel(mode: AppSettings["modelPerformanceMode"]): string {
   return mode.charAt(0).toUpperCase() + mode.slice(1);
