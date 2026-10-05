@@ -183,7 +183,7 @@ describe("main configures the cache", () => {
   it("puts it under userData, not in the resource tree", () => {
     // Only the cache expression itself — the surrounding supervisor
     // construction legitimately references resourcesPath for the runtime.
-    const declaration = sliceBetween(main, "const bytecodeCacheDirectory", "await mkdir(");
+    const declaration = sliceBetween(setup, "const bytecodeCacheDirectory", "await mkdir(");
 
     expect(declaration).toContain('path.join(app.getPath("userData"), "python-bytecode-cache")');
     expect(declaration).not.toContain("process.resourcesPath");

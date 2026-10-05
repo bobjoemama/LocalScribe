@@ -53,7 +53,6 @@ export function SettingsApp() {
 
   useEffect(() => window.localScribe.windows.onNavigate((target) => {
     if (target === "settings" || target === "data") {
-      if (dismissalGate.current && !dismissalGate.current()) return;
       setSettingsInitialTab(target === "data" ? "privacy" : "general");
       setSettingsOpen(true);
       return;

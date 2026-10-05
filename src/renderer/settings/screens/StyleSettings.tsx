@@ -936,7 +936,6 @@ export function SettingsModal({ onClose, registerDismissalGate, initialTab = "ge
   registerDismissalGate?(gate: (() => boolean) | null): void;
 }) {
   const [tab, setTab] = useState<SettingsTab>(initialTab);
-  useEffect(() => setTab(initialTab), [initialTab]);
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [settingsLoadError, setSettingsLoadError] = useState<unknown | null>(null);
   const [permissions, setPermissions] = useState<PermissionSnapshot | null>(null);
