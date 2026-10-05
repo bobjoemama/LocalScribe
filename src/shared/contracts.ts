@@ -139,6 +139,11 @@ export const dictionaryEntrySchema = z.object({
   createdAt: z.number().int().positive(),
 });
 export type DictionaryEntry = z.infer<typeof dictionaryEntrySchema>;
+export const dictionarySaveInputSchema = dictionaryEntrySchema
+  .pick({ phrase: true, replacement: true })
+  .extend({ id: dictionaryEntrySchema.shape.id.optional() })
+  .strict();
+export type DictionarySaveInput = z.infer<typeof dictionarySaveInputSchema>;
 
 export const snippetSchema = z.object({
   id: z.string().uuid(),
@@ -149,6 +154,11 @@ export const snippetSchema = z.object({
   createdAt: z.number().int().positive(),
 });
 export type Snippet = z.infer<typeof snippetSchema>;
+export const snippetSaveInputSchema = snippetSchema
+  .pick({ trigger: true, expansion: true })
+  .extend({ id: snippetSchema.shape.id.optional() })
+  .strict();
+export type SnippetSaveInput = z.infer<typeof snippetSaveInputSchema>;
 
 export const scratchpadNoteSchema = z.object({
   id: z.string().uuid(),
@@ -1043,12 +1053,12 @@ export interface LocalScribeApi {
   };
   dictionary: {
     list(): Promise<DictionaryEntry[]>;
-    save(input: Pick<DictionaryEntry, "phrase" | "replacement">): Promise<DictionaryEntry>;
+    save(input: DictionarySaveInput): Promise<DictionaryEntry>;
     delete(id: string): Promise<void>;
   };
   snippets: {
     list(): Promise<Snippet[]>;
-    save(input: Pick<Snippet, "trigger" | "expansion">): Promise<Snippet>;
+    save(input: SnippetSaveInput): Promise<Snippet>;
     delete(id: string): Promise<void>;
   };
   profiles: {

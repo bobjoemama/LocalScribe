@@ -229,6 +229,60 @@ function storageButtonTags(html: string): string[] {
 }
 
 describe("ModelPerformanceSettings", () => {
+  it.each([8 * GIBIBYTE, null])("allows verified High despite an exceeded or unknown estimate (%s)", (availableMemoryBytes) => {
+    const modelCatalog = catalog();
+    modelCatalog.families[0]!.profiles.find(profile => profile.tier === "high")!.expectedMemoryMaxBytes = 9 * GIBIBYTE;
+    const html = renderModelSettings({
+      catalog: modelCatalog,
+      currentModelLoaded: false,
+      pendingSelection: { familyId: "qwen3-asr-0-6b", asrMode: "after-stop", performanceMode: "high" },
+      mode: "high",
+      fitsMemoryBudget: availableMemoryBytes === null ? null : false,
+      hardware: { platform: "darwin", displayName: "Apple Silicon", totalMemoryBytes: 48 * GIBIBYTE, availableMemoryBytes, memoryBasis: availableMemoryBytes === null ? "unavailable" : "estimated" },
+      memoryRequirement: null,
+      runtimeTierStatuses: [{ familyId: "qwen3-asr-0-6b", tier: "high", artifactId: "qwen3-asr-0-6b-high", verificationStatus: "verified" }],
+    });
+    expect(applyButtonTag(html)).toContain('aria-disabled="false"');
+    expect(html).not.toContain("cannot run");
+    expect(html).not.toContain("Dictation stays blocked");
+    expect(html).not.toContain("Refresh accelerator memory before applying");
+  });
+
+  it.each([
+    { availableMemory: 4 * GIBIBYTE, totalMemory: 48 * GIBIBYTE, tier: "high" },
+    { availableMemory: 3 * GIBIBYTE, totalMemory: 48 * GIBIBYTE, tier: "medium" },
+    { availableMemory: GIBIBYTE, totalMemory: 48 * GIBIBYTE, tier: "low" },
+    { availableMemory: null, totalMemory: 48 * GIBIBYTE, tier: "low" },
+    { availableMemory: 4 * GIBIBYTE, totalMemory: null, tier: "low" },
+  ] as const)("stages Auto at $tier using only reported estimates ($availableMemory)", ({ availableMemory, totalMemory, tier }) => {
+    const modelCatalog = catalog();
+    const eligibility = modelApplyEligibility({
+      currentSelection: { familyId: "qwen3-asr-0-6b", asrMode: "after-stop", performanceMode: "high" },
+      currentModelLoaded: true,
+      pendingSelection: { familyId: "qwen3-asr-0-6b", asrMode: "after-stop", performanceMode: "auto" },
+      resolvedTier: "high",
+      catalog: modelCatalog, catalogError: null,
+      runtimeTierStatuses: modelCatalog.families[0]!.profiles.map(profile => ({ familyId: "qwen3-asr-0-6b", tier: profile.tier, artifactId: profile.artifactId, verificationStatus: "verified" })),
+      hardware: { platform: "darwin", displayName: "Apple Silicon", totalMemoryBytes: totalMemory, availableMemoryBytes: availableMemory, memoryBasis: "estimated" },
+      memoryRequirement: { requiredFreeMemoryBytes: 20 * GIBIBYTE, reservedHeadroomBytes: 10 * GIBIBYTE },
+      action: null, applying: false, refreshing: false,
+    });
+    expect(eligibility).toMatchObject({ enabled: true, targetTier: tier, targetVerification: "verified" });
+  });
+
+  it("retains an actual model-load failure while allowing a verified retry", () => {
+    const html = renderModelSettings({
+      currentModelLoaded: false,
+      feedback: { isError: true, message: "Model allocation failed. Previous saved selection retained." },
+      pendingSelection: { familyId: "qwen3-asr-0-6b", asrMode: "after-stop", performanceMode: "high" },
+      hardware: null, memoryRequirement: null,
+      runtimeTierStatuses: [{ familyId: "qwen3-asr-0-6b", tier: "high", artifactId: "qwen3-asr-0-6b-high", verificationStatus: "verified" }],
+    });
+    expect(html).toContain('role="alert"');
+    expect(html).toContain("Model allocation failed. Previous saved selection retained.");
+    expect(applyButtonTag(html)).toContain('aria-disabled="false"');
+  });
+
   it.each(["whisper-large-v2", "whisper-large-v3"] as const)("explains retired %s while allowing an explicit supported replacement", (familyId) => {
     const reduced = catalog({ activeFamilyId: familyId });
     reduced.modelLibraryFamilyIds.push(familyId);
@@ -514,10 +568,10 @@ describe("ModelPerformanceSettings", () => {
     const html = renderModelSettings({ currentModelLoaded: true });
     expect(html).not.toContain("normalized for the warm model");
     expect(html).not.toContain("Selection budget");
-    expect(html).toContain("Available now (a warm model is resident)");
+    expect(html).toContain("Reported available (a warm model is resident)");
   });
 
-  it("enables one combined Apply only for a changed, verified, memory-eligible target", () => {
+  it("enables one combined Apply for a changed, verified target", () => {
     const modelCatalog = catalog();
     const eligibility = modelApplyEligibility({
       currentSelection: { familyId: "qwen3-asr-0-6b", asrMode: "after-stop", performanceMode: "auto" },
@@ -552,7 +606,7 @@ describe("ModelPerformanceSettings", () => {
     });
   });
 
-  it("accounts conservatively for memory released by the warm model before Apply", () => {
+  it("does not block a verified explicit selection on estimated memory", () => {
     const eligibility = modelApplyEligibility({
       currentSelection: { familyId: "qwen3-asr-0-6b", asrMode: "after-stop", performanceMode: "high" },
       currentModelLoaded: true,
@@ -582,8 +636,8 @@ describe("ModelPerformanceSettings", () => {
       refreshing: false,
     });
 
-    // The raw reading is only 2 GiB, but unloading the current High profile
-    // conservatively releases its 3 GiB minimum before Medium loads.
+    // The estimate exceeds reported availability; the real loader decides
+    // whether allocation succeeds. No resident-model allocation is invented.
     expect(eligibility).toMatchObject({
       enabled: true,
       targetTier: "medium",
@@ -701,7 +755,7 @@ describe("ModelPerformanceSettings", () => {
 
     expect(html).toContain("Qwen3-ASR 0.6B");
     expect(html).toContain("<dt>Runtime</dt><dd>MLX Audio</dd>");
-    expect(html).toContain("Run eligibility is unknown");
+    expect(html).toContain("Memory information is unavailable");
     expect(html).toContain("Availability · unavailable");
     expect(html).not.toContain("Available now · unavailable");
     expect(html).toContain('<button type="button" class="ls-small-button" aria-label="Download High profile for qwen3-asr-0-6b">Download</button>');
@@ -709,7 +763,7 @@ describe("ModelPerformanceSettings", () => {
     expect(html).not.toContain("Checking the local model catalog");
   });
 
-  it("does not claim an explicit profile is running when unified memory is insufficient", () => {
+  it("presents an explicit profile as selected with advisory memory rather than blocked", () => {
     const macCatalog = catalog({ sharedPrimaryArtifact: true });
     const html = renderModelSettings({
       mode: "high",
@@ -740,10 +794,10 @@ describe("ModelPerformanceSettings", () => {
     expect(html).toContain("<strong>High</strong> selected");
     expect(html).not.toContain("Using <strong>High</strong>");
     expect(html).toContain(
-      "<strong>High</strong> cannot run with the unified memory currently available. Dictation stays blocked until enough unified memory is available or you choose a lower profile.",
+      "<strong>High</strong> exceeds the reported memory estimate. You can still apply it; loading will report any actual allocation failure.",
     );
     expect(html).toContain(
-      "requires <strong>10.0 GiB</strong> free unified memory, including 2.00 GiB reserved headroom",
+      "Profile estimate: <strong>8.00 GiB</strong> unified memory. This is advisory, not a measured allocation or a loading limit.",
     );
   });
 
@@ -930,14 +984,15 @@ describe("ModelPerformanceSettings", () => {
     expect(unmanaged).not.toContain("<button");
   });
 
-  it("renders friendly precision, memory evidence, and exact free-memory headroom", () => {
+  it("renders precision and an advisory allocation estimate without reserved headroom", () => {
     const html = renderModelSettings();
 
     expect(html).toContain("BF16");
     expect(html).toContain("8-bit");
     expect(html).toContain("4-bit");
     expect(html).toContain("3.00 GiB–4.00 GiB estimated");
-    expect(html).toContain("requires <strong>9.00 GiB</strong> free unified memory, including 2.00 GiB reserved headroom");
+    expect(html).toContain("Profile estimate: <strong>7.00 GiB</strong> unified memory. This is advisory");
+    expect(html).not.toContain("reserved headroom");
   });
 
   it("reports catalog failure directly instead of an endless checking state", () => {
@@ -950,7 +1005,7 @@ describe("ModelPerformanceSettings", () => {
     });
 
     expect(html).toContain("Could not load the curated model catalog: IPC unavailable");
-    expect(html).toContain("Run eligibility is unknown");
+    expect(html).toContain("Memory information is unavailable");
     expect(html).not.toContain("Loading curated model catalog");
   });
 });

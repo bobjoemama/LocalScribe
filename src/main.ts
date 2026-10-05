@@ -29,7 +29,7 @@ import {
   appSettingsPatchSchema,
   appProfileSchema,
   cancelLiveAudioSchema,
-  dictionaryEntrySchema,
+  dictionarySaveInputSchema,
   finishLiveAudioSchema,
   IPC,
   liveAudioFrameSchema,
@@ -45,7 +45,7 @@ import {
   sessionFailureSchema,
   sessionSnapshotSchema,
   sanitizeSourceApplicationId,
-  snippetSchema,
+  snippetSaveInputSchema,
   transcribeAudioSchema,
   type Diagnostics,
   type AsrMode,
@@ -270,8 +270,8 @@ if (!hasSingleInstanceLock) app.quit();
 
 const uuidSchema = z.string().uuid();
 const limitSchema = z.number().int().min(1).max(MAX_HISTORY_ITEMS).optional();
-const dictionaryInputSchema = dictionaryEntrySchema.pick({ phrase: true, replacement: true });
-const snippetInputSchema = snippetSchema.pick({ trigger: true, expansion: true });
+const dictionaryInputSchema = dictionarySaveInputSchema;
+const snippetInputSchema = snippetSaveInputSchema;
 const profileInputSchema = appProfileSchema.omit({ id: true, createdAt: true });
 const scratchpadSchema = persistedPrivateTextSchema;
 
@@ -452,27 +452,6 @@ async function refreshModelResolution(options: {
   return next;
 }
 
-/**
- * A live telemetry sample includes the memory already held by the warm model.
- * Add back only the curated minimum allocation for selection policy, capped
- * at physical memory. That is the conservative lower bound for the memory the
- * current runtime would release; using the maximum could overstate capacity
- * and select a tier that cannot actually load. Diagnostics continue to expose
- * the unmodified reading.
- */
-function memorySnapshotWithoutWarmModel(
-  snapshot: WorkerAcceleratorSnapshot,
-  warmResolution: ModelPerformanceResolution,
-): ReturnType<typeof memorySnapshot> {
-  return {
-    totalBytes: snapshot.totalMemoryBytes,
-    freeBytes: Math.min(
-      snapshot.totalMemoryBytes,
-      snapshot.freeMemoryBytes + warmResolution.tier.acceleratorMemory.minimumBytes,
-    ),
-  };
-}
-
 async function refreshAutoResolutionAtRecordingBoundary(): Promise<ModelPerformanceResolution> {
   const settings = database.getSettings();
   const warmSelection = worker.loadedSelection();
@@ -486,7 +465,6 @@ async function refreshAutoResolutionAtRecordingBoundary(): Promise<ModelPerforma
   const cachedMatchesWarmSelection = cached !== null
     && cached.preference === "auto"
     && cached.tier.familyId === settings.activeModelFamilyId
-    && cached.fitsMemoryBudget
     && workerModelSelectionsMatch(warmSelection, workerSelection(cached.tier, settings.asrMode));
   try {
     const liveSnapshot = await worker.deviceInfo();
@@ -495,7 +473,7 @@ async function refreshAutoResolutionAtRecordingBoundary(): Promise<ModelPerforma
       throw new Error("The warm local speech model does not match the active Auto selection.");
     }
     const next = await refreshModelResolution({
-      memory: memorySnapshotWithoutWarmModel(liveSnapshot, cached),
+      memory: memorySnapshot(),
     });
     /*
      * Auto's policy is memory-only, so freeing memory between dictations can
@@ -589,19 +567,6 @@ function workerSelection(
   };
 }
 
-function assertResolutionFitsMemory(resolution: ModelPerformanceResolution): void {
-  if (resolution.fitsMemoryBudget) return;
-  const required = resolution.requiredMemoryBytes
-    ?? resolution.tier.acceleratorMemory.maximumBytes;
-  const available = acceleratorSnapshot?.freeMemoryBytes;
-  const detail = available === undefined || available === null
-    ? "accelerator memory could not be measured"
-    : `${Math.round(available / 1024 ** 3)} GiB is currently available`;
-  throw new Error(
-    `${resolution.effectiveTier} mode needs ${Math.ceil(required / 1024 ** 3)} GiB of free accelerator memory including reserved headroom; ${detail}. Choose a lower mode or free memory and refresh diagnostics.`,
-  );
-}
-
 function resolutionReasonMessage(resolution: ModelPerformanceResolution): string {
   // Never interpolate the raw tier enum: this string is rendered verbatim
   // beside a heading that uses the product label, so "medium" next to
@@ -613,11 +578,11 @@ function resolutionReasonMessage(resolution: ModelPerformanceResolution): string
     case "dictation-active":
       return `${tier} is pinned until the active dictation finishes.`;
     case "auto-highest-fit":
-      return `Auto selected ${tier}, the highest tier that fits the current memory budget.`;
+      return `Auto selected ${tier} using estimated memory availability.`;
     case "auto-hysteresis-hold":
       return `Auto kept ${tier} to avoid switching after a small memory change.`;
     case "auto-insufficient-memory":
-      return "Auto could not verify enough free accelerator memory. Dictation stays blocked until a tier fits.";
+      return "Auto selected the smallest profile because memory estimates are unavailable or do not fit. The runtime will attempt to load it.";
   }
 }
 
@@ -1305,19 +1270,12 @@ function beginListening(activation: "hold" | "toggle" = "toggle"): SessionSnapsh
     if (!modelResolution) {
       return failSession("Local model selection is still initializing. Try dictating again in a moment.");
     }
-    try {
-      assertResolutionFitsMemory(modelResolution);
-    } catch (error) {
-      return failSession(error);
-    }
   }
   const sessionId = randomUUID();
   activeSessionId = sessionId;
   if (preference === "auto") {
-    // Sample live memory at every recording boundary without evicting a warm
-    // model. Selection policy adds back the warm tier's curated minimum
-    // allocation, so Auto compares tiers against a conservative
-    // unloaded-equivalent budget.
+    // Sample live memory without evicting a warm model. This is only an Auto
+    // selection hint; actual runtime allocation decides load success.
     // A changed tier is applied later by the normal same-family transcription
     // load boundary; Auto never falls back to another family.
     const promise = refreshAutoResolutionAtRecordingBoundary().then((resolution) => {
@@ -1533,7 +1491,6 @@ async function applyModelSelection(
     const currentWarmSelection = worker.loadedSelection();
     if (
       currentResolutionForSelection
-      && currentResolutionForSelection.fitsMemoryBudget
       && workerModelSelectionsMatch(
         currentWarmSelection,
         workerSelection(currentResolutionForSelection.tier, request.asrMode),
@@ -1578,35 +1535,26 @@ async function applyModelSelection(
     try {
       /*
        * Resolve and verify the exact replacement while the working model is
-       * still resident. The memory projection adds back only the curated
-       * minimum allocation of that warm model, so it cannot overstate the
-       * budget. This closes the destructive gap where Apply used to kill a
+       * still resident. Memory estimates are advisory and do not prevent a
+       * native allocation attempt. This closes the gap where Apply killed a
        * usable runtime and only then discover that the selected artifact was
        * missing or corrupt.
        */
       if (!acceleratorSnapshot) {
-        if (currentWarmSelection) acceleratorSnapshot = await worker.deviceInfo();
-        else await probeUnloadedAccelerator();
+        if (currentWarmSelection) {
+          try { acceleratorSnapshot = await worker.deviceInfo(); }
+          catch { acceleratorSnapshot = null; }
+        } else await probeUnloadedAccelerator();
       }
-      const warmResolutionMatches = currentWarmSelection !== null
-        && previousResolution !== null
-        && workerModelSelectionsMatch(
-          currentWarmSelection,
-          workerSelection(previousResolution.tier, previousSettings.asrMode),
-        );
-      const projectedMemory = warmResolutionMatches && acceleratorSnapshot
-        ? memorySnapshotWithoutWarmModel(acceleratorSnapshot, previousResolution)
-        : memorySnapshot();
       targetResolution = resolveModelPerformance({
         preference: request.performanceMode,
         catalog: targetCatalog,
-        memory: projectedMemory,
+        memory: memorySnapshot(),
         previousTier: previousSettings.activeModelFamilyId === request.familyId
           && previousSettings.modelPerformanceMode === "auto"
           ? previousAutoTier
           : undefined,
       });
-      assertResolutionFitsMemory(targetResolution);
 
       const modelRoot = modelRootForUserData(app.getPath("userData"));
       // Only the artifact about to be loaded gates the Apply. Verifying the whole
@@ -1626,12 +1574,6 @@ async function applyModelSelection(
       runtimeTransitionStarted = true;
       await worker.shutdown();
       await probeUnloadedAccelerator();
-      const postUnloadFit = resolveModelPerformance({
-        preference: targetResolution.effectiveTier,
-        catalog: targetCatalog,
-        memory: memorySnapshot(),
-      });
-      assertResolutionFitsMemory(postUnloadFit);
       previousAutoTier = undefined;
 
       // Eager loading proves the exact engine, model, quantization, and current
@@ -1786,7 +1728,6 @@ function registerIpc(): void {
       preference: settings.modelPerformanceMode,
     });
     const resolution = await currentModelResolution();
-    assertResolutionFitsMemory(resolution);
     const sink = await worker.beginLive({
       session: request,
       model: workerSelection(resolution.tier, "live"),
@@ -1935,7 +1876,6 @@ function registerIpc(): void {
       }
       const workerLanguage = workerLanguageForActiveModel(settings);
       const resolution = await currentModelResolution();
-      assertResolutionFitsMemory(resolution);
       const terms = dictionaryAsrContextForCapabilities(
         database.listDictionary(),
         modelCatalog(resolution.tier.familyId).capabilities,

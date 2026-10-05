@@ -15,18 +15,18 @@ describe("atomic model selection architecture", () => {
   it("proves the exact target before unload, then probes, loads, and persists it", () => {
     const body = between("async function applyModelSelection(", "function registerIpc(): void");
     const resolve = body.indexOf("targetResolution = resolveModelPerformance");
-    const memory = body.indexOf("assertResolutionFitsMemory(targetResolution);", resolve);
     // Only the artifact being loaded gates the Apply; the other tiers of the
     // family cannot change the outcome and hashing them cost gigabytes of reads.
-    const verify = body.indexOf("await verifyModelDirectory(modelRoot, targetResolution.tier.manifest)", memory);
+    const verify = body.indexOf("await verifyModelDirectory(modelRoot, targetResolution.tier.manifest)", resolve);
     expect(body).not.toContain("verifyRuntimeModelCatalog");
+    expect(body).not.toContain("assertResolutionFitsMemory");
     const unload = body.indexOf("await worker.shutdown();", verify);
     const probe = body.indexOf("await probeUnloadedAccelerator();", unload);
     const load = body.indexOf("await worker.ensureReady(workerSelection(targetResolution.tier, request.asrMode));", probe);
     const persist = body.indexOf("const latestSettings = database.getSettings();", load);
     const notify = body.indexOf("notifySettingsChanged(settings);", persist);
 
-    const positions = [resolve, memory, verify, unload, probe, load, persist, notify];
+    const positions = [resolve, verify, unload, probe, load, persist, notify];
     expect(positions.every((position) => position >= 0)).toBe(true);
     expect(positions).toEqual([...positions].sort((a, b) => a - b));
   });
@@ -106,7 +106,7 @@ describe("atomic model selection architecture", () => {
     expect(body).not.toContain("if (previousWarmSelection) await worker.ensureReady(previousWarmSelection);");
   });
 
-  it("samples live Auto telemetry without unloading and normalizes the warm allocation", () => {
+  it("samples live Auto telemetry without unloading or inventing a warm allocation", () => {
     const diagnostics = between(
       "async function collectDiagnosticsForResolution(",
       "async function collectDiagnostics():",
@@ -123,7 +123,9 @@ describe("atomic model selection architecture", () => {
       "async function currentModelResolution()",
     );
     expect(boundary).toContain("const liveSnapshot = await worker.deviceInfo();");
-    expect(boundary).toContain("memorySnapshotWithoutWarmModel(liveSnapshot, cached)");
+    expect(boundary).toContain("acceleratorSnapshot = liveSnapshot;");
+    expect(boundary).toContain("memory: memorySnapshot(),");
+    expect(source).not.toContain("memorySnapshotWithoutWarmModel");
     expect(boundary).toContain("return cached;");
     /*
      * Auto is a memory-only policy, so a drift between dictations can land on a
@@ -144,12 +146,7 @@ describe("atomic model selection architecture", () => {
     expect(boundary).toContain("modelArtifactIsVerifiedNow(");
     expect(boundary).not.toContain("modelArtifactIsPresent(");
 
-    const normalization = between(
-      "function memorySnapshotWithoutWarmModel(",
-      "async function refreshAutoResolutionAtRecordingBoundary()",
-    );
-    expect(normalization).toContain("snapshot.freeMemoryBytes + warmResolution.tier.acceleratorMemory.minimumBytes");
-    expect(normalization).toContain("Math.min(");
+    expect(boundary).not.toContain("acceleratorMemory.minimumBytes");
   });
 
   /*

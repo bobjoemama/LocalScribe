@@ -20,6 +20,8 @@ import {
   type InsightRange,
 } from "../../../shared/insights";
 import { rendererSafeErrorMessage } from "../../../shared/rendererErrors";
+import { modelFamilyDisplayName } from "../../../shared/modelAvailability";
+import { modelPerformanceTierLabel } from "../../../shared/modelPerformance";
 import "./history-insights.css";
 
 type HistoryState = {
@@ -232,7 +234,7 @@ function HistoryIntegrityWarning({ skippedUnreadable }: { skippedUnreadable: num
   );
 }
 
-export function HistoryScreen({ onOpenSettings }: { onOpenSettings?: () => void } = {}) {
+export function HistoryScreen({ onOpenSettings, onChooseModel }: { onOpenSettings?: () => void; onChooseModel?: () => void } = {}) {
   const [{ items, skippedUnreadable, loading, error }, load] = useLocalHistory("History could not be loaded.");
   const screenRef = useRef<HTMLDivElement>(null);
   const [query, setQuery] = useState("");
@@ -241,6 +243,7 @@ export function HistoryScreen({ onOpenSettings }: { onOpenSettings?: () => void 
   const [shortcuts, setShortcuts] = useState<Pick<AppSettings, "holdShortcut" | "toggleShortcut"> | null>(null);
   const [shortcutSettingsStatus, setShortcutSettingsStatus] = useState<ShortcutRuntimeStatus>("loading");
   const [historySavingEnabled, setHistorySavingEnabled] = useState<HistorySavingState>("loading");
+  const [modelChoice, setModelChoice] = useState<Pick<AppSettings, "activeModelFamilyId" | "modelPerformanceMode"> | null>(null);
 
   useEffect(() => {
     const screen = screenRef.current;
@@ -330,13 +333,14 @@ export function HistoryScreen({ onOpenSettings }: { onOpenSettings?: () => void 
 
   useEffect(() => {
     const setShortcutSettings = (
-      settings: Pick<AppSettings, "holdShortcut" | "toggleShortcut" | "keepHistory">,
+      settings: Pick<AppSettings, "holdShortcut" | "toggleShortcut" | "keepHistory" | "activeModelFamilyId" | "modelPerformanceMode">,
     ) => {
       setShortcuts({
         holdShortcut: settings.holdShortcut,
         toggleShortcut: settings.toggleShortcut,
       });
       setHistorySavingEnabled(settings.keepHistory);
+      setModelChoice({ activeModelFamilyId: settings.activeModelFamilyId, modelPerformanceMode: settings.modelPerformanceMode });
       setShortcutSettingsStatus("ready");
     };
     let active = true;
@@ -423,7 +427,7 @@ export function HistoryScreen({ onOpenSettings }: { onOpenSettings?: () => void 
       <header className="hi-welcome">
         <div>
           <h1>Dictation</h1>
-          <p>{storagePresentation.intro}</p>
+          {historySavingEnabled !== true && <p>{storagePresentation.intro}</p>}
         </div>
         <div className="hi-header-actions">
           <button
@@ -506,12 +510,23 @@ export function HistoryScreen({ onOpenSettings }: { onOpenSettings?: () => void 
         </div>
       </section>
 
+      <div className="hi-model-choice" aria-label="Saved dictation model">
+        <div>
+          <span>Dictation model</span>
+          <strong>{modelChoice ? modelFamilyDisplayName(modelChoice.activeModelFamilyId) : shortcutSettingsStatus === "unavailable" ? "Model unavailable" : "Loading model…"}</strong>
+          {modelChoice && <span>{modelChoice.modelPerformanceMode === "auto" ? "Auto" : modelPerformanceTierLabel(modelChoice.modelPerformanceMode)}</span>}
+        </div>
+        {onChooseModel && <button type="button" onClick={onChooseModel}>Choose model…</button>}
+      </div>
+
       <div className="hi-history-layout">
         <section className="hi-history-feed" aria-label="Dictation history">
           <div className="hi-section-title">
             <div>
-              <h2>{query ? "Search results" : "Recent dictations"}</h2>
-              <p>{query ? `${filtered.length} ${filtered.length === 1 ? "match" : "matches"}` : "Saved locally"}</p>
+              {query && <>
+                <h2>Search results</h2>
+                <p>{filtered.length} {filtered.length === 1 ? "match" : "matches"}</p>
+              </>}
             </div>
             {!loading && items.length > 0 && (
               <span>

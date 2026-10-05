@@ -574,7 +574,7 @@ describe("model and performance presentation", () => {
 
   it("uses macOS unified-memory language", () => {
     expect(modelMemoryCopy()).toEqual({
-      summary: "Auto uses available unified memory to choose the highest profile that fits in the active family.",
+      summary: "Auto starts with the highest profile estimated to fit reported unified memory, or the lowest supported profile when memory is unknown or no estimate fits. Estimates do not block loading; actual allocation failures are reported.",
       memoryLabel: "Unified memory",
     });
   });
@@ -621,12 +621,12 @@ describe("model and performance presentation", () => {
     expect(formatModelBytes(12_000_000_000)).toBe("12.0 GB");
   });
 
-  it("does not claim Auto resolved to the internal Low sentinel when no tier fits", () => {
+  it("reports the lowest Auto starting profile when estimates do not fit", () => {
     expect(modelPerformanceSaveMessage("auto", {
       fitsMemoryBudget: false,
       resolvedTier: "low",
     })).toBe(
-      "Auto saved, but no tier fits the current memory budget. Dictation stays blocked until enough memory is available.",
+      "Auto saved and resolved to Low. Memory estimates are advisory.",
     );
     expect(modelPerformanceSaveMessage("auto", {
       fitsMemoryBudget: true,
@@ -818,15 +818,15 @@ describe("model and performance presentation", () => {
     });
   });
 
-  it("makes a known insufficient-memory failure show the reported requirement and reserve", () => {
+  it("preserves an actual allocation error without manufacturing a memory requirement", () => {
     expect(modelActionFailureMessage(
       "install",
-      new Error("high mode needs 9 GiB of free accelerator memory including reserved headroom; 4 GiB is currently available."),
+      new Error("Allocation failed while loading the local model."),
       {
         performance: { requiredFreeMemoryBytes: 9 * 1_073_741_824, reservedHeadroomBytes: 2 * 1_073_741_824 },
         accelerator: { freeMemoryBytes: 4 * 1_073_741_824 },
       } as never,
-    )).toContain("requires 9.00 GiB free accelerator memory, including 2.00 GiB reserved headroom; LocalScribe currently reports 4.00 GiB available");
+    )).toBe("Could not download this curated model profile: Allocation failed while loading the local model.");
   });
 });
 

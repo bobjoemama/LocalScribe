@@ -64,7 +64,7 @@ describe("automatic model performance resolution", () => {
     "qwen3-asr-1-7b",
   );
 
-  it("uses both total and free memory with conservative headroom", () => {
+  it("uses working-set estimates without a physical-RAM-scaled reserve", () => {
     const high = resolveModelPerformance({
       preference: "auto",
       catalog,
@@ -75,11 +75,9 @@ describe("automatic model performance resolution", () => {
       reason: "auto-highest-fit",
       fitsMemoryBudget: true,
     });
-    // Diagnostics must show the actual decision threshold: 5.4 GiB maximum
-    // working memory plus 20% of total memory (3.2 GiB) headroom.
-    expect(high.reservedHeadroomBytes).toBe(Math.ceil(3.2 * GIBIBYTE));
+    expect(high.reservedHeadroomBytes).toBe(0);
     expect(high.requiredMemoryBytes).toBe(
-      runtimeModelTier(catalog, "high").acceleratorMemory.maximumBytes + Math.ceil(3.2 * GIBIBYTE),
+      runtimeModelTier(catalog, "high").acceleratorMemory.maximumBytes,
     );
 
     expect(resolveModelPerformance({
@@ -87,7 +85,7 @@ describe("automatic model performance resolution", () => {
       catalog,
       memory: { totalBytes: 16 * GIBIBYTE, freeBytes: 6.5 * GIBIBYTE },
     })).toMatchObject({
-      effectiveTier: "low",
+      effectiveTier: "high",
       reason: "auto-highest-fit",
       fitsMemoryBudget: true,
     });
@@ -97,7 +95,7 @@ describe("automatic model performance resolution", () => {
       catalog,
       memory: { totalBytes: 6 * GIBIBYTE, freeBytes: 6 * GIBIBYTE },
     })).toMatchObject({
-      effectiveTier: "medium",
+      effectiveTier: "high",
       reason: "auto-highest-fit",
       fitsMemoryBudget: true,
     });
@@ -128,7 +126,7 @@ describe("automatic model performance resolution", () => {
     expect(resolveModelPerformance({
       preference: "auto",
       catalog,
-      memory: { totalBytes: 16 * GIBIBYTE, freeBytes: 9 * GIBIBYTE },
+      memory: { totalBytes: 16 * GIBIBYTE, freeBytes: 6 * GIBIBYTE },
       previousTier: "medium",
     })).toMatchObject({
       effectiveTier: "medium",
@@ -138,7 +136,7 @@ describe("automatic model performance resolution", () => {
     expect(resolveModelPerformance({
       preference: "auto",
       catalog,
-      memory: { totalBytes: 16 * GIBIBYTE, freeBytes: 10 * GIBIBYTE },
+      memory: { totalBytes: 16 * GIBIBYTE, freeBytes: 7 * GIBIBYTE },
       previousTier: "medium",
     })).toMatchObject({
       effectiveTier: "high",
@@ -148,10 +146,10 @@ describe("automatic model performance resolution", () => {
     expect(resolveModelPerformance({
       preference: "auto",
       catalog,
-      memory: { totalBytes: 16 * GIBIBYTE, freeBytes: 6.5 * GIBIBYTE },
+      memory: { totalBytes: 16 * GIBIBYTE, freeBytes: 4 * GIBIBYTE },
       previousTier: "high",
     })).toMatchObject({
-      effectiveTier: "low",
+      effectiveTier: "medium",
       reason: "auto-highest-fit",
     });
   });
@@ -187,9 +185,9 @@ describe("automatic model performance resolution", () => {
   it.each([
     ["high", 4, 2],
     ["medium", 4, 2],
-    ["low", 4, 2],
+    ["low", 4, 1],
   ] as const)(
-    "keeps explicit %s exact even when the current memory budget blocks it",
+    "keeps explicit %s exact even when estimates do not fit",
     (preference, totalGiB, freeGiB) => {
       expect(resolveModelPerformance({
         preference,
@@ -208,10 +206,10 @@ describe("automatic model performance resolution", () => {
   );
 
   it.each([
-    [8, 7, "medium", true],
+    [8, 7, "high", true],
     [16, 12, "high", true],
     [48, 16, "high", true],
-    [128, 26, "low", false],
+    [128, 26, "high", true],
   ] as const)(
     "derives Apple Auto from %d GiB total and %d GiB currently free",
     (totalGiB, freeGiB, effectiveTier, fitsMemoryBudget) => {
@@ -228,6 +226,16 @@ describe("automatic model performance resolution", () => {
       });
     },
   );
+
+  it("does not inflate Canary High on a 48 GiB Mac or treat its estimate as a cap", () => {
+    const canary = loadRuntimeModelCatalog(manifestDirectory, "darwin", "arm64", "canary-qwen-2-5b");
+    const result = resolveModelPerformance({ preference: "high", catalog: canary,
+      memory: { totalBytes: 48 * GIBIBYTE, freeBytes: 8 * GIBIBYTE } });
+    expect(result.effectiveTier).toBe("high");
+    expect(result.reservedHeadroomBytes).toBe(0);
+    expect(result.requiredMemoryBytes).toBe(9 * GIBIBYTE);
+    expect(result.fitsMemoryBudget).toBe(false); // Advisory; main attempts the exact runtime.
+  });
 
   it("applies the same telemetry policy to every curated model family", () => {
     for (const familyId of [

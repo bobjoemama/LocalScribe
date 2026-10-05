@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { AppInfo } from "../../shared/contracts";
 import { HistoryScreen, InsightsScreen } from "./screens/HistoryInsights";
 import { DictionaryScreen, SnippetsScreen } from "./screens/LibraryNotes";
-import { SettingsModal, StyleScreen, TransformsScreen } from "./screens/StyleSettings";
+import { SettingsModal, StyleScreen, TransformsScreen, type SettingsTab } from "./screens/StyleSettings";
 
 type Section =
   | "dictation"
@@ -26,6 +26,7 @@ const primaryNavigation: Array<{ id: Section; label: string }> = [
 export function SettingsApp() {
   const [section, setSection] = useState<Section>("dictation");
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsInitialTab, setSettingsInitialTab] = useState<SettingsTab>("general");
   const [appInfo, setAppInfo] = useState<AppInfo | null>(null);
 
   const openSection = (target: Section) => {
@@ -51,6 +52,7 @@ export function SettingsApp() {
 
   useEffect(() => window.localScribe.windows.onNavigate((target) => {
     if (target === "settings") {
+      setSettingsInitialTab("general");
       setSettingsOpen(true);
       return;
     }
@@ -98,7 +100,7 @@ export function SettingsApp() {
           <button
             className="hub-nav-item"
             type="button"
-            onClick={() => setSettingsOpen(true)}
+            onClick={() => { setSettingsInitialTab("general"); setSettingsOpen(true); }}
             aria-haspopup="dialog"
             aria-expanded={settingsOpen}
           >
@@ -119,7 +121,10 @@ export function SettingsApp() {
         * where an announcement can say what actually changed.
         */}
       <section className="hub-content" inert={settingsOpen}>
-        {section === "dictation" && <HistoryScreen onOpenSettings={() => setSettingsOpen(true)} />}
+        {section === "dictation" && <HistoryScreen
+          onOpenSettings={() => { setSettingsInitialTab("general"); setSettingsOpen(true); }}
+          onChooseModel={() => { setSettingsInitialTab("model"); setSettingsOpen(true); }}
+        />}
         {section === "insights" && <InsightsScreen />}
         {section === "dictionary" && <DictionaryScreen />}
         {section === "snippets" && <SnippetsScreen />}
@@ -129,6 +134,7 @@ export function SettingsApp() {
 
       {settingsOpen && (
         <SettingsModal
+          initialTab={settingsInitialTab}
           onClose={() => setSettingsOpen(false)}
           registerDismissalGate={registerDismissalGate}
         />

@@ -270,3 +270,10 @@
 
 .hi-live-region { position: fixed; left: auto; right: 30px; bottom: 24px; z-index: 30; margin: 0; padding: 10px 14px; color: var(--ink); background: var(--surface-raised); border: 1px solid var(--line-strong); border-radius: 9px; box-shadow: var(--floating-shadow); font-size: 12px; line-height: 1.4; }
 .hi-live-region:empty { padding: 0; border: 0; box-shadow: none; }
+
+.hi-model-choice { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin: -10px 0 25px; font-size: 12px; }
+.hi-model-choice > div { display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px; min-width: 0; }
+.hi-model-choice span { color: var(--muted); }
+.hi-model-choice strong { color: var(--ink); font-weight: 600; }
+.hi-model-choice button { flex: 0 0 auto; padding: 6px 0 6px 8px; border: 0; background: transparent; color: var(--accent); font: inherit; }
+.hi-model-choice button:hover { text-decoration: underline; text-underline-offset: 3px; }

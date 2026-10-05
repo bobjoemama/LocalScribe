@@ -129,6 +129,7 @@ export function DictionaryScreen() {
   const [items, setItems] = useState<DictionaryEntry[]>([]);
   const [query, setQuery] = useState("");
   const [showAdd, setShowAdd] = useState(false);
+  const [editingEntry, setEditingEntry] = useState<DictionaryEntry | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<LibraryError | null>(null);
   const [deletingIds, setDeletingIds] = useState<ReadonlySet<string>>(() => new Set());
@@ -215,7 +216,7 @@ export function DictionaryScreen() {
           subtitle="Help LocalScribe recognize names, products, and specialized language the way you write them."
           actionLabel="Add new"
           actionDisabled={loading || unavailable}
-          onAction={() => setShowAdd(true)}
+          onAction={() => { setEditingEntry(null); setShowAdd(true); }}
         >
         {showHero && (
           <OnboardingHero
@@ -265,16 +266,10 @@ export function DictionaryScreen() {
                   <span className="ln-row__label">Preferred spelling</span>
                   <strong>{item.replacement}</strong>
                 </div>
-                <button
-                  className="ln-icon-button ln-icon-button--danger"
-                  type="button"
-                  aria-label={`Remove ${item.replacement}`}
-                  title="Remove term"
-                  disabled={deletingIds.has(item.id)}
-                  onClick={() => void remove(item)}
-                >
-                  <TrashIcon />
-                </button>
+                <div className="ln-row__actions">
+                  <button className="ln-edit-button" type="button" aria-label={`Edit ${item.replacement}`} disabled={deletingIds.has(item.id)} onClick={() => { setEditingEntry(item); setShowAdd(true); }}>Edit</button>
+                  <button className="ln-delete-button" type="button" aria-label={`Delete ${item.replacement}`} disabled={deletingIds.has(item.id)} onClick={() => void remove(item)}>Delete</button>
+                </div>
               </article>
             ))
           )}
@@ -284,6 +279,7 @@ export function DictionaryScreen() {
 
       {showAdd && (
         <DictionaryModal
+          entry={editingEntry ?? undefined}
           onClose={() => setShowAdd(false)}
           onSaved={async () => {
             await load();
@@ -299,6 +295,7 @@ export function SnippetsScreen() {
   const [items, setItems] = useState<Snippet[]>([]);
   const [query, setQuery] = useState("");
   const [showAdd, setShowAdd] = useState(false);
+  const [editingEntry, setEditingEntry] = useState<Snippet | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<LibraryError | null>(null);
   const [deletingIds, setDeletingIds] = useState<ReadonlySet<string>>(() => new Set());
@@ -385,7 +382,7 @@ export function SnippetsScreen() {
           subtitle="Turn short spoken cues into text you use often, without sending the cue or expansion anywhere."
           actionLabel="Add new"
           actionDisabled={loading || unavailable}
-          onAction={() => setShowAdd(true)}
+          onAction={() => { setEditingEntry(null); setShowAdd(true); }}
         >
         {showHero && (
           <OnboardingHero
@@ -435,16 +432,10 @@ export function SnippetsScreen() {
                   <span className="ln-row__label">Expansion</span>
                   <p>{item.expansion}</p>
                 </div>
-                <button
-                  className="ln-icon-button ln-icon-button--danger"
-                  type="button"
-                  aria-label={`Remove ${item.trigger}`}
-                  title="Remove snippet"
-                  disabled={deletingIds.has(item.id)}
-                  onClick={() => void remove(item)}
-                >
-                  <TrashIcon />
-                </button>
+                <div className="ln-row__actions">
+                  <button className="ln-edit-button" type="button" aria-label={`Edit ${item.trigger}`} disabled={deletingIds.has(item.id)} onClick={() => { setEditingEntry(item); setShowAdd(true); }}>Edit</button>
+                  <button className="ln-delete-button" type="button" aria-label={`Delete ${item.trigger}`} disabled={deletingIds.has(item.id)} onClick={() => void remove(item)}>Delete</button>
+                </div>
               </article>
             ))
           )}
@@ -454,6 +445,7 @@ export function SnippetsScreen() {
 
       {showAdd && (
         <SnippetModal
+          entry={editingEntry ?? undefined}
           onClose={() => setShowAdd(false)}
           onSaved={async () => {
             await load();
@@ -567,9 +559,9 @@ function LibraryToolbar({
   );
 }
 
-export function DictionaryModal({ onClose, onSaved }: { onClose(): void; onSaved(): Promise<void> }) {
-  const [phrase, setPhrase] = useState("");
-  const [replacement, setReplacement] = useState("");
+export function DictionaryModal({ entry, onClose, onSaved }: { entry?: DictionaryEntry; onClose(): void; onSaved(): Promise<void> }) {
+  const [phrase, setPhrase] = useState(entry?.phrase ?? "");
+  const [replacement, setReplacement] = useState(entry?.replacement ?? "");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const saveInFlight = useRef(false);
@@ -584,7 +576,7 @@ export function DictionaryModal({ onClose, onSaved }: { onClose(): void; onSaved
     setSaving(true);
     setError(null);
     try {
-      await window.localScribe.dictionary.save({ phrase, replacement });
+      await window.localScribe.dictionary.save({ ...(entry ? { id: entry.id } : {}), phrase, replacement });
       await onSaved();
     } catch (saveError) {
       setError(libraryErrorMessage(
@@ -598,7 +590,7 @@ export function DictionaryModal({ onClose, onSaved }: { onClose(): void; onSaved
   };
 
   return (
-    <LibraryModal title="Add a dictionary term" description="Choose what LocalScribe should write when it recognizes this phrase." onClose={requestClose} busy={saving}>
+    <LibraryModal title={entry ? "Edit dictionary term" : "Add a dictionary term"} description="Choose what LocalScribe should write when it recognizes this phrase." onClose={requestClose} busy={saving}>
       <form className="ln-modal__form" onSubmit={(event) => void submit(event)}>
         <label>
           <span>Phrase it may hear</span>
@@ -626,8 +618,8 @@ export function DictionaryModal({ onClose, onSaved }: { onClose(): void; onSaved
         {error && <InlineError>{error}</InlineError>}
         <div className="ln-modal__actions">
           <button className="ln-secondary" type="button" disabled={saving} onClick={requestClose}>Cancel</button>
-          <button className="ln-primary" type="submit" disabled={saving || !phrase.trim() || !replacement.trim()}>
-            {saving ? "Saving…" : "Add term"}
+          <button className="ln-primary" type="submit" disabled={saving || !phrase.trim() || !replacement.trim() || Boolean(entry && phrase === entry.phrase && replacement === entry.replacement)}>
+            {saving ? "Saving…" : entry ? "Save changes" : "Add term"}
           </button>
         </div>
       </form>
@@ -635,9 +627,9 @@ export function DictionaryModal({ onClose, onSaved }: { onClose(): void; onSaved
   );
 }
 
-export function SnippetModal({ onClose, onSaved }: { onClose(): void; onSaved(): Promise<void> }) {
-  const [trigger, setTrigger] = useState("");
-  const [expansion, setExpansion] = useState("");
+export function SnippetModal({ entry, onClose, onSaved }: { entry?: Snippet; onClose(): void; onSaved(): Promise<void> }) {
+  const [trigger, setTrigger] = useState(entry?.trigger ?? "");
+  const [expansion, setExpansion] = useState(entry?.expansion ?? "");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const saveInFlight = useRef(false);
@@ -652,7 +644,7 @@ export function SnippetModal({ onClose, onSaved }: { onClose(): void; onSaved():
     setSaving(true);
     setError(null);
     try {
-      await window.localScribe.snippets.save({ trigger, expansion });
+      await window.localScribe.snippets.save({ ...(entry ? { id: entry.id } : {}), trigger, expansion });
       await onSaved();
     } catch (saveError) {
       setError(libraryErrorMessage(
@@ -666,7 +658,7 @@ export function SnippetModal({ onClose, onSaved }: { onClose(): void; onSaved():
   };
 
   return (
-    <LibraryModal title="Create a snippet" description="Pair a memorable spoken cue with the complete text you want inserted." onClose={requestClose} busy={saving}>
+    <LibraryModal title={entry ? "Edit snippet" : "Create a snippet"} description="Pair a memorable spoken cue with the complete text you want inserted." onClose={requestClose} busy={saving}>
       <form className="ln-modal__form" onSubmit={(event) => void submit(event)}>
         <label>
           <span>Spoken trigger</span>
@@ -694,8 +686,8 @@ export function SnippetModal({ onClose, onSaved }: { onClose(): void; onSaved():
         {error && <InlineError>{error}</InlineError>}
         <div className="ln-modal__actions">
           <button className="ln-secondary" type="button" disabled={saving} onClick={requestClose}>Cancel</button>
-          <button className="ln-primary" type="submit" disabled={saving || !trigger.trim() || !expansion.trim()}>
-            {saving ? "Saving…" : "Add snippet"}
+          <button className="ln-primary" type="submit" disabled={saving || !trigger.trim() || !expansion.trim() || Boolean(entry && trigger === entry.trigger && expansion === entry.expansion)}>
+            {saving ? "Saving…" : entry ? "Save changes" : "Add snippet"}
           </button>
         </div>
       </form>
@@ -863,5 +855,4 @@ function Icon({ children }: { children: ReactNode }) {
 function PlusIcon() { return <Icon><path d="M12 5v14M5 12h14" /></Icon>; }
 function CloseIcon() { return <Icon><path d="m6.5 6.5 11 11m0-11-11 11" /></Icon>; }
 function SearchIcon() { return <Icon><circle cx="10.8" cy="10.8" r="6.2" /><path d="m15.4 15.4 4.1 4.1" /></Icon>; }
-function TrashIcon() { return <Icon><path d="M8 8.5v8m4-8v8m4-8v8M5.5 6h13m-9-2h5m-7.5 2 .7 14h8.6L17 6" /></Icon>; }
 function NoteIcon() { return <Icon><path d="M6 3.5h9l3 3V20H6z" /><path d="M15 3.5V7h3M9 11h6m-6 3h6m-6 3h4" /></Icon>; }

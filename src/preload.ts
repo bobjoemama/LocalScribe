@@ -7,6 +7,7 @@ import {
   appProfileSchema,
   diagnosticsSchema,
   dictionaryEntrySchema,
+  dictionarySaveInputSchema,
   cancelLiveAudioSchema,
   finishLiveAudioSchema,
   historyListResultSchema,
@@ -30,6 +31,7 @@ import {
   sessionFailureSchema,
   sessionSnapshotSchema,
   snippetSchema,
+  snippetSaveInputSchema,
   transcribeAudioSchema,
   transcriptionSchema,
   type LocalScribeApi,
@@ -98,12 +100,12 @@ const api: LocalScribeApi = {
   },
   dictionary: {
     list: async () => dictionaryEntrySchema.array().parse(await ipcRenderer.invoke(IPC.dictionaryList)),
-    save: async (input) => dictionaryEntrySchema.parse(await ipcRenderer.invoke(IPC.dictionarySave, input)),
+    save: async (input) => dictionaryEntrySchema.parse(await ipcRenderer.invoke(IPC.dictionarySave, dictionarySaveInputSchema.parse(input))),
     delete: async (id) => ipcRenderer.invoke(IPC.dictionaryDelete, id),
   },
   snippets: {
     list: async () => snippetSchema.array().parse(await ipcRenderer.invoke(IPC.snippetsList)),
-    save: async (input) => snippetSchema.parse(await ipcRenderer.invoke(IPC.snippetsSave, input)),
+    save: async (input) => snippetSchema.parse(await ipcRenderer.invoke(IPC.snippetsSave, snippetSaveInputSchema.parse(input))),
     delete: async (id) => ipcRenderer.invoke(IPC.snippetsDelete, id),
   },
   profiles: {

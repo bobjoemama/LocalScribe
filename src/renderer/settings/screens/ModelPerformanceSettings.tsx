@@ -252,12 +252,10 @@ export function modelApplyEligibility({
   currentSelection,
   currentModelLoaded,
   pendingSelection,
-  resolvedTier,
   catalog,
   catalogError,
   runtimeTierStatuses,
   hardware,
-  memoryRequirement,
   action,
   applying,
   refreshing,
@@ -317,53 +315,25 @@ export function modelApplyEligibility({
     }
   }
   if (!family.inLibrary) return unavailable(`Add ${family.displayName} to your library first.`);
-  if (!hardware || hardware.totalMemoryBytes === null || hardware.availableMemoryBytes === null) {
-    return unavailable("Refresh accelerator memory before applying.");
-  }
-  const totalMemoryBytes = hardware.totalMemoryBytes;
-  const availableMemoryBytes = hardware.availableMemoryBytes;
-  const currentFamily = catalog.families.find(
-    (candidate) => candidate.familyId === currentSelection.familyId,
-  );
-  const currentProfile = resolvedTier === null
-    ? undefined
-    : currentFamily?.profiles.find((profile) => profile.tier === resolvedTier);
-  // Apply unloads the current runtime before loading the target. Use the
-  // current profile's minimum estimated allocation as a conservative lower
-  // bound for memory that will become available; using its maximum could
-  // overstate capacity. The hardware display itself remains the raw reading.
-  const availableAfterUnloadBytes = Math.min(
-    totalMemoryBytes,
-    availableMemoryBytes + (
-      currentModelLoaded ? currentProfile?.expectedMemoryMinBytes ?? 0 : 0
-    ),
-  );
-  const headroom = memoryRequirement?.reservedHeadroomBytes;
-  if (headroom === null || headroom === undefined) {
-    return unavailable("Reserved runtime memory is unavailable. Refresh model status.");
-  }
-
   const orderedProfiles = [...family.profiles].sort(
     (left, right) => TIER_ORDER.indexOf(left.tier) - TIER_ORDER.indexOf(right.tier),
   );
-  const fits = (profile: ModelCatalog["families"][number]["profiles"][number]) => {
-    const required = profile.expectedMemoryMaxBytes + headroom;
-    return totalMemoryBytes >= required && availableAfterUnloadBytes >= required;
-  };
+  // Estimates guide Auto's starting profile, never admission. There is no
+  // measured allocation to add back for the resident model before unloading.
+  const totalMemory = hardware?.totalMemoryBytes;
+  const availableMemory = hardware?.availableMemoryBytes;
+  const estimatedFit = totalMemory !== null && totalMemory !== undefined
+    && availableMemory !== null && availableMemory !== undefined
+    ? orderedProfiles.find(profile => (
+      totalMemory >= profile.expectedMemoryMaxBytes
+      && availableMemory >= profile.expectedMemoryMaxBytes
+    ))
+    : undefined;
   const targetProfile = pendingSelection.performanceMode === "auto"
-    ? orderedProfiles.find(fits)
+    ? estimatedFit ?? orderedProfiles.at(-1)
     : orderedProfiles.find((profile) => profile.tier === pendingSelection.performanceMode);
   if (!targetProfile) {
-    return unavailable(pendingSelection.performanceMode === "auto"
-      ? "No profile in this model family fits the available memory."
-      : "The selected performance profile is missing from the catalog.");
-  }
-  if (!fits(targetProfile)) {
-    const required = targetProfile.expectedMemoryMaxBytes + headroom;
-    return unavailable(
-      `${tierLabelFor(targetProfile.tier)} needs ${formatAcceleratorBytes(required)} available after unloading the current model, but ${formatAcceleratorBytes(availableAfterUnloadBytes)} is conservatively available.`,
-      targetProfile.tier,
-    );
+    return unavailable("The selected performance profile is missing from the catalog.");
   }
 
   const runtime = runtimeTierStatuses.find((candidate) => (
@@ -414,7 +384,7 @@ export function modelMemoryCopy(): {
   memoryLabel: string;
 } {
   return {
-    summary: "Auto uses available unified memory to choose the highest profile that fits in the active family.",
+    summary: "Auto starts with the highest profile estimated to fit reported unified memory, or the lowest supported profile when memory is unknown or no estimate fits. Estimates do not block loading; actual allocation failures are reported.",
     memoryLabel: "Unified memory",
   };
 }
@@ -552,11 +522,10 @@ export function ModelPerformanceSettings({
   onRefresh,
 }: ModelPerformanceSettingsProps) {
   const memoryCopy = modelMemoryCopy();
-  const inlineMemoryLabel = memoryCopy.memoryLabel.toLowerCase();
   const resolvedLabel = resolvedTier
     ? MODEL_MODE_CHOICES.find((choice) => choice.id === resolvedTier)?.label ?? resolvedTier
-    : "Run eligibility unavailable";
-  const autoResolutionLabel = fitsMemoryBudget === false ? "No tier fits" : resolvedLabel;
+    : "Profile not resolved";
+  const autoResolutionLabel = resolvedLabel;
   const requestedLabel = MODEL_MODE_CHOICES.find((choice) => choice.id === mode)?.label ?? mode;
   const eligibilityUnknown = hardware === null || hardware.availableMemoryBytes === null;
   const currentFamily = catalog?.families.find((family) => family.familyId === currentSelection.familyId);
@@ -732,11 +701,7 @@ export function ModelPerformanceSettings({
               <span>{choice.label}</span>
               {choice.id === "auto" && (
                 <small>
-                  {fitsMemoryBudget === false
-                    ? "No tier fits"
-                    : resolvedTier
-                      ? `Currently ${resolvedLabel}`
-                      : "Memory unavailable"}
+                  {resolvedTier ? `Currently ${resolvedLabel}` : "Lowest supported if memory is unknown"}
                 </small>
               )}
             </label>
@@ -753,7 +718,7 @@ export function ModelPerformanceSettings({
         <p className="ls-model-resolution-note" role="status">
           <InfoIcon />
           <span>
-            <strong>{requestedLabel}</strong> cannot run with the {inlineMemoryLabel} currently available. Dictation stays blocked until enough {inlineMemoryLabel} is available or you choose a lower profile.
+            <strong>{requestedLabel}</strong> exceeds the reported memory estimate. You can still apply it; loading will report any actual allocation failure.
           </span>
         </p>
       )}
@@ -838,7 +803,6 @@ export function ModelPerformanceSettings({
                   currentFamilyId={currentSelection.familyId}
                   pendingFamilyId={pendingSelection.familyId}
                   resolvedTier={selectionChanged ? applyEligibility.targetTier : resolvedTier}
-                  fitsMemoryBudget={fitsMemoryBudget}
                   runtimeTierStatuses={runtimeTierStatuses}
                   action={action}
                   runEligibilityUnknown={eligibilityUnknown}
@@ -910,13 +874,14 @@ function MemoryStatus({
     return (
       <section className="ls-model-memory-note" role="status">
         <InfoIcon />
-        <span>Run eligibility is unknown because LocalScribe could not read accelerator memory. You can still check or download curated model data.</span>
+        <span>Memory information is unavailable. Verified profiles can still be applied; Auto starts with the lowest supported profile.</span>
       </section>
     );
   }
   const requirement = memoryRequirement?.requiredFreeMemoryBytes;
-  const headroom = memoryRequirement?.reservedHeadroomBytes;
-  const inlineMemoryLabel = memoryCopy.memoryLabel.toLowerCase();
+  const estimatedAllocation = requirement === null || requirement === undefined
+    ? null
+    : Math.max(0, requirement - (memoryRequirement?.reservedHeadroomBytes ?? 0));
   return (
     <>
       <section className="ls-model-hardware" aria-label="Detected accelerator memory">
@@ -933,31 +898,23 @@ function MemoryStatus({
           <small>
             {hardware.availableMemoryBytes === null
               ? "Availability · unavailable"
-              /*
-               * The number above is the raw reading main reports; diagnostics
-               * stay observational and are never normalized. The caption used
-               * to claim it was "normalized for the warm model", which is a
-               * different, larger figure computed only inside apply
-               * eligibility — so the readout and the Apply message quoted two
-               * irreconcilable numbers. Describe what is actually shown.
-               */
               : normalizedForWarmModel
-                ? `Available now (a warm model is resident) · live telemetry · ${hardware.memoryBasis}`
-                : `Available now · live telemetry · ${hardware.memoryBasis}`}
+                ? `Reported available (a warm model is resident) · ${hardware.memoryBasis}`
+                : `Reported available · ${hardware.memoryBasis}`}
           </small>
         </span>
       </section>
-      {requirement !== null && requirement !== undefined ? (
+      {estimatedAllocation !== null ? (
         <p className="ls-model-memory-note">
           <InfoIcon />
           <span>
-            This selected profile requires <strong>{formatAcceleratorBytes(requirement)}</strong> free {inlineMemoryLabel}, including {headroom === null || headroom === undefined ? "the reserved runtime headroom" : `${formatAcceleratorBytes(headroom)} reserved headroom`}.
+            Profile estimate: <strong>{formatAcceleratorBytes(estimatedAllocation)}</strong> unified memory. This is advisory, not a measured allocation or a loading limit.
           </span>
         </p>
       ) : eligibilityUnknown ? (
         <p className="ls-model-memory-note">
           <InfoIcon />
-          <span>Run eligibility is unknown while accelerator memory is unavailable. Model-data actions remain available; dictation cannot claim a runnable profile until LocalScribe can measure memory.</span>
+          <span>Memory information is unavailable. Verified profiles can still be applied; Auto starts with the lowest supported profile.</span>
         </p>
       ) : null}
     </>
@@ -973,7 +930,6 @@ function ModelFamilyCard({
   currentFamilyId,
   pendingFamilyId,
   resolvedTier,
-  fitsMemoryBudget,
   runtimeTierStatuses,
   action,
   runEligibilityUnknown,
@@ -992,7 +948,6 @@ function ModelFamilyCard({
   currentFamilyId: ModelFamilyId;
   pendingFamilyId: ModelFamilyId;
   resolvedTier: ConcreteModelTier | null;
-  fitsMemoryBudget: boolean | null;
   runtimeTierStatuses: readonly ModelTierRuntimeStatus[];
   action: ModelActionState;
   runEligibilityUnknown: boolean;
@@ -1075,7 +1030,6 @@ function ModelFamilyCard({
             tier={tier}
             selected={isPending && (mode === tier.tier || (
               mode === "auto"
-              && fitsMemoryBudget === true
               && resolvedTier === tier.tier
             ))}
             activeFamily={isCurrent}
@@ -1216,7 +1170,7 @@ function ModelTierRow({
       </div>
       <details className="ls-model-tier-details">
         <summary>Technical details</summary>
-        <p>{tier.displayName}. {tier.qualityNote}{runEligibilityUnknown && activeFamily ? " Run eligibility is unknown until accelerator memory can be read." : ""}</p>
+        <p>{tier.displayName}. {tier.qualityNote}{runEligibilityUnknown && activeFamily ? " Memory information is unavailable; verified profiles can still be applied." : ""}</p>
         <dl>
           <div><dt>Runtime</dt><dd>{tier.backend}</dd></div>
           <div><dt>License</dt><dd>{tier.license}</dd></div>
