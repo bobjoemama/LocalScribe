@@ -427,7 +427,7 @@ export function HistoryScreen({ onOpenSettings, onChooseModel }: { onOpenSetting
       <header className="hi-welcome">
         <div>
           <h1>Dictation</h1>
-          <p>{storagePresentation.intro}</p>
+          {historySavingEnabled !== true && <p>{storagePresentation.intro}</p>}
         </div>
         <div className="hi-header-actions">
           <button
@@ -523,8 +523,10 @@ export function HistoryScreen({ onOpenSettings, onChooseModel }: { onOpenSetting
         <section className="hi-history-feed" aria-label="Dictation history">
           <div className="hi-section-title">
             <div>
-              <h2>{query ? "Search results" : "Recent dictations"}</h2>
-              <p>{query ? `${filtered.length} ${filtered.length === 1 ? "match" : "matches"}` : "Saved locally"}</p>
+              {query && <>
+                <h2>Search results</h2>
+                <p>{filtered.length} {filtered.length === 1 ? "match" : "matches"}</p>
+              </>}
             </div>
             {!loading && items.length > 0 && (
               <span>
