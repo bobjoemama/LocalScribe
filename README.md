@@ -30,11 +30,13 @@ security protections.
 
 Internet access is needed to download the app and your chosen model. Once the
 model is installed, dictation works offline. Downloading a model does not
-activate it until you press Apply.
+activate it until you press Apply. **Download all** installs all 14 offered
+profiles and adds all six families to your library; only the applied model is
+loaded in memory.
 
 ## iOS
 
-The native iPhone app and keyboard are in [LocalScribeiOS](https://github.com/bobjoemama/LocalScribeiOS). They run local speech models; physical-device performance and keyboard validation are still in progress.
+The native iPhone app and keyboard are in [LocalScribeiOS](https://github.com/bobjoemama/LocalScribeiOS). The catalog includes Phonon 2 LUT6 CPU/ANE, Phonon 2 LUT3 GPU, and Moonshine Small Streaming CPU. They run locally; physical-device performance and keyboard validation are still in progress.
 
 ## What you can do
 
@@ -47,9 +49,14 @@ The native iPhone app and keyboard are in [LocalScribeiOS](https://github.com/bo
 - **History and scratchpad:** keep encrypted local transcripts and notes.
 - **Copy fallback:** copy the result when automatic insertion is unavailable.
 
-Parakeet, Qwen3-ASR, and Canary-Qwen speech models are available in the
-curated catalog. Language support, download size, memory estimates, and profiles
-are shown in Settings. Canary-Qwen is English-only and **After I stop** only.
+The Mac catalog offers six families and 14 profiles: Parakeet Unified,
+Qwen3-ASR 0.6B and 1.7B, Canary-Qwen, Phonon 2, and Moonshine Small Streaming.
+Phonon offers **Neural Engine / LUT6** (CPU/ANE encoder) and **GPU / LUT3**
+(CPU/GPU encoder); it requires **macOS 15 or newer**. Moonshine offers one
+**CPU** runtime. Both support English Live and after-stop dictation. Phonon
+Live uses sliding windows; Moonshine uses its streaming architecture.
+Language support, download sizes, and memory estimates appear in Settings.
+Canary-Qwen is English-only and **After I stop** only.
 Whisper is no longer supported. An older saved Whisper selection stays
 unavailable until you choose and Apply a supported replacement; cached model
 files and history are preserved, and the app never silently switches families.
@@ -61,8 +68,8 @@ The DMG includes the application and its required runtimes:
 
 - Electron and the JavaScript runtime, UI, database, and shortcut dependencies.
 - A private Python 3.12.13 runtime with the locked MLX inference dependencies.
-- FluidAudio/Core ML integration, the Canary Metal runtime, and native macOS
-  insertion helpers.
+- FluidAudio/Core ML integration, Moonshine/ONNX Runtime, the Canary Metal
+  runtime, and native macOS insertion helpers.
 - Dependency licenses and attributions; release assets include dependency
   inventories (SBOMs) and checksums.
 
@@ -71,7 +78,9 @@ install and use the app.** Existing system Python or Node versions are not used.
 Core ML and Metal are provided by macOS.
 
 **Not included:** large speech-model weights. Download only the models and
-profiles you want from Settings; their sizes are shown before downloading.
+profiles you want from Settings, or use **Download all**; sizes are shown
+before downloading. Installed files occupy disk space independently of the
+single applied model kept loaded.
 Normal dictation never downloads a model or silently switches to another one.
 
 ## Updating and troubleshooting
