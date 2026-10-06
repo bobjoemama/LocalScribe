@@ -80,14 +80,18 @@ export type ModelCatalogPlatform = ModelSpec["platform"];
 export type ModelEngine =
   | "mlx-audio"
   | "fluid-audio"
-  | "transcribe-cpp";
+  | "transcribe-cpp"
+  | "moonshine";
 export type ModelPrecision =
   | "fp16"
   | "bf16"
   | "8-bit"
   | "4-bit"
   | "coreml-fp16"
-  | "coreml-int8";
+  | "coreml-int8"
+  | "coreml-lut6-ane"
+  | "coreml-lut3-gpu"
+  | "onnx-cpu";
 
 export interface ModelResourceEvidence {
   kind: ModelResourceEvidenceKind;
@@ -140,7 +144,7 @@ export interface RuntimePlatformModelCatalog {
 export interface CuratedWorkerSelection {
   readonly modelId: string;
   readonly tier: ModelPerformanceTier;
-  readonly computeType: "float16" | "bfloat16" | "int8" | "int4" | "coreml-fp16" | "coreml-int8";
+  readonly computeType: "float16" | "bfloat16" | "int8" | "int4" | "coreml-fp16" | "coreml-int8" | "coreml-lut6-ane" | "coreml-lut3-gpu" | "onnx-cpu";
   readonly asrMode?: AsrMode;
 }
 
@@ -154,6 +158,9 @@ export function workerComputeTypeForTier(
     case "4-bit": return "int4";
     case "coreml-fp16": return "coreml-fp16";
     case "coreml-int8": return "coreml-int8";
+    case "coreml-lut6-ane": return "coreml-lut6-ane";
+    case "coreml-lut3-gpu": return "coreml-lut3-gpu";
+    case "onnx-cpu": return "onnx-cpu";
   }
 }
 
@@ -282,7 +289,9 @@ const immutableArtifactAudit = (
 ): ModelResourceEvidence => ({
   kind: "measured",
   source: `https://huggingface.co/${modelId}/tree/${revision}`,
-  auditedAt: modelId === "handy-computer/canary-qwen-2.5b-gguf" ? "2026-09-09" : "2026-07-23",
+  auditedAt: modelId === "FluidInference/phonon-2-coreml" || modelId === "moonshine-ai/moonshine-voice-assets"
+    ? "2026-10-05"
+    : modelId === "handy-computer/canary-qwen-2.5b-gguf" ? "2026-09-09" : "2026-07-23",
 });
 
 const estimatedMemory = (source: string, minimumGiB: number, maximumGiB: number) => ({
@@ -316,7 +325,7 @@ const mlxAudioTier = (
 const fluidAudioTier = (
   input: {
     manifestFilename: string;
-    precision: "coreml-fp16" | "coreml-int8";
+    precision: "coreml-fp16" | "coreml-int8" | "coreml-lut6-ane" | "coreml-lut3-gpu" | "onnx-cpu";
     memory: readonly [number, number];
   },
 ): CatalogTierDefinition => ({
@@ -462,6 +471,42 @@ const canaryMac: FamilyCatalogDefinition = {
   },
 };
 
+const phononMac: FamilyCatalogDefinition = {
+  familyId: "phonon-2",
+  displayName: modelFamilyDisplayName("phonon-2"),
+  engine: "fluid-audio",
+  capabilities: PARAKEET_UNIFIED_CAPABILITIES,
+  tiers: {
+    high: {
+      manifestFilename: "phonon-2-coreml-lut6-ane.json",
+      engine: "fluid-audio",
+      precision: "coreml-lut6-ane",
+      acceleratorMemory: estimatedMemory("Phonon 2 LUT6 CPU / ANE working-set estimate; physical LocalScribe benchmark pending", 1, 2),
+    },
+    medium: {
+      manifestFilename: "phonon-2-coreml-lut3-gpu.json",
+      engine: "fluid-audio",
+      precision: "coreml-lut3-gpu",
+      acceleratorMemory: estimatedMemory("Phonon 2 LUT3 GPU working-set estimate; physical LocalScribe benchmark pending", 0.7, 1.5),
+    },
+  },
+};
+
+const moonshineMac: FamilyCatalogDefinition = {
+  familyId: "moonshine-small-streaming",
+  displayName: modelFamilyDisplayName("moonshine-small-streaming"),
+  engine: "moonshine",
+  capabilities: PARAKEET_UNIFIED_CAPABILITIES,
+  tiers: {
+    high: {
+      manifestFilename: "moonshine-small-streaming-cpu.json",
+      engine: "moonshine",
+      precision: "onnx-cpu",
+      acceleratorMemory: estimatedMemory("Moonshine Small Streaming ONNX CPU working-set estimate; physical LocalScribe benchmark pending", 0.2, 0.6),
+    },
+  },
+};
+
 /** Every shipped family is declared for the supported Apple Silicon runtime. */
 export const MODEL_CATALOG_DEFINITIONS = {
   "darwin-arm64": {
@@ -471,6 +516,8 @@ export const MODEL_CATALOG_DEFINITIONS = {
       "qwen3-asr-0-6b": qwen06Mac,
       "qwen3-asr-1-7b": qwenMac,
       "canary-qwen-2-5b": canaryMac,
+      "phonon-2": phononMac,
+      "moonshine-small-streaming": moonshineMac,
     },
   },
 } as const satisfies PlatformCatalogDefinition;
@@ -658,10 +705,14 @@ export function resolveModelPerformance(
 }
 
 const MODEL_TIER_PRIORITY: readonly ModelPerformanceTier[] = ["high", "medium", "low"];
-const UNQUANTIZED_PRECISIONS = new Set<ModelPrecision>([
+// High means the highest curated quality for each family. Phonon ships LUT6
+// as its highest profile; its declared quantization is never labeled FP16.
+const HIGHEST_PROFILE_PRECISIONS = new Set<ModelPrecision>([
   "fp16",
   "bf16",
   "coreml-fp16",
+  "coreml-lut6-ane",
+  "onnx-cpu",
 ]);
 
 /** Curated profiles in descending quality/resource order. */
@@ -736,8 +787,8 @@ function assertCatalogRouting(catalog: RuntimeModelCatalog): void {
         `Model catalog ${catalog.platform}/${catalog.familyId}/${tierName} crosses a platform, engine, or tier routing boundary (including family routing)`,
       );
     }
-    if (tierName === "high" && !UNQUANTIZED_PRECISIONS.has(tier.precision)) {
-      throw new Error(`Model catalog ${catalog.platform}/${catalog.familyId}/high must be unquantized`);
+    if (tierName === "high" && !HIGHEST_PROFILE_PRECISIONS.has(tier.precision)) {
+      throw new Error(`Model catalog ${catalog.platform}/${catalog.familyId}/high must use its highest curated precision`);
     }
   }
 }
@@ -810,6 +861,7 @@ function assertManifestMatchesCatalog(
     "mlx-audio": "MLX Audio",
     "fluid-audio": "FluidAudio CoreML / ANE",
     "transcribe-cpp": "transcribe.cpp / Metal",
+    "moonshine": "Moonshine ONNX / CPU",
   };
   const expectedBackend = expectedBackends[definition.engine];
   const expected = {

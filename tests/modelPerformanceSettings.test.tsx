@@ -5,6 +5,7 @@ import {
   modelApplyEligibility,
   modelActionProgressPresentation,
   modelFamilyPresentation,
+  modelProfileLabel,
   ModelPerformanceSettings,
   supportedModeChoices,
   type ModelPerformanceSettingsProps,
@@ -229,6 +230,27 @@ function storageButtonTags(html: string): string[] {
 }
 
 describe("ModelPerformanceSettings", () => {
+  it("names hardware runtimes without implying quality levels", () => {
+    expect(modelProfileLabel("phonon-2", "high")).toBe("Neural Engine / LUT6");
+    expect(modelProfileLabel("phonon-2", "medium")).toBe("GPU / LUT3");
+    expect(modelProfileLabel("moonshine-small-streaming", "high")).toBe("CPU");
+    expect(modelProfileLabel("canary-qwen-2-5b", "high")).toBe("High");
+  });
+
+  it("keeps the loaded runtime visible while staging another profile", () => {
+    const html = renderModelSettings({
+      pendingSelection: { familyId: "qwen3-asr-0-6b", asrMode: "after-stop", performanceMode: "high" },
+      mode: "high",
+      residentRuntimeLabel: "Qwen3-ASR 0.6B medium",
+      onProfileChange: vi.fn(),
+      onInstallAll: vi.fn(),
+    });
+    expect(html).toContain("Loaded: Qwen3-ASR 0.6B medium");
+    expect(html).toContain(">Download all</button>");
+    expect(html).toContain(">Select Medium</button>");
+    expect(html).toContain("Downloads stay on disk. Applying a selection loads only that model.");
+  });
+
   it.each([8 * GIBIBYTE, null])("allows verified High despite an exceeded or unknown estimate (%s)", (availableMemoryBytes) => {
     const modelCatalog = catalog();
     modelCatalog.families[0]!.profiles.find(profile => profile.tier === "high")!.expectedMemoryMaxBytes = 9 * GIBIBYTE;

@@ -7,7 +7,7 @@ export const REFERENCE_BENCHMARK_CONTEXT = "Hugging Face Open ASR, 4 September 2
 
 interface ModelEvidence {
   originalModelId: string;
-  artifactPublisher: "FluidInference" | "mlx-community" | "handy-computer";
+  artifactPublisher: "FluidInference" | "mlx-community" | "handy-computer" | "moonshine-ai";
   publisherDescription: string;
   reference: { modelId: string; wer: number; rtfx: number } | null;
 }
@@ -15,6 +15,18 @@ interface ModelEvidence {
 // Do not substitute another model variant for a missing row.
 // The Qwen leaderboard rows are explicitly the Transformers (-hf) checkpoints.
 export const MODEL_EVIDENCE: Partial<Record<ModelFamilyId, ModelEvidence>> = {
+  "phonon-2": {
+    originalModelId: "FluidInference/phonon-2-coreml",
+    artifactPublisher: "FluidInference",
+    publisherDescription: "FluidInference Phonon 2 Core ML artifacts; LUT6 CPU / ANE and LUT3 GPU are separately pinned profiles. No LocalScribe benchmark is available.",
+    reference: null,
+  },
+  "moonshine-small-streaming": {
+    originalModelId: "moonshine-ai/moonshine-voice-assets",
+    artifactPublisher: "moonshine-ai",
+    publisherDescription: "Official Moonshine Small Streaming English ONNX CPU artifacts. No LocalScribe benchmark is available.",
+    reference: null,
+  },
   "parakeet-unified-en-0-6b": {
     originalModelId: "nvidia/parakeet-unified-en-0.6b",
     artifactPublisher: "FluidInference",
@@ -43,7 +55,7 @@ export const MODEL_EVIDENCE: Partial<Record<ModelFamilyId, ModelEvidence>> = {
 
 /** Only canonical Hub IDs and immutable revisions become artifact source URLs. */
 export function modelArtifactSourceUrl(modelId: string, revision: string): string | null {
-  if (!/^(FluidInference|mlx-community|handy-computer)\/[A-Za-z0-9][A-Za-z0-9._-]*$/.test(modelId)
+  if (!/^(FluidInference|mlx-community|handy-computer|moonshine-ai)\/[A-Za-z0-9][A-Za-z0-9._-]*$/.test(modelId)
     || !/^[a-f0-9]{40}$/.test(revision)) return null;
   return `https://huggingface.co/${modelId}/tree/${revision}`;
 }

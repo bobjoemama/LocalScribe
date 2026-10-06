@@ -210,6 +210,8 @@ export const AVAILABLE_MODEL_FAMILY_IDS = [
   "qwen3-asr-0-6b",
   "qwen3-asr-1-7b",
   "canary-qwen-2-5b",
+  "phonon-2",
+  "moonshine-small-streaming",
 ] as const;
 /** Retired IDs remain readable so upgrades never silently replace a saved model. */
 export const RETIRED_MODEL_FAMILY_IDS = ["whisper-large-v3", "whisper-large-v2"] as const;
@@ -482,7 +484,7 @@ const modelCatalogProfileSchema = z.object({
   profileId: z.string().regex(/^[a-z0-9][a-z0-9-]*$/),
   tier: modelPerformanceTierSchema,
   artifactId: z.string().regex(/^[a-z0-9][a-z0-9-]*$/),
-  engine: z.enum(["mlx-audio", "fluid-audio", "transcribe-cpp"]),
+  engine: z.enum(["mlx-audio", "fluid-audio", "transcribe-cpp", "moonshine"]),
   precision: z.string().min(1).max(40),
   expectedMemoryMinBytes: z.number().int().positive(),
   expectedMemoryMaxBytes: z.number().int().positive(),

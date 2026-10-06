@@ -35,6 +35,9 @@ const MAC_MODEL_MANIFESTS = [
   "qwen3-asr-0-6b-mlx-4bit.json",
   "parakeet-unified-en-0-6b-coreml-fp16.json",
   "parakeet-unified-en-0-6b-coreml-int8.json",
+  "phonon-2-coreml-lut6-ane.json",
+  "phonon-2-coreml-lut3-gpu.json",
+  "moonshine-small-streaming-cpu.json",
 ] as const;
 
 function makeTemporaryProject(): string {
@@ -63,18 +66,18 @@ afterEach(() => {
 });
 
 describe("packaged dependency inventory", () => {
-  it("ships the byte-exact notices from pinned FluidAudio 0.15.5", () => {
+  it("ships the byte-exact notices from pinned FluidAudio 0.17.5", () => {
     const expectedNotices = new Map([
       [
-        "FluidAudio-0.15.5-LICENSE.txt",
+        "FluidAudio-0.17.5-LICENSE.txt",
         "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
       ],
       [
-        "FluidAudio-0.15.5-fastcluster-LICENSE.md",
+        "FluidAudio-0.17.5-fastcluster-LICENSE.md",
         "67594dbe4a7477719c8160373e7767c2c319ef966a6042f76846a18af02cde0a",
       ],
       [
-        "FluidAudio-0.15.5-vbx-LICENSE.md",
+        "FluidAudio-0.17.5-vbx-LICENSE.md",
         "08e57fdb5187c816e937916f1e176aadb400ca76f4b3b493d69730ec8f10dd80",
       ],
     ]);
@@ -183,9 +186,23 @@ describe("packaged dependency inventory", () => {
       "licenses/transcribe-cpp-LICENSE.txt",
       "licenses/transcribe-cpp-ggml-LICENSE.txt",
       "licenses/transcribe-cpp-miniz-LICENSE.txt",
-      "licenses/FluidAudio-0.15.5-LICENSE.txt",
-      "licenses/FluidAudio-0.15.5-fastcluster-LICENSE.md",
-      "licenses/FluidAudio-0.15.5-vbx-LICENSE.md",
+      "licenses/FluidAudio-0.17.5-LICENSE.txt",
+      "licenses/FluidAudio-0.17.5-fastcluster-LICENSE.md",
+      "licenses/FluidAudio-0.17.5-vbx-LICENSE.md",
+      "licenses/FluidAudio-0.17.5-NemoTextProcessing-LICENSE.md",
+      "licenses/NemoTextProcessing-0.3.1-LICENSE.txt",
+      "licenses/NemoTextProcessing-0.3.1-NOTICE.txt",
+      "licenses/NemoTextProcessing-0.3.1-THIRD-PARTY-LICENSES.md",
+
+      "licenses/FluidAudio-0.17.5-JapaneseG2P-LICENSE.md",
+      "licenses/FluidAudio-0.17.5-KokoroAneSpanishFrenchG2P-LICENSE.md",
+      "licenses/Moonshine-LICENSE.txt",
+      "licenses/Moonshine-utf8proc-LICENSE.txt",
+      "licenses/Moonshine-nlohmann-LICENSE.txt",
+      "licenses/Moonshine-utf8-LICENSE.txt",
+      "licenses/Moonshine-kaldi-native-fbank-LICENSE.txt",
+      "licenses/Moonshine-ONNXRuntime-LICENSE.txt",
+
     ]);
     expect(mac.brandingFiles).toEqual([]);
     expect(mac.legalFiles).toEqual(["LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.md"]);
@@ -213,9 +230,23 @@ describe("packaged dependency inventory", () => {
       "python-runtime/venv/bin/python3",
       "native/macos/active-target",
       "native/macos/localscribe-fluidaudio-parakeet",
-      "licenses/FluidAudio-0.15.5-LICENSE.txt",
-      "licenses/FluidAudio-0.15.5-fastcluster-LICENSE.md",
-      "licenses/FluidAudio-0.15.5-vbx-LICENSE.md",
+      "licenses/FluidAudio-0.17.5-LICENSE.txt",
+      "licenses/FluidAudio-0.17.5-fastcluster-LICENSE.md",
+      "licenses/FluidAudio-0.17.5-vbx-LICENSE.md",
+      "licenses/FluidAudio-0.17.5-NemoTextProcessing-LICENSE.md",
+      "licenses/NemoTextProcessing-0.3.1-LICENSE.txt",
+      "licenses/NemoTextProcessing-0.3.1-NOTICE.txt",
+      "licenses/NemoTextProcessing-0.3.1-THIRD-PARTY-LICENSES.md",
+
+      "licenses/FluidAudio-0.17.5-JapaneseG2P-LICENSE.md",
+      "licenses/FluidAudio-0.17.5-KokoroAneSpanishFrenchG2P-LICENSE.md",
+      "licenses/Moonshine-LICENSE.txt",
+      "licenses/Moonshine-utf8proc-LICENSE.txt",
+      "licenses/Moonshine-nlohmann-LICENSE.txt",
+      "licenses/Moonshine-utf8-LICENSE.txt",
+      "licenses/Moonshine-kaldi-native-fbank-LICENSE.txt",
+      "licenses/Moonshine-ONNXRuntime-LICENSE.txt",
+
       "LICENSE",
       "NOTICE",
       "THIRD_PARTY_NOTICES.md",
@@ -309,9 +340,23 @@ describe("packaged dependency inventory", () => {
       "native/macos/localscribe-fluidaudio-parakeet",
       "native/macos/active-target.swift",
       "native/windows/active-target.exe",
-      "licenses/FluidAudio-0.15.5-LICENSE.txt",
-      "licenses/FluidAudio-0.15.5-fastcluster-LICENSE.md",
-      "licenses/FluidAudio-0.15.5-vbx-LICENSE.md",
+      "licenses/FluidAudio-0.17.5-LICENSE.txt",
+      "licenses/FluidAudio-0.17.5-fastcluster-LICENSE.md",
+      "licenses/FluidAudio-0.17.5-vbx-LICENSE.md",
+      "licenses/FluidAudio-0.17.5-NemoTextProcessing-LICENSE.md",
+      "licenses/NemoTextProcessing-0.3.1-LICENSE.txt",
+      "licenses/NemoTextProcessing-0.3.1-NOTICE.txt",
+      "licenses/NemoTextProcessing-0.3.1-THIRD-PARTY-LICENSES.md",
+
+      "licenses/FluidAudio-0.17.5-JapaneseG2P-LICENSE.md",
+      "licenses/FluidAudio-0.17.5-KokoroAneSpanishFrenchG2P-LICENSE.md",
+      "licenses/Moonshine-LICENSE.txt",
+      "licenses/Moonshine-utf8proc-LICENSE.txt",
+      "licenses/Moonshine-nlohmann-LICENSE.txt",
+      "licenses/Moonshine-utf8-LICENSE.txt",
+      "licenses/Moonshine-kaldi-native-fbank-LICENSE.txt",
+      "licenses/Moonshine-ONNXRuntime-LICENSE.txt",
+
       "licenses/unreviewed-LICENSE.txt",
       "python-runtime/venv/bin/python3",
       "python-runtime/venv/lib/pkg/tests/test_pkg.py",
@@ -335,10 +380,23 @@ describe("packaged dependency inventory", () => {
     expect(existsSync(path.join(resources, "native", "macos", "localscribe-fluidaudio-parakeet"))).toBe(true);
     expect(existsSync(path.join(resources, "native", "windows"))).toBe(false);
     expect(readdirSync(path.join(resources, "licenses")).sort()).toEqual([
-      "FluidAudio-0.15.5-LICENSE.txt",
-      "FluidAudio-0.15.5-fastcluster-LICENSE.md",
-      "FluidAudio-0.15.5-vbx-LICENSE.md",
-    ]);
+      "FluidAudio-0.17.5-LICENSE.txt",
+      "FluidAudio-0.17.5-fastcluster-LICENSE.md",
+      "FluidAudio-0.17.5-vbx-LICENSE.md",
+      "FluidAudio-0.17.5-NemoTextProcessing-LICENSE.md",
+      "NemoTextProcessing-0.3.1-LICENSE.txt",
+      "NemoTextProcessing-0.3.1-NOTICE.txt",
+      "NemoTextProcessing-0.3.1-THIRD-PARTY-LICENSES.md",
+
+      "FluidAudio-0.17.5-JapaneseG2P-LICENSE.md",
+      "FluidAudio-0.17.5-KokoroAneSpanishFrenchG2P-LICENSE.md",
+      "Moonshine-LICENSE.txt",
+      "Moonshine-utf8proc-LICENSE.txt",
+      "Moonshine-nlohmann-LICENSE.txt",
+      "Moonshine-utf8-LICENSE.txt",
+      "Moonshine-kaldi-native-fbank-LICENSE.txt",
+      "Moonshine-ONNXRuntime-LICENSE.txt",
+    ].sort());
     expect(existsSync(path.join(resources, "python-runtime", "venv", "lib", "pkg", "tests"))).toBe(false);
     expect(existsSync(path.join(resources, "python-runtime-windows"))).toBe(false);
   });

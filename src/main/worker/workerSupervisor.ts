@@ -137,6 +137,9 @@ const computeTypeSchema = z.enum([
   "bfloat16",
   "coreml-fp16",
   "coreml-int8",
+  "coreml-lut6-ane",
+  "coreml-lut3-gpu",
+  "onnx-cpu",
 ]);
 export type WorkerComputeType = z.infer<typeof computeTypeSchema>;
 

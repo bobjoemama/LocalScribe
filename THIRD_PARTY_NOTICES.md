@@ -20,18 +20,28 @@ Major runtime components include:
   License: https://creativecommons.org/licenses/by/4.0/
   Weights are downloaded only at the user's request and are not included in
   the installer. High uses BF16; Medium and Low use Q8_0 and Q4_K_M conversions.
-- FluidAudio 0.15.5 (Apache License 2.0). The exact upstream license from
-  pinned revision `19600a485baa4998812e4654b70d2bab8f2c9949` is distributed
-  as `resources/licenses/FluidAudio-0.15.5-LICENSE.txt`.
+- FluidAudio 0.17.5 (Apache License 2.0). The exact upstream license from
+  pinned revision `0b1f46289fe27d95b5e66ad8be46e64f5ee02ae7` is distributed
+  as `resources/licenses/FluidAudio-0.17.5-LICENSE.txt`.
 - FastCluster sources embedded by that pinned FluidAudio revision
   (BSD 2-Clause). FluidAudio's exact upstream attribution and license text from
   `ThirdPartyLicenses/fastcluster-LICENSE.md` is distributed as
-  `resources/licenses/FluidAudio-0.15.5-fastcluster-LICENSE.md`.
+  `resources/licenses/FluidAudio-0.17.5-fastcluster-LICENSE.md`.
 - The FluidAudio Swift implementation based on the VBx speaker-diarization
   algorithm (Apache License 2.0; copyright 2021-2024 BUT Speech@FIT).
   FluidAudio's exact upstream attribution and license text from
   `ThirdPartyLicenses/vbx-LICENSE.md` is distributed as
-  `resources/licenses/FluidAudio-0.15.5-vbx-LICENSE.md`.
+  `resources/licenses/FluidAudio-0.17.5-vbx-LICENSE.md`.
+- NemoTextProcessing 0.3.1 (Apache-2.0), statically linked by FluidAudio.
+  The upstream attribution covering NeMo grammars and Rust dependencies is
+  `resources/licenses/FluidAudio-0.17.5-NemoTextProcessing-LICENSE.md`. The exact
+  text-processing-rs release LICENSE, NOTICE, and third-party attribution are
+  retained as `resources/licenses/NemoTextProcessing-0.3.1-*`.
+  FluidAudio Japanese and Spanish/French G2P attributions are also retained.
+- Moonshine Voice Swift 0.1.5 (MIT), pinned to
+  `45a14f9edf1f2a6913d3aff38c1fd4e72d5b7daa`. Its static runtime includes
+  ONNX Runtime, kaldi-native-fbank, utf8proc, utf-8, and nlohmann/json;
+  their license texts are retained as `resources/licenses/Moonshine*LICENSE.txt`.
 - MLX, MLX Audio, and the Python inference stack (their packaged
   upstream licenses)
 

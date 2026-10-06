@@ -962,6 +962,8 @@ export function SettingsModal({ onClose, registerDismissalGate, initialTab = "ge
    * ref closes that window the way `applyModelSelection` already does.
    */
   const modelOperationInFlight = useRef(false);
+  const [installingAllModels, setInstallingAllModels] = useState(false);
+  const stopModelDownloads = useRef(false);
   const [modelFeedback, setModelFeedback] = useState<{ message: string; isError: boolean } | null>(null);
   const dialogRef = useRef<HTMLElement>(null);
   /*
@@ -1402,6 +1404,58 @@ export function SettingsModal({ onClose, registerDismissalGate, initialTab = "ge
     }
   };
 
+  const installAllModels = async () => {
+    if (modelOperationInFlight.current || !modelCatalog) return;
+    const seen = new Set<string>();
+    const downloads = modelCatalog.families.flatMap((family) => family.profiles.flatMap((profile) => {
+      if (seen.has(profile.artifactId)) return [];
+      seen.add(profile.artifactId);
+      const verification = modelCatalog.verifications.find((entry) => entry.familyId === family.familyId && entry.artifactId === profile.artifactId);
+      if (verification?.verificationStatus === "verified") return [];
+      const artifact = family.artifacts.find((entry) => entry.artifactId === profile.artifactId);
+      return artifact ? [{ family, profile, artifact, replaceExisting: verification?.verificationStatus === "invalid" }] : [];
+    }));
+    if (downloads.length === 0) {
+      setModelFeedback({ message: "All model downloads are verified. Apply a selection to load it.", isError: false });
+      return;
+    }
+    const totalBytes = downloads.reduce((sum, item) => sum + item.artifact.expectedDownloadBytes, 0);
+    if (!window.confirm(`Download all ${downloads.length} remaining model packages (${formatBytes(totalBytes)})? Downloads run one at a time and stay on disk. Your selected model stays unchanged.`)) return;
+    modelOperationInFlight.current = true;
+    setInstallingAllModels(true);
+    stopModelDownloads.current = false;
+    let completed = 0;
+    let failure: string | null = null;
+    const addedFamilies = new Set<ModelFamilyId>();
+    try {
+      for (const item of downloads) {
+        if (stopModelDownloads.current) break;
+        const { family, profile, replaceExisting } = item;
+        if (!family.inLibrary && !addedFamilies.has(family.familyId)) {
+          setModelAction({ action: "adding", familyId: family.familyId });
+          setModelCatalog(await window.localScribe.system.addModelFamily({ familyId: family.familyId }));
+          addedFamilies.add(family.familyId);
+        }
+        setModelAction({ action: replaceExisting ? "repairing" : "installing", familyId: family.familyId, tier: profile.tier, progress: { phase: "preparing" } });
+        setModelFeedback({ message: `Downloading ${completed + 1} of ${downloads.length}: ${family.displayName} · ${tierLabel(profile.tier)}…`, isError: false });
+        setDiagnostics(await window.localScribe.system.installModel(modelInstallRequest(family.familyId, profile.tier, replaceExisting)));
+        completed += 1;
+      }
+    } catch (error) {
+      failure = `Download all stopped after ${completed} of ${downloads.length} packages: ${errorDetail(error)}`;
+    }
+    try {
+      await refreshModelCatalog();
+    } catch (error) {
+      failure = `${failure ?? `${completed} packages downloaded.`} Could not refresh model status: ${errorDetail(error)}`;
+    } finally {
+      modelOperationInFlight.current = false;
+      setModelAction(null);
+      setInstallingAllModels(false);
+      setModelFeedback({ message: failure ?? (completed < downloads.length ? `Stopped after ${completed} of ${downloads.length} packages. Completed downloads stay on disk.` : `All ${completed} model packages downloaded and verified. Apply a selection to load it.`), isError: failure !== null });
+    }
+  };
+
   const removeModel = async (familyId: ModelFamilyId, tier: ModelPerformanceTier) => {
     if (modelOperationInFlight.current) return;
     const model = catalogModelProfile(modelCatalog, familyId, tier);
@@ -1783,6 +1837,23 @@ export function SettingsModal({ onClose, registerDismissalGate, initialTab = "ge
                     isError: false,
                   });
                 }}
+                onProfileChange={(familyId, tier) => {
+                  const family = modelCatalog?.families.find((candidate) => candidate.familyId === familyId);
+                  setPendingModelSelection({
+                    familyId,
+                    performanceMode: tier,
+                    asrMode: family?.capabilities.modes.includes(displayedModelSelection!.asrMode)
+                      ? displayedModelSelection!.asrMode
+                      : family?.capabilities.modes[0] ?? "after-stop",
+                  });
+                  setModelFeedback({ message: `${family?.displayName ?? familyId} · ${tierLabel(tier)} selected. Press Apply model to load it.`, isError: false });
+                }}
+                installingAll={installingAllModels}
+                onStopInstallAll={() => {
+                  stopModelDownloads.current = true;
+                  setModelFeedback({ message: "Stopping after the current package finishes downloading and verifying…", isError: false });
+                }}
+                onInstallAll={() => void installAllModels()}
                 onApply={() => void applyModelSelection()}
                 onInstall={(familyId, tier) => void installModel(familyId, tier, false)}
                 onRepair={(familyId, tier) => void installModel(familyId, tier, true)}

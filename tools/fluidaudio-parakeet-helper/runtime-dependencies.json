@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "artifacts": [
+    {
+      "name": "NemoTextProcessing",
+      "version": "0.3.1",
+      "url": "https://github.com/FluidInference/text-processing-rs/releases/download/v0.3.1/NemoTextProcessing.xcframework.zip",
+      "sha256": "5fa8c10d4ec26c1bb2413125f351a7222a4c68a23b74476680fbada7e26fc6aa",
+      "embeddedBy": "FluidAudio"
+    },
+    {
+      "name": "Moonshine",
+      "version": "0.1.5",
+      "url": "https://github.com/moonshine-ai/moonshine-swift/releases/download/v0.1.5/Moonshine.xcframework.zip",
+      "sha256": "6bc7fb4b6d3a470a2ae2d681299975f3ba9d710753786d1cd7e8beabaad066e8",
+      "embeddedBy": "MoonshineVoice"
+    }
+  ],
+  "notices": {
+    "FluidAudio-0.17.5-NemoTextProcessing-LICENSE.md": "300a31d86c7c5d809f0adc00ef7d35259226acc7e412b9767cd3029a3395c50e",
+    "FluidAudio-0.17.5-JapaneseG2P-LICENSE.md": "cb82031f608b056ffb378073d15fd840e070a1dd3063f8975556f9536d447103",
+    "FluidAudio-0.17.5-KokoroAneSpanishFrenchG2P-LICENSE.md": "82b80894661fb61209fc39f91bb50b2ed5d0c8628f9d1460ccc853b8bcf12043",
+    "Moonshine-LICENSE.txt": "fa7d1174dd8af6a7cd280be20b80d10095ed4c19b5b20b61a7715c3ad790dc5f",
+    "Moonshine-utf8proc-LICENSE.txt": "3b510150d34f248a221bb88e1d811238d6c6c18b51231822c42974c39bb07256",
+    "Moonshine-nlohmann-LICENSE.txt": "86b998c792894ccb911a1cb7994f7a9652894e7a094c0b5e45be2f553f45cf14",
+    "Moonshine-utf8-LICENSE.txt": "c9bff75738922193e67fa726fa225535870d2aa1059f91452c411736284ad566",
+    "Moonshine-kaldi-native-fbank-LICENSE.txt": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+    "Moonshine-ONNXRuntime-LICENSE.txt": "2f07c72751aed99790b8a4869cf2311df85a860b22ded05fa22803587a48922c",
+    "NemoTextProcessing-0.3.1-LICENSE.txt": "ac84752611bfcb8e2f472b17f9cb18f5321c9a75c2a5445b766725b1de67790b",
+    "NemoTextProcessing-0.3.1-NOTICE.txt": "886143044515319a91f4447f9b447bb89089b4c9af847300f4b8de830c805852",
+    "NemoTextProcessing-0.3.1-THIRD-PARTY-LICENSES.md": "14d21dbb0deb74aa7775f5803c36609aa6ef0c38c94fb03dbc95efb3645f7678"
+  },
+  "noticeSources": {
+    "Moonshine": "https://github.com/moonshine-ai/moonshine/tree/234f60faa0eb388b01cdf7e60aca232af37aefda",
+    "NemoTextProcessing": "https://github.com/FluidInference/text-processing-rs/tree/v0.3.1",
+    "FluidAudio": "https://github.com/FluidInference/FluidAudio/tree/0b1f46289fe27d95b5e66ad8be46e64f5ee02ae7"
+  }
+}

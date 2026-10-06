@@ -10,6 +10,8 @@ export function modelFamilyDisplayName(familyId: ModelFamilyId): string {
     case "qwen3-asr-0-6b": return "Qwen3-ASR 0.6B";
     case "qwen3-asr-1-7b": return "Qwen3-ASR 1.7B";
     case "canary-qwen-2-5b": return "Canary-Qwen 2.5B";
+    case "phonon-2": return "Phonon 2";
+    case "moonshine-small-streaming": return "Moonshine Small Streaming";
     default: return "Unavailable model";
   }
 }

@@ -26,6 +26,9 @@ const MAC_MANIFEST_FILENAMES = [
   "canary-qwen-2-5b-gguf-q4.json",
   "parakeet-unified-en-0-6b-coreml-fp16.json",
   "parakeet-unified-en-0-6b-coreml-int8.json",
+  "phonon-2-coreml-lut6-ane.json",
+  "phonon-2-coreml-lut3-gpu.json",
+  "moonshine-small-streaming-cpu.json",
   "qwen3-asr-0-6b-mlx-bf16.json",
   "qwen3-asr-0-6b-mlx-8bit.json",
   "qwen3-asr-0-6b-mlx-4bit.json",
@@ -121,7 +124,7 @@ describe("packaged model specifications", () => {
     }
   });
 
-  it("loads exactly the supported Parakeet, Qwen, and Canary families", () => {
+  it("loads exactly the supported Mac model families", () => {
     const manifestDirectory = path.resolve("resources/model-manifest");
     const mac = loadRuntimeModelCatalog(
       manifestDirectory,
@@ -137,6 +140,8 @@ describe("packaged model specifications", () => {
       "qwen3-asr-0-6b",
       "qwen3-asr-1-7b",
       "canary-qwen-2-5b",
+      "phonon-2",
+      "moonshine-small-streaming",
     ]);
     expect(platformMac.recommendedDefaultFamilyId).toBe("parakeet-unified-en-0-6b");
     expect(platformMac.families["parakeet-unified-en-0-6b"]).toMatchObject({
@@ -216,6 +221,30 @@ describe("packaged model specifications", () => {
     }
   });
 
+  it("keeps Phonon hardware profiles isolated and routes Moonshine CPU exactly", () => {
+    const catalog = loadRuntimePlatformModelCatalog(path.resolve("resources/model-manifest"), "darwin", "arm64");
+    const phonon = catalog.families["phonon-2"]!;
+    const high = runtimeModelTier(phonon, "high");
+    const medium = runtimeModelTier(phonon, "medium");
+    expect(high.expectedDownloadBytes).toBe(506_857_210);
+    expect(medium.expectedDownloadBytes).toBe(289_801_830);
+    expect(high.manifest.storageDirectory).not.toBe(medium.manifest.storageDirectory);
+    expect(Object.keys(high.manifest.files)).toContain("Encoder_lut6.mlmodelc/weights/weight.bin");
+    expect(Object.keys(high.manifest.files).some((name) => name.startsWith("Encoder_lut3"))).toBe(false);
+    expect(Object.keys(medium.manifest.files)).toContain("Encoder_lut3.mlmodelc/weights/weight.bin");
+    for (const mode of ["live", "after-stop"] as const) {
+      expect(manifestForWorkerSelection(catalog, {modelId: high.manifest.modelId, tier: "high", computeType: "coreml-lut6-ane", asrMode: mode})).toBe(high.manifest);
+      expect(manifestForWorkerSelection(catalog, {modelId: high.manifest.modelId, tier: "high", computeType: "coreml-lut3-gpu", asrMode: mode})).toBeNull();
+    }
+    const moonshine = runtimeModelTier(catalog.families["moonshine-small-streaming"]!, "high");
+    expect(moonshine.expectedDownloadBytes).toBe(142_300_974);
+    expect(moonshine.manifest.license).toBe("MIT");
+    expect(Object.keys(moonshine.manifest.files)).toHaveLength(8);
+    expect(manifestForWorkerSelection(catalog, {modelId: moonshine.manifest.modelId, tier: "high", computeType: "onnx-cpu", asrMode: "live"})).toBe(moonshine.manifest);
+    expect(phonon.tiers.low).toBeUndefined();
+    expect(catalog.families["moonshine-small-streaming"]!.tiers.medium).toBeUndefined();
+  });
+
   it("keeps the legacy singleton loader on the recommended Parakeet medium tier", () => {
     const manifestDirectory = path.resolve("resources/model-manifest");
     expect(loadRuntimeModelSpec(manifestDirectory, "darwin", "arm64").modelId).toBe(
@@ -256,8 +285,11 @@ describe("packaged model specifications", () => {
       expect.objectContaining({ familyId: "canary-qwen-2-5b", artifactId: "canary-qwen-2-5b-gguf-bf16" }),
       expect.objectContaining({ familyId: "canary-qwen-2-5b", artifactId: "canary-qwen-2-5b-gguf-q8" }),
       expect.objectContaining({ familyId: "canary-qwen-2-5b", artifactId: "canary-qwen-2-5b-gguf-q4" }),
+      expect.objectContaining({ familyId: "phonon-2", artifactId: "phonon-2-coreml-lut6-ane" }),
+      expect.objectContaining({ familyId: "phonon-2", artifactId: "phonon-2-coreml-lut3-gpu" }),
+      expect.objectContaining({ familyId: "moonshine-small-streaming", artifactId: "moonshine-small-streaming-cpu" }),
     ]);
-    expect(macVerifier).toHaveBeenCalledTimes(11);
+    expect(macVerifier).toHaveBeenCalledTimes(14);
   });
 
   it("rejects cross-family storage aliasing before verification or removal can target it", async () => {

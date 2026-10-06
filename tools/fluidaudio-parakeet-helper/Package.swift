@@ -11,14 +11,16 @@ let package = Package(
     dependencies: [
         .package(
             url: "https://github.com/FluidInference/FluidAudio.git",
-            exact: "0.15.5"
-        )
+            exact: "0.17.5"
+        ),
+        .package(url: "https://github.com/moonshine-ai/moonshine-swift.git", exact: "0.1.5"),
     ],
     targets: [
         .executableTarget(
             name: "localscribe-fluidaudio-parakeet",
             dependencies: [
-                .product(name: "FluidAudio", package: "FluidAudio")
+                .product(name: "FluidAudio", package: "FluidAudio"),
+                .product(name: "MoonshineVoice", package: "moonshine-swift")
             ]
         )
     ]

@@ -78,8 +78,13 @@ async function audit() {
     for (const [filename, expected] of Object.entries(manifest.files)) {
       const remote = metadata.siblings.find((file) => file.rfilename === filename);
       if (!validateRemoteFile(expected, remote)) {
+        // This pinned Moonshine frontend is a small ONNX execution graph;
+        // its weights remain independently LFS-attested and are never fetched.
+        const smallMoonshineFrontend = manifest.modelId === "moonshine-ai/moonshine-voice-assets"
+          && filename === "model/small-streaming-en/quantized_26_08_21/frontend.model.ort"
+          && expected.bytes <= 32_768;
         // Never retrieve an unrecognized binary or weight file, even if small.
-        if (!(filename === ".gitattributes" || filename === "README.md" || /\.(json|txt|plist|mil|mlmodel)$/.test(filename)) || expected.bytes > 4_000_000) {
+        if (!(smallMoonshineFrontend || filename === ".gitattributes" || filename === "README.md" || /\.(json|txt|plist|mil|mlmodel)$/.test(filename)) || expected.bytes > 4_000_000) {
           throw new Error(`Cannot verify ${filename} without a model download`);
         }
         const encodedPath = filename.split("/").map(encodeURIComponent).join("/");
