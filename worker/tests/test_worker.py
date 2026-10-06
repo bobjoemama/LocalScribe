@@ -14,10 +14,8 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
-import numpy as np
-from tqdm.contrib.concurrent import thread_map
-
 import localscribe_worker.worker as worker_module
+import numpy as np
 from localscribe_worker.worker import (
     MAX_REQUEST_BYTES,
     TIER_SPECS,
@@ -32,6 +30,7 @@ from localscribe_worker.worker import (
     ensure_model,
     run_worker,
 )
+from tqdm.contrib.concurrent import thread_map
 
 
 def request(message_type: str, **fields: Any) -> dict[str, Any]:
