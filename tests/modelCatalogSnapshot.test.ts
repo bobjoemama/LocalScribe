@@ -72,7 +72,7 @@ describe("main-process model catalog snapshot", () => {
 
     expect(() => modelCatalogSchema.parse(snapshot)).not.toThrow();
     expect(snapshot.recommendedDefaultFamilyId).toBe("parakeet-unified-en-0-6b");
-    expect(snapshot.verifications).toHaveLength(11);
+    expect(snapshot.verifications).toHaveLength(14);
     expect(snapshot.verifications).toEqual(expect.arrayContaining([
       expect.objectContaining({
         familyId: "parakeet-unified-en-0-6b",
@@ -99,6 +99,11 @@ describe("main-process model catalog snapshot", () => {
         artifactId: "qwen3-asr-1-7b-mlx-8bit",
         verificationStatus: "missing",
       }),
+      ...[
+        ["phonon-2", "phonon-2-coreml-lut6-ane"],
+        ["phonon-2", "phonon-2-coreml-lut3-gpu"],
+        ["moonshine-small-streaming", "moonshine-small-streaming-cpu"],
+      ].map(([familyId, artifactId]) => expect.objectContaining({ familyId, artifactId, verificationStatus: "missing" })),
     ]));
     expect(snapshot.families.find((family) => family.familyId === "whisper-large-v2"))
       .toBeUndefined();

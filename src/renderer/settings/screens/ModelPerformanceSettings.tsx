@@ -594,6 +594,8 @@ export function ModelPerformanceSettings({
     languageHasUnsavedChange,
   });
   const availableModeChoices = supportedModeChoices(pendingFamily);
+  const allPackagesDownloaded = Boolean(catalog?.families.length) && catalog!.families.every((family) => family.profiles.every((profile) => catalog!.verifications.some((entry) => entry.familyId === family.familyId && entry.artifactId === profile.artifactId && entry.verificationStatus === "verified")));
+  const allFamiliesInLibrary = catalog?.families.every((family) => family.inLibrary) ?? false;
   const liveFamiliesAvailable = catalog?.families.some(
     (family) => modelFamilyPresentation(family).experiences.includes("live"),
   ) ?? false;
@@ -777,7 +779,7 @@ export function ModelPerformanceSettings({
             <p>Downloads stay on disk. Applying a selection loads only that model.</p>
           </div>
           <div className="ls-model-sort-toolbar">
-            {installingAll && onStopInstallAll ? <button type="button" className="ls-small-button" onClick={onStopInstallAll}>Stop after current</button> : onInstallAll && <button type="button" className="ls-small-button" disabled={applying || refreshing || action !== null || !catalog || Boolean(catalogError)} onClick={onInstallAll}>Download all</button>}
+            {installingAll && onStopInstallAll ? <button type="button" className="ls-small-button" onClick={onStopInstallAll}>Stop after current</button> : onInstallAll && <button type="button" className="ls-small-button" disabled={applying || refreshing || action !== null || !catalog || Boolean(catalogError) || (allPackagesDownloaded && allFamiliesInLibrary)} onClick={onInstallAll}>{allPackagesDownloaded ? allFamiliesInLibrary ? "All downloaded" : "All downloaded · Add to library" : "Download all"}</button>}
             <label>
               Sort models
               <select value={sortOrder} onChange={(event) => {

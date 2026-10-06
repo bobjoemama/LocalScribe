@@ -60,6 +60,8 @@ describe("IPC contracts", () => {
       "qwen3-asr-0-6b",
       "qwen3-asr-1-7b",
       "canary-qwen-2-5b",
+      "phonon-2",
+      "moonshine-small-streaming",
     ]);
     expect(MODEL_FAMILY_IDS).toEqual([
       ...AVAILABLE_MODEL_FAMILY_IDS,

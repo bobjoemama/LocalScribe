@@ -1,4 +1,5 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -38,9 +39,48 @@ const temporaryDirectories: string[] = [];
  * scheme must update this deliberately — and must rebuild every artifact whose
  * embedded expectation was computed under the old scheme.
  */
-// Deliberately regenerated when the final Whisper manifest left the selected
-// inventory (eleven supported profiles). The hashing algorithm is unchanged.
-const GOLDEN_ROOT = "0b30326190eeeea4f015f7cb674494b90b2313a7c032175f15dd63f0ba64c1e1";
+// The selected inventory now includes three additional profiles and the exact
+// FluidAudio 0.17.5 / Moonshine / Nemo notices. Recomputed independently with
+// the previous quadratic algorithm below, not copied from production output.
+const GOLDEN_ROOT = "8954f72185d758e0063d5a4e2f89ddab050407a0683b5931403c0ef38c136d40";
+
+/** Independent reference: scan the fixture, then rescan all hashes per directory. */
+function previousQuadraticRoot(resourcesPath: string): string {
+  const domain = "localscribe-resource-integrity-v1";
+  const hash = (fields: readonly string[]): string =>
+    createHash("sha256").update(fields.join("\0")).digest("hex");
+  const entries = new Map<string, string>();
+  const directories: string[] = [];
+  const visit = (relative: string): void => {
+    for (const child of readdirSync(path.join(resourcesPath, relative), { withFileTypes: true })) {
+      const childPath = path.posix.join(relative, child.name);
+      if (child.isDirectory()) {
+        directories.push(childPath);
+        visit(childPath);
+      } else {
+        const bytes = readFileSync(path.join(resourcesPath, childPath));
+        entries.set(childPath, hash([
+          domain, "file", childPath, String(bytes.length), "",
+          createHash("sha256").update(bytes).digest("hex"),
+        ]));
+      }
+    }
+  };
+  visit("");
+  const compare = (left: string, right: string): number => left < right ? -1 : left > right ? 1 : 0;
+  const children = (parent: string): string[] => [...entries.entries()]
+    .filter(([entry]) => path.posix.dirname(entry) === parent)
+    .sort(([left], [right]) => compare(left, right))
+    .flatMap(([entry, digest]) => [path.posix.basename(entry), digest]);
+  directories.sort((left, right) => right.split("/").length - left.split("/").length || compare(left, right));
+  for (const directory of directories) {
+    entries.set(directory, hash([domain, "directory", directory, "0", ...children(directory)]));
+  }
+  const policy = resourcePolicyFor("darwin", "arm64");
+  const coveredRoots = [policy.workerDirectory, policy.runtimeDirectory,
+    ...policy.helperFiles, ...policy.manifestFiles, ...policy.licenseFiles, ...policy.brandingFiles].sort();
+  return hash([domain, "root", "darwin-arm64", ...coveredRoots, ...children(".")]);
+}
 
 function fixture(): string {
   const resourcesPath = mkdtempSync(path.join(tmpdir(), "localscribe-root-"));
@@ -88,7 +128,9 @@ afterEach(() => {
 
 describe("packaged resource tree root", () => {
   it("still produces the root the previous implementation produced", () => {
-    const expectation = buildResourceIntegrityExpectation(fixture(), "darwin", "arm64");
+    const resourcesPath = fixture();
+    expect(previousQuadraticRoot(resourcesPath)).toBe(GOLDEN_ROOT);
+    const expectation = buildResourceIntegrityExpectation(resourcesPath, "darwin", "arm64");
     expect(expectation.root).toBe(GOLDEN_ROOT);
   });
 

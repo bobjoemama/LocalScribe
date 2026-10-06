@@ -1415,27 +1415,31 @@ export function SettingsModal({ onClose, registerDismissalGate, initialTab = "ge
       const artifact = family.artifacts.find((entry) => entry.artifactId === profile.artifactId);
       return artifact ? [{ family, profile, artifact, replaceExisting: verification?.verificationStatus === "invalid" }] : [];
     }));
-    if (downloads.length === 0) {
+    const familiesToAdd = modelCatalog.families.filter((family) => !family.inLibrary);
+    if (downloads.length === 0 && familiesToAdd.length === 0) {
       setModelFeedback({ message: "All model downloads are verified. Apply a selection to load it.", isError: false });
       return;
     }
     const totalBytes = downloads.reduce((sum, item) => sum + item.artifact.expectedDownloadBytes, 0);
-    if (!window.confirm(`Download all ${downloads.length} remaining model packages (${formatBytes(totalBytes)})? Downloads run one at a time and stay on disk. Your selected model stays unchanged.`)) return;
+    const confirmation = downloads.length === 0
+      ? `All model packages are downloaded. Add ${familiesToAdd.length} model families to your library? Your selected model stays unchanged.`
+      : `Download all ${downloads.length} remaining model packages (${formatBytes(totalBytes)}) and add available families to your library? Downloads run one at a time and stay on disk. Your selected model stays unchanged.`;
+    if (!window.confirm(confirmation)) return;
     modelOperationInFlight.current = true;
     setInstallingAllModels(true);
     stopModelDownloads.current = false;
     let completed = 0;
     let failure: string | null = null;
-    const addedFamilies = new Set<ModelFamilyId>();
     try {
+      for (const family of familiesToAdd) {
+        if (stopModelDownloads.current) break;
+        setModelAction({ action: "adding", familyId: family.familyId });
+        setModelFeedback({ message: `Adding ${family.displayName} to your library…`, isError: false });
+        setModelCatalog(await window.localScribe.system.addModelFamily({ familyId: family.familyId }));
+      }
       for (const item of downloads) {
         if (stopModelDownloads.current) break;
         const { family, profile, replaceExisting } = item;
-        if (!family.inLibrary && !addedFamilies.has(family.familyId)) {
-          setModelAction({ action: "adding", familyId: family.familyId });
-          setModelCatalog(await window.localScribe.system.addModelFamily({ familyId: family.familyId }));
-          addedFamilies.add(family.familyId);
-        }
         setModelAction({ action: replaceExisting ? "repairing" : "installing", familyId: family.familyId, tier: profile.tier, progress: { phase: "preparing" } });
         setModelFeedback({ message: `Downloading ${completed + 1} of ${downloads.length}: ${family.displayName} · ${tierLabel(profile.tier)}…`, isError: false });
         setDiagnostics(await window.localScribe.system.installModel(modelInstallRequest(family.familyId, profile.tier, replaceExisting)));
@@ -1452,7 +1456,7 @@ export function SettingsModal({ onClose, registerDismissalGate, initialTab = "ge
       modelOperationInFlight.current = false;
       setModelAction(null);
       setInstallingAllModels(false);
-      setModelFeedback({ message: failure ?? (completed < downloads.length ? `Stopped after ${completed} of ${downloads.length} packages. Completed downloads stay on disk.` : `All ${completed} model packages downloaded and verified. Apply a selection to load it.`), isError: failure !== null });
+      setModelFeedback({ message: failure ?? (stopModelDownloads.current || completed < downloads.length ? `Stopped after ${completed} of ${downloads.length} packages. Completed downloads stay on disk.` : `All model packages are downloaded and verified; available families are in your library. Apply a selection to load it.`), isError: failure !== null });
     }
   };
 
