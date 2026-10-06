@@ -2,9 +2,10 @@
 import CoreML
 import FluidAudio
 import Foundation
+import MoonshineVoice
 
-private let protocolVersion = 1
-private let runtimeVersion = "0.15.5"
+private let protocolVersion = 2
+private let runtimeVersion = "FluidAudio/0.17.5 Moonshine/0.1.5"
 // Commands and responses are JSON metadata only; PCM follows in a separately
 // length-bounded raw payload. Keep framing aligned with the Python adapter so
 // a compromised peer cannot make the helper allocate a 32 MiB JSON frame.
@@ -13,15 +14,20 @@ private let maximumPcmBytes = 20_971_520
 private let expectedModelDirectoryNames: [ParakeetPrecision: String] = [
     .fp16: "parakeet-unified-en-0-6b-coreml-fp16",
     .int8: "parakeet-unified-en-0-6b-coreml-int8",
+    .lut6ANE: "phonon-2-coreml-lut6-ane",
+    .lut3GPU: "phonon-2-coreml-lut3-gpu",
+    .moonshineCPU: "moonshine-small-streaming-cpu",
 ]
 
-private enum HelperError: Error {
+enum HelperError: Error {
     case malformedFrame
     case frameTooLarge
     case malformedRequest
     case invalidModelPath
     case pcmLengthInvalid
     case modelNotLoaded
+    case unsupportedPlatform
+    case runtimeFailure
 }
 
 private func errorCode(_ error: Error) -> String {
@@ -34,6 +40,8 @@ private func errorCode(_ error: Error) -> String {
         return "invalid_model_path"
     case HelperError.modelNotLoaded:
         return "model_not_loaded"
+    case HelperError.unsupportedPlatform:
+        return "unsupported_platform"
     default:
         return "runtime_failure"
     }
@@ -107,7 +115,7 @@ private func exactInteger(_ request: [String: Any], _ key: String) throws -> Int
     return Int(number.int64Value)
 }
 
-private enum ParakeetMode: String {
+enum ParakeetMode: String {
     case afterStop = "after-stop"
     case live
 }
@@ -115,11 +123,15 @@ private enum ParakeetMode: String {
 private enum ParakeetPrecision: String {
     case fp16 = "coreml-fp16"
     case int8 = "coreml-int8"
+    case lut6ANE = "coreml-lut6-ane"
+    case lut3GPU = "coreml-lut3-gpu"
+    case moonshineCPU = "onnx-cpu"
 
     var fluidAudio: UnifiedEncoderPrecision {
         switch self {
         case .fp16: return .fp16
         case .int8: return .int8
+        case .lut6ANE, .lut3GPU, .moonshineCPU: return .fp16
         }
     }
 }
@@ -128,6 +140,8 @@ private final class ParakeetRuntime {
     private var offlineManager: UnifiedAsrManager?
     private var liveManager: StreamingUnifiedAsrManager?
     private var mode: ParakeetMode?
+    private var phonon: PhononRuntime?
+    private var moonshine: MoonshineRuntime?
 
     private func samples(from pcm16: Data) throws -> [Float] {
         guard !pcm16.isEmpty, pcm16.count <= maximumPcmBytes, pcm16.count.isMultiple(of: 2) else {
@@ -173,6 +187,21 @@ private final class ParakeetRuntime {
         // damaged CoreML bundle must become a repairable error, never trigger
         // an unpinned redownload or alter the verified model directory.
         ModelHub.offlineMode = true
+        await close()
+        if precision == .lut6ANE || precision == .lut3GPU {
+            let runtime = PhononRuntime()
+            try await runtime.load(url, gpu: precision == .lut3GPU, mode: mode)
+            phonon = runtime
+            self.mode = mode
+            return
+        }
+        if precision == .moonshineCPU {
+            let runtime = MoonshineRuntime()
+            try await runtime.load(url, mode: mode)
+            moonshine = runtime
+            self.mode = mode
+            return
+        }
         let configuration = MLModelConfiguration()
         // The encoder is the only large graph. Pin it to ANE instead of letting
         // CoreML opportunistically contend with Electron/MLX on the GPU. The
@@ -203,6 +232,8 @@ private final class ParakeetRuntime {
     }
 
     func transcribe(pcm16: Data) async throws -> String {
+        if let phonon { return try await phonon.transcribe(samples(from: pcm16)) }
+        if let moonshine { return try await moonshine.transcribe(samples(from: pcm16)) }
         guard mode == .afterStop, let offlineManager else { throw HelperError.modelNotLoaded }
         let text = try await offlineManager.transcribe(try samples(from: pcm16))
         guard text.utf8.count <= 100_000 else { throw HelperError.malformedRequest }
@@ -210,6 +241,8 @@ private final class ParakeetRuntime {
     }
 
     func append(pcm16: Data) async throws -> String {
+        if let phonon { return try await phonon.append(samples(from: pcm16)) }
+        if let moonshine { return try await moonshine.append(samples(from: pcm16)) }
         guard mode == .live, let liveManager else { throw HelperError.modelNotLoaded }
         try await liveManager.appendAudio(makeBuffer(samples: try samples(from: pcm16)))
         try await liveManager.processBufferedAudio()
@@ -219,6 +252,8 @@ private final class ParakeetRuntime {
     }
 
     func finish() async throws -> String {
+        if let phonon { return try await phonon.finish() }
+        if let moonshine { return try await moonshine.finish() }
         guard mode == .live, let liveManager else { throw HelperError.modelNotLoaded }
         let text = try await liveManager.finish()
         guard text.utf8.count <= 100_000 else { throw HelperError.malformedRequest }
@@ -226,11 +261,17 @@ private final class ParakeetRuntime {
     }
 
     func reset() async throws {
+        if let phonon { try await phonon.reset(); return }
+        if let moonshine { try await moonshine.reset(); return }
         guard mode == .live, let liveManager else { throw HelperError.modelNotLoaded }
         try await liveManager.reset()
     }
 
     func close() async {
+        await phonon?.close()
+        await moonshine?.close()
+        phonon = nil
+        moonshine = nil
         await offlineManager?.cleanup()
         await liveManager?.cleanup()
         offlineManager = nil
@@ -246,10 +287,10 @@ struct LocalScribeFluidAudioParakeet {
         writeFrame([
             "type": "hello",
             "protocol": protocolVersion,
-            "runtime": "FluidAudio CoreML / ANE",
+            "runtime": "LocalScribe Native ASR",
             "runtimeVersion": runtimeVersion,
             "modes": ["after-stop", "live"],
-            "precisions": ["coreml-fp16", "coreml-int8"],
+            "precisions": ["coreml-fp16", "coreml-int8", "coreml-lut6-ane", "coreml-lut3-gpu", "onnx-cpu"],
         ])
         while true {
             do {

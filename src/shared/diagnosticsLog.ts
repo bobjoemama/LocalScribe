@@ -215,6 +215,7 @@ export const KNOWN_ERROR_CODES: ReadonlySet<string> = new Set([
   "transcription_failed",
   "unsafe_model_path",
   "unsupported_message_type",
+  "unsupported_platform",
   "worker_exited",
   "worker_timeout",
   "no_speech_detected",

@@ -48,7 +48,7 @@ describe("model ordering", () => {
     const qwen = families.find((family) => family.familyId === "qwen3-asr-1-7b")!;
     expect(modelComparisonValues(qwen, "high", "live").wer).toBeNull();
     for (const { id } of MODEL_SORT_OPTIONS) {
-      expect(orderModelFamilies(families, id, "high", "live").map((family) => family.familyId)).toEqual([parakeet.familyId]);
+      expect(orderModelFamilies(families, id, "high", "live").map((family) => family.familyId).sort()).toEqual([parakeet.familyId, "phonon-2", "moonshine-small-streaming"].sort());
     }
   });
 

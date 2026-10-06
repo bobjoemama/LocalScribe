@@ -115,9 +115,23 @@ describe("packaged loose-resource integrity", () => {
   });
 
   it.each([
-    "licenses/FluidAudio-0.15.5-LICENSE.txt",
-    "licenses/FluidAudio-0.15.5-fastcluster-LICENSE.md",
-    "licenses/FluidAudio-0.15.5-vbx-LICENSE.md",
+    "licenses/FluidAudio-0.17.5-LICENSE.txt",
+    "licenses/FluidAudio-0.17.5-fastcluster-LICENSE.md",
+    "licenses/FluidAudio-0.17.5-vbx-LICENSE.md",
+      "licenses/FluidAudio-0.17.5-NemoTextProcessing-LICENSE.md",
+      "licenses/NemoTextProcessing-0.3.1-LICENSE.txt",
+      "licenses/NemoTextProcessing-0.3.1-NOTICE.txt",
+      "licenses/NemoTextProcessing-0.3.1-THIRD-PARTY-LICENSES.md",
+
+      "licenses/FluidAudio-0.17.5-JapaneseG2P-LICENSE.md",
+      "licenses/FluidAudio-0.17.5-KokoroAneSpanishFrenchG2P-LICENSE.md",
+      "licenses/Moonshine-LICENSE.txt",
+      "licenses/Moonshine-utf8proc-LICENSE.txt",
+      "licenses/Moonshine-nlohmann-LICENSE.txt",
+      "licenses/Moonshine-utf8-LICENSE.txt",
+      "licenses/Moonshine-kaldi-native-fbank-LICENSE.txt",
+      "licenses/Moonshine-ONNXRuntime-LICENSE.txt",
+
   ])("protects the exact packaged notice bytes for %s", (noticePath) => {
     const resourcesPath = makeResourceFixture("darwin", "arm64");
     const expected = buildResourceIntegrityExpectation(resourcesPath, "darwin", "arm64");

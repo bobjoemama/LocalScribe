@@ -1978,10 +1978,13 @@ class ModelInstallationTests(unittest.TestCase):
         self.assertEqual(manifest.revision, "c" * 40)
 
     def test_packaged_catalog_has_exact_curated_manifests_and_files(self) -> None:
-        self.assertEqual(len(TIER_SPECS), 11)
+        self.assertEqual(len(TIER_SPECS), 14)
         self.assertEqual(
             {spec.manifest_filename for spec in TIER_SPECS.values()},
             {
+                "phonon-2-coreml-lut6-ane.json",
+                "phonon-2-coreml-lut3-gpu.json",
+                "moonshine-small-streaming-cpu.json",
                 "canary-qwen-2-5b-gguf-bf16.json",
                 "canary-qwen-2-5b-gguf-q8.json",
                 "canary-qwen-2-5b-gguf-q4.json",
@@ -1997,17 +2000,11 @@ class ModelInstallationTests(unittest.TestCase):
         )
         for family in ("qwen", "qwen06"):
             self.assertEqual(
-                [
-                    tier_spec(tier, family=family).compute_type
-                    for tier in ("high", "medium", "low")
-                ],
+                [tier_spec(tier, family=family).compute_type for tier in ("high", "medium", "low")],
                 ["bfloat16", "int8", "int4"],
             )
         self.assertEqual(
-            [
-                tier_spec(tier, family="parakeet").compute_type
-                for tier in ("high", "medium")
-            ],
+            [tier_spec(tier, family="parakeet").compute_type for tier in ("high", "medium")],
             ["coreml-fp16", "coreml-int8"],
         )
         for selection, manifest in worker_module.MODEL_MANIFESTS.items():
@@ -2031,6 +2028,18 @@ class ModelInstallationTests(unittest.TestCase):
                 )
                 self.assertTrue(any("streaming_70_7_7" in name for name in manifest.files))
                 self.assertFalse(any("streaming_70_13_13" in name for name in manifest.files))
+            elif manifest.family_id == "phonon-2":
+                encoder = (
+                    "Encoder_lut6" if spec.compute_type == "coreml-lut6-ane" else "Encoder_lut3"
+                )
+                self.assertIn(f"{encoder}.mlmodelc/weights/weight.bin", manifest.files)
+                self.assertIn("parakeet_vocab.json", manifest.files)
+                self.assertFalse(
+                    any(name.startswith("Encoder.mlmodelc/") for name in manifest.files)
+                )
+            elif manifest.family_id == "moonshine-small-streaming":
+                self.assertTrue(any(name.endswith("/encoder.ort") for name in manifest.files))
+                self.assertTrue(any(name.endswith("/tokenizer.bin") for name in manifest.files))
             else:
                 self.fail(f"unexpected model family: {manifest.family_id}")
             for model_file in manifest.files.values():
@@ -2053,11 +2062,17 @@ class RuntimeAndHardwareTests(unittest.TestCase):
                     frame(
                         {
                             "type": "hello",
-                            "protocol": 1,
-                            "runtime": "FluidAudio CoreML / ANE",
-                            "runtimeVersion": "0.15.5",
+                            "protocol": 2,
+                            "runtime": "LocalScribe Native ASR",
+                            "runtimeVersion": "FluidAudio/0.17.5 Moonshine/0.1.5",
                             "modes": ["after-stop", "live"],
-                            "precisions": ["coreml-fp16", "coreml-int8"],
+                            "precisions": [
+                                "coreml-fp16",
+                                "coreml-int8",
+                                "coreml-lut6-ane",
+                                "coreml-lut3-gpu",
+                                "onnx-cpu",
+                            ],
                         }
                     )
                     + frame({"type": "loaded"})
@@ -2089,7 +2104,9 @@ class RuntimeAndHardwareTests(unittest.TestCase):
             compute_type="coreml-int8",
         )
         with (
-            patch.object(worker_module, "_fluid_audio_helper_path", return_value=Path("/signed/helper")),
+            patch.object(
+                worker_module, "_fluid_audio_helper_path", return_value=Path("/signed/helper")
+            ),
             patch.object(worker_module.subprocess, "Popen", return_value=process),
         ):
             runtime = FluidAudioParakeetRuntime.load(
@@ -2122,6 +2139,29 @@ class RuntimeAndHardwareTests(unittest.TestCase):
         self.assertEqual(second, {"type": "transcribe", "pcmBytes": 2})
         self.assertEqual(wire[offset + 4 + second_length :], b"\x00\x00")
         runtime.close()
+
+    def test_new_native_profiles_dispatch_without_mlx_fallback(self) -> None:
+        specs = [
+            spec
+            for spec in TIER_SPECS.values()
+            if spec.family_id in {"phonon-2", "moonshine-small-streaming"}
+        ]
+        self.assertEqual(len(specs), 3)
+        for spec in specs:
+            with (
+                self.subTest(artifact=spec.artifact_id),
+                patch.object(FluidAudioParakeetRuntime, "load", return_value="native") as native,
+                patch.object(MLXAudioRuntime, "load") as mlx,
+            ):
+                path = Path("/models") / spec.storage_directory
+                self.assertEqual(worker_module._load_runtime(path, spec), "native")
+                native.assert_called_once_with(path, spec)
+                mlx.assert_not_called()
+        invalid = worker_module.replace(specs[0], compute_type="onnx-cpu")
+        with patch.object(worker_module.subprocess, "Popen") as spawn:
+            with self.assertRaises(WorkerError):
+                FluidAudioParakeetRuntime.load(Path("/models") / invalid.storage_directory, invalid)
+            spawn.assert_not_called()
 
     def test_qwen_families_dispatch_only_to_mlx_audio(self) -> None:
         for family in ("qwen", "qwen06"):

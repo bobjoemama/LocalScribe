@@ -247,7 +247,7 @@ describe("packaged macOS real-model smoke", () => {
       "    return False",
       "lock = root / 'owned.lock'",
       "marker = root / 'owned.marker'",
-      "owned = module.start_owned_process([sys.executable, '-c', child, str(lock), str(marker), descendant_code, '3'], cwd=Path.cwd(), environment=os.environ.copy())",
+      "owned = module.start_owned_process([sys.executable, '-c', child, str(lock), str(marker), descendant_code, '30'], cwd=Path.cwd(), environment=os.environ.copy())",
       "process = owned.process",
       "stderr = module.WorkerStderrReader(process)",
       "reader = module.WorkerResponseReader(process)",
@@ -255,8 +255,16 @@ describe("packaged macOS real-model smoke", () => {
       "unrelated = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'], start_new_session=True)",
       "try:",
       "  module.wait_for_exit(owned)",
+      "  if lock_available(lock): raise RuntimeError('owned descendant did not survive worker exit')",
       "  module.retire_owned_process(owned)",
+      // SIGKILL is delivered to every member, but waitpid only waits for the
+      // anchor. Give the separately scheduled descendant time to release its
+      // kernel lock; the assertion still requires release before its 30s sleep.
+      "  descendant_deadline = time.monotonic() + 1",
       "  descendant_released = lock_available(lock)",
+      "  while not descendant_released and time.monotonic() < descendant_deadline:",
+      "    time.sleep(0.01)",
+      "    descendant_released = lock_available(lock)",
       "  unexpected_lock = root / 'unexpected.lock'",
       "  unexpected_marker = root / 'unexpected.marker'",
       "  unexpected = module.start_owned_process([sys.executable, '-c', child, str(unexpected_lock), str(unexpected_marker), descendant_code, '1'], cwd=Path.cwd(), environment=os.environ.copy())",

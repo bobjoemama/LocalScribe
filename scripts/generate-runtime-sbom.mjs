@@ -292,12 +292,12 @@ const exactNoticeDigest = (relativePath, expectedDigest, label) => {
   return digest;
 };
 const fastClusterNoticeDigest = exactNoticeDigest(
-  "resources/licenses/FluidAudio-0.15.5-fastcluster-LICENSE.md",
+  "resources/licenses/FluidAudio-0.17.5-fastcluster-LICENSE.md",
   "67594dbe4a7477719c8160373e7767c2c319ef966a6042f76846a18af02cde0a",
   "FastCluster",
 );
 const vbxNoticeDigest = exactNoticeDigest(
-  "resources/licenses/FluidAudio-0.15.5-vbx-LICENSE.md",
+  "resources/licenses/FluidAudio-0.17.5-vbx-LICENSE.md",
   "08e57fdb5187c816e937916f1e176aadb400ca76f4b3b493d69730ec8f10dd80",
   "VBx",
 );
@@ -368,7 +368,7 @@ const fluidAudioEmbeddedComponents = [
       },
       {
         name: "com.localscribe.packaged-notice-path",
-        value: "licenses/FluidAudio-0.15.5-fastcluster-LICENSE.md",
+        value: "licenses/FluidAudio-0.17.5-fastcluster-LICENSE.md",
       },
       { name: "com.localscribe.packaged-notice-sha256", value: fastClusterNoticeDigest },
     ],
@@ -399,7 +399,7 @@ const fluidAudioEmbeddedComponents = [
       },
       {
         name: "com.localscribe.packaged-notice-path",
-        value: "licenses/FluidAudio-0.15.5-vbx-LICENSE.md",
+        value: "licenses/FluidAudio-0.17.5-vbx-LICENSE.md",
       },
       { name: "com.localscribe.packaged-notice-sha256", value: vbxNoticeDigest },
     ],
@@ -414,8 +414,8 @@ const rootSupplementalComponents = [
     version: appVersion,
     purl: `pkg:generic/localscribe-fluidaudio-parakeet@${appVersion}?platform=${platformName}`,
     properties: [
-      { name: "com.localscribe.runtime-role", value: "parakeet-coreml-ane-helper" },
-      { name: "com.localscribe.helper-protocol", value: "1" },
+      { name: "com.localscribe.runtime-role", value: "parakeet-phonon-coreml-moonshine-cpu-helper" },
+      { name: "com.localscribe.helper-protocol", value: "2" },
       ...(packagedRuntime
         ? [{
             name: "com.localscribe.helper-sha256",
@@ -512,17 +512,80 @@ const canaryComponents = [
     { name: "com.localscribe.packaged-notice-sha256", value: createHash("sha256").update(readFileSync(path.join(projectRoot, "resources/licenses", notice))).digest("hex") },
   ],
 }));
+const nativeDependencyPin = readJson("tools/fluidaudio-parakeet-helper/runtime-dependencies.json");
+const helperPackageSource = readFileSync(path.join(projectRoot, "tools/fluidaudio-parakeet-helper/Package.swift"), "utf8");
+const helperResolved = readJson("tools/fluidaudio-parakeet-helper/Package.resolved");
+const moonshinePin = helperResolved.pins?.find((pin) => pin.identity === "moonshine-swift");
+if (!moonshinePin || moonshinePin.kind !== "remoteSourceControl" ||
+    moonshinePin.location !== "https://github.com/moonshine-ai/moonshine-swift.git" ||
+    moonshinePin.state?.version !== "0.1.5" || !/^[a-f0-9]{40}$/.test(moonshinePin.state?.revision ?? "") ||
+    !/url:\s*"https:\/\/github\.com\/moonshine-ai\/moonshine-swift\.git",\s*exact:\s*"0\.1\.5"/.test(helperPackageSource)) {
+  throw new Error("Moonshine helper declaration and resolved source pin disagree.");
+}
+for (const [notice, digest] of Object.entries(nativeDependencyPin.notices)) {
+  exactNoticeDigest(`resources/licenses/${notice}`, digest, notice);
+}
+const moonshineReference = `moonshine-swift@0.1.5+${moonshinePin.state.revision}`;
+const nativeBinaryComponents = nativeDependencyPin.artifacts.map((artifact) => {
+  if (!/^[a-f0-9]{64}$/.test(artifact.sha256) || !artifact.url.startsWith("https://github.com/")) {
+    throw new Error("Native binary dependency is missing an immutable archive pin.");
+  }
+  return {
+    type: "library", "bom-ref": `${artifact.name}@${artifact.version}+${artifact.sha256}`,
+    name: artifact.name, version: artifact.version,
+    licenses: [{ license: { id: artifact.name === "Moonshine" ? "MIT" : "Apache-2.0" } }],
+    externalReferences: [{ type: "distribution", url: artifact.url, hashes: [{ alg: "SHA-256", content: artifact.sha256 }] }],
+    properties: [{ name: "com.localscribe.runtime-role", value: "statically-linked-xcframework" }],
+  };
+});
+const moonshineEmbeddedComponents = [
+  ["ONNX Runtime", "MIT", "Moonshine-ONNXRuntime-LICENSE.txt"],
+  ["kaldi-native-fbank", "Apache-2.0", "Moonshine-kaldi-native-fbank-LICENSE.txt"],
+  ["utf8proc", "MIT", "Moonshine-utf8proc-LICENSE.txt"],
+  ["utf-8", "MIT", "Moonshine-utf8-LICENSE.txt"],
+  ["nlohmann/json", "MIT", "Moonshine-nlohmann-LICENSE.txt"],
+].map(([name, license, notice]) => ({
+  type: "library", "bom-ref": `${name}@embedded-in-moonshine-0.1.5`, name,
+  licenses: [{ license: { id: license } }],
+  properties: [
+    { name: "com.localscribe.embedded-by", value: nativeBinaryComponents[1]["bom-ref"] },
+    { name: "com.localscribe.packaged-notice-path", value: `licenses/${notice}` },
+    { name: "com.localscribe.packaged-notice-sha256", value: nativeDependencyPin.notices[notice] },
+    { name: "com.localscribe.version-evidence", value: "upstream binary release; individual dependency versions are not declared by the xcframework" },
+  ],
+}));
+const moonshineComponent = {
+  type: "library", "bom-ref": moonshineReference, name: "MoonshineVoice", version: "0.1.5",
+  purl: `pkg:github/moonshine-ai/moonshine-swift@${moonshinePin.state.revision}`,
+  licenses: [{ license: { id: "MIT" } }],
+};
+const nemoEmbeddedComponents = ["NVIDIA NeMo Text Processing", "rustfst", "flate2"].map((name) => ({
+  type: "library", "bom-ref": `${name}@embedded-in-nemo-0.3.1`, name,
+  licenses: [{ license: { id: "Apache-2.0" } }],
+  properties: [
+    { name: "com.localscribe.embedded-by", value: nativeBinaryComponents[0]["bom-ref"] },
+    { name: "com.localscribe.packaged-notice-path", value: "licenses/NemoTextProcessing-0.3.1-THIRD-PARTY-LICENSES.md" },
+    { name: "com.localscribe.packaged-notice-sha256", value: nativeDependencyPin.notices["NemoTextProcessing-0.3.1-THIRD-PARTY-LICENSES.md"] },
+  ],
+}));
 const supplementalComponents = [
   ...rootSupplementalComponents,
+  moonshineComponent,
+  ...nativeBinaryComponents,
+  ...moonshineEmbeddedComponents,
+  ...nemoEmbeddedComponents,
   ...canaryComponents,
   fluidAudioComponent,
   ...fluidAudioEmbeddedComponents,
 ];
 const supplementalDependencyEdges = new Map([
+  [nativeBinaryComponents[0]["bom-ref"], nemoEmbeddedComponents.map(componentReference)],
   [canaryLibraryReference, [canaryReference]],
   [canaryReference, [ggmlReference, minizReference]],
-  [fluidAudioHelperReference, [fluidAudioReference]],
-  [fluidAudioReference, [fastClusterReference, vbxReference]],
+  [fluidAudioHelperReference, [fluidAudioReference, moonshineReference]],
+  [moonshineReference, [nativeBinaryComponents[1]["bom-ref"]]],
+  [nativeBinaryComponents[1]["bom-ref"], moonshineEmbeddedComponents.map(componentReference)],
+  [fluidAudioReference, [fastClusterReference, vbxReference, nativeBinaryComponents[0]["bom-ref"]]],
 ]);
 
 // npm can mark a direct production package as `peer: true` when a development

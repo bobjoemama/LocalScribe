@@ -65,6 +65,8 @@ const COMMON_RELEASE_INPUTS = [
 ] as const;
 
 const MAC_RELEASE_INPUTS = [
+  "resources/model-manifest",
+  "resources/licenses",
   "resources/audio-protocol.json",
   "resources/branding/LocalScribe.icns",
   "resources/entitlements.mac.active-target.plist",
@@ -72,7 +74,7 @@ const MAC_RELEASE_INPUTS = [
   "resources/entitlements.mac.plist",
   "resources/entitlements.mac.plugin.plist",
   "resources/entitlements.mac.runtime.plist",
-  "resources/licenses/FluidAudio-0.15.5-LICENSE.txt",
+  "resources/licenses/FluidAudio-0.17.5-LICENSE.txt",
   "resources/licenses/transcribe-cpp-LICENSE.txt",
   "resources/licenses/transcribe-cpp-ggml-LICENSE.txt",
   "resources/licenses/transcribe-cpp-miniz-LICENSE.txt",
@@ -84,8 +86,22 @@ const MAC_RELEASE_INPUTS = [
   "tools/canary-runtime/contract-test.cpp",
   "tools/canary-runtime/pin.json",
   "scripts/build-canary-runtime.sh",
-  "resources/licenses/FluidAudio-0.15.5-fastcluster-LICENSE.md",
-  "resources/licenses/FluidAudio-0.15.5-vbx-LICENSE.md",
+  "resources/licenses/FluidAudio-0.17.5-fastcluster-LICENSE.md",
+  "resources/licenses/FluidAudio-0.17.5-vbx-LICENSE.md",
+  "resources/licenses/FluidAudio-0.17.5-NemoTextProcessing-LICENSE.md",
+  "resources/licenses/NemoTextProcessing-0.3.1-LICENSE.txt",
+  "resources/licenses/NemoTextProcessing-0.3.1-NOTICE.txt",
+  "resources/licenses/NemoTextProcessing-0.3.1-THIRD-PARTY-LICENSES.md",
+
+  "resources/licenses/FluidAudio-0.17.5-JapaneseG2P-LICENSE.md",
+  "resources/licenses/FluidAudio-0.17.5-KokoroAneSpanishFrenchG2P-LICENSE.md",
+  "resources/licenses/Moonshine-LICENSE.txt",
+  "resources/licenses/Moonshine-utf8proc-LICENSE.txt",
+  "resources/licenses/Moonshine-nlohmann-LICENSE.txt",
+  "resources/licenses/Moonshine-utf8-LICENSE.txt",
+  "resources/licenses/Moonshine-kaldi-native-fbank-LICENSE.txt",
+  "resources/licenses/Moonshine-ONNXRuntime-LICENSE.txt",
+
   "resources/model-manifest/qwen3-asr-1-7b-mlx-4bit.json",
   "resources/model-manifest/qwen3-asr-1-7b-mlx-8bit.json",
   "resources/model-manifest/qwen3-asr-1-7b-mlx-bf16.json",
@@ -94,14 +110,18 @@ const MAC_RELEASE_INPUTS = [
   "resources/model-manifest/qwen3-asr-0-6b-mlx-bf16.json",
   "resources/model-manifest/parakeet-unified-en-0-6b-coreml-fp16.json",
   "resources/model-manifest/parakeet-unified-en-0-6b-coreml-int8.json",
+  "resources/model-manifest/phonon-2-coreml-lut6-ane.json",
+  "resources/model-manifest/phonon-2-coreml-lut3-gpu.json",
+  "resources/model-manifest/moonshine-small-streaming-cpu.json",
   "resources/native/macos/active-target.swift",
   "scripts/test-macos-accessibility-target.mjs",
   "scripts/test-settings-scroll-layout.mjs",
   "scripts/settings-layout-harness.html",
   "scripts/settings-layout-harness.tsx",
   "tools/fluidaudio-parakeet-helper/Package.resolved",
+  "tools/fluidaudio-parakeet-helper/runtime-dependencies.json",
   "tools/fluidaudio-parakeet-helper/Package.swift",
-  "tools/fluidaudio-parakeet-helper/Sources/localscribe-fluidaudio-parakeet/main.swift",
+  "tools/fluidaudio-parakeet-helper/Sources",
   /*
    * The macOS gate scripts decide whether an artifact may ship, so a change to
    * one of them has to invalidate the artifact it approved. Without these, a signed app

@@ -21,13 +21,26 @@ function temporaryRoot(): string {
 }
 
 describe("license-reviewed distributable model catalog", () => {
-  it("ships exactly eleven profiles across four families, with no Whisper runtime", () => {
+  it("ships exactly fourteen profiles across six families, with no Whisper runtime", () => {
     expect(Object.keys(catalog.families)).toEqual([
       "parakeet-unified-en-0-6b", "qwen3-asr-0-6b", "qwen3-asr-1-7b", "canary-qwen-2-5b",
+      "phonon-2", "moonshine-small-streaming",
     ]);
     expect(catalog.families["whisper-large-v3"]).toBeUndefined();
     expect(catalog.families["whisper-large-v2"]).toBeUndefined();
-    expect(resourcePolicyFor("darwin", "arm64").manifestFiles).toHaveLength(11);
+    expect(resourcePolicyFor("darwin", "arm64").manifestFiles).toHaveLength(14);
+    expect(resourcePolicyFor("darwin", "arm64").manifestFiles).toEqual(expect.arrayContaining([
+      "model-manifest/phonon-2-coreml-lut6-ane.json",
+      "model-manifest/phonon-2-coreml-lut3-gpu.json",
+      "model-manifest/moonshine-small-streaming-cpu.json",
+    ]));
+    const phonon = catalog.families["phonon-2"]!;
+    expect(Object.keys(phonon.tiers)).toEqual(["high", "medium"]);
+    expect(phonon.tiers.high!.manifest).toMatchObject({ modelId: "FluidInference/phonon-2-coreml", revision: "a812a0dfef205660787ef6234317ab79acf4d5d6", license: "CC-BY-4.0" });
+    expect(phonon.tiers.medium!.manifest).toMatchObject({ modelId: "FluidInference/phonon-2-coreml", revision: "a812a0dfef205660787ef6234317ab79acf4d5d6", license: "CC-BY-4.0" });
+    const moonshine = catalog.families["moonshine-small-streaming"]!;
+    expect(Object.keys(moonshine.tiers)).toEqual(["high"]);
+    expect(moonshine.tiers.high!.manifest).toMatchObject({ modelId: "moonshine-ai/moonshine-voice-assets", revision: "0bf2f2e5aff22e6fbba4300b00a4e00bbc4f8aae", license: "MIT" });
     expect(() => assertDistributableModelLicenses(process.cwd())).not.toThrow();
   });
 

@@ -53,9 +53,9 @@ MAX_HELPER_FRAME_BYTES = 256 * 1024
 # chunks at 8 KiB means strict base64 remains comfortably below the 16 KiB
 # request ceiling while still representing 256 ms of 16 kHz PCM16.
 MAX_LIVE_AUDIO_BYTES = 8 * 1024
-FLUID_AUDIO_HELPER_PROTOCOL_VERSION = 1
-FLUID_AUDIO_HELPER_RUNTIME = "FluidAudio CoreML / ANE"
-FLUID_AUDIO_HELPER_VERSION = "0.15.5"
+FLUID_AUDIO_HELPER_PROTOCOL_VERSION = 2
+FLUID_AUDIO_HELPER_RUNTIME = "LocalScribe Native ASR"
+FLUID_AUDIO_HELPER_VERSION = "FluidAudio/0.17.5 Moonshine/0.1.5"
 FLUID_AUDIO_HELPER_FILENAME = "localscribe-fluidaudio-parakeet"
 MODEL_TRANSACTION_PREFIX = ".localscribe-model-install-"
 MODEL_TRANSACTION_MARKER = "transaction.json"
@@ -154,6 +154,9 @@ def _catalog_selection(spec: TierSpec) -> CatalogSelection:
 # runtime compute profile remain an executable allowlist: a renderer cannot
 # supply either, and adding a curated model still requires a signed app build.
 CURATED_PROFILE_POLICIES = (
+    ("phonon-2-coreml-lut6-ane.json", "high", "coreml-lut6-ane", "FluidAudio CoreML / ANE"),
+    ("phonon-2-coreml-lut3-gpu.json", "medium", "coreml-lut3-gpu", "FluidAudio CoreML / ANE"),
+    ("moonshine-small-streaming-cpu.json", "high", "onnx-cpu", "Moonshine ONNX / CPU"),
     ("canary-qwen-2-5b-gguf-bf16.json", "high", "bfloat16", "transcribe.cpp / Metal"),
     ("canary-qwen-2-5b-gguf-q8.json", "medium", "int8", "transcribe.cpp / Metal"),
     ("canary-qwen-2-5b-gguf-q4.json", "low", "int4", "transcribe.cpp / Metal"),
@@ -1606,11 +1609,14 @@ class FluidAudioParakeetRuntime:
 
     def _send(self, request: dict[str, Any], pcm16: bytes | None = None) -> dict[str, Any]:
         process = self._process
-        if process is None or process.poll() is not None or process.stdin is None or process.stdout is None:
-            raise WorkerError("runtime_protocol_error", "Parakeet runtime is not running")
-        if pcm16 is not None and (
-            not pcm16 or len(pcm16) > MAX_AUDIO_BYTES or len(pcm16) % 2 != 0
+        if (
+            process is None
+            or process.poll() is not None
+            or process.stdin is None
+            or process.stdout is None
         ):
+            raise WorkerError("runtime_protocol_error", "Parakeet runtime is not running")
+        if pcm16 is not None and (not pcm16 or len(pcm16) > MAX_AUDIO_BYTES or len(pcm16) % 2 != 0):
             raise WorkerError("invalid_audio_file", "audio payload is invalid")
         try:
             process.stdin.write(self._frame_payload(request))
@@ -1630,9 +1636,12 @@ class FluidAudioParakeetRuntime:
                 "invalid_model_path",
                 "model_not_loaded",
                 "runtime_failure",
+                "unsupported_platform",
             }:
                 raise WorkerError("runtime_protocol_error", "Parakeet runtime rejected a request")
-            raise WorkerError("parakeet_runtime_failed", "Parakeet CoreML inference failed")
+            if code == "unsupported_platform":
+                raise WorkerError("unsupported_platform", "Phonon-2 requires macOS 15 or later")
+            raise WorkerError("parakeet_runtime_failed", "Native speech inference failed")
         return response
 
     @staticmethod
@@ -1644,14 +1653,23 @@ class FluidAudioParakeetRuntime:
     def load(cls, model_directory: Path, spec: TierSpec) -> FluidAudioParakeetRuntime:
         if (
             not model_directory.is_absolute()
-            or spec.family_id != "parakeet-unified-en-0-6b"
-            or spec.compute_type not in {"coreml-fp16", "coreml-int8"}
+            or (spec.family_id, spec.compute_type)
+            not in {
+                ("parakeet-unified-en-0-6b", "coreml-fp16"),
+                ("parakeet-unified-en-0-6b", "coreml-int8"),
+                ("phonon-2", "coreml-lut6-ane"),
+                ("phonon-2", "coreml-lut3-gpu"),
+                ("moonshine-small-streaming", "onnx-cpu"),
+            }
             or spec.asr_mode not in {"after-stop", "live"}
         ):
             raise WorkerError("model_load_failed", "local Parakeet model selection is invalid")
         expected_directory = {
             "coreml-fp16": "parakeet-unified-en-0-6b-coreml-fp16",
             "coreml-int8": "parakeet-unified-en-0-6b-coreml-int8",
+            "coreml-lut6-ane": "phonon-2-coreml-lut6-ane",
+            "coreml-lut3-gpu": "phonon-2-coreml-lut3-gpu",
+            "onnx-cpu": "moonshine-small-streaming-cpu",
         }[spec.compute_type]
         if model_directory.name != expected_directory:
             raise WorkerError("model_load_failed", "local Parakeet model path is invalid")
@@ -1666,7 +1684,9 @@ class FluidAudioParakeetRuntime:
                 close_fds=True,
             )
         except OSError as error:
-            raise WorkerError("runtime_unavailable", "Parakeet CoreML runtime could not start") from error
+            raise WorkerError(
+                "runtime_unavailable", "Parakeet CoreML runtime could not start"
+            ) from error
         runtime = cls(process=process, mode=spec.asr_mode)
         try:
             hello = runtime._read_frame(process.stdout) if process.stdout is not None else {}
@@ -1676,7 +1696,13 @@ class FluidAudioParakeetRuntime:
                 "runtime": FLUID_AUDIO_HELPER_RUNTIME,
                 "runtimeVersion": FLUID_AUDIO_HELPER_VERSION,
                 "modes": ["after-stop", "live"],
-                "precisions": ["coreml-fp16", "coreml-int8"],
+                "precisions": [
+                    "coreml-fp16",
+                    "coreml-int8",
+                    "coreml-lut6-ane",
+                    "coreml-lut3-gpu",
+                    "onnx-cpu",
+                ],
             }:
                 raise WorkerError("runtime_protocol_error", "Parakeet runtime handshake is invalid")
             runtime._require_exact_response(
@@ -1812,7 +1838,7 @@ def _load_runtime(model_directory: Path, spec: TierSpec) -> InferenceRuntime:
         from .canary_runtime import CanaryRuntime
 
         return CanaryRuntime.load(model_directory, spec)
-    if spec.family_id == "parakeet-unified-en-0-6b":
+    if spec.family_id in {"parakeet-unified-en-0-6b", "phonon-2", "moonshine-small-streaming"}:
         return FluidAudioParakeetRuntime.load(model_directory, spec)
     if spec.family_id in {"qwen3-asr-1-7b", "qwen3-asr-0-6b"}:
         return MLXAudioRuntime.load(model_directory, spec)
@@ -1918,7 +1944,12 @@ def _parse_model_request(
         )
     if operation == "load_model":
         asr_mode = _string_field(message, "asrMode", max_chars=16)
-        allowed_modes = {"after-stop", "live"} if spec.family_id == "parakeet-unified-en-0-6b" else {"after-stop"}
+        allowed_modes = (
+            {"after-stop", "live"}
+            if spec.family_id
+            in {"parakeet-unified-en-0-6b", "phonon-2", "moonshine-small-streaming"}
+            else {"after-stop"}
+        )
         if asr_mode not in allowed_modes:
             raise WorkerError(
                 "invalid_asr_mode",

@@ -42,6 +42,15 @@ describe("codes carried in a wrapped cause", () => {
     expect(normalizeDiagnosticCode(rewrapped)).toBe("model_not_installed");
   });
 
+  it("preserves an actionable native model platform requirement", () => {
+    const failure = new Error("Phonon-2 requires macOS 15 or later. Select another speech model.", {
+      cause: new Error("unsupported_platform: Phonon-2 requires macOS 15 or later"),
+    });
+
+    expect(normalizeDiagnosticCode(failure)).toBe("unsupported_platform");
+    expect(DIAGNOSTIC_DETAILS.has("unsupported_platform")).toBe(true);
+  });
+
   it("looks through more than one layer of wrapping", () => {
     const outer = new Error("Dictation failed", {
       cause: new Error("could not load the model", {

@@ -138,8 +138,8 @@ describe("runtime core SBOM generation", () => {
       const bom = runtimeSbom();
       const expectedHelper = "native/macos/active-target";
       const fluidAudioHelper = "native/macos/localscribe-fluidaudio-parakeet";
-      const fluidAudioRevision = "19600a485baa4998812e4654b70d2bab8f2c9949";
-      const fluidAudioReference = `fluidaudio@0.15.5+${fluidAudioRevision}`;
+      const fluidAudioRevision = "0b1f46289fe27d95b5e66ad8be46e64f5ee02ae7";
+      const fluidAudioReference = `fluidaudio@0.17.5+${fluidAudioRevision}`;
       const fastClusterReference = `fastcluster@embedded-in-fluidaudio-${fluidAudioRevision}`;
       const vbxReference = `vbx@embedded-in-fluidaudio-${fluidAudioRevision}`;
 
@@ -153,7 +153,14 @@ describe("runtime core SBOM generation", () => {
       expectOneExactComponent(bom, expectedHelper, packageJson.version);
       expectOneExactComponent(bom, fluidAudioHelper, packageJson.version);
       expect(namedComponents(bom, "CrispASR")).toHaveLength(0);
-      expectOneExactComponent(bom, "FluidAudio", "0.15.5");
+      expectOneExactComponent(bom, "FluidAudio", "0.17.5");
+      expectOneExactComponent(bom, "MoonshineVoice", "0.1.5");
+      expectOneExactComponent(bom, "Moonshine", "0.1.5");
+      expectOneExactComponent(bom, "NemoTextProcessing", "0.3.1");
+      for (const embedded of ["ONNX Runtime", "kaldi-native-fbank", "utf8proc", "utf-8", "nlohmann/json", "NVIDIA NeMo Text Processing", "rustfst", "flate2"]) {
+        expect(namedComponents(bom, embedded)).toHaveLength(1);
+        expect(componentProperty(namedComponents(bom, embedded)[0]!, "com.localscribe.packaged-notice-sha256")).toMatch(/^[a-f0-9]{64}$/);
+      }
       const fluidAudio = namedComponents(bom, "FluidAudio")[0];
       if (!fluidAudio) {
         throw new Error("runtime SBOM is missing FluidAudio");
@@ -190,11 +197,11 @@ describe("runtime core SBOM generation", () => {
       );
       expect(dependencies(bom)).toContainEqual({
         ref: `${fluidAudioHelper}@${packageJson.version}`,
-        dependsOn: [fluidAudioReference],
+        dependsOn: [fluidAudioReference, "moonshine-swift@0.1.5+45a14f9edf1f2a6913d3aff38c1fd4e72d5b7daa"],
       });
       expect(dependencies(bom)).toContainEqual({
         ref: fluidAudioReference,
-        dependsOn: [fastClusterReference, vbxReference],
+        dependsOn: [fastClusterReference, vbxReference, "NemoTextProcessing@0.3.1+5fa8c10d4ec26c1bb2413125f351a7222a4c68a23b74476680fbada7e26fc6aa"],
       });
 
       for (const [productionDependency, version] of Object.entries(

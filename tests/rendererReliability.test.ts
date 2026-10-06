@@ -66,7 +66,21 @@ describe("renderer operation latches", () => {
     expect(settingsSource).not.toContain("modelLibraryActionInFlight");
     expect(settingsSource.match(/if \(modelOperationInFlight\.current\) return;/g)).toHaveLength(4);
     expect(settingsSource).toContain("if (!settings || modelOperationInFlight.current) return;");
-    expect(settingsSource.match(/modelOperationInFlight\.current = true;/g)).toHaveLength(5);
+    expect(settingsSource.match(/modelOperationInFlight\.current = true;/g)).toHaveLength(6);
+  });
+
+  it("guards bulk installs before awaiting and releases the shared latch", () => {
+    const bulk = settingsSource.slice(settingsSource.indexOf("  const installAllModels = async"), settingsSource.indexOf("  const removeModel = async"));
+    expect(bulk).toContain("if (modelOperationInFlight.current || !modelCatalog) return;");
+    const latch = bulk.indexOf("modelOperationInFlight.current = true;");
+    const firstAwait = bulk.indexOf("await ");
+    expect(latch).toBeGreaterThan(bulk.indexOf("if (!window.confirm(confirmation)) return;"));
+    expect(firstAwait).toBeGreaterThan(latch);
+    expect(bulk).toMatch(/finally \{\s*modelOperationInFlight\.current = false;\s*setModelAction\(null\);\s*setInstallingAllModels\(false\);/);
+    expect(bulk).toContain("if (downloads.length === 0 && familiesToAdd.length === 0)");
+    expect(bulk.indexOf("for (const family of familiesToAdd)")).toBeLessThan(bulk.indexOf("for (const item of downloads)"));
+    expect(bulk).not.toContain("setPendingModelSelection");
+    expect(bulk).not.toContain("applyModelSelection");
   });
 
   it("latches ordinary and cleanup saves before awaiting persistence", () => {
