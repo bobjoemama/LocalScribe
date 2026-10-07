@@ -278,18 +278,25 @@ If automatic updates remain disabled, document manual replacement and data
 preservation behavior. Never weaken a fail-closed gate to make a validation
 artifact appear production-ready.
 
-## October 7 distribution preparation
+## October 7 distribution status
 
-The redesigned dev.21 source is pushed in PR #36. Its local Developer ID-signed
-DMG and ZIP were built and checked against the staged app; the DMG itself is
-also signed. They are local review artifacts, not a published/notarized release.
-The documented `localscribe-notary` Keychain profile is absent on this Mac,
-and the dev.21 DMG has no stapled ticket. A public release still needs the
-credential-backed timestamped release build, full release gates and publication
-procedure above. The public download remains the older notarized dev.20.
+[dev.21](https://github.com/bobjoemama/LocalScribe/releases/tag/v0.1.0-dev.21)
+is a public prerelease. Its Developer ID-signed app and DMG are notarized,
+stapled, and accepted by Gatekeeper. The annotated `v0.1.0-dev.21` tag points
+to `01b2c03`, the exact build source; the
+[PR #37](https://github.com/bobjoemama/LocalScribe/pull/37) squash on `main`
+has the same source tree. All five published assets—the DMG, ZIP, two SBOMs,
+and checksum manifest—have verified sizes and SHA-256 values matching the
+local release inventory.
 
-The separate iPhone repository has a successful 0.7.0/build 10 Release archive
-with the app and both extensions. Its profiles are development profiles; it
-is not a TestFlight export or a general-install IPA. Distribution signing,
-App Store Connect setup/upload, beta review and a public invitation remain.
-See its [installation guide](https://github.com/bobjoemama/LocalScribeiOS/blob/main/docs/INSTALLATION.md).
+The full public macOS gate passed native helper, packaged resource and runtime
+checks, startup/shutdown smoke, 1,576 source tests (two skipped), and 73
+bundled-worker tests. Physical microphone-to-third-party-app acceptance was
+not rerun against these exact public binaries; automated checks do not replace it.
+
+The separate iPhone app's 0.7.0/build 10 was rebuilt with the required privacy
+and encryption metadata and Apple Distribution signing for the app and both
+extensions. Upload succeeded for App Store Connect record `6820165376`,
+**LocalScribe – Local Dictation**. External TestFlight approval and a public
+invitation are still pending, as is the beta contact phone number. See its
+[installation guide](https://github.com/bobjoemama/LocalScribeiOS/blob/main/docs/INSTALLATION.md).

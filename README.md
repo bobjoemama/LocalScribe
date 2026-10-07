@@ -7,16 +7,15 @@ models that run locally—no account, subscription, telemetry, or cloud transcri
 
 ## Install and dictate
 
-### [Download LocalScribe for Mac — dev.20](https://github.com/bobjoemama/LocalScribe/releases/download/v0.1.0-dev.20/LocalScribe-0.1.0-dev.20-arm64.dmg)
+### [Download LocalScribe for Mac — dev.21](https://github.com/bobjoemama/LocalScribe/releases/download/v0.1.0-dev.21/LocalScribe-0.1.0-dev.21-arm64.dmg)
 
-Latest public download: [dev.20](https://github.com/bobjoemama/LocalScribe/releases/tag/v0.1.0-dev.20),
-a Developer ID-signed, Apple-notarized prerelease (older interface).
-The redesigned dev.21 has no public DMG yet.
+Latest public download: [dev.21](https://github.com/bobjoemama/LocalScribe/releases/tag/v0.1.0-dev.21),
+a Developer ID-signed, Apple-notarized prerelease (redesigned interface).
 
 1. Open the downloaded DMG and drag **LocalScribe** into **Applications**.
 2. Open LocalScribe. Grant **Microphone** access for recording and
    **Accessibility** access for automatic text insertion.
-3. Open **Settings → Model & Performance**. Choose a model and download its
+3. Open **Models**. Choose a model and download its
    files; **Parakeet Unified EN 0.6B** is a good English starting point.
    Click **Apply model** (or **Load current model**) and wait until ready.
 4. Click a text field in another app. Press your toggle shortcut to start,
@@ -43,7 +42,7 @@ Applications; your data and downloaded models stay in place.
 [Build and verify from source](docs/RELEASING.md) · [Packaging](docs/PACKAGING.md)
 
 Optional verification: download the checksum manifest from the
-[release notes and checksums](https://github.com/bobjoemama/LocalScribe/releases/tag/v0.1.0-dev.20)
+[release notes and checksums](https://github.com/bobjoemama/LocalScribe/releases/tag/v0.1.0-dev.21)
 and every file it lists into one folder. Run
 `shasum -a 256 -c LocalScribe-<version>-macos-arm64-SHA256SUMS.txt`;
 each line should say `OK`.
