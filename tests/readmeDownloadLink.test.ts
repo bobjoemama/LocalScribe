@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 
@@ -9,40 +9,67 @@ import { describe, expect, it } from "vitest";
  */
 const projectRoot = path.resolve(__dirname, "..");
 const readme = readFileSync(path.join(projectRoot, "README.md"), "utf8");
+const normalizeWhitespace = (value: string): string => value.replace(/\s+/gu, " ").trim();
+const readmeText = normalizeWhitespace(readme);
+const releasingText = normalizeWhitespace(
+  readFileSync(path.join(projectRoot, "docs/RELEASING.md"), "utf8"),
+);
+const readmeLinks = Array.from(readme.matchAll(/\[([^\]]+)\]\(([^)]+)\)/gu), (match) => ({
+  label: match[1],
+  target: match[2],
+}));
 const publishedVersion = "0.1.0-dev.20";
 const releasesUrl = "https://github.com/bobjoemama/LocalScribe/releases";
+const publishedTagUrl = `${releasesUrl}/tag/v${publishedVersion}`;
+const publishedDmgUrl = `${releasesUrl}/download/v${publishedVersion}/LocalScribe-${publishedVersion}-arm64.dmg`;
 
 describe("README download section", () => {
   it("directs readers to an approved release or a source build", () => {
-    expect(readme).toContain(`${releasesUrl}/tag/v${publishedVersion}`);
-    expect(readme).toContain("## Build and verify from source");
+    expect(readmeLinks.some((link) => link.target === publishedTagUrl)).toBe(true);
+    const sourceGuide = readmeLinks.find((link) => /build.*source/iu.test(link.label));
+    expect(sourceGuide?.target).toBe("docs/RELEASING.md");
+    expect(existsSync(path.resolve(projectRoot, sourceGuide?.target ?? "__missing_source_guide__"))).toBe(true);
   });
 
   it("tells the reader to verify a download against the checksum manifest", () => {
-    expect(readme).toContain("SHA256SUMS.txt");
-    expect(readme).toContain("shasum -a 256");
+    expect(readmeText).toContain("checksum manifest");
+    expect(readmeText).toContain("every file it lists into one folder");
+    expect(readmeText).toContain("shasum -a 256 -c LocalScribe-<version>-macos-arm64-SHA256SUMS.txt");
+    expect(readmeText).toContain("Each line should say `OK`");
   });
 
   it("separates ordinary installation from developer prerequisites", () => {
-    expect(readme).toContain("You do not need Docker, Python, Node.js, Homebrew, Xcode");
-    expect(readme).toContain("**Not included:** large speech-model weights");
-    expect(readme).toContain("**Microphone**");
-    expect(readme).toContain("**Accessibility**");
-    expect(readme).toContain("Press **Apply model**");
-    expect(readme).toContain("Older previews may not be notarized");
+    expect(readmeText).toContain("The app includes its runtimes");
+    const prerequisites = readmeText.match(/You do not need\b.*?\.(?= |$)/u)?.[0] ?? "";
+    for (const prerequisite of ["Docker", "Python", "Node.js", "Homebrew", "Xcode"]) {
+      expect(prerequisites).toContain(prerequisite);
+    }
+    expect(prerequisites).toContain("use Terminal");
+    expect(readmeText).toMatch(/Large speech-model (?:files|weights) are downloaded separately/iu);
+    expect(readmeText).toContain("Choose a model and download its files");
+    expect(readmeText).toContain("**Microphone** access for recording");
+    expect(readmeText).toContain("**Accessibility** access for automatic text insertion");
+    expect(readmeText).toMatch(/(?:Click|Press) \*\*Apply model\*\*/u);
+    expect(readmeText).toContain("Downloading files does not activate them: apply your selection to load it");
   });
 
   it("requires a new version and tag instead of overwriting a release", () => {
-    expect(readme).toMatch(/every build must have a\s+new version and tag/iu);
-    expect(readme).toMatch(/do\s+not replace or overwrite an existing release asset/iu);
+    expect(releasingText).toContain("Every uploaded build must use a new semantic prerelease version");
+    expect(releasingText).toContain("create a matching annotated tag");
+    expect(releasingText).toContain("Never reuse a tag or overwrite an existing release asset with different bytes");
+    expect(releasingText).toContain("do not delete or replace a reviewed asset in place");
   });
 
   it("links the explicitly published DMG without obsolete access restrictions", () => {
-    expect(readme).toContain(`${releasesUrl}/download/v${publishedVersion}/LocalScribe-${publishedVersion}-arm64.dmg`);
-    expect(readme).toContain("published prerelease");
-    expect(readme).toContain("Developer ID-signed and Apple-notarized");
-    expect(readme).not.toContain("repository is currently private");
-    expect(readme).not.toContain("available to invited repository members");
-    expect(readme).not.toContain("staged in a draft release");
+    expect(readmeLinks.filter((link) => link.target.startsWith(`${releasesUrl}/download/`))
+      .map((link) => link.target)).toEqual([publishedDmgUrl]);
+    const publication = readmeText.match(/The latest public DMG is .*?prerelease with the older interface\./u)?.[0] ?? "";
+    expect(publication).toContain(publishedTagUrl);
+    expect(publication).toContain("Developer ID-signed");
+    expect(publication).toContain("Apple-notarized prerelease");
+    expect(readmeText).toMatch(/dev\.21\b[^.]*does not have a public DMG yet\./u);
+    expect(readmeText).not.toContain("repository is currently private");
+    expect(readmeText).not.toContain("available to invited repository members");
+    expect(readmeText).not.toContain("staged in a draft release");
   });
 });
