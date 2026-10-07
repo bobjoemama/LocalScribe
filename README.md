@@ -7,9 +7,9 @@ models that run locally—no account, subscription, telemetry, or cloud transcri
 
 ## Install and dictate
 
-### [Download LocalScribe for Mac — dev.21](https://github.com/bobjoemama/LocalScribe/releases/download/v0.1.0-dev.21/LocalScribe-0.1.0-dev.21-arm64.dmg)
+### [Download LocalScribe for Mac — dev.24](https://github.com/bobjoemama/LocalScribe/releases/download/v0.1.0-dev.24/LocalScribe-0.1.0-dev.24-arm64.dmg)
 
-Latest public download: [dev.21](https://github.com/bobjoemama/LocalScribe/releases/tag/v0.1.0-dev.21),
+Latest public download: [dev.24](https://github.com/bobjoemama/LocalScribe/releases/tag/v0.1.0-dev.24),
 a Developer ID-signed, Apple-notarized prerelease (redesigned interface).
 
 1. Open the downloaded DMG and drag **LocalScribe** into **Applications**.
@@ -42,7 +42,7 @@ Applications; your data and downloaded models stay in place.
 [Build and verify from source](docs/RELEASING.md) · [Packaging](docs/PACKAGING.md)
 
 Optional verification: download the checksum manifest from the
-[release notes and checksums](https://github.com/bobjoemama/LocalScribe/releases/tag/v0.1.0-dev.21)
+[release notes and checksums](https://github.com/bobjoemama/LocalScribe/releases/tag/v0.1.0-dev.24)
 and every file it lists into one folder. Run
 `shasum -a 256 -c LocalScribe-<version>-macos-arm64-SHA256SUMS.txt`;
 each line should say `OK`.
