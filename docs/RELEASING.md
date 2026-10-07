@@ -280,19 +280,27 @@ artifact appear production-ready.
 
 ## October 7 distribution status
 
-[dev.21](https://github.com/bobjoemama/LocalScribe/releases/tag/v0.1.0-dev.21)
-is a public prerelease. Its Developer ID-signed app and DMG are notarized,
-stapled, and accepted by Gatekeeper. The annotated `v0.1.0-dev.21` tag points
-to `01b2c03`, the exact build source; the
-[PR #37](https://github.com/bobjoemama/LocalScribe/pull/37) squash on `main`
-has the same source tree. All five published assets—the DMG, ZIP, two SBOMs,
-and checksum manifest—have verified sizes and SHA-256 values matching the
-local release inventory.
+[dev.24](https://github.com/bobjoemama/LocalScribe/releases/tag/v0.1.0-dev.24)
+was published at 2026-10-07T17:32:23Z. Its Developer ID-signed app and DMG are
+notarized, stapled, and accepted by Gatekeeper. The annotated `v0.1.0-dev.24`
+tag points to `d61e7c9`, the exact artifact source;
+[PR #39](https://github.com/bobjoemama/LocalScribe/pull/39) merged as `88a845a`
+on `main` with the same source tree. All five published assets—the DMG, ZIP,
+two SBOMs, and checksum manifest—have verified sizes and SHA-256 values
+matching the local release inventory.
 
-The full public macOS gate passed native helper, packaged resource and runtime
-checks, startup/shutdown smoke, 1,576 source tests (two skipped), and 73
-bundled-worker tests. Physical microphone-to-third-party-app acceptance was
-not rerun against these exact public binaries; automated checks do not replace it.
+The full public macOS gate passed 1,652 source tests (two existing skips),
+73 bundled-worker tests, native boundary checks, and packaged resource and
+runtime verification. The exact DMG and ZIP passed archive verification and
+packaged startup/shutdown checks.
+
+The installed dev.24 app preserves the existing signing identity and 63 saved
+history entries. All 11 tracked processes from the old warm session exited after
+Command-Q before replacement; the previous dev.21 app remains recoverable in
+Trash. The new app launched with Microphone and Accessibility granted, and
+Canary High loaded successfully. Microphone recording and physical browser text
+insertion were not tested against dev.24; these checks do not replace that
+acceptance work.
 
 The separate iPhone app's 0.7.1/build 11 uploaded successfully at
 2026-10-07T17:06:14Z. Apple reports **PROCESSING**; no eligible portal build is
@@ -317,21 +325,15 @@ when needed, preserving the warm worker's temporary-root policy. Tests exercise
 two real processes, dead-owner cleanup, missing-root recovery, cancellation and
 filesystem failures. Diagnostics and the pill use fixed storage-error codes and
 actionable messages, without private paths or dictated text. New public artifacts
-require the usual exact-source release gate; published dev.21 assets are immutable.
+require the usual exact-source release gate; published assets are immutable.
 
-## dev.24 source candidate
+## dev.24 changes
 
-The dev.22 private artifact was validated locally and never published. The next
-dev.24 candidate includes the audio-cache recovery correction, retryable native
-helper metadata and fresh Accessibility status (granted, denied or unavailable),
-browser target continuity through model warmup, and guards for secure or disabled
-editors. Permission and copy fallback advice reflects current readiness. Settings
-now confirm discarding drafts, preserve edits during pending saves, support
-Command-S, and show pending and failure feedback.
-
-Focused source checks passed 300 tests across 16 files, followed by 94 final tests;
-the native helper compiled and passed its self-test. Final source verification passed 1,652 tests with two existing skips; the insertion fallback message was measured to fit the original pill size. The full public dev.24 gate
-is pending, and physical browser insertion remains unverified. These checks do
-not establish packaged acceptance, notarization or publication. Published
-dev.21 remains the public installer until a new candidate completes its release
-gates and is published.
+The dev.22 private artifact was validated locally and never published. Public
+dev.24 includes the audio-cache recovery correction, retryable native helper
+metadata and fresh Accessibility status (granted, denied or unavailable), browser
+target continuity through Accessibility activation, and guards for secure or disabled editors.
+Permission and copy fallback advice reflects current readiness. Settings confirm
+discarding drafts, preserve edits during pending saves, support Command-S, and
+show pending and failure feedback. The insertion fallback message was measured
+to fit the original pill size.

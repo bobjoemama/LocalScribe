@@ -23,7 +23,7 @@ const approvedRelease: {
   interface: "older" | "redesigned";
   pendingLabel: string | null;
 } = {
-  version: "0.1.0-dev.21",
+  version: "0.1.0-dev.24",
   interface: "redesigned",
   pendingLabel: null,
 };
