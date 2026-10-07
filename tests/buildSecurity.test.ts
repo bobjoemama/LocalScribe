@@ -247,7 +247,7 @@ describe("release hardening configuration", () => {
     expect(forgeConfig).toContain('removeInfoPlistKeyIfPresent(infoPlist, "NSCameraUsageDescription")');
   });
 
-  it("enables only Electron's documented accessibility tree and keeps editor resolution fail-closed", () => {
+  it("uses browser role discovery and Electron tree activation without granting cold-focus authority", () => {
     const helper = projectFile("resources/native/macos/active-target.swift");
 
     expect(helper).toContain('"AXManualAccessibility" as CFString');
@@ -260,10 +260,12 @@ describe("release hardening configuration", () => {
     );
     expect(helper).toContain("focusedElementLookupAttemptCount = 81");
     expect(helper).toContain("focusedElementLookupInterval: TimeInterval = 0.025");
-    expect(helper).not.toContain("AXEnhancedUserInterface");
+    expect(helper).not.toContain('"AXEnhancedUserInterface"');
+    expect(helper).toContain("attributeString(application, kAXRoleAttribute as CFString)");
+    expect(helper).toContain("activationError == .success || applicationRoleAvailable");
     expect(helper).toContain("editableElementAvailable: initialEditableElement != nil");
     expect(helper).not.toMatch(/manualAccessibilityActivationNeeded\([\s\S]{0,300}role\s*==/u);
-    expect(helper).toContain('activation: resolvedElement == nil ? "timed_out" : "resolved"');
+    expect(helper).toContain('activation: resolvedElement != nil');
 
     expect(helper).toContain('"AXEditableAncestor" as CFString');
     expect(helper).not.toContain("AXHighestEditableAncestor");
@@ -279,7 +281,7 @@ describe("release hardening configuration", () => {
       "let focusedUIElement = mayAuthorizePaste ? initialFocusedUIElement : nil",
     );
     expect(helper).toContain(
-      "let windowFingerprint = mayAuthorizePaste ? initialWindowFingerprint : nil",
+      "let windowFingerprint = initialWindowFingerprint",
     );
     expect(helper).not.toContain("recoveredTargetIdentityIsAllowed(");
     expect(helper).not.toContain("elementsAreSameOrAncestorDescendant(");
@@ -313,7 +315,7 @@ describe("release hardening configuration", () => {
       '!["resolved", "timed_out"].includes(firstTarget.accessibilityActivation)',
     );
     expect(coldEditorFixture).toContain("focusRetentionTimer");
-    expect(coldEditorFixture).toContain("firstTarget.windowFingerprint !== null");
+    expect(coldEditorFixture).toContain('typeof firstTarget.windowFingerprint !== "string"');
     expect(coldEditorFixture).toContain("firstTarget.focusedEditable !== null");
     expect(coldEditorFixture).toContain("firstTarget.focusedElementFingerprint !== null");
     expect(coldEditorFixture).toContain('target.accessibilityActivation !== "not_needed"');

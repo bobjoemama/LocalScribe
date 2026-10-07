@@ -1182,7 +1182,7 @@ describe("native helper boundary", () => {
 });
 
 describe("macOS insertion service", () => {
-  it("requires both cached helper-protocol readiness and current Accessibility grants", async () => {
+  it("rechecks helper authority and current Accessibility grants on each insertion", async () => {
     const { InsertionService } = await import("../src/main/insertion/insertionService");
     const bridge = new FakeBridge([]);
     const ready = vi.fn(async () => true);
@@ -1198,7 +1198,7 @@ describe("macOS insertion service", () => {
 
     await expect(insertion.automaticPasteReady()).resolves.toBe(true);
     await expect(insertion.automaticPasteReady()).resolves.toBe(false);
-    expect(ready).toHaveBeenCalledOnce();
+    expect(ready).toHaveBeenCalledTimes(2);
     expect(accessibilityReady).toHaveBeenCalledTimes(2);
   });
 
@@ -1242,6 +1242,37 @@ describe("macOS insertion service", () => {
     expect(insertion.pinNativeHelperIntegrity()).toBe(true);
     await expect(insertion.automaticPasteReady()).resolves.toBe(true);
     expect(ready).toHaveBeenCalledTimes(2);
+  });
+
+  it("recovers a transient helper failure without repinning or app restart", async () => {
+    const { InsertionService } = await import("../src/main/insertion/insertionService");
+    const bridge = new FakeBridge([]);
+    const ready = vi.fn().mockRejectedValueOnce(new Error("temporary failure"))
+      .mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+    Object.assign(bridge, { ready, accessibilityStatus: async () => "granted" });
+    const insertion = new InsertionService({
+      clipboard: new FakeClipboard(bridge), platformBridge: bridge, platform: "darwin",
+    });
+
+    await expect(insertion.automaticPasteReady()).resolves.toBe(false);
+    await expect(insertion.automaticPasteReady()).resolves.toBe(true);
+    await expect(insertion.automaticPasteReady()).resolves.toBe(false);
+  });
+
+  it("does not report absent or failed status lookup as a denied OS permission", async () => {
+    const { InsertionService } = await import("../src/main/insertion/insertionService");
+    const bridge = new FakeBridge([]);
+    const insertion = new InsertionService({
+      clipboard: new FakeClipboard(bridge), platformBridge: bridge, platform: "darwin",
+    });
+    await expect(insertion.accessibilityStatus()).resolves.toBe("unavailable");
+    Object.assign(bridge, {
+      accessibilityStatus: vi.fn().mockRejectedValueOnce(new Error("temporary failure"))
+        .mockResolvedValueOnce("granted").mockResolvedValueOnce("denied"),
+    });
+    await expect(insertion.accessibilityStatus()).resolves.toBe("unavailable");
+    await expect(insertion.accessibilityStatus()).resolves.toBe("granted");
+    await expect(insertion.accessibilityStatus()).resolves.toBe("denied");
   });
 
 

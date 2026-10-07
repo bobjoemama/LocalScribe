@@ -30,6 +30,15 @@ describe("macOS permission capabilities", () => {
       });
   });
 
+  it("reports unknown helper status without claiming the OS denied access", () => {
+    expect(permissionSnapshotForPlatform("darwin", "granted", "unavailable", true, true))
+      .toMatchObject({
+        accessibility: { supported: true, granted: false, status: "unavailable" },
+        automaticPaste: { supported: true, ready: false },
+        globalHold: { supported: true, ready: true },
+      });
+  });
+
   it("returns macOS settings deep links", () => {
     expect(permissionSettingsUrl("darwin", "microphone")).toContain("Privacy_Microphone");
     expect(permissionSettingsUrl("darwin", "accessibility")).toContain("Privacy_Accessibility");

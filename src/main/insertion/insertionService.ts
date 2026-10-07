@@ -3,6 +3,7 @@ import { createDefaultInsertionBridge } from "./nativePlatformBridge";
 import { SafeInsertionCoordinator } from "./safeInsertion";
 import type {
   ClipboardPort,
+  AccessibilityStatus,
   InsertionOutcome,
   InsertionResult,
   PasteInjector,
@@ -28,7 +29,6 @@ export class InsertionService {
   private readonly coordinator: SafeInsertionCoordinator;
   private readonly platformBridge: PlatformInsertionBridge;
   private readonly platform: NodeJS.Platform;
-  private helperReadiness: Promise<boolean> | null = null;
 
   constructor(dependencies: InsertionServiceDependencies = {}) {
     this.platform = dependencies.platform ?? process.platform;
@@ -79,23 +79,39 @@ export class InsertionService {
 
   pinNativeHelperIntegrity(): boolean {
     const pinned = this.platformBridge.pinExecutableIntegrity?.() ?? false;
-    this.helperReadiness = null;
     return pinned;
   }
 
   async automaticPasteReady(): Promise<boolean> {
     if (this.platform !== "darwin") return false;
-    this.helperReadiness ??= (this.platformBridge.ready?.() ?? Promise.resolve(false))
+    // The bridge owns successful self-test caching and validates pinned helper
+    // authority on every request. Caching here bypasses that revalidation and
+    // makes a transient failure sticky for the rest of the app's lifetime.
+    const ready = await (this.platformBridge.ready?.() ?? Promise.resolve(false))
       .catch(() => false);
-    if (!await this.helperReadiness) return false;
+    if (!ready) return false;
     // Accessibility is intentionally not cached: the user can revoke it while
     // LocalScribe is running. Both the pinned helper protocol and the current
     // OS grants must be true at the insertion boundary.
     return this.accessibilityReady();
   }
 
-  accessibilityReady(): Promise<boolean> {
-    return this.platformBridge.accessibilityReady?.() ?? Promise.resolve(false);
+  async accessibilityStatus(): Promise<AccessibilityStatus> {
+    try {
+      if (this.platformBridge.accessibilityStatus) {
+        return await this.platformBridge.accessibilityStatus();
+      }
+      if (this.platformBridge.accessibilityReady) {
+        return await this.platformBridge.accessibilityReady() ? "granted" : "denied";
+      }
+    } catch {
+      // A helper exception cannot establish the current OS grant.
+    }
+    return "unavailable";
+  }
+
+  async accessibilityReady(): Promise<boolean> {
+    return await this.accessibilityStatus() === "granted";
   }
 
   requestAccessibility(): Promise<boolean> {

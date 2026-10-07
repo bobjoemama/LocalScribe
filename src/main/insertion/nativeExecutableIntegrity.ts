@@ -12,6 +12,8 @@ export interface RegularExecutableProof {
   readonly device: number;
   readonly inode: number;
   readonly mode: number;
+  readonly ownerId: number;
+  readonly groupId: number;
   readonly size: number;
   readonly modifiedAtMs: number;
   readonly changedAtMs: number;
@@ -30,6 +32,8 @@ function sameFileIdentity(
     && left.dev === right.dev
     && left.ino === right.ino
     && left.mode === right.mode
+    && left.uid === right.uid
+    && left.gid === right.gid
     && left.size === right.size
     && left.mtimeMs === right.mtimeMs
     && left.ctimeMs === right.ctimeMs;
@@ -74,6 +78,8 @@ export function proveRegularExecutable(
       device: after.dev,
       inode: after.ino,
       mode: after.mode,
+      ownerId: after.uid,
+      groupId: after.gid,
       size: after.size,
       modifiedAtMs: after.mtimeMs,
       changedAtMs: after.ctimeMs,
@@ -97,7 +103,21 @@ export function sameRegularExecutableProof(
     && left.device === right.device
     && left.inode === right.inode
     && left.mode === right.mode
+    && left.ownerId === right.ownerId
+    && left.groupId === right.groupId
     && left.size === right.size
     && left.modifiedAtMs === right.modifiedAtMs
     && left.changedAtMs === right.changedAtMs;
+}
+
+/**
+ * A status timestamp can change when filesystem metadata such as extended
+ * attributes changes. It is evidence to revalidate, not executable authority.
+ * Both proofs must still come from the full, stable descriptor-backed read.
+ */
+export function sameExecutableAuthority(
+  left: RegularExecutableProof,
+  right: RegularExecutableProof,
+): boolean {
+  return sameRegularExecutableProof(left, { ...right, changedAtMs: left.changedAtMs });
 }

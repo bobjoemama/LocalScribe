@@ -573,7 +573,7 @@ private func manualAccessibilityFailureOutcome(_ error: AXError) -> String {
 }
 
 private func activationProvidesPasteAuthority(_ activation: String) -> Bool {
-    // AXManualAccessibility can materialize a completely different element
+    // An application role query or AXManualAccessibility can materialize a different element
     // graph. Nothing observed after that mutation inherits authority from the
     // pre-activation focus. A later helper invocation must establish a fresh,
     // already-active target from one observation boundary.
@@ -603,6 +603,13 @@ private func focusedUIElementEnablingManualAccessibilityIfNeeded(
         )
     }
 
+    // Gecko and Chromium activate their native accessibility APIs when an
+    // assistive client queries the application role. Read only this content-free
+    // standard attribute; never toggle screen-reader mode via AXEnhancedUserInterface.
+    // See Mozilla accessible/mac/Platform.mm accessibilityRole and Chromium
+    // chrome/browser/chrome_browser_application_mac.mm accessibilityRole.
+    let applicationRoleAvailable = attributeString(application, kAXRoleAttribute as CFString) != nil
+
     // Electron documents AXManualAccessibility as the third-party integration
     // point for enabling Chromium's otherwise lazy accessibility tree. Cold
     // trees do not have one stable placeholder shape: physical targets have
@@ -619,7 +626,7 @@ private func focusedUIElementEnablingManualAccessibilityIfNeeded(
         manualAccessibilityAttribute,
         kCFBooleanTrue
     )
-    guard activationError == .success else {
+    guard activationError == .success || applicationRoleAvailable else {
         return FocusedElementObservation(
             roleCategory: focusedElementRoleCategory(
                 initialFocusedElement.flatMap {
@@ -650,7 +657,11 @@ private func focusedUIElementEnablingManualAccessibilityIfNeeded(
         roleCategory: focusedElementRoleCategory(
             finalElement.flatMap { attributeString($0, kAXRoleAttribute as CFString) }
         ),
-        activation: resolvedElement == nil ? "timed_out" : "resolved",
+        activation: resolvedElement != nil
+            ? "resolved"
+            : activationError == .success
+                ? "timed_out"
+                : manualAccessibilityFailureOutcome(activationError),
         lookupAttempts: lookupAttempts
     )
 }
@@ -764,7 +775,7 @@ private func captureTarget() throws -> TargetPayload {
     let focusedApplication = AXUIElementCreateApplication(application.processIdentifier)
     // Capture the complete authority boundary before any possible tree
     // activation. If activation is attempted, this invocation returns only
-    // closed diagnostics plus app/process identity. A later invocation must
+    // closed diagnostics plus app/process/window continuity. A later invocation must
     // establish a fresh target after the accessibility tree is already active.
     let initialFocusedUIElement = accessibilityTrusted
         ? copyFocusedUIElement(focusedApplication)
@@ -791,7 +802,9 @@ private func captureTarget() throws -> TargetPayload {
         focusedObservation.activation
     )
     let focusedUIElement = mayAuthorizePaste ? initialFocusedUIElement : nil
-    let windowFingerprint = mayAuthorizePaste ? initialWindowFingerprint : nil
+    // A pre-activation window identifies continuity for the later observation;
+    // it grants no focused-control authority by itself.
+    let windowFingerprint = initialWindowFingerprint
     let focusedElement = focusedElementState(
         for: application.processIdentifier,
         focusedElement: focusedUIElement,

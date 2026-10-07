@@ -335,6 +335,7 @@ export const permissionSnapshotSchema = z.object({
   accessibility: z.object({
     supported: z.boolean(),
     granted: z.boolean(),
+    status: z.enum(["granted", "denied", "unavailable"]).optional(),
   }),
   automaticPaste: z.object({
     supported: z.boolean(),

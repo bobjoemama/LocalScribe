@@ -21,6 +21,8 @@ function proofForDigest(digest: string): RegularExecutableProof {
     device: 1,
     inode: 2,
     mode: 0o100700,
+    ownerId: 501,
+    groupId: 20,
     size: 100,
     modifiedAtMs: 3,
     changedAtMs: 4,

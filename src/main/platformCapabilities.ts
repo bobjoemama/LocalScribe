@@ -27,7 +27,7 @@ export function runtimeArchitectureFor(architecture: string): "arm64" {
 export function permissionSnapshotForPlatform(
   platform: RuntimePlatform,
   microphone: PermissionSnapshot["microphone"],
-  accessibilityGranted: boolean,
+  accessibility: boolean | "granted" | "denied" | "unavailable",
   globalHoldReady: boolean,
   automaticPasteReady: boolean,
   /*
@@ -37,6 +37,10 @@ export function permissionSnapshotForPlatform(
    */
   globalToggleReady = true,
 ): PermissionSnapshot {
+  const accessibilityStatus = typeof accessibility === "boolean"
+    ? accessibility ? "granted" : "denied"
+    : accessibility;
+  const accessibilityGranted = accessibilityStatus === "granted";
   return {
     platform,
     microphone,
@@ -44,6 +48,7 @@ export function permissionSnapshotForPlatform(
     accessibility: {
       supported: true,
       granted: accessibilityGranted,
+      status: accessibilityStatus,
     },
     automaticPaste: {
       supported: true,
