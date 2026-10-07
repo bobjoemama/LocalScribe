@@ -449,6 +449,17 @@ private func focusedElementIdentityDescriptor(_ element: AXUIElement) -> String?
     )
 }
 
+private func explicitlyDisallowsInsertion(subrole: String?, enabled: Bool?) -> Bool {
+    subrole == (kAXSecureTextFieldSubrole as String) || enabled == false
+}
+
+private func focusedElementExplicitlyDisallowsInsertion(_ element: AXUIElement) -> Bool {
+    explicitlyDisallowsInsertion(
+        subrole: attributeString(element, kAXSubroleAttribute as CFString),
+        enabled: attributeBool(element, kAXEnabledAttribute as CFString)
+    )
+}
+
 private func editabilityFromCapabilities(
     role: String?,
     subrole: String?,
@@ -457,8 +468,7 @@ private func editabilityFromCapabilities(
     selectedTextSettable: Bool,
     selectedTextRangeSettable: Bool
 ) -> Bool {
-    if subrole == (kAXSecureTextFieldSubrole as String) { return false }
-    if enabled == false { return false }
+    if explicitlyDisallowsInsertion(subrole: subrole, enabled: enabled) { return false }
 
     let knownStaticRoles: Set<String> = [
         kAXStaticTextRole as String,
@@ -583,8 +593,20 @@ private func activationProvidesPasteAuthority(_ activation: String) -> Bool {
 private func focusedUIElementEnablingManualAccessibilityIfNeeded(
     _ application: AXUIElement,
     initialFocusedElement: AXUIElement?,
+    initialInsertionDisallowed: Bool,
     processId: pid_t
 ) -> FocusedElementObservation {
+    // Known secure or disabled focus is negative evidence, not a cold tree.
+    // Retain it without activation or adopting another control during recovery.
+    if initialInsertionDisallowed {
+        return FocusedElementObservation(
+            roleCategory: focusedElementRoleCategory(initialFocusedElement.flatMap {
+                attributeString($0, kAXRoleAttribute as CFString)
+            }),
+            activation: "not_needed",
+            lookupAttempts: 1
+        )
+    }
     let initialEditableElement = initialFocusedElement.flatMap {
         focusedEditableElement($0, processId: processId)
     }
@@ -707,6 +729,7 @@ private func focusedEditableElement(
     _ focusedElement: AXUIElement,
     processId: pid_t
 ) -> AXUIElement? {
+    guard !focusedElementExplicitlyDisallowsInsertion(focusedElement) else { return nil }
     if focusedElementIsEditable(focusedElement) { return focusedElement }
 
     // Chromium can focus a static descendant (for example a text node inside
@@ -780,6 +803,9 @@ private func captureTarget() throws -> TargetPayload {
     let initialFocusedUIElement = accessibilityTrusted
         ? copyFocusedUIElement(focusedApplication)
         : nil
+    let initialInsertionDisallowed = initialFocusedUIElement.map {
+        focusedElementExplicitlyDisallowsInsertion($0)
+    } ?? false
     let initialWindowFingerprint = accessibilityTrusted
         ? focusedWindowFingerprint(
             for: application.processIdentifier,
@@ -791,6 +817,7 @@ private func captureTarget() throws -> TargetPayload {
         ? focusedUIElementEnablingManualAccessibilityIfNeeded(
             focusedApplication,
             initialFocusedElement: initialFocusedUIElement,
+            initialInsertionDisallowed: initialInsertionDisallowed,
             processId: application.processIdentifier
         )
         : FocusedElementObservation(
@@ -805,11 +832,13 @@ private func captureTarget() throws -> TargetPayload {
     // A pre-activation window identifies continuity for the later observation;
     // it grants no focused-control authority by itself.
     let windowFingerprint = initialWindowFingerprint
-    let focusedElement = focusedElementState(
-        for: application.processIdentifier,
-        focusedElement: focusedUIElement,
-        windowFingerprint: windowFingerprint
-    )
+    let focusedElement = initialInsertionDisallowed
+        ? FocusedElementState(editable: false, fingerprint: nil)
+        : focusedElementState(
+            for: application.processIdentifier,
+            focusedElement: focusedUIElement,
+            windowFingerprint: windowFingerprint
+        )
     let payload = TargetPayload(
         processId: application.processIdentifier,
         applicationId: applicationId,
@@ -962,6 +991,10 @@ private func selfTest() -> Bool {
         identifierIdentity == "identifier:AXWebArea::editor-id",
         geometryIdentity == "geometry:AXWebArea::10:20:30:40",
         ancestryIdentity == "ancestry:0:AXWebArea:",
+        explicitlyDisallowsInsertion(subrole: kAXSecureTextFieldSubrole as String, enabled: true),
+        explicitlyDisallowsInsertion(subrole: nil, enabled: false),
+        !explicitlyDisallowsInsertion(subrole: nil, enabled: true),
+        !explicitlyDisallowsInsertion(subrole: nil, enabled: nil),
         editabilityFromCapabilities(
             role: "AXWebArea",
             subrole: nil,

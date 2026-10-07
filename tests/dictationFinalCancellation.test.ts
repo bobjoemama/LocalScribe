@@ -3,6 +3,7 @@ import ts from "typescript";
 import { describe, expect, it, vi } from "vitest";
 import { SafeInsertionCoordinator } from "../src/main/insertion/safeInsertion";
 import type { SessionSnapshot } from "../src/shared/contracts";
+import type { AccessibilityStatus } from "../src/main/insertion/types";
 
 // Exercise the actual main-process completion function without starting
 // Electron or opening a user's database, clipboard, or microphone.
@@ -20,13 +21,15 @@ const javascript = ts.transpileModule(completion.getText(source), {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
 }).outputText;
 
-function harness() {
+function harness(accessibility: AccessibilityStatus | Promise<AccessibilityStatus> = "granted") {
   let activeSessionId: string | null = "original";
   let snapshot: SessionSnapshot = { state: "transcribing", sessionId: "original" };
   let releaseReadiness!: (ready: boolean) => void;
   let enteredReadiness!: () => void;
   const readinessEntered = new Promise<void>((resolve) => { enteredReadiness = resolve; });
   const readiness = new Promise<boolean>((resolve) => { releaseReadiness = resolve; });
+  let enteredAccessibility!: () => void;
+  const accessibilityEntered = new Promise<void>((resolve) => { enteredAccessibility = resolve; });
   const writeText = vi.fn();
   const coordinator = new SafeInsertionCoordinator(
     { writeText, snapshot: vi.fn(), restore: vi.fn() },
@@ -42,6 +45,7 @@ function harness() {
     insertion: {
       targetAppId: () => coordinator.targetAppId(),
       automaticPasteReady: () => { enteredReadiness(); return readiness; },
+      accessibilityStatus: () => { enteredAccessibility(); return Promise.resolve(accessibility); },
       copyAndPasteDetailed,
     },
     sanitizeSourceApplicationId: (value: string | null) => value,
@@ -82,6 +86,7 @@ function harness() {
       }
     },
     readinessEntered,
+    accessibilityEntered,
     releaseReadiness,
     snapshot: () => snapshot,
     writeText,
@@ -92,6 +97,41 @@ function harness() {
 }
 
 describe("dictation completion after native permission readiness", () => {
+  it.each(["granted", "unavailable", "denied"] as const)(
+    "labels unavailable automatic insertion truthfully when Accessibility is %s",
+    async (status) => {
+      const h = harness(status);
+      const result = h.start();
+      await h.readinessEntered;
+      h.releaseReadiness(false);
+      await result;
+      expect(h.snapshot()).toMatchObject({
+        state: "success",
+        message: status === "denied"
+          ? "Copied — allow Accessibility"
+          : "Copied — automatic insertion unavailable",
+      });
+    },
+  );
+
+  it("respects cancellation while the failure's OS status check is pending", async () => {
+    let releaseStatus!: (status: AccessibilityStatus) => void;
+    const status = new Promise<AccessibilityStatus>((resolve) => { releaseStatus = resolve; });
+    const h = harness(status);
+    const result = h.start();
+    const rejected = expect(result).rejects.toThrow("Dictation was cancelled");
+    await h.readinessEntered;
+    h.releaseReadiness(false);
+    await h.accessibilityEntered;
+    h.cancel(true);
+    releaseStatus("granted");
+    await rejected;
+    expect(h.snapshot()).toEqual({ state: "listening", sessionId: "newer" });
+    expect(h.copyAndPasteDetailed).not.toHaveBeenCalled();
+    expect(h.writeText).not.toHaveBeenCalled();
+    expect(h.persistHistory).not.toHaveBeenCalled();
+  });
+
   it.each([false, true])("respects cancellation while readiness is pending (restart=%s)", async (restart) => {
     const h = harness();
     const result = h.start();

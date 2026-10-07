@@ -1420,6 +1420,10 @@ async function completeDictationFinal(input: {
     // The native permission check yields to cancellation and new dictations.
     // Do not bind this result to a newer insertion target or revive its state.
     assertActiveSession(sessionId);
+    const accessibilityStatus = settings.autoPaste && !automaticPasteReady
+      ? await insertion.accessibilityStatus()
+      : null;
+    assertActiveSession(sessionId);
     const canAutoPaste = settings.autoPaste && automaticPasteReady;
     setSession({ state: "inserting", sessionId, message: canAutoPaste ? "Inserting" : "Copying" });
     const insertionResult = await insertion.copyAndPasteDetailed(text, canAutoPaste);
@@ -1430,7 +1434,9 @@ async function completeDictationFinal(input: {
       sessionId,
     });
     const copiedMessage = settings.autoPaste && !automaticPasteReady
-      ? "Copied — allow Accessibility"
+      ? accessibilityStatus === "denied"
+        ? "Copied — allow Accessibility"
+        : "Copied — automatic insertion unavailable"
       : "Copied to clipboard";
     successMessage = outcome === "pasted"
       ? "Inserted"
@@ -2169,12 +2175,12 @@ function registerIpc(): void {
   handle(IPC.systemGetPermissions, async () => {
     const platform = runtimePlatformFor(process.platform);
     const microphone = systemPreferences.getMediaAccessStatus("microphone");
-    const accessibilityGranted = await insertion.accessibilityReady();
+    const accessibilityStatus = await insertion.accessibilityStatus();
     const automaticPasteReady = await insertion.automaticPasteReady();
     return permissionSnapshotForPlatform(
       platform,
       microphone,
-      accessibilityGranted,
+      accessibilityStatus,
       hotkeys?.isGlobalHoldReady() ?? false,
       automaticPasteReady,
       hotkeys?.isToggleReady() ?? false,

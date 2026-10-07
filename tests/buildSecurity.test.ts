@@ -272,6 +272,16 @@ describe("release hardening configuration", () => {
     expect(helper).toContain("elementIsInParentChain(editableAncestor, of: focusedElement)");
     expect(helper).toContain("elementsShareAccessibilityWindow(editableAncestor, focusedElement)");
     expect(helper).toContain("candidateEditable: focusedElementIsEditable(editableAncestor)");
+    const ancestorResolution = helper.slice(helper.indexOf("private func focusedEditableElement("));
+    expect(ancestorResolution).toContain("guard !focusedElementExplicitlyDisallowsInsertion(focusedElement)");
+    expect(ancestorResolution.indexOf("guard !focusedElementExplicitlyDisallowsInsertion(focusedElement)"))
+      .toBeLessThan(ancestorResolution.indexOf("let editableAncestor = attributeElement("));
+    const activation = helper.slice(helper.indexOf("private func focusedUIElementEnablingManualAccessibilityIfNeeded("));
+    expect(activation).toContain("if initialInsertionDisallowed");
+    expect(activation.indexOf("if initialInsertionDisallowed"))
+      .toBeLessThan(activation.indexOf("let applicationRoleAvailable"));
+    expect(helper).toContain("let focusedElement = initialInsertionDisallowed");
+    expect(helper).toContain("? FocusedElementState(editable: false, fingerprint: nil)");
     expect(helper).toContain("let initialWindowFingerprint = accessibilityTrusted");
     expect(helper).toMatch(
       /let initialFocusedUIElement[\s\S]*?let initialWindowFingerprint[\s\S]*?let focusedObservation[\s\S]*?focusedUIElementEnablingManualAccessibilityIfNeeded\(/u,

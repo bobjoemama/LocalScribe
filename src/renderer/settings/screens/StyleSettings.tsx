@@ -232,10 +232,17 @@ export function automaticPasteSettingsPresentation(
       value: null,
     };
   }
-  if (!permissions.automaticPaste.ready || accessibilityPermissionStatus(permissions) === "denied") {
+  if (accessibilityPermissionStatus(permissions) === "denied") {
     return {
       editable: true,
       detail: "Accessibility is not granted, so completed dictation is copied instead. Grant it under General → Permissions and this starts pasting.",
+      value: null,
+    };
+  }
+  if (!permissions.automaticPaste.ready) {
+    return {
+      editable: true,
+      detail: "Accessibility is granted, but automatic insertion is unavailable. Completed dictation is copied. Refresh diagnostics under General to recheck insertion readiness.",
       value: null,
     };
   }

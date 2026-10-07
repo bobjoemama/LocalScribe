@@ -984,6 +984,20 @@ describe("redesigned settings and cleanup", () => {
 });
 
  describe("Accessibility check presentation", () => {
+  it("reports unavailable insertion without denying a granted OS permission", () => {
+    const permissions = {
+      platform: "darwin",
+      accessibility: { supported: true, granted: true, status: "granted" },
+      automaticPaste: { supported: true, ready: false },
+    } as unknown as Parameters<typeof automaticPasteSettingsPresentation>[0];
+    const presentation = automaticPasteSettingsPresentation(permissions);
+    expect(presentation.editable).toBe(true);
+    expect(presentation.detail).toContain("Accessibility is granted");
+    expect(presentation.detail).toContain("automatic insertion is unavailable");
+    expect(presentation.detail).toContain("Refresh diagnostics");
+    expect(presentation.detail).not.toMatch(/not granted|denied|Grant it/iu);
+  });
+
   it("keeps unavailable distinct from denied and stale grants", () => {
     const permissions = { accessibility: { supported: true, granted: true, status: "unavailable" }, automaticPaste: { supported: true, ready: false }, globalHold: { supported: true, ready: false }, globalToggle: { supported: true, ready: true } } as unknown as Parameters<typeof accessibilityPermissionStatus>[0];
     expect(accessibilityPermissionStatus(permissions)).toBe("unavailable");
