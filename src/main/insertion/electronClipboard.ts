@@ -10,7 +10,7 @@ const PLAIN_TEXT_FORMATS = [
 const HTML_FORMATS = [/^text\/html/i, /^public\.html$/i, /^html format$/i];
 const RTF_FORMATS = [/^text\/rtf/i, /^public\.rtf$/i, /rich text format/i];
 const IMAGE_FORMATS = [
-  /^image\//i,
+  /^image\/(?:png|tiff|jpeg|bmp)$/i,
   /^public\.(?:png|tiff|jpeg)$/i,
   /^com\.apple\.pict$/i,
   /^cf_(?:dib|dibv5)$/i,
@@ -37,7 +37,8 @@ export class ElectronClipboardPort implements ClipboardPort {
     if (hasMatchingFormat(formats, RTF_FORMATS)) snapshot.rtf = clipboard.readRTF();
     if (hasMatchingFormat(formats, IMAGE_FORMATS)) {
       const image = clipboard.readImage();
-      if (!image.isEmpty()) snapshot.imagePng = image.toPNG();
+      if (image.isEmpty()) snapshot.restorable = false;
+      else snapshot.imagePng = image.toPNG();
     }
     return snapshot;
   }

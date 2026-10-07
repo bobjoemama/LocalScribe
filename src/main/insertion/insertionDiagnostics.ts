@@ -21,8 +21,8 @@ export interface InsertionDiagnosticEvent {
 /**
  * Describes the insertion boundary without recording target identity, clipboard
  * contents, or dictated text. Copy-only results preserve a closed reason code
- * from the coordinator; permission state takes precedence when automatic paste
- * was disabled or unavailable before the coordinator ran.
+ * from the coordinator. `not_ready` describes aggregate helper/permission
+ * readiness, never proof of an OS permission denial.
  */
 export function insertionDiagnosticEvent(
   insertionResult: InsertionResult,
@@ -39,7 +39,10 @@ export function insertionDiagnosticEvent(
     ? undefined
     : permission === "disabled"
       ? "automatic_paste_disabled"
-      : permission === "not_ready"
+      : permission === "not_ready" && (
+        insertionResult.reason === undefined
+        || insertionResult.reason === "automatic_paste_disabled"
+      )
         ? "automatic_paste_unavailable"
         : insertionResult.reason;
   return {

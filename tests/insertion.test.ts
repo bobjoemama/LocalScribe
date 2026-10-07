@@ -61,7 +61,7 @@ const TARGET_B: ActiveTarget = {
 };
 const COLD_TARGET: ActiveTarget = {
   ...TARGET_A,
-  windowFingerprint: null,
+  windowFingerprint: TARGET_A.windowFingerprint,
   focusedEditable: null,
   focusedElementFingerprint: null,
   accessibilityElement: "static_text",
@@ -211,7 +211,7 @@ describe("safe insertion", () => {
     async (accessibilityActivation) => {
       const firstTarget: ActiveTarget = { ...COLD_TARGET, accessibilityActivation };
       const recoveredTarget: ActiveTarget = {
-        ...TARGET_B,
+        ...TARGET_A,
         accessibilityElement: "text_control",
         accessibilityActivation: "not_needed",
         accessibilityLookupAttempts: 1,
@@ -273,7 +273,7 @@ describe("safe insertion", () => {
         accessibilityLookupAttempts: 2,
       };
       const independentlyObservedTarget: ActiveTarget = {
-        ...TARGET_B,
+        ...TARGET_A,
         accessibilityElement: "text_control",
         accessibilityActivation: "not_needed",
         accessibilityLookupAttempts: 1,
@@ -329,8 +329,8 @@ describe("safe insertion", () => {
     expect(paste).not.toHaveBeenCalled();
   });
 
-  it("accepts a recovered sibling target only when the exact target remains focused before paste", async () => {
-    const bridge = new FakeBridge([COLD_TARGET, TARGET_B, TARGET_A]);
+  it("rejects a different browser window during cold-tree recovery", async () => {
+    const bridge = new FakeBridge([COLD_TARGET, TARGET_B, TARGET_B]);
     const captureActiveTarget = vi.spyOn(bridge, "captureActiveTarget");
     const clipboard = new FakeClipboard(bridge);
     const paste = vi.fn();
@@ -339,10 +339,13 @@ describe("safe insertion", () => {
     insertion.beginSession();
     await expect(insertion.insert("dictated", true)).resolves.toEqual({
       outcome: "copied",
-      reason: "current_window_changed",
+      reason: "initial_target_editability_unavailable",
+      accessibilityElement: "static_text",
+      accessibilityActivation: "resolved",
+      accessibilityLookupAttempts: 8,
     });
 
-    expect(captureActiveTarget).toHaveBeenCalledTimes(3);
+    expect(captureActiveTarget).toHaveBeenCalledTimes(2);
     expect(paste).not.toHaveBeenCalled();
   });
 
@@ -351,7 +354,7 @@ describe("safe insertion", () => {
       ...TARGET_A,
       focusedEditable: false,
       accessibilityElement: "text_control",
-      accessibilityActivation: "resolved",
+      accessibilityActivation: "not_needed",
       accessibilityLookupAttempts: 1,
     };
     const bridge = new FakeBridge([COLD_TARGET, stillUnusable, TARGET_A]);
@@ -365,11 +368,50 @@ describe("safe insertion", () => {
       outcome: "copied",
       reason: "initial_target_not_editable",
       accessibilityElement: "text_control",
-      accessibilityActivation: "resolved",
+      accessibilityActivation: "not_needed",
       accessibilityLookupAttempts: 1,
     });
 
     expect(captureActiveTarget).toHaveBeenCalledTimes(2);
+    expect(paste).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { first: { ...COLD_TARGET, windowFingerprint: null }, second: TARGET_A },
+    { first: { ...TARGET_A, accessibilityActivation: "resolved" as const }, second: TARGET_B },
+    {
+      first: { ...TARGET_A, accessibilityActivation: "resolved" as const },
+      second: { ...TARGET_A, focusedElementFingerprint: "c".repeat(64) },
+    },
+  ])("requires original window and any known control during recovery", async ({ first, second }) => {
+    const bridge = new FakeBridge([first, second, second]);
+    const clipboard = new FakeClipboard(bridge);
+    const paste = vi.fn();
+    const insertion = coordinator(bridge, clipboard, paste);
+
+    insertion.beginSession();
+    expect(await insertion.insert("dictated", true)).toMatchObject({
+      outcome: "copied",
+      reason: "initial_target_editability_unavailable",
+    });
+    expect(paste).not.toHaveBeenCalled();
+    expect(clipboard.currentText).toBe("dictated");
+  });
+
+  it("does not grant paste authority if the recovery capture activates another tree", async () => {
+    const mutationTarget: ActiveTarget = {
+      ...TARGET_A,
+      accessibilityActivation: "resolved",
+    };
+    const bridge = new FakeBridge([COLD_TARGET, mutationTarget, TARGET_A]);
+    const paste = vi.fn();
+    const insertion = coordinator(bridge, new FakeClipboard(bridge), paste);
+    insertion.beginSession();
+    expect(await insertion.insert("dictated", true)).toMatchObject({
+      outcome: "copied",
+      reason: "initial_target_editability_unavailable",
+      accessibilityActivation: "resolved",
+    });
     expect(paste).not.toHaveBeenCalled();
   });
 
@@ -764,7 +806,7 @@ describe("safe insertion", () => {
     const diagnosticTarget: ActiveTarget = {
       ...TARGET_A,
       accessibilityElement: "text_control",
-      accessibilityActivation: "resolved",
+      accessibilityActivation: "not_needed",
       accessibilityLookupAttempts: 7,
     };
     const bridge = new FakeBridge([diagnosticTarget]);
@@ -779,7 +821,7 @@ describe("safe insertion", () => {
       outcome: "copied",
       reason: "clipboard_snapshot_failed",
       accessibilityElement: "text_control",
-      accessibilityActivation: "resolved",
+      accessibilityActivation: "not_needed",
       accessibilityLookupAttempts: 7,
     });
     expect(clipboard.currentText).toBe("dictated");
@@ -1083,6 +1125,19 @@ describe("Electron rich clipboard adapter", () => {
       electronMocks.availableFormats.mockReturnValue(["text/plain", uncapturedFormat]);
       expect(port.snapshot().restorable, uncapturedFormat).toBe(false);
     }
+  });
+
+  it("does not restore an unsupported or undecodable image as an empty clipboard", async () => {
+    const { ElectronClipboardPort } = await import("../src/main/insertion/electronClipboard");
+    const port = new ElectronClipboardPort();
+    for (const format of ["image/svg+xml", "image/gif", "image/png"]) {
+      electronMocks.availableFormats.mockReturnValue([format]);
+      const snapshot = port.snapshot();
+      expect(snapshot.restorable, format).toBe(false);
+      port.restore(snapshot);
+    }
+    expect(electronMocks.clear).not.toHaveBeenCalled();
+    expect(electronMocks.write).not.toHaveBeenCalled();
   });
 });
 
