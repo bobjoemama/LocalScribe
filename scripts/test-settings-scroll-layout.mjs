@@ -252,6 +252,20 @@ async function exerciseChangedSettings(window) {
       candidate.querySelector("strong")?.textContent?.trim() === label
     ));
 
+    const harness = window.__localScribeSettingsHarness;
+    const saveButton = () => [...document.querySelectorAll(".ls-settings-footer button")].find(button => button.textContent.trim() === "Save changes");
+    if (!saveButton()?.disabled) throw new Error("Unchanged settings offered Save");
+    await openTab("System");
+    const reversible = row("Show floating bar")?.querySelector("input");
+    reversible.click(); await waitForPaint();
+    if (saveButton()?.disabled) throw new Error("Changed settings disabled Save");
+    harness.setConfirmAnswer(false);
+    const confirmations = harness.confirmCalls.length;
+    document.querySelector(".ls-close-button").click(); await waitForPaint();
+    if (harness.confirmCalls.length !== confirmations + 1 || !harness.confirmCalls.at(-1).includes("unsaved")) throw new Error("Closing settings did not confirm discarding edits");
+    harness.setConfirmAnswer(true);
+    reversible.click(); await waitForPaint();
+    if (!saveButton()?.disabled) throw new Error("Reverted setting remained dirty");
     await openTab("General");
     const language = row("Dictation language")?.querySelector("select");
     if (!(language instanceof HTMLSelectElement)) throw new Error("Missing dictation language select");
@@ -281,14 +295,20 @@ async function exerciseChangedSettings(window) {
     const save = [...document.querySelectorAll(".ls-settings-footer button")]
       .find((candidate) => candidate.textContent?.trim() === "Save changes");
     if (!(save instanceof HTMLButtonElement)) throw new Error("Missing Save changes button");
-    save.click();
+    harness.delaySettingsSave();
+    const callsBefore = harness.patchCalls.length;
+    const dispatchSave = () => document.querySelector(".ls-settings-modal").dispatchEvent(new KeyboardEvent("keydown", { key: "s", metaKey: true, bubbles: true, cancelable: true }));
+    dispatchSave(); dispatchSave();
+    await waitForPaint();
+    if (harness.patchCalls.length !== callsBefore + 1 || !save.disabled || save.textContent.trim() !== "Saving…") throw new Error("Command-S pending save did not suppress repeated activation");
+    harness.finishSettingsSave();
     for (let attempt = 0; attempt < 40; attempt += 1) {
       await new Promise((resolve) => setTimeout(resolve, 10));
       if (window.__localScribeSettingsHarness.patchCalls.length > 0
         && !save.textContent?.includes("Saving")) break;
     }
     const beforeReload = {
-      patchCalls: window.__localScribeSettingsHarness.patchCalls,
+      patchCalls: [...window.__localScribeSettingsHarness.patchCalls],
       persisted: window.__localScribeSettingsHarness.persisted(),
       status: document.querySelector(".ls-settings-footer [role='status']")?.textContent?.trim() ?? "",
     };
@@ -312,6 +332,17 @@ async function exerciseChangedSettings(window) {
       appearance: reloadedRow("Appearance")?.querySelector("select")?.value ?? null,
       language: await reloadedLanguage(),
     };
+    // A revert during an earlier save must remain a draft until saved again.
+    await openTab("System");
+    const revertDuringSave = row("Show floating bar").querySelector("input");
+    const initialValue = revertDuringSave.checked;
+    revertDuringSave.click(); await waitForPaint();
+    harness.delaySettingsSave(); dispatchSave(); await waitForPaint();
+    revertDuringSave.click(); await waitForPaint();
+    harness.finishSettingsSave(); await new Promise(resolve => setTimeout(resolve, 50)); await waitForPaint();
+    if (revertDuringSave.checked !== initialValue || saveButton().disabled || !document.querySelector(".ls-settings-footer [role='status']").textContent.includes("Newer changes")) throw new Error("A revert during pending save was lost");
+    dispatchSave(); await new Promise(resolve => setTimeout(resolve, 50)); await waitForPaint();
+    if (!saveButton().disabled || harness.persisted().showPillWhenIdle !== initialValue) throw new Error("Reverted draft could not be saved");
     return { beforeReload, afterReload };
   })()\`);
 }
@@ -808,6 +839,10 @@ async function inspectSize(width, height, platform, verification, settingsPreset
       writeFileSync(join(screenshotDirectory, ["models", appearance, width + "x" + height, applyResult, "after-apply"].join("-") + ".png"), shot.toPNG());
     }
     const longFooterStatus = saveResult === "fail" ? await exerciseLongFooterStatus(window) : null;
+    if (screenshotDirectory && longFooterStatus) {
+      const shot = await window.webContents.capturePage();
+      writeFileSync(join(screenshotDirectory, ["settings", appearance, width + "x" + height, "save-error"].join("-") + ".png"), shot.toPNG());
+    }
     const permissionPoll = saveResult === "fail" ? await exercisePermissionPollGating(window) : null;
     return {
       platform,
@@ -1127,14 +1162,14 @@ function assertChangedSettings(size) {
   const patchCalls = size.saveReload?.beforeReload?.patchCalls;
   assert(Array.isArray(patchCalls) && patchCalls.length === 1, `Settings save did not issue exactly one field patch: ${evidence}`);
   assert(
-    JSON.stringify(patchCalls[0]) === JSON.stringify({
+    JSON.stringify(Object.entries(patchCalls[0]).sort()) === JSON.stringify(Object.entries({
       language: "German",
       launchAtLogin: true,
       showPillWhenIdle: true,
       autoPaste: true,
       historyRetentionDays: 7,
       appearance: "dark",
-    }),
+    }).sort()),
     `Settings save submitted stale or unrelated fields: ${evidence}`,
   );
   assert(size.saveReload?.beforeReload?.status === "Settings saved", `Successful save was not acknowledged: ${evidence}`);

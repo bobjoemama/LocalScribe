@@ -173,6 +173,13 @@ export function pendingSettingsAfterSave(
   return pending;
 }
 
+/** Drop fields that have been restored to their saved value. */
+export function settingsDraftComparedWithSaved(saved: AppSettings, draft: AppSettingsPatch, effectiveLaunchAtLogin?: boolean): AppSettingsPatch {
+  const pending = pendingSettingsAfterSave(settingsPatchWithoutModelSelection(draft), saved);
+  if (draft.launchAtLogin !== undefined && effectiveLaunchAtLogin !== undefined && draft.launchAtLogin !== effectiveLaunchAtLogin) pending.launchAtLogin = draft.launchAtLogin;
+  return pending;
+}
+
 export function selectedMicrophoneIsUnavailable(
   selectedMicrophoneId: string | null,
   microphones: ReadonlyArray<Pick<MediaDeviceInfo, "deviceId">>,
@@ -181,6 +188,14 @@ export function selectedMicrophoneIsUnavailable(
     selectedMicrophoneId
     && !microphones.some((microphone) => microphone.deviceId === selectedMicrophoneId),
   );
+}
+
+export function accessibilityPermissionStatus(permissions: PermissionSnapshot | null): "granted" | "denied" | "unavailable" | "checking" {
+  if (!permissions) return "checking";
+  const accessibility = permissions.accessibility as PermissionSnapshot["accessibility"] & {
+    status?: "granted" | "denied" | "unavailable";
+  };
+  return accessibility.status ?? (accessibility.granted ? "granted" : "denied");
 }
 
 export function automaticPasteSettingsPresentation(
@@ -210,7 +225,14 @@ export function automaticPasteSettingsPresentation(
    * grant from the Privacy tab, and the preference
    * takes effect the moment they do. Only the promise is corrected.
    */
-  if (!permissions.automaticPaste.ready) {
+  if (accessibilityPermissionStatus(permissions) === "unavailable") {
+    return {
+      editable: true,
+      detail: "LocalScribe could not check Accessibility. Completed dictation is copied until automatic paste can be confirmed.",
+      value: null,
+    };
+  }
+  if (!permissions.automaticPaste.ready || accessibilityPermissionStatus(permissions) === "denied") {
     return {
       editable: true,
       detail: "Accessibility is not granted, so completed dictation is copied instead. Grant it under General → Permissions and this starts pasting.",
@@ -518,6 +540,10 @@ export function SettingsModal({ onClose, registerDismissalGate, initialTab = "ge
   const [status, setStatus] = useState("");
   const [busy, setBusy] = useState(false);
   const dirtySettings = useRef<AppSettingsPatch>({});
+  const persistedSettings = useRef<AppSettings | null>(null);
+  const submittedSettings = useRef<AppSettingsPatch | null>(null);
+  const [shortcutSaving, setShortcutSaving] = useState(false);
+  const [dataAction, setDataAction] = useState<string | null>(null);
   const [modelAction, setModelAction] = useState<ModelActionState>(null);
   const [pendingModelSelection, setPendingModelSelection] = useState<ModelSelectionDraft | null>(null);
   const [modelApplying, setModelApplying] = useState(false);
@@ -577,12 +603,14 @@ export function SettingsModal({ onClose, registerDismissalGate, initialTab = "ge
       setModelFeedback({ message: decision.message, isError: false });
       return false;
     }
+    if ((Object.keys(dirtySettings.current).length > 0 || pendingModelSelection)
+      && !window.confirm("Discard your unsaved settings changes?")) return false;
     if (presentation === "modal") {
       setPendingModelSelection(null);
       onClose();
     }
     return true;
-  }, [onClose, presentation]);
+  }, [onClose, presentation, pendingModelSelection]);
 
   const closeSettings = useCallback(() => {
     attemptDismissal();
@@ -627,7 +655,8 @@ export function SettingsModal({ onClose, registerDismissalGate, initialTab = "ge
   const applyPersistedSettings = useCallback((next: AppSettings) => {
     // Keep only local edits pending for a field-level patch. A shortcut that
     // just committed in another surface otherwise must replace this stale copy.
-    dirtySettings.current = settingsPatchWithoutModelSelection(dirtySettings.current);
+    persistedSettings.current = next;
+    dirtySettings.current = settingsDraftComparedWithSaved(next, dirtySettings.current);
     setSettings(settingsWithPendingDraft(next, dirtySettings.current));
     setSettingsLoadError(null);
   }, []);
@@ -750,7 +779,8 @@ export function SettingsModal({ onClose, registerDismissalGate, initialTab = "ge
   useEffect(() => {
     if (presentation === "page") return;
     const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") closeSettings();
+      if (event.defaultPrevented) return;
+      if (event.key === "Escape") { event.preventDefault(); closeSettings(); }
       if (event.key === "Tab") {
         const controls = [...(dialogRef.current?.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex="0"]') ?? [])].filter((control) => control.getClientRects().length > 0);
         const first = controls[0];
@@ -766,7 +796,11 @@ export function SettingsModal({ onClose, registerDismissalGate, initialTab = "ge
   const update = <K extends keyof AppSettings>(key: K, value: AppSettings[K]) => {
     if (!settings) return;
     setStatus("");
-    dirtySettings.current = { ...dirtySettings.current, [key]: value };
+    const editedDraft = { ...dirtySettings.current, [key]: value };
+    // Even reverting to the old value is a new edit while a save is pending.
+    dirtySettings.current = submittedSettings.current
+      ? editedDraft
+      : settingsDraftComparedWithSaved(persistedSettings.current ?? settings, editedDraft, launchAtLoginStatus?.effective);
     setSettings((current) => current ? { ...current, [key]: value } as AppSettings : current);
   };
 
@@ -785,8 +819,11 @@ export function SettingsModal({ onClose, registerDismissalGate, initialTab = "ge
       };
     }
     settingsSaveInFlight.current = true;
+    setShortcutSaving(true);
+    setStatus("Applying shortcut…");
     try {
       const saved = await window.localScribe.shortcuts.update({ kind, shortcut });
+      persistedSettings.current = saved;
       const field = kind === "hold" ? "holdShortcut" : "toggleShortcut";
       delete dirtySettings.current[field];
       setSettings(settingsWithPendingDraft(saved, dirtySettings.current));
@@ -796,12 +833,14 @@ export function SettingsModal({ onClose, registerDismissalGate, initialTab = "ge
         shortcut: saved[field],
       };
     } catch {
+      setStatus(shortcutCommitErrorMessage());
       return {
         accepted: false,
         error: shortcutCommitErrorMessage(),
       };
     } finally {
       settingsSaveInFlight.current = false;
+      setShortcutSaving(false);
     }
   };
 
@@ -815,9 +854,12 @@ export function SettingsModal({ onClose, registerDismissalGate, initialTab = "ge
     }
     settingsSaveInFlight.current = true;
     setBusy(true);
+    setStatus("Saving settings…");
+    submittedSettings.current = patch;
     try {
       const saved = await window.localScribe.settings.patch(patch);
-      const remaining = pendingSettingsAfterSave(dirtySettings.current, patch);
+      persistedSettings.current = saved;
+      const remaining = settingsDraftComparedWithSaved(saved, pendingSettingsAfterSave(dirtySettings.current, patch));
       dirtySettings.current = remaining;
       setSettings(settingsWithPendingDraft(saved, remaining));
       setStatus(Object.keys(remaining).length > 0
@@ -835,7 +877,26 @@ export function SettingsModal({ onClose, registerDismissalGate, initialTab = "ge
       setStatus(`Could not save settings: ${errorDetail(error)}`);
     } finally {
       settingsSaveInFlight.current = false;
+      submittedSettings.current = null;
       setBusy(false);
+    }
+  };
+
+  const runDataAction = async (label: string, action: () => Promise<void>) => {
+    if (settingsSaveInFlight.current || modelOperationInFlight.current) return;
+    settingsSaveInFlight.current = true;
+    setDataAction(label);
+    setStatus(`${label}…`);
+    try { await action(); }
+    finally { settingsSaveInFlight.current = false; setDataAction(null); }
+  };
+
+  const openPermissionSettings = async (kind: "microphone" | "accessibility") => {
+    try {
+      await window.localScribe.system.openPermission(kind);
+      setStatus(`${kind === "microphone" ? "Microphone" : "Accessibility"} settings opened`);
+    } catch (error) {
+      setStatus(`Could not open permission settings: ${errorDetail(error)}`);
     }
   };
 
@@ -855,7 +916,7 @@ export function SettingsModal({ onClose, registerDismissalGate, initialTab = "ge
   };
 
   const clearHistory = async () => {
-    if (!window.confirm("Delete all encrypted transcript history from LocalScribe?")) return;
+    if (!window.confirm("Delete all encrypted transcript history from LocalScribe?")) { setStatus("Clear history cancelled"); return; }
     try {
       await window.localScribe.history.clear();
       setStatus("Transcript history deleted");
@@ -865,7 +926,7 @@ export function SettingsModal({ onClose, registerDismissalGate, initialTab = "ge
   };
 
   const clearDiagnostics = async () => {
-    if (!window.confirm("Clear the local redacted diagnostics trail?")) return;
+    if (!window.confirm("Clear the local redacted diagnostics trail?")) { setStatus("Clear diagnostics cancelled"); return; }
     try {
       await window.localScribe.system.clearDiagnostics();
       setStatus("Diagnostics log cleared");
@@ -896,7 +957,7 @@ export function SettingsModal({ onClose, registerDismissalGate, initialTab = "ge
   };
 
   const showDataBackups = async () => {
-    try { await window.localScribe.system.showDataBackups(); }
+    try { await window.localScribe.system.showDataBackups(); setStatus("Recovery copies opened in Finder"); }
     catch (error) { setStatus(`Could not open recovery copies: ${errorDetail(error)}`); }
   };
 
@@ -1137,7 +1198,8 @@ export function SettingsModal({ onClose, registerDismissalGate, initialTab = "ge
     setModelFeedback({ message: "Unloading the current model and loading your selected model…", isError: false });
     try {
       const result = await window.localScribe.system.applyModelSelection(selection);
-      dirtySettings.current = settingsPatchWithoutModelSelection(dirtySettings.current);
+      persistedSettings.current = result.settings;
+      dirtySettings.current = settingsDraftComparedWithSaved(result.settings, dirtySettings.current);
       setSettings(settingsWithPendingDraft(result.settings, dirtySettings.current));
       setModelCatalog(result.catalog);
       setModelCatalogError(null);
@@ -1176,7 +1238,7 @@ export function SettingsModal({ onClose, registerDismissalGate, initialTab = "ge
     ? "Saved settings could not be loaded."
     : tab === "model"
       ? "Model choices apply only with the Apply model button above."
-      : status;
+      : status || (Object.keys(dirtySettings.current).length > 0 ? "Unsaved changes" : "All changes saved");
   const automaticPastePresentation = automaticPasteSettingsPresentation(permissions);
   const launchAtLoginPresentation = settings
     ? launchAtLoginSettingsPresentation(
@@ -1218,6 +1280,12 @@ export function SettingsModal({ onClose, registerDismissalGate, initialTab = "ge
         aria-modal={presentation === "page" ? undefined : true}
         aria-labelledby="settings-title"
         tabIndex={-1}
+        onKeyDown={(event) => {
+          if (!event.defaultPrevented && event.metaKey && !event.ctrlKey && !event.altKey && event.key.toLowerCase() === "s" && tab !== "model") {
+            event.preventDefault();
+            if (!event.repeat) void save();
+          }
+        }}
       >
         {presentation === "modal" && <aside className="ls-settings-sidebar">
           <div className="ls-settings-brand"><strong>Settings</strong></div>
@@ -1233,7 +1301,7 @@ export function SettingsModal({ onClose, registerDismissalGate, initialTab = "ge
         <div className="ls-settings-main">
           <header className="ls-settings-header">
             <div><h1 id="settings-title">{presentation === "page" ? "Models" : SETTINGS_TABS.find((item) => item.id === tab)?.label}</h1></div>
-            {presentation === "modal" && <button type="button" className="ls-close-button" disabled={busy || modelApplying || modelRefreshing || modelAction !== null} onClick={closeSettings} aria-label="Close settings"><CloseIcon /></button>}
+            {presentation === "modal" && <button type="button" className="ls-close-button" disabled={busy || shortcutSaving || dataAction !== null || modelApplying || modelRefreshing || modelAction !== null} onClick={closeSettings} aria-label="Close settings"><CloseIcon /></button>}
           </header>
 
           <div
@@ -1300,19 +1368,23 @@ export function SettingsModal({ onClose, registerDismissalGate, initialTab = "ge
                   <PermissionRow
                     label="Microphone"
                     detail="Required only while recording dictation."
+                    disabled={busy || shortcutSaving || dataAction !== null}
                     ready={permissions?.microphone === "granted"}
                     value={microphonePermissionLabel(permissions?.microphone)}
                     onOpen={permissions?.microphoneSettingsAvailable
-                      ? () => void window.localScribe.system.openPermission("microphone")
+                      ? () => void runDataAction("Opening microphone settings", () => openPermissionSettings("microphone"))
                       : undefined}
                   />
                   {permissions?.accessibility.supported && (
                     <PermissionRow
                       label="Accessibility"
-                      detail="Required for automatic paste and global push-to-talk. Without it, use the toggle shortcut; completed dictation is copied to the clipboard."
-                      ready={permissions.accessibility.granted}
-                      value={permissions.accessibility.granted ? "Granted" : "Denied"}
-                      onOpen={() => void window.localScribe.system.openPermission("accessibility")}
+                      detail={accessibilityPermissionStatus(permissions) === "unavailable"
+                        ? "LocalScribe could not check Accessibility. It will retry while Settings is open; you can also check the grant in macOS System Settings."
+                        : "Required for automatic paste and global push-to-talk. Completed dictation is copied when automatic paste is unavailable."}
+                      disabled={busy || shortcutSaving || dataAction !== null}
+                      ready={accessibilityPermissionStatus(permissions) === "granted"}
+                      value={accessibilityPermissionStatus(permissions) === "unavailable" ? "Unavailable" : accessibilityPermissionStatus(permissions) === "granted" ? "Granted" : "Denied"}
+                      onOpen={() => void runDataAction("Opening Accessibility settings", () => openPermissionSettings("accessibility"))}
                     />
                   )}
                 </SettingsGroup>
@@ -1461,17 +1533,17 @@ export function SettingsModal({ onClose, registerDismissalGate, initialTab = "ge
                 <SettingsGroup title="Storage and diagnostics">
                   <SettingsReadOnly label="Processing" detail="No listening server or transcription API." value={resolvedModelEngine(diagnostics)} />
                   <SettingsReadOnly label="Database" detail="Encrypted transcript and scratchpad storage." value={diagnostics?.databaseIntegrity ?? "Checking"} />
-                  <div className="ls-settings-row"><span><strong>Data path</strong><small>Local application data with encrypted private text.</small></span><button type="button" className="ls-small-button" disabled={!diagnostics?.dataPath} onClick={() => void copyDataPath()}>Copy path</button></div>
+                  <div className="ls-settings-row"><span><strong>Data path</strong><small>Local application data with encrypted private text.</small></span><button type="button" className="ls-small-button" disabled={!diagnostics?.dataPath || busy || shortcutSaving || dataAction !== null} onClick={() => void runDataAction("Copying path", copyDataPath)}>Copy path</button></div>
                   <SettingsReadOnly label="Model revision" detail="Resolved local speech model" value={diagnostics?.model.revision.slice(0, 10) ?? "Checking"} monospace />
                 </SettingsGroup>
                 <div className="ls-data-actions">
-                  <button type="button" onClick={() => void exportHistory()}><DownloadIcon /><span><strong>Export history</strong><small>Save a local copy of your transcripts.</small></span></button>
-                  <button type="button" onClick={() => void showDataBackups()}><FolderIcon /><span><strong>Show recovery copies</strong><small>Open encrypted database backups in Finder.</small></span></button>
-                  <button type="button" disabled={busy || modelApplying || modelRefreshing || modelAction !== null} onClick={() => void resetSavedData()} className="is-danger"><TrashIcon /><span><strong>{busy ? "Please wait…" : "Reset saved data…"}</strong><small>Clear history, dictionary, snippets and notes. Keeps settings and models.</small></span></button>
-                  <button type="button" onClick={() => void clearHistory()} className="is-danger"><TrashIcon /><span><strong>Clear history</strong><small>Delete encrypted transcripts from LocalScribe history.</small></span></button>
-                  <button type="button" onClick={() => void refreshWithStatus()}><RefreshIcon /><span><strong>Refresh diagnostics</strong><small>Recheck permissions, storage, and model.</small></span></button>
-                  <button type="button" onClick={() => void copyDiagnostics()}><CopyIcon /><span><strong>Copy diagnostics</strong><small>Redacted failure log — no transcripts or paths.</small></span></button>
-                  <button type="button" onClick={() => void clearDiagnostics()} className="is-danger"><TrashIcon /><span><strong>Clear diagnostics</strong><small>Delete the current local redacted failure log.</small></span></button>
+                  <button type="button" disabled={busy || shortcutSaving || dataAction !== null} onClick={() => void runDataAction("Exporting history", exportHistory)}><DownloadIcon /><span><strong>Export history</strong><small>Save a local copy of your transcripts.</small></span></button>
+                  <button type="button" disabled={busy || shortcutSaving || dataAction !== null} onClick={() => void runDataAction("Opening recovery copies", showDataBackups)}><FolderIcon /><span><strong>Show recovery copies</strong><small>Open encrypted database backups in Finder.</small></span></button>
+                  <button type="button" disabled={busy || shortcutSaving || dataAction !== null || modelApplying || modelRefreshing || modelAction !== null} onClick={() => void resetSavedData()} className="is-danger"><TrashIcon /><span><strong>{busy ? "Please wait…" : "Reset saved data…"}</strong><small>Clear history, dictionary, snippets and notes. Keeps settings and models.</small></span></button>
+                  <button type="button" disabled={busy || shortcutSaving || dataAction !== null} onClick={() => void runDataAction("Clearing history", clearHistory)} className="is-danger"><TrashIcon /><span><strong>Clear history</strong><small>Delete encrypted transcripts from LocalScribe history.</small></span></button>
+                  <button type="button" disabled={busy || shortcutSaving || dataAction !== null} onClick={() => void runDataAction("Refreshing diagnostics", refreshWithStatus)}><RefreshIcon /><span><strong>Refresh diagnostics</strong><small>Recheck permissions, storage, and model.</small></span></button>
+                  <button type="button" disabled={busy || shortcutSaving || dataAction !== null} onClick={() => void runDataAction("Copying diagnostics", copyDiagnostics)}><CopyIcon /><span><strong>Copy diagnostics</strong><small>Redacted failure log — no transcripts or paths.</small></span></button>
+                  <button type="button" disabled={busy || shortcutSaving || dataAction !== null} onClick={() => void runDataAction("Clearing diagnostics", clearDiagnostics)} className="is-danger"><TrashIcon /><span><strong>Clear diagnostics</strong><small>Delete the current local redacted failure log.</small></span></button>
                 </div>
                 <div className="ls-settings-note"><InfoIcon /><span>Automatic paste reads the active app identity and hashes limited focused-window metadata to confirm the dictation target. LocalScribe does not read field or document contents from other applications.</span></div>
               </>
@@ -1499,9 +1571,9 @@ export function SettingsModal({ onClose, registerDismissalGate, initialTab = "ge
               the longest operation in the app, and Cancel sat fully enabled
               throughout it — the button offered an exit it would not honour.
             */}
-            <button type="button" className="ls-secondary-button" disabled={busy || modelApplying || modelRefreshing || modelAction !== null} onClick={closeSettings}>Cancel</button>
+            <button type="button" className="ls-secondary-button" disabled={busy || shortcutSaving || dataAction !== null || modelApplying || modelRefreshing || modelAction !== null} onClick={closeSettings}>Cancel</button>
             {tab !== "model" && (
-              <button type="button" className="ls-primary-button" disabled={busy || !settings} onClick={() => void save()}>{busy ? "Saving…" : "Save changes"}</button>
+              <button type="button" className="ls-primary-button" disabled={busy || shortcutSaving || dataAction !== null || !settings || Object.keys(dirtySettings.current).length === 0} title={Object.keys(dirtySettings.current).length === 0 ? "No unsaved changes" : "Save changes (⌘S)"} onClick={() => void save()}>{busy ? "Saving…" : "Save changes"}</button>
             )}
           </footer>}
         </div>
@@ -1541,12 +1613,12 @@ function SettingsReadOnly({ label, detail, value, monospace = false }: { label: 
   );
 }
 
-function PermissionRow({ label, detail, ready, value, onOpen }: { label: string; detail: string; ready: boolean; value: string; onOpen?: () => void }) {
+function PermissionRow({ label, detail, ready, value, onOpen, disabled = false }: { label: string; detail: string; ready: boolean; value: string; onOpen?: () => void; disabled?: boolean }) {
   return (
     <div className="ls-settings-row">
       <span><strong>{label}</strong><small>{detail}</small></span>
       <span className={ready ? "ls-permission-state is-ready" : "ls-permission-state"}><i />{value}</span>
-      {onOpen && <button type="button" className="ls-small-button" onClick={onOpen}>Open settings</button>}
+      {onOpen && <button type="button" className="ls-small-button" disabled={disabled} onClick={onOpen}>Open settings</button>}
     </div>
   );
 }
@@ -1768,13 +1840,19 @@ export function shortcutHelpText(
   const withToggle = (whenLive: string, whenDead: string): string =>
     toggleDead ? `${whenDead} ${TOGGLE_UNREGISTERED_ADVICE}` : whenLive;
 
+  if (accessibilityPermissionStatus(permissions) === "unavailable") {
+    return withToggle(
+      `The current push-to-talk key is ${label}. LocalScribe could not check Accessibility. Use the toggle shortcut while permission readiness is rechecked.`,
+      `The current push-to-talk key is ${label}. LocalScribe could not check Accessibility.`,
+    );
+  }
   if (permissions.globalHold.ready) {
     const hold = `Shortcut changes apply immediately. Hold ${label} to dictate from any app.`;
     // Hold works, so this is not urgent — but the toggle is still advertised in
     // both menus and the recorder below, and pressing it does nothing.
     return withToggle(hold, hold);
   }
-  if (permissions.accessibility.granted) {
+  if (accessibilityPermissionStatus(permissions) === "granted") {
     return withToggle(
       `The current push-to-talk key is ${label}. Accessibility is granted, but the global keyboard hook is not running. Restart LocalScribe or use the toggle shortcut.`,
       `The current push-to-talk key is ${label}. Accessibility is granted, but the global keyboard hook is not running.`,

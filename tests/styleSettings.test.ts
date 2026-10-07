@@ -10,6 +10,7 @@ import {
 } from "../src/shared/contracts";
 import {
   appProfilePresentation,
+  accessibilityPermissionStatus,
   automaticPasteSettingsPresentation,
   appliedModelSelectionMessage,
   cleanupSelectionForSettings,
@@ -36,6 +37,7 @@ import {
   settingsHistoryExportMessage,
   settingsLoadPresentation,
   settingsWithPendingDraft,
+  settingsDraftComparedWithSaved,
   shortcutHelpText,
   shortcutCommitErrorMessage,
   StyleScreen,
@@ -181,6 +183,7 @@ describe("settings loading truthfulness", () => {
     const denied = automaticPasteSettingsPresentation({
       platform: "darwin",
       automaticPaste: { supported: true, ready: false },
+      accessibility: { supported: true, granted: false },
     } as never);
 
     expect(denied.detail).toMatch(/copied/iu);
@@ -195,6 +198,7 @@ describe("settings loading truthfulness", () => {
     expect(automaticPasteSettingsPresentation({
       platform: "darwin",
       automaticPaste: { supported: true, ready: false },
+      accessibility: { supported: true, granted: false },
     } as never)).toMatchObject({ editable: true, value: null });
   });
 
@@ -202,6 +206,7 @@ describe("settings loading truthfulness", () => {
     expect(automaticPasteSettingsPresentation({
       platform: "darwin",
       automaticPaste: { supported: true, ready: true },
+      accessibility: { supported: true, granted: true },
     } as never)).toEqual({
       editable: true,
       detail: "Best-effort paste rechecks the app and editor immediately before sending Command-V. If macOS changes focus at the final handoff, the dictated text remains copied as a fallback.",
@@ -957,5 +962,33 @@ describe("redesigned settings and cleanup", () => {
   });
   it("uses explicit permission labels", () => {
     expect(["granted", "denied", "restricted", "not-determined", "unknown"].map((value) => microphonePermissionLabel(value as never))).toEqual(["Granted", "Denied", "Restricted", "Not asked", "Unknown"]);
+  });
+});
+
+ describe("settings draft tracking", () => {
+  it("drops reverted settings and keeps unrelated edits", () => {
+    expect(settingsDraftComparedWithSaved(DEFAULT_SETTINGS, {
+      autoPaste: DEFAULT_SETTINGS.autoPaste,
+      showPillWhenIdle: !DEFAULT_SETTINGS.showPillWhenIdle,
+    })).toEqual({ showPillWhenIdle: !DEFAULT_SETTINGS.showPillWhenIdle });
+  });
+  it("keeps an explicit retry when macOS login startup differs from the saved preference", () => {
+    expect(settingsDraftComparedWithSaved({ ...DEFAULT_SETTINGS, launchAtLogin: true }, { launchAtLogin: true, autoPaste: !DEFAULT_SETTINGS.autoPaste }, false)).toEqual({ launchAtLogin: true, autoPaste: !DEFAULT_SETTINGS.autoPaste });
+  });
+  it("does not turn model choices into a general settings save", () => {
+    expect(settingsDraftComparedWithSaved(DEFAULT_SETTINGS, {
+      modelPerformanceMode: "low",
+      modelLibraryFamilyIds: ["qwen3-asr-0-6b"],
+    } as AppSettingsPatch)).toEqual({});
+  });
+});
+
+ describe("Accessibility check presentation", () => {
+  it("keeps unavailable distinct from denied and stale grants", () => {
+    const permissions = { accessibility: { supported: true, granted: true, status: "unavailable" }, automaticPaste: { supported: true, ready: false }, globalHold: { supported: true, ready: false }, globalToggle: { supported: true, ready: true } } as unknown as Parameters<typeof accessibilityPermissionStatus>[0];
+    expect(accessibilityPermissionStatus(permissions)).toBe("unavailable");
+    expect(automaticPasteSettingsPresentation(permissions).detail).toContain("could not check Accessibility");
+    expect(shortcutHelpText(permissions, "Control")).toContain("could not check Accessibility");
+    expect(shortcutHelpText(permissions, "Control")).not.toContain("Grant Accessibility");
   });
 });
