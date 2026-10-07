@@ -1436,7 +1436,7 @@ async function completeDictationFinal(input: {
     const copiedMessage = settings.autoPaste && !automaticPasteReady
       ? accessibilityStatus === "denied"
         ? "Copied — allow Accessibility"
-        : "Copied — automatic insertion unavailable"
+        : "Copied — paste unavailable"
       : "Copied to clipboard";
     successMessage = outcome === "pasted"
       ? "Inserted"

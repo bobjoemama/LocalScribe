@@ -10,7 +10,7 @@ export interface PillSize {
  * Widest measured status string, and the fixed chrome around it. Produced by
  * `scripts/measure-pill-status-widths.mjs`; see `PILL_LAYOUT.status`.
  */
-export const STATUS_COPY_WIDTH = 208;
+export const STATUS_COPY_WIDTH = 150;
 export const STATUS_CHROME_WIDTH = 8 + 6 + 22 + 22 + 7 + 7;
 
 /**
@@ -109,7 +109,7 @@ export const PILL_LAYOUT = {
    * signal that automatic paste degraded to clipboard-only, was unreadable.
    * Measured in Chromium at the shipped 10px/600 type by
    * `scripts/measure-pill-status-widths.mjs`: the widest message
-   * ("Copied — automatic insertion unavailable") is 208px, and the surrounding chrome
+   * ("Paste sent · copied as backup") is 150px, and the surrounding chrome
    * (14px padding + 22px mark + 22px close + two 7px gaps) is 72px.
    *
    * The width is fixed rather than per-message: the pill is centred on the

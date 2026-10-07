@@ -109,7 +109,7 @@ describe("dictation completion after native permission readiness", () => {
         state: "success",
         message: status === "denied"
           ? "Copied — allow Accessibility"
-          : "Copied — automatic insertion unavailable",
+          : "Copied — paste unavailable",
       });
     },
   );

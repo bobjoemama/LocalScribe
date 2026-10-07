@@ -32,7 +32,7 @@ const MESSAGES = [
   "Paste sent · copied as backup",
   "Copied to clipboard",
   "Copied — allow Accessibility",
-  "Copied — automatic insertion unavailable",
+  "Copied — paste unavailable",
   "Done",
   "Try again",
 ];
