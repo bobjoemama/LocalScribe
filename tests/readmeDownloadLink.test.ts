@@ -15,8 +15,8 @@ const releasingText = normalizeWhitespace(
   readFileSync(path.join(projectRoot, "docs/RELEASING.md"), "utf8"),
 );
 const readmeLinks = Array.from(readme.matchAll(/\[([^\]]+)\]\(([^)]+)\)/gu), (match) => ({
-  label: match[1],
-  target: match[2],
+  label: match[1] ?? "",
+  target: match[2] ?? "",
 }));
 const publishedVersion = "0.1.0-dev.20";
 const releasesUrl = "https://github.com/bobjoemama/LocalScribe/releases";
