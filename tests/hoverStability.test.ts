@@ -6,6 +6,7 @@ const root = resolve(process.cwd());
 
 const RENDERER_STYLESHEETS = [
   "src/renderer/styles.css",
+  "src/renderer/workspace-theme.css",
   "src/renderer/settings/screens/style-settings.css",
   "src/renderer/settings/screens/history-insights.css",
   "src/renderer/settings/screens/library-notes.css",
@@ -133,25 +134,21 @@ describe("hover stability", () => {
     expect(offenders).toEqual([]);
   });
 
-  it("keeps the settings cards on a paint-only hover", () => {
+  it("keeps current settings controls on a paint-only hover", () => {
     const source = stylesheet("src/renderer/settings/screens/style-settings.css");
-    const cardHover = hoverRules(source).find((rule) =>
-      rule.selectorList.includes(".ls-tone-card:hover")
-      && rule.selectorList.includes(".ls-cleanup-card:hover")
-      && rule.selectorList.includes(".ls-transform-card:hover"),
+    const controlHover = hoverRules(source).find((rule) =>
+      rule.selectorList.includes(".ls-shortcut-recorder__button:hover"),
     );
-    expect(cardHover, "the shared settings-card hover rule disappeared").toBeDefined();
-    // The affordance is still there — it just does not move the card.
-    expect(cardHover?.body).toContain("box-shadow:");
-    expect(cardHover?.body).toContain("border-color:");
-    expect(cardHover?.body).not.toContain("transform");
-
-    // And the transition must not name a property the rule no longer animates,
-    // which is how the reduced-motion audit missed the lift in the first place.
-    const base = /\.ls-transform-card\s*\{([^{}]*)\}/u.exec(source)?.[1]
-      ?? /\.ls-tone-card,\s*\.ls-cleanup-card,\s*\.ls-transform-card\s*\{([^{}]*)\}/u.exec(source)?.[1]
-      ?? "";
+    expect(controlHover, "the shortcut control hover affordance disappeared").toBeDefined();
+    expect(controlHover?.body).toContain("background:");
+    expect(controlHover?.body).toContain("border-color:");
+    expect(controlHover?.body).not.toContain("transform");
+    const base = /\.ls-shortcut-recorder__button\s*\{([^{}]*)\}/u.exec(source)?.[1] ?? "";
     const transition = /transition:\s*([^;}]+)/u.exec(base)?.[1] ?? "";
+    expect(transition).toContain("border-color");
     expect(transition).not.toContain("transform");
+    // Cleanup now uses flat level buttons, so the old tone/transform cards
+    // must not survive as an untested animated surface.
+    expect(source).not.toMatch(/\.ls-(?:tone|transform)-card\b/u);
   });
 });

@@ -24,7 +24,7 @@ import { sliceFollowing } from "./support/order";
  * one of these fails.
  */
 const MEASURED_TOOLTIP_WIDTHS: Readonly<Record<string, number>> = {
-  Scratchpad: 62.0,
+  Notes: 31.8,
   "Choose microphone": 107.4,
   "Close microphone menu": 129.8,
   "Dictate · hold ⌥Space": 118.8,
@@ -133,7 +133,7 @@ describe("what the tooltip can be asked to show", () => {
    * pill, and at 117px of text it read "Dictate · hold ⌥Spac…".
    */
   const EVERYDAY_TOOLTIPS = [
-    "Scratchpad",
+    "Notes",
     "Choose microphone",
     "Close microphone menu",
     "Dictate · hold ⌥Space",

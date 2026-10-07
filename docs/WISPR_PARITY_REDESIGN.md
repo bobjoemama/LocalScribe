@@ -1,164 +1,137 @@
-# LocalScribe Wispr-parity redesign
+# LocalScribe interface redesign
 
-The original product inventory was made by observing the installed Wispr Flow application
-through macOS Accessibility and screenshots. The October 2026 workspace refresh gives
-LocalScribe its own visual system while retaining the implemented local features. It uses
-the LocalScribe name, original icons, original copy, and no Wispr assets or source code.
-The installed application is not updated by a source-code edit; deployment is a separate step.
+The October 7, 2026 source candidate (0.1.0-dev.21) implements the Mac portion
+of the user-approved Fable design brief. Its warm paper/ink palette, direct labels
+and recording feedback replace the earlier navy workspace and disabled placeholder
+pages. The current candidate has **not been activated in the installed Mac app**.
+Prior activation evidence below describes earlier builds.
 
-## Accepted direction: minimal, functional, system appearance
+The brief covers both platforms. The native iPhone implementation and its
+recording, keyboard, Action Button, Live Activity and phone performance surfaces
+live in [LocalScribeiOS](https://github.com/bobjoemama/LocalScribeiOS). That project's
+records own its build, installation and physical-device verification status.
+LocalScribe uses its own name, brand mark, copy and implementation; Wispr source
+and assets are not incorporated.
 
-The first October 2026 concept was rejected as decorative. This revision removes
-promotional slogans, decorative waveform/brand artwork, sidebar category labels,
-and repeated local/privacy badges. Screen names and controls describe their function.
-The earlier signed candidate in `out/ui-redesign-20261004` is superseded and preserved;
-Devesh subsequently authorized rebuilding and replacing the installed app without restarting macOS.
+## Current design system
 
-## Design system
+- Shared semantic tokens are defined in src/renderer/workspace-theme.css and
+  used by workspace, settings, library, menus and Notes. Light canvas is
+  #F3F1ED, dark canvas #141312; surfaces are white / #1E1C1A, with warm
+  inset and raised surfaces. Neutral primary actions use contrasting ink.
+- Recording red, success green, warning amber and error red communicate state.
+  The implemented light recording color is #D3352A, dark #FF5F52. Control
+  boundaries and focus use stronger contrast than decorative separators.
+- System sans-serif typography uses 20px page titles, 13px controls and 14px
+  transcript text. Timers and measurements use tabular numbers. Shared spacing,
+  restrained corner radii and separators replace nested dashboard frames.
+- Settings → System now persists **System / Light / Dark**. Main applies
+  nativeTheme.themeSource before windows open and after durable Save. Hub and
+  Notes native backgrounds follow the effective theme, including later system
+  changes. The black recording pill remains black in all appearances.
+- Keyboard focus, reduced-motion behavior, adaptive menus and small-window
+  layout remain explicit. The supported hub sizes remain 1220×760 and 900×640.
 
-- Native system sans-serif; 26px page titles, 13px controls and 14px transcript text.
-- Light canvas (`#edf1f6`) with white content; dark canvas (`#171c24`) with
-  content (`#202631`) and elevated surfaces (`#2a3443`). Thin gray separators,
-  restrained shadows and 6–14px corner radii communicate surface hierarchy.
-- Blue marks actionable primary controls, links, selected navigation and keyboard
-  focus. Hover and pressed states remain distinct without moving controls. Success,
-  warning and error states retain distinct colors in both appearances. Primary
-  action text remains at least 4.5:1 in normal, hover and pressed states.
-- CSS `color-scheme: light dark` and `light-dark()` follow macOS system appearance
-  and respond when it changes. There was no persisted appearance setting in the
-  application; this revision adds no new preference or IPC contract.
-- Shared tokens live in `src/renderer/workspace-theme.css`. Existing settings,
-  history, library and scratchpad colors also have explicit dark equivalents so
-  dark appearance covers nested controls, menus, dialogs and model status.
-- The floating bar retains its established presentation, dimensions and behavior.
+## Current surface coverage
 
-## Application shell
+| Surface | Implemented behavior |
+| --- | --- |
+| Hub | Text sidebar: Dictation, Insights, Notes, Dictionary, Snippets, Cleanup, Models; Settings and version below. One separator replaces the rounded content frame. ⌘1–⌘7 navigate, ⌘, opens Settings, ⌘F focuses list search. |
+| Dictation | One compact line shows saved shortcuts, model and recognition mode, with direct Settings/Models actions. Search, export, copy-visible, clear-history, date groups, complete selectable transcripts, copy feedback and unreadable-history recovery remain. The duplicate Today/Summary side panel is removed. |
+| Insights | Period selection, plain usage figures, activity chart and source-app categories remain. Writing contains measured pace, sentence length, word variety and frequent words with a deterministic-data explanation. The personality headline and separate Voice profile tab are removed. |
+| Dictionary / Snippets | Search, counts, readable rows, Say / Replace with or Say / Insert editors, validation, identity-aware saves, discard confirmation, deletion and unreadable-store recovery remain. Failed saves retain the draft. Custom replacement rules use the existing dictionary rather than a separate rule store. |
+| Notes | Existing dedicated encrypted note window, search, New note, note list, autosave, Copy, Delete and resizing remain. System-font editor and shared surfaces replace the serif presentation. Escape drains queued saves through the existing close path. Disabled rewrite/format tools are removed. Storage and IPC identifiers retain scratchpad for compatibility. |
+| Cleanup | None / Light / Medium presets plus derived Custom state map to the existing filler, spoken-command and punctuation flags. Changes apply immediately. App-profile create/delete controls remain, with confirmed deletion; word replacements link to Dictionary. Legacy Style/Transforms links open Cleanup. Disabled tone and rewrite cards are removed. |
+| Models | Dedicated sidebar page reuses the existing catalog and operation controller. Current/pending selection, explicit Apply/Load current model, Live / After I stop, quality preference, advisory memory details, family/profile comparison, downloads, verification, Repair, Remove, Check, Refresh, Download all, sort/filter and technical/source disclosures remain. Model operations still guard navigation and dismissal. Precision labels describe CPU/GPU/Neural Engine paths. |
+| Settings | General: both shortcut recorders, microphone, dictation language, app language and permissions. System: login startup, floating bar, automatic paste, appearance, history and retention. Data & Privacy: local-processing/database/revision status, data-folder action, export, recovery copies, reset, clear history and diagnostics. Shortcut changes apply immediately; other fields retain Cancel / Save changes. Removed Model/Writing content is reachable through Models/Cleanup; disabled Experimental switches are removed. |
+| Recording pill | Existing non-focusable black capsule, hover actions, microphone menu and session states remain. Recording dot and elapsed timer use real session start. Live text distinguishes recent words and allows reading earlier text with Latest to resume following. Finish/Cancel, processing, copy/paste notices, error details and dismissal remain. Native listening/live dimensions are unchanged. |
+| Native menus | Tray uses the original L silhouette as a 16pt template image with 1x/2x representations. Tray/app menu labels say Notes. ⌘W uses the existing hide-on-close boundary; Quit retains full teardown. |
+| Metrics companion | Separate companion retains live device/code Start/Stop and trace-report workflows. Its source is maintained in the iPhone repository; collector failures are surfaced rather than discarded. |
 
-- A 196px text sidebar lists Dictation, Insights, Scratchpad, Dictionary, Snippets,
-  Style and Transforms. Settings and the application version remain below.
-- Main content scrolls independently. The supported sizes remain 1220×760 and
-  900×640. Existing model apply, focus, dismissal and save boundaries remain intact.
+## Runtime, storage and lifecycle continuity
 
-## Screens
+The redesign preserves bundle identity, Keychain encryption, user records, model
+files, pinned runtime adapters, microphone/accessibility grants and registered
+Control–Space. Source edits and fixture tests do not modify installed app state.
+Closing the Mac window hides it; actual Quit/⌘Q ends capture, hotkeys, worker and
+loaded-model resources. Window visibility still controls hidden permission polling.
+The appearance listener is retired during shutdown.
 
-### Dictation
+Model browsing and installation remain separate from runtime activation. Only
+explicit Apply commits a changed Mac model selection. Memory estimates and missing
+telemetry remain advisory, and runtime loading failures retain the saved selection.
+Cleanup and dictionary corrections remain deterministic local operations. No cloud,
+account, subscription, generation model, daemon or dependency was added.
 
-- Direct `Dictation` title and existing settings-dependent history status.
-- Actual saved hold and toggle shortcuts are visible at both supported sizes;
-  `Edit shortcuts…` opens the existing guarded Settings modal.
-- The saved dictation model and performance preference are visible below the
-  shortcuts. `Choose model…` opens Model & Performance directly. Opening it does
-  not apply a model or change saved settings; the label does not claim model
-  readiness or an effective Auto tier. It reads the existing settings snapshot,
-  without hashing downloaded model files or starting a worker.
-- Search, export, copy and overflow actions; today-grouped selectable transcript
-  text; compact Today and Summary statistics. No promotional banner or privacy badge.
-- Short transcripts fit their text; long transcripts retain a bounded, scrollable
-  read-only field containing the complete value. Row hover and focus emphasize
-  the current record. Copy feedback is visible and announced without interrupting.
-- Native overflow disclosures use the same adaptive raised surface as dialogs.
-  Only one opens at a time. Escape closes and restores trigger focus; outside click
-  and action selection close it. Arrow keys, Home and End navigate its ordinary
-  buttons, and focused actions have a small blue outline. Popup placement adapts
-  above or below its trigger within the content viewport.
-- Transcripts and actions retain the existing local persistence and encryption paths.
+## Verified limits and departures from the brief
 
-### Insights
+- The alleged paste parser defect was not present. The Swift helper returns
+  injected after posting Command–V, with no receiving-app consumption receipt.
+  nativePlatformBridge.ts faithfully parses that response. safeInsertion.ts
+  deliberately keeps the transcription copied when acknowledgment is absent.
+  A dispatched event is not proof of insertion, so the redesign retains honest
+  paste-sent/copy-backup feedback and conditional restoration. It does not
+  manufacture an “Inserted” receipt or restore the clipboard prematurely.
+- Individual Mac downloads have no supported cancellation contract. The existing
+  bulk **Stop after current** behavior remains; current artifact download and
+  verification finish before the next package is skipped. No per-file Cancel
+  control promises an abort that the worker cannot perform.
+- Drag-to-snap pill placement remains outside this change. Existing placement and
+  the non-focusable panel's focus-preservation behavior remain intact.
+- iPhone background microphone activation, clipboard delivery, actual Dynamic
+  Island rendering and keyboard host insertion remain physical-device checks,
+  owned by the iPhone project. The design brief does not establish those results.
 
-- Tabs: Usage and Voice profile. Team leaderboard is omitted because LocalScribe has no team
-  service.
-- Usage cards derive word count, estimated WPM, duration, app count, source-app categories,
-  and recent streak data from encrypted local transcript metadata.
-- Voice profile is a deterministic, clearly labeled local summary; it must not pretend to be
-  a generative analysis.
+## Verification and activation status
 
-### Dictionary and snippets
+Focused platform checks passed for appearance persistence/migration, native canvas
+updates, navigation compatibility, shutdown behavior and existing safe insertion.
+An isolated Electron check decoded both tray representations, confirmed template
+image status and built the Close menu role. Synthetic renderer fixtures exercise
+light/dark workspace and dialog states without loading a model, changing the system
+clipboard or reading personal records. The full source gate passed 1,575 tests
+with two existing skips, toolchain/dependency audits, lint and TypeScript. Sixteen
+native Chromium scenarios passed across both appearances and 1220×760/900×640,
+including model-operation guards, Apply success/failure, editing, focus, scrolling
+and appearance persistence. Eighteen additional Notes/pill captures and real
+fixture interactions passed, including save-drain on Escape and Latest re-follow.
+See [current synthetic captures and reports](previews/redesign-20261007/README.md).
 
-- Header with `Add new`, search and bordered list rows. Empty states describe
-  the action directly; redundant introductory cards are removed.
-- Add/edit surfaces are centered modals. Dictionary supports heard phrase and preferred
-  spelling. Snippets support spoken trigger and expansion.
-- Each saved row has explicit `Edit` and `Delete` actions. Editing opens the same
-  accessible dialog with its existing values; unchanged drafts cannot be saved.
-  Cancel writes nothing and returns focus to Edit. Add new starts a blank draft.
-- Saves address the entry by identity, preserving its creation time when a phrase
-  or trigger is renamed. A case- or Unicode-equivalent collision with another
-  entry, a stale identity, or an unreadable potentially duplicate rule rejects
-  the save. The draft remains available for correction or retry. Encryption
-  failure preserves the prior stored fields, and snippet whitespace is retained.
-- No sharing/team controls.
+The signed 0.1.0-dev.21 build replaced `/Applications/LocalScribe.app` on October 7
+after its Dictation menu confirmed idle. Actual Command–Q ended all nine tracked
+app/helper/worker processes. Bundle signatures, nested entitlements, resource
+integrity, archive checks and the complete designated requirement passed; the
+installed archive matches the candidate. Startup and Control–Space registration
+passed, Canary-Qwen and the 53 readable history entries remained. Only LocalScribe
+restarted; the prior bundle is in recoverable Trash. No user data/model reset,
+physical microphone test or new notarized/public binary release was performed.
 
-### Style
+## Desktop recovery and recording fixes
 
-- Tabs: Personal messages, Work messages, Email, Other, Auto cleanup.
-- Style cards: Formal, Casual, Very casual/Excited where appropriate, with realistic preview
-  cards. Existing local app profiles remain reachable from this screen.
-- Auto cleanup levels: None, Light, Medium. Only behavior implemented by the deterministic
-  local cleanup pipeline may be promised.
+Settings → Data & Privacy provides **Reset saved data…** and **Show recovery copies**.
+Reset uses a native confirmation, first saves a consistent encrypted SQLite backup,
+then clears history, dictionary, snippets and saved notes in one transaction.
+Models, settings, shortcuts and app profiles remain unchanged. Active dictation
+and model operations must finish first; competing saved-data writes are blocked
+until reset completes. Backup failures preserve the original store. The recovery
+copies use the same Keychain key; they cannot restore a previously lost key.
+Unreadable dictionary/snippet entries show their count and a direct recovery link.
 
-### Transforms
+New library items are revealed even under an active search. Saving locks editor
+fields; correcting a failed draft clears its stale error. History refreshes keep
+existing readable rows and focus visible, including when refresh fails. Deletion
+notifications also refresh other views when deletion committed but WAL cleanup
+could not finish. New notes clear search and expand the notes list.
 
-- Local deterministic controls for Polish and spoken structure, plus a
-  custom-rule editor surface. These perform exact, source-defined transforms.
-- Concise semantic rewriting remains visibly disabled because it requires a
-  separately installed local text-generation model. The ASR model does not
-  provide rewriting, and deterministic cleanup must not be described as an LLM
-  transformation.
+Recorder generations reject stale queued audio. Stop/Cancel release microphone
+and recorder state even if audio-context closure fails. Recorder teardown also
+runs on session errors and pill unmount; late settings responses cannot restart
+capture after disposal. Focused regression tests cover these failure paths.
 
-### Scratchpad
+## Historical release and activation records
 
-- Scratchpad opens in its existing dedicated compact note window with search/new controls,
-  a note list, and encrypted editor. The palette and native sans-serif editor match the hub.
-- Save behavior, independent window dimensions, and local storage remain unchanged.
-
-### Settings modal
-
-- Modal overlay with internal sidebar: General, System, Model & Performance, Writing,
-  Experimental, Data & Privacy. Navigation, scroll ownership, fixed footer, focus trapping,
-  and guarded dismissal remain in the existing implementation.
-- General: hold-to-talk shortcut, microphone, dictation language, app language, permissions.
-- System: login item, floating bar, automatic paste, history, retention.
-- Model & Performance: curated model catalog, profile comparison, download/verification,
-  and explicit model Apply. Workspace styling does not change model selection behavior.
-- Memory ranges and reported availability are advisory. Apply is gated by verified
-  installed artifacts, supported capabilities and language, and operation state;
-  an exceeded estimate or missing telemetry does not block explicit or Auto loading.
-  Auto starts with the highest supported profile estimated to fit reported memory,
-  falling back to the lowest supported profile if telemetry is unknown or no
-  estimate fits. The UI does not invent memory released by a resident model.
-  Actual loading failures remain visible, with the saved selection retained.
-- Writing: app profiles, style/cleanup explanation, dictionary/snippet shortcuts.
-- Experimental: command mode, press-enter command, stacked messages, bulk import (only mark a
-  switch active when its behavior exists).
-- Data & Privacy: local-only processing, context boundaries, encrypted storage, export, clear,
-  model removal, data/model paths, diagnostics.
-
-## Floating bar
-
-- Idle state collapses to a quiet 42x7 warm-gray/black capsule at bottom center.
-- Hover/focus expands to an original compact LocalScribe control with the black `L`, shortcut
-  hint, and settings action.
-- Listening expands to a dark capsule with an original animated waveform; processing shows a
-  restrained progress treatment; success/error collapse after feedback.
-- Microphone access is never triggered merely to inspect or hover over the bar.
-
-## Privacy and correctness boundaries
-
-- Preserve sandboxed renderer, narrow validated IPC, OS-encrypted private text fields, raw-audio deletion,
-  target-guarded insertion, conditional clipboard restoration, pinned model revision/hash,
-  hardened fuses, and no listening server.
-- Never copy Wispr source, assets, screenshots, account/team data, private text, or proprietary
-  wording into LocalScribe.
-- UI controls must either call an existing local implementation or clearly communicate that
-  they are informational; no deceptive functional parity.
-
-## Verification and activation boundary
-
-`npm run typecheck`, `npm run lint`, renderer UI tests, and the isolated settings
-layout harness verify source behavior and rendering. Optional fixture captures use
-`LOCALSCRIBE_LAYOUT_SCREENSHOT_DIR` and `LOCALSCRIBE_LAYOUT_APPEARANCE=light|dark`.
-The same complete hidden test package renders actual workspace pages with synthetic
-history; it does not launch the product app, access user history or change macOS appearance.
+The following records describe prior October 4 builds. Their successful startup,
+shortcut registration and fixture results do not verify the current candidate.
 
 A separately packaged candidate reuses the existing Developer ID, bundle identifier
 and hardened runtime. Packaging validates source provenance, resources, entitlements
@@ -204,25 +177,3 @@ Neither fixture accesses user records, changes the system clipboard or invokes
 the installed application. Scratchpad already has encrypted note persistence,
 autosave, search, New note and Copy; Style already has application categories and
 concrete before/after examples, so those surfaces need no parity-only additions.
-
-## Desktop recovery and recording fixes
-
-Settings → Data & Privacy provides **Reset saved data…** and **Show recovery copies**.
-Reset uses a native confirmation, first saves a consistent encrypted SQLite backup,
-then clears history, dictionary, snippets and saved notes in one transaction.
-Models, settings, shortcuts and app profiles remain unchanged. Active dictation
-and model operations must finish first; competing saved-data writes are blocked
-until reset completes. Backup failures preserve the original store. The recovery
-copies use the same Keychain key; they cannot restore a previously lost key.
-Unreadable dictionary/snippet entries show their count and a direct recovery link.
-
-New library items are revealed even under an active search. Saving locks editor
-fields; correcting a failed draft clears its stale error. History refreshes keep
-existing readable rows and focus visible, including when refresh fails. Deletion
-notifications also refresh other views when deletion committed but WAL cleanup
-could not finish. New notes clear search and expand the notes list.
-
-Recorder generations reject stale queued audio. Stop/Cancel release microphone
-and recorder state even if audio-context closure fails. Recorder teardown also
-runs on session errors and pill unmount; late settings responses cannot restart
-capture after disposal. Focused regression tests cover these failure paths.

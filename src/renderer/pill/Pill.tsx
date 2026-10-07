@@ -1,4 +1,4 @@
-import { type CSSProperties, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { type CSSProperties, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import {
   type AppSettings,
@@ -26,6 +26,7 @@ const WAVE_SAMPLE_COUNT = 15;
 const MICROPHONE_PICKER_ID = "pill-microphone-picker";
 const MICROPHONE_PICKER_TITLE_ID = "pill-microphone-picker-title";
 const quietWave = () => Array.from({ length: WAVE_SAMPLE_COUNT }, () => 0);
+const liveSentenceSegmenter = new Intl.Segmenter(undefined, { granularity: "sentence" });
 type PillStyle = CSSProperties & Record<PillLayoutCssVariable, string>;
 type ErrorNoticeStyle = CSSProperties & Record<"--pill-error-notice-duration", string>;
 const pillStageStyle = PILL_LAYOUT_CSS_PROPERTIES as PillStyle;
@@ -192,6 +193,23 @@ export function scrollLiveTranscriptToEnd(
   shouldFollow = true,
 ): void {
   if (viewport && shouldFollow) viewport.scrollTop = viewport.scrollHeight;
+}
+
+/** The timer uses the main process's session start, including after a renderer reload. */
+export function recordingElapsedLabel(startedAt: number | undefined, now: number): string | null {
+  if (!startedAt || startedAt <= 0 || !Number.isFinite(startedAt) || !Number.isFinite(now)) return null;
+  const seconds = Math.max(0, Math.floor((now - startedAt) / 1_000));
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
+}
+
+/** Preserve the full replacement snapshot while emphasizing its recent sentences. */
+export function splitRecentLiveText(text: string): { earlier: string; recent: string } {
+  const sentences = [...liveSentenceSegmenter.segment(text)];
+  const words = [...text.matchAll(/\S+/gu)];
+  const sentenceStart = sentences.length > 3 ? sentences[sentences.length - 3]!.index : 0;
+  const wordStart = words.length > 65 ? words[words.length - 65]!.index! : 0;
+  const start = Math.max(sentenceStart, wordStart);
+  return { earlier: text.slice(0, start), recent: text.slice(start) };
 }
 
 export function Pill() {
@@ -553,7 +571,7 @@ function IdlePill({
     shortcutSettingsStatus,
   );
   const tooltip = hoveredAction === "scratchpad"
-    ? "Scratchpad"
+    ? "Notes"
     : hoveredAction === "microphone"
       ? (pickerOpen ? "Close microphone menu" : "Choose microphone")
       : shortcutPresentation.tooltip;
@@ -644,7 +662,7 @@ function IdlePill({
             className="pill__round pill__round--scratchpad"
             type="button"
             onClick={() => void window.localScribe.windows.showSettings("scratchpad")}
-            aria-label="Open scratchpad"
+            aria-label="Open Notes"
             onPointerEnter={() => setHoveredAction("scratchpad")}
             onPointerLeave={() => setHoveredAction(null)}
           >
@@ -679,13 +697,14 @@ function ActivePill({
           ariaLabel={ariaLabel}
           transcript={transcript}
           waveform={waveform}
+          startedAt={snapshot.startedAt}
         />
       );
     }
     if (snapshot.activation === "hold") {
       return (
         <section className="pill pill--listening pill--hold-listening" aria-label={ariaLabel}>
-          <Wave samples={waveform} />
+          <RecordingMeter samples={waveform} startedAt={snapshot.startedAt} />
         </section>
       );
     }
@@ -694,7 +713,7 @@ function ActivePill({
         <button className="pill__end pill__end--cancel" type="button" onClick={() => void window.localScribe.session.cancel()} aria-label="Cancel dictation">
           <CloseIcon />
         </button>
-        <Wave samples={waveform} />
+        <RecordingMeter samples={waveform} startedAt={snapshot.startedAt} />
         <button className="pill__end pill__end--finish" type="button" onClick={() => void window.localScribe.session.toggle()} aria-label="Finish dictation">
           <CheckIcon />
         </button>
@@ -714,7 +733,7 @@ function ActivePill({
   return (
     <section className={`pill pill--status pill--${snapshot.state}`} aria-label={`LocalScribe: ${status}`}>
       <span className="pill__status-mark" aria-hidden="true">
-        <CompactWave />
+        {canAct ? <CheckIcon /> : <CompactWave />}
       </span>
       {/* The box is sized for the longest message the product composes, but a
           future or localized string could still ellipsize; keep it readable. */}
@@ -738,15 +757,19 @@ function LiveListeningPill({
   ariaLabel,
   transcript,
   waveform,
+  startedAt,
 }: {
   activation: "hold" | "toggle" | undefined;
   ariaLabel: string;
   transcript: string | null;
   waveform: number[];
+  startedAt: number | undefined;
 }) {
   const transcriptViewport = useRef<HTMLDivElement>(null);
   const followsLiveTranscript = useRef(true);
+  const [showLatest, setShowLatest] = useState(false);
   const isHold = activation === "hold";
+  const textParts = useMemo(() => transcript ? splitRecentLiveText(transcript) : null, [transcript]);
 
   useLayoutEffect(() => {
     scrollLiveTranscriptToEnd(transcriptViewport.current, followsLiveTranscript.current);
@@ -762,18 +785,33 @@ function LiveListeningPill({
         tabIndex={0}
         onScroll={(event) => {
           followsLiveTranscript.current = isLiveTranscriptNearBottom(event.currentTarget);
+          setShowLatest(!followsLiveTranscript.current);
         }}
         title={transcript ?? undefined}
       >
-        <span>{transcript ?? "Listening…"}</span>
+        <span>{textParts ? <><span className="pill__live-earlier">{textParts.earlier}</span><span className="pill__live-recent">{textParts.recent}</span></> : "Listening…"}</span>
       </div>
+      {showLatest && (
+        <button
+          className="pill__latest"
+          type="button"
+          aria-label="Show latest words and follow live transcript"
+          onClick={() => {
+            followsLiveTranscript.current = true;
+            scrollLiveTranscriptToEnd(transcriptViewport.current);
+            setShowLatest(false);
+          }}
+        >
+          Latest <span aria-hidden="true">↓</span>
+        </button>
+      )}
       <div className={`pill pill--listening pill__live-controls${isHold ? " pill--hold-listening" : ""}`}>
         {!isHold && (
           <button className="pill__end pill__end--cancel" type="button" onClick={() => void window.localScribe.session.cancel()} aria-label="Cancel dictation">
             <CloseIcon />
           </button>
         )}
-        <Wave samples={waveform} />
+        <RecordingMeter samples={waveform} startedAt={startedAt} />
         {!isHold && (
           <button className="pill__end pill__end--finish" type="button" onClick={() => void window.localScribe.session.toggle()} aria-label="Finish dictation">
             <CheckIcon />
@@ -844,6 +882,22 @@ function Wave({ samples }: { samples: number[] }) {
           }}
         />
       ))}
+    </span>
+  );
+}
+
+function RecordingMeter({ samples, startedAt }: { samples: number[]; startedAt: number | undefined }) {
+  const [now, setNow] = useState(Date.now);
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 1_000);
+    return () => window.clearInterval(timer);
+  }, [startedAt]);
+  const elapsed = recordingElapsedLabel(startedAt, now);
+  return (
+    <span className="pill__recording-meter">
+      <span className="pill__recording-dot" aria-label="Recording" />
+      <Wave samples={samples} />
+      {elapsed && <span className="pill__elapsed" aria-label={`Recording duration ${elapsed}`} title={`Recording ${elapsed}`}>{elapsed}</span>}
     </span>
   );
 }

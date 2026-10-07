@@ -650,7 +650,7 @@ export function ModelPerformanceSettings({
           <p id="model-apply-status">{applyEligibility.reason}</p>
           {savedSelectionUnavailable && <p role="alert">{UNAVAILABLE_MODEL_SELECTION_MESSAGE}</p>}
         </div>
-        <div className="ls-model-apply-actions">
+        {(selectionChanged || !currentModelLoaded || applying) && <div className="ls-model-apply-actions">
           <button
             type="button"
             className="ls-primary-button ls-model-apply-button"
@@ -666,12 +666,12 @@ export function ModelPerformanceSettings({
                 ? "Load current model"
                 : "Apply model"}
           </button>
-        </div>
+        </div>}
       </section>
 
       <section className="ls-model-experience-picker" aria-labelledby="model-experience-heading">
         <div>
-          <h2 id="model-experience-heading">When should text appear?</h2>
+          <h2 id="model-experience-heading">Text appears</h2>
           <p>Both run locally and insert the finished text after you stop.</p>
         </div>
         <div className="ls-model-experience-options" role="group" aria-label="Dictation experience">
@@ -1040,8 +1040,7 @@ function ModelFamilyCard({
       <p className="ls-model-family-meta">{presentation.languageLabel} · {catalogFamilyBackendLabel(family)}{presentation.experiences.length > 1 ? " · After I stop + Live" : ""}</p>
       {sortSummary && <p className="ls-model-sort-value">{sortSummary}</p>}
       {familyAction && activeTier && <ModelOperationProgress action={familyAction} expectedBytes={activeTier.downloadBytes} />}
-      <details className="ls-model-profiles" open={isPending || familyAction !== null}>
-      <summary>{family.familyId === "phonon-2" || family.familyId === "moonshine-small-streaming" ? "Runtimes & downloads" : "Profiles & downloads"} <span>{tiers.length} profiles · {tiers.filter((tier) => tier.verificationStatus === "verified").length} verified</span></summary>
+      <div className="ls-model-profiles">
       {presentation.experiences.length > 1 && (
         <p className="ls-model-family-note ls-model-family-note--shared-runtime">
           One downloaded model supports both After I stop and Live. Changing dictation experience does not download a second copy.
@@ -1071,7 +1070,7 @@ function ModelFamilyCard({
           />
         ))}
       </div>
-      </details>
+      </div>
       <ModelComparisonDetails family={family} tier={comparisonTier} experience={browsingExperience} />
     </article>
   );
@@ -1172,7 +1171,7 @@ function ModelTierRow({
         <span className={`ls-model-state is-${status.tone}`} title={tier.verificationStatus === "verified" ? "Downloaded and verified on disk; loading is controlled by Apply model." : undefined}>{status.label}</span>
       </div>
       <dl className="ls-model-tier-facts">
-        <div><dt>Precision</dt><dd>{tier.precision}</dd></div>
+        <div><dt>Precision</dt><dd>{modelPrecisionLabel(tier.precision)}</dd></div>
         <div><dt>Artifact</dt><dd>{formatModelBytes(tier.downloadBytes)}</dd></div>
         <div><dt>Memory</dt><dd>{formatMemoryRange(tier.acceleratorMemory)}</dd></div>
       </dl>
@@ -1352,4 +1351,15 @@ function progressLabelFor(operation: "install" | "repair" | "remove"): string {
 
 function tierLabelFor(tier: ConcreteModelTier): string {
   return MODEL_MODE_CHOICES.find((choice) => choice.id === tier)?.label ?? tier;
+}
+
+export function modelPrecisionLabel(precision: string): string {
+  const labels: Record<string, string> = {
+    "coreml-lut6-ane": "LUT6 · Neural Engine",
+    "coreml-lut3-gpu": "LUT3 · GPU",
+    "onnx-cpu": "CPU",
+    "coreml-fp16": "FP16 · Neural Engine", "coreml-int8": "INT8 · Neural Engine",
+    "bf16": "BF16", "fp16": "FP16", "fp32": "FP32", "int8": "INT8",
+  };
+  return labels[precision.toLowerCase()] ?? precision;
 }

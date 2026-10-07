@@ -1,4 +1,7 @@
 import { readFileSync } from "node:fs";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { SettingsModal, ModelsScreen } from "../src/renderer/settings/screens/StyleSettings";
 import { describe, expect, it } from "vitest";
 
 import { requireIndex, sliceBetween } from "./support/order";
@@ -48,17 +51,33 @@ describe("settings dialog keyboard containment", () => {
   });
 
   it("gives the dialog a focus target that is not in the tab order", () => {
-    const open = modal.lastIndexOf("<section", modal.indexOf('className="ls-settings-modal"'));
-    const tag = modal.slice(open, modal.indexOf(">", open) + 1);
-
-    expect(tag).toContain("ref={dialogRef}");
+    const html = renderToStaticMarkup(createElement(SettingsModal, { onClose: () => undefined }));
+    const open = html.indexOf('<section class="ls-settings-modal"');
+    expect(open).toBeGreaterThanOrEqual(0);
+    const tag = html.slice(open, html.indexOf(">", open) + 1);
     expect(tag).toContain('role="dialog"');
     expect(tag).toContain('aria-modal="true"');
-    // tabIndex={-1} is what makes .focus() work without adding a tab stop.
-    expect(tag).toContain("tabIndex={-1}");
+    expect(tag).toContain('tabindex="-1"');
+    const dialogTag = modal.slice(modal.indexOf("ref={dialogRef}"), modal.indexOf("tabIndex={-1}") + "tabIndex={-1}".length);
+    expect(dialogTag).toContain("presentation === \"page\"");
+    const models = renderToStaticMarkup(createElement(ModelsScreen));
+    expect(models).not.toContain('role="dialog"');
+    expect(models).not.toContain('aria-modal="true"');
   });
 
   it("exposes the active settings destination semantically", () => {
     expect(modal).toContain('aria-current={tab === item.id ? "page" : undefined}');
+  });
+});
+
+
+describe("settings dialog Tab wrapping", () => {
+  it("wraps forward and reverse focus within enabled visible dialog controls", () => {
+    const handler = sliceBetween(modal, "const closeOnEscape", "window.addEventListener(\"keydown\", closeOnEscape)");
+    expect(handler).toContain('event.key === "Tab"');
+    expect(handler).toContain("control.getClientRects().length > 0");
+    expect(handler).toContain("event.shiftKey");
+    expect(handler).toContain("event.preventDefault(); last?.focus()");
+    expect(handler).toContain("event.preventDefault(); first?.focus()");
   });
 });

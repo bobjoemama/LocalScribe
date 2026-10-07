@@ -132,24 +132,24 @@ describe("every path that unmounts the dialog consults the decision", () => {
    * navigates the hub unmounted the dialog mid-operation.
    */
   it("gates the navigation path that used to close the dialog unconditionally", () => {
-    const handler = sliceBetween(hub, "onNavigate((target)", "openSection(target);");
+    const handler = sliceBetween(hub, "const openSection =", "const openSettings =");
 
     expect(handler).toContain("dismissalGate.current");
     expectPrecedes(handler, "dismissalGate.current()", "setSettingsOpen(false)");
   });
 
   it("leaves the hub on its current section when a navigation is refused", () => {
-    const handler = sliceBetween(hub, "onNavigate((target)", "openSection(target);");
+    const handler = sliceBetween(hub, "const openSection =", "const openSettings =");
     const refusal = handler.slice(requireIndex(handler, "dismissalGate.current()"));
 
     // The early `return` must come before both effects, not just the unmount.
     expectPrecedes(refusal, "return;", "setSettingsOpen(false)");
   });
 
-  it("still opens the dialog on a settings navigation without consulting the gate", () => {
-    const handler = sliceBetween(hub, "onNavigate((target)", "openSection(target);");
-
-    expectPrecedes(handler, "setSettingsOpen(true)", "dismissalGate.current");
+  it("consults the model workspace gate before opening settings", () => {
+    const handler = sliceBetween(hub, "const openSettings =", "useEffect(() => window.localScribe.windows.onNavigate");
+    expectPrecedes(handler, "modelPageGate.current()", "setSettingsOpen(true)");
+    expect(handler).toContain("return;");
   });
 
   it("publishes the gate while the dialog is mounted and clears it on unmount", () => {
@@ -167,5 +167,15 @@ describe("every path that unmounts the dialog consults the decision", () => {
     const cancel = footer.slice(requireIndex(footer, "ls-secondary-button"));
 
     expect(cancel).toContain("disabled={busy || modelApplying || modelRefreshing || modelAction !== null}");
+  });
+});
+
+
+describe("model page navigation guard", () => {
+  it("registers a separate live operation gate for the model workspace", () => {
+    const hub = readFileSync("src/renderer/settings/SettingsApp.tsx", "utf8");
+    expect(hub).toContain("registerDismissalGate={registerModelPageGate}");
+    const navigation = sliceBetween(hub, "const openSection =", "const openSettings =");
+    expectPrecedes(navigation, "modelPageGate.current()", "setSection(target)");
   });
 });

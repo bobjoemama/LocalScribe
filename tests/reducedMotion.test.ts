@@ -6,6 +6,7 @@ const root = resolve(process.cwd());
 
 const RENDERER_STYLESHEETS = [
   "src/renderer/styles.css",
+  "src/renderer/workspace-theme.css",
   "src/renderer/settings/screens/style-settings.css",
   "src/renderer/settings/screens/history-insights.css",
   "src/renderer/settings/screens/library-notes.css",
@@ -143,6 +144,9 @@ describe("reduced-motion coverage", () => {
       stylesheet("src/renderer/settings/screens/style-settings.css"),
     );
     expect(settings).toContain(".ls-switch::after");
-    expect(settings).toContain(".ls-transform-card");
+    expect(settings).toContain(".ls-shortcut-recorder__button");
+    expect(settings).toContain(".ls-model-operation-progress__bar > i");
+    expect(settings).toMatch(/\.ls-model-operation-progress__bar\.is-indeterminate > i\s*\{[^}]*animation: none;[^}]*transform: none;/u);
+    expect(stylesheet("src/renderer/settings/screens/style-settings.css")).not.toContain(".ls-transform-card");
   });
 });

@@ -79,16 +79,20 @@ const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, mil
 async function inspectTab(window, label, targetText) {
   return window.webContents.executeJavaScript(\`(async () => {
     const waitForPaint = () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-    const button = [...document.querySelectorAll(".ls-settings-sidebar nav button")]
-      .find((candidate) => candidate.textContent?.trim() === \${JSON.stringify(label)});
-    if (!button) throw new Error("Missing settings tab: \${label}");
-    button.click();
+    if (\${JSON.stringify(label)} === "Models") {
+      window.__localScribeSettingsHarness.showModels();
+    } else {
+      const button = [...document.querySelectorAll(".ls-settings-sidebar nav button")].find((candidate) => candidate.textContent?.trim() === \${JSON.stringify(label)});
+      if (!button) throw new Error("Missing settings tab: \${label}");
+      button.click();
+    }
     await waitForPaint();
+    await new Promise(resolve => setTimeout(resolve, 50));
 
     const scroll = document.querySelector(".ls-settings-scroll");
     const header = document.querySelector(".ls-settings-header");
     const footer = document.querySelector(".ls-settings-footer");
-    if (!(scroll instanceof HTMLElement) || !(header instanceof HTMLElement) || !(footer instanceof HTMLElement)) {
+    if (!(scroll instanceof HTMLElement) || !(header instanceof HTMLElement) || (\${JSON.stringify(label)} !== "Models" && !(footer instanceof HTMLElement))) {
       throw new Error("Settings layout chrome is missing for \${label}");
     }
     const target = [...scroll.querySelectorAll("button, strong, small, span, p")]
@@ -113,7 +117,7 @@ async function inspectTab(window, label, targetText) {
       scrollHeight: scroll.scrollHeight,
       clientHeight: scroll.clientHeight,
       headerTop: header.getBoundingClientRect().top,
-      footerTop: footer.getBoundingClientRect().top,
+      footerTop: footer?.getBoundingClientRect().top ?? scroll.getBoundingClientRect().bottom,
     };
     scroll.scrollTop = scroll.scrollHeight;
     scroll.dispatchEvent(new Event("scroll"));
@@ -124,13 +128,13 @@ async function inspectTab(window, label, targetText) {
       scrollTop: scroll.scrollTop,
       maxScrollTop: Math.max(0, scroll.scrollHeight - scroll.clientHeight),
       headerTop: header.getBoundingClientRect().top,
-      footerTop: footer.getBoundingClientRect().top,
+      footerTop: footer?.getBoundingClientRect().top ?? scroll.getBoundingClientRect().bottom,
       targetTop: targetBounds.top,
       targetBottom: targetBounds.bottom,
       viewportTop: viewport.top,
       viewportBottom: viewport.bottom,
     };
-    const footerControls = [...footer.querySelectorAll("button")].map((control) => {
+    const footerControls = [...(footer?.querySelectorAll("button") ?? [])].map((control) => {
       const bounds = control.getBoundingClientRect();
       return {
         label: control.textContent?.trim(),
@@ -173,16 +177,12 @@ async function inspectTab(window, label, targetText) {
         "Paste automatically",
         "Save transcript history",
         "History retention",
+        "Appearance",
       ]) {
         settingsBindings[rowLabel] = rowControl(rowLabel);
       }
-    } else if (\${JSON.stringify(label)} === "Writing") {
-      for (const rowLabel of ["Remove filler words", "Spoken commands", "Smart punctuation"]) {
-        settingsBindings[rowLabel] = rowControl(rowLabel);
-      }
-      settingsBindings.copy = scroll.textContent ?? "";
     }
-    if (\${JSON.stringify(label)} === "Model & Performance") {
+    if (\${JSON.stringify(label)} === "Models") {
       const modeInputs = [...scroll.querySelectorAll("input[name='model-performance-mode']")];
       for (const input of modeInputs) {
         const control = input.closest("label");
@@ -216,7 +216,7 @@ async function inspectTab(window, label, targetText) {
         .filter((node) => node.textContent?.includes("Shared artifact")).length;
     }
     const interactiveCursors = [...document.querySelectorAll(
-      ".ls-settings-modal button, .ls-settings-modal summary, .ls-settings-modal select, "
+      ".ls-models-workspace button, .ls-models-workspace summary, .ls-models-workspace select, .ls-settings-modal button, .ls-settings-modal summary, .ls-settings-modal select, "
       + ".ls-settings-modal label, .ls-settings-modal [role='button'], "
       + ".ls-settings-modal [role='radio'], .ls-settings-modal [role='tab'], "
       + ".ls-settings-modal [role='menuitem'], .ls-settings-modal [role='switch']",
@@ -263,9 +263,10 @@ async function exerciseChangedSettings(window) {
     const showPill = row("Show floating bar")?.querySelector("input");
     const autoPaste = row("Paste automatically")?.querySelector("input");
     const retention = row("History retention")?.querySelector("select");
+    const appearanceControl = row("Appearance")?.querySelector("select");
     if (!(launchAtLogin instanceof HTMLInputElement)
       || !(showPill instanceof HTMLInputElement) || !(autoPaste instanceof HTMLInputElement)
-      || !(retention instanceof HTMLSelectElement)) {
+      || !(retention instanceof HTMLSelectElement) || !(appearanceControl instanceof HTMLSelectElement)) {
       throw new Error("Missing editable System settings controls");
     }
     launchAtLogin.click();
@@ -273,6 +274,8 @@ async function exerciseChangedSettings(window) {
     autoPaste.click();
     retention.value = "7";
     retention.dispatchEvent(new Event("change", { bubbles: true }));
+    appearanceControl.value = "dark";
+    appearanceControl.dispatchEvent(new Event("change", { bubbles: true }));
     await waitForPaint();
 
     const save = [...document.querySelectorAll(".ls-settings-footer button")]
@@ -306,6 +309,7 @@ async function exerciseChangedSettings(window) {
       showPillWhenIdle: reloadedRow("Show floating bar")?.querySelector("input")?.checked ?? null,
       autoPaste: reloadedRow("Paste automatically")?.querySelector("input")?.checked ?? null,
       historyRetentionDays: reloadedRow("History retention")?.querySelector("select")?.value ?? null,
+      appearance: reloadedRow("Appearance")?.querySelector("select")?.value ?? null,
       language: await reloadedLanguage(),
     };
     return { beforeReload, afterReload };
@@ -490,15 +494,31 @@ async function exercisePermissionPollGating(window) {
   })()\`);
 }
 
+async function inspectCleanup(window) {
+  const evidence = await window.webContents.executeJavaScript(\`(async () => {
+    window.__localScribeSettingsHarness.showCleanup();
+    await new Promise(resolve => setTimeout(resolve, 100));
+    const rowControl = label => {
+      const row = [...document.querySelectorAll(".ls-settings-row")].find(row => row.querySelector("strong")?.textContent.trim() === label);
+      return { found: !!row, checked: row?.querySelector("input")?.checked ?? null };
+    };
+    const settingsBindings = {};
+    for (const label of ["Remove filler words", "Spoken commands", "Smart punctuation"]) settingsBindings[label] = rowControl(label);
+    settingsBindings.copy = document.querySelector(".ls-cleanup-screen").textContent;
+    const host = document.querySelector(".ls-cleanup-screen");
+    const before = window.__localScribeSettingsHarness.patchCalls.length;
+    return { settingsBindings, horizontalOverflow: host.scrollWidth - host.clientWidth, patchCalls: before, profiles: document.querySelectorAll(".ls-profile-row").length, noDisabledPlaceholders: !/Concise rewrite|Generative rewrite|How should it sound/.test(host.textContent) };
+  })()\`);
+  if (evidence.horizontalOverflow > 1 || !evidence.noDisabledPlaceholders) throw new Error("Cleanup layout or feature coverage failed: " + JSON.stringify(evidence));
+  return evidence;
+}
+
 async function exerciseModelSelection(window, expectedResult) {
   return window.webContents.executeJavaScript(\`(async () => {
     const waitForPaint = () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-    const openModel = [...document.querySelectorAll(".ls-settings-sidebar nav button")]
-      .find((candidate) => candidate.textContent?.trim() === "Model & Performance");
-    if (!(openModel instanceof HTMLButtonElement)) throw new Error("Missing Model & Performance tab");
-    openModel.click();
+    window.__localScribeSettingsHarness.showModels();
     await waitForPaint();
-    await new Promise((resolve) => setTimeout(resolve, 30));
+    await new Promise(resolve => setTimeout(resolve, 50));
 
     const qwenCard = [...document.querySelectorAll(".ls-model-family-card")]
       .find((candidate) => candidate.querySelector("h3")?.textContent?.trim() === "Qwen3-ASR 1.7B");
@@ -538,7 +558,8 @@ async function exerciseModelSelection(window, expectedResult) {
         checked: selectionInputs.filter((input) => input.checked).map((input) => input.value),
         summary: document.querySelector(".ls-model-apply-card")?.textContent ?? "",
         feedback: document.querySelector(".ls-model-feedback")?.textContent ?? "",
-        applyDisabled: apply.disabled,
+        applyDisabled: document.querySelector(".ls-model-apply-button")?.disabled ?? true,
+        applyPresent: !!document.querySelector(".ls-model-apply-button"),
       },
     };
   })()\`);
@@ -547,9 +568,9 @@ async function exerciseModelSelection(window, expectedResult) {
 async function exerciseModelOrdering(window) {
   return window.webContents.executeJavaScript(\`(async () => {
     const paint = () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-    [...document.querySelectorAll(".ls-settings-sidebar nav button")]
-      .find((button) => button.textContent.trim() === "Model & Performance").click();
+    window.__localScribeSettingsHarness.showModels();
     await paint();
+    await new Promise(resolve => setTimeout(resolve, 50));
     const controls = [...document.querySelectorAll(".ls-model-sort-toolbar select")];
     if (controls.length !== 2) throw new Error("Missing model ordering controls");
     const [sort, profile] = controls;
@@ -558,7 +579,7 @@ async function exerciseModelOrdering(window) {
     if (document.querySelector(".ls-model-performance").firstElementChild !== sticky) throw new Error("Apply status is not first");
     if (document.querySelector(".ls-model-hardware-details").open
       || [...document.querySelectorAll(".ls-model-evidence")].some((detail) => detail.open)
-      || document.querySelectorAll(".ls-model-profiles[open]").length > 1) {
+      || document.querySelectorAll("details.ls-model-profiles").length > 0) {
       throw new Error("Secondary model details must start collapsed");
     }
     const stickyPositions = [];
@@ -568,7 +589,7 @@ async function exerciseModelOrdering(window) {
       const bounds = sticky.getBoundingClientRect();
       const viewport = scrollRegion.getBoundingClientRect();
       const headerBottom = document.querySelector(".ls-settings-header").getBoundingClientRect().bottom;
-      const applyBounds = sticky.querySelector(".ls-model-apply-button").getBoundingClientRect();
+      const applyBounds = sticky.querySelector(".ls-model-apply-button")?.getBoundingClientRect() ?? sticky.getBoundingClientRect();
       if (Math.abs(bounds.top - viewport.top) > 1 || Math.abs(bounds.top - headerBottom) > 1) {
         throw new Error("Gap above sticky status: " + JSON.stringify({ offset, top: bounds.top, viewportTop: viewport.top, headerBottom }));
       }
@@ -586,7 +607,7 @@ async function exerciseModelOrdering(window) {
       throw new Error("Keyboard scroll clearance did not update with the status height");
     }
     selectionDetails.open = false;
-    const profileSummary = document.querySelector(".ls-model-profiles > summary");
+    const profileSummary = document.querySelector(".ls-model-profiles button:not(:disabled)");
     profileSummary.focus();
     profileSummary.scrollIntoView({ block: "start" });
     await paint();
@@ -610,8 +631,8 @@ async function exerciseModelOrdering(window) {
       await paint();
     };
     const original = names();
-    if (original.length !== 4 || original.some((name) => /Whisper/i.test(name))) {
-      throw new Error("Available model cards must contain exactly the four supported families");
+    if (original.length !== 6 || !original.includes("Phonon 2") || !original.includes("Moonshine Small Streaming") || original.some((name) => /Whisper/i.test(name))) {
+      throw new Error("Available model cards must contain all six supported families");
     }
     const summary = document.querySelector(".ls-model-apply-card").textContent;
     const calls = JSON.stringify([window.__localScribeSettingsHarness.applyCalls, window.__localScribeSettingsHarness.patchCalls]);
@@ -624,12 +645,12 @@ async function exerciseModelOrdering(window) {
     }
     if (orders["wer-asc"][0] !== "Canary-Qwen 2.5B" || orders["wer-desc"][0] !== "Qwen3-ASR 0.6B"
       || orders["speed-desc"][0] !== "Qwen3-ASR 0.6B" || orders["speed-asc"][0] !== "Qwen3-ASR 1.7B"
-      || orders["memory-asc"][0] !== "Parakeet Unified EN 0.6B" || orders["memory-desc"][0] !== "Canary-Qwen 2.5B") {
+      || orders["memory-asc"][0] !== "Moonshine Small Streaming" || orders["memory-desc"][0] !== "Canary-Qwen 2.5B") {
       throw new Error("Model ordering does not match fixture metrics: " + JSON.stringify(orders));
     }
     await change(profile, "low");
     await change(sort, "memory-desc");
-    if (names().at(-1) !== "Parakeet Unified EN 0.6B") throw new Error("Unavailable Low profile did not sort last");
+    if (JSON.stringify(names().slice(-3).sort()) !== JSON.stringify(["Parakeet Unified EN 0.6B", "Phonon 2", "Moonshine Small Streaming"].sort())) throw new Error("Unavailable Low profiles did not sort last");
     const detail = document.querySelector(".ls-model-evidence");
     detail.open = true;
     await paint();
@@ -746,20 +767,15 @@ async function inspectSize(width, height, platform, verification, settingsPreset
       await inspectTab(window, "System", "History retention"),
       await inspectTab(
         window,
-        "Model & Performance",
+        "Models",
         "Additional model families appear only after their supported profiles have pinned manifests and package validation for this local runtime.",
       ),
-      await inspectTab(
-        window,
-        "Writing",
-        settingsPreset === "custom"
-          ? "TextEdit"
-          : "No app profiles",
-      ),
+      // A page replaces the former model modal tab; remount settings for privacy.
+      ...(await window.webContents.executeJavaScript("window.__localScribeSettingsHarness.remount()"), await sleep(80), []),
       await inspectTab(window, "Data & Privacy", "Automatic paste reads the active app identity and hashes limited focused-window metadata to confirm the dictation target. LocalScribe does not read field or document contents from other applications."),
     ];
     if (screenshotDirectory && verification === "missing" && settingsPreset === "default" && !applyResult && !saveResult) {
-      for (const label of ["System", "Model & Performance", "Writing", "Experimental", "Data & Privacy"]) {
+      for (const label of ["General", "System", "Data & Privacy"]) {
         await window.webContents.executeJavaScript(\`[...document.querySelectorAll('.ls-settings-sidebar nav button')].find(button => button.textContent.trim() === \${JSON.stringify(label)}).click()\`);
         await sleep(100);
         await window.webContents.executeJavaScript("document.querySelector('.ls-settings-scroll').scrollTop = 0");
@@ -770,10 +786,27 @@ async function inspectSize(width, height, platform, verification, settingsPreset
     }
     const sidebar = await inspectSidebarReach(window);
     const modelOrdering = await exerciseModelOrdering(window);
+    if (screenshotDirectory) {
+      await window.webContents.executeJavaScript("document.querySelector('.ls-settings-scroll').scrollTop = 0");
+      await sleep(80);
+      const shot = await window.webContents.capturePage();
+      writeFileSync(join(screenshotDirectory, ["models", appearance, width + "x" + height, verification, settingsPreset, applyResult ?? "no-apply"].join("-") + ".png"), shot.toPNG());
+    }
+    const cleanup = await inspectCleanup(window);
+    if (screenshotDirectory) {
+      const shot = await window.webContents.capturePage();
+      writeFileSync(join(screenshotDirectory, ["cleanup", appearance, width + "x" + height, settingsPreset].join("-") + ".png"), shot.toPNG());
+    }
+    await window.webContents.executeJavaScript("window.__localScribeSettingsHarness.remount()");
+    await sleep(80);
     const saveReload = settingsPreset === "custom"
       ? await exerciseChangedSettings(window)
       : null;
     const modelSelection = applyResult ? await exerciseModelSelection(window, applyResult) : null;
+    if (screenshotDirectory && modelSelection) {
+      const shot = await window.webContents.capturePage();
+      writeFileSync(join(screenshotDirectory, ["models", appearance, width + "x" + height, applyResult, "after-apply"].join("-") + ".png"), shot.toPNG());
+    }
     const longFooterStatus = saveResult === "fail" ? await exerciseLongFooterStatus(window) : null;
     const permissionPoll = saveResult === "fail" ? await exercisePermissionPollGating(window) : null;
     return {
@@ -790,6 +823,7 @@ async function inspectSize(width, height, platform, verification, settingsPreset
       tabs,
       sidebar,
       modelOrdering,
+      cleanup,
       saveReload,
       modelSelection,
       longFooterStatus,
@@ -874,7 +908,7 @@ function assertTab(result, size) {
   assert(after.targetBottom <= after.viewportBottom + 1, `${label}: bottom target remains hidden behind the footer: ${layoutEvidence}`);
   assert(
     result.footerControls.map((control) => control.label).join("\u0000")
-      === (label === "Model & Performance" ? "Cancel" : "Cancel\u0000Save changes"),
+      === (label === "Models" ? "" : "Cancel\u0000Save changes"),
     `${label}: settings footer controls are incomplete: ${layoutEvidence}`,
   );
   assert(
@@ -886,7 +920,7 @@ function assertTab(result, size) {
       && result.interactiveCursors.every((control) => control.cursor === "default"),
     `${label}: an application control does not keep the stable arrow cursor: ${JSON.stringify(result.interactiveCursors)}`,
   );
-  if (label === "Model & Performance") {
+  if (label === "Models") {
     const expectedModes = size.settingsPreset === "custom" || size.applyResult
       ? "auto\u0000high\u0000medium\u0000low"
       : "auto\u0000high\u0000medium";
@@ -944,7 +978,7 @@ function assertModelSelection(size) {
     assert(evidence.afterApply.persisted.modelPerformanceMode === "low", `Model Apply: acknowledged mode did not persist: ${serialized}`);
     assert(evidence.afterApply.persisted.activeModelFamilyId === "qwen3-asr-1-7b", `Model Apply: acknowledged family did not persist: ${serialized}`);
     assert(evidence.afterApply.persisted.asrMode === "after-stop", `Model Apply: acknowledged experience did not persist: ${serialized}`);
-    assert(evidence.afterApply.applyDisabled, `Model Apply: unchanged acknowledged selection remained enabled: ${serialized}`);
+    assert(!evidence.afterApply.applyPresent && evidence.afterApply.applyDisabled, `Model Apply: unchanged acknowledged selection remained enabled: ${serialized}`);
     assert(evidence.afterApply.summary.includes("Applied and ready"), `Model Apply: success did not converge current and pending: ${serialized}`);
     assert(
       evidence.afterApply.feedback.includes("is applied, loaded, and ready"),
@@ -1052,7 +1086,7 @@ function assertChangedSettings(size) {
   const byLabel = Object.fromEntries(size.tabs.map((tab) => [tab.label, tab]));
   const general = byLabel.General?.settingsBindings;
   const system = byLabel.System?.settingsBindings;
-  const writing = byLabel.Writing?.settingsBindings;
+  const writing = size.cleanup?.settingsBindings;
   const evidence = JSON.stringify({ platform: size.platform, general, system, writing, saveReload: size.saveReload });
 
   assert(general?.microphone?.value === "disconnected-usb-microphone", `Saved microphone ID is not bound: ${evidence}`);
@@ -1099,6 +1133,7 @@ function assertChangedSettings(size) {
       showPillWhenIdle: true,
       autoPaste: true,
       historyRetentionDays: 7,
+      appearance: "dark",
     }),
     `Settings save submitted stale or unrelated fields: ${evidence}`,
   );
@@ -1107,6 +1142,7 @@ function assertChangedSettings(size) {
   assert(size.saveReload?.afterReload?.language === "German", `Language did not survive reload: ${evidence}`);
   assert(size.saveReload?.afterReload?.showPillWhenIdle === true, `Floating-bar setting did not survive reload: ${evidence}`);
   assert(size.saveReload?.afterReload?.autoPaste === true, `Automatic-paste setting did not survive reload: ${evidence}`);
+  assert(size.saveReload?.afterReload?.appearance === "dark", `Appearance did not survive reload: ${evidence}`);
   assert(size.saveReload?.afterReload?.historyRetentionDays === "7", `Retention did not survive reload: ${evidence}`);
 }
 
@@ -1127,7 +1163,25 @@ async function inlineHarnessHtml(directory) {
 }
 
 try {
+  // Read only the checked-in manifests through the production catalog loader.
+  // No user model directory is inspected and verification state stays synthetic.
+  const catalogDirectory = resolve(temporaryRoot, "catalog");
   await build({
+    root: repository, configFile: false, ssr: { noExternal: true },
+    build: { ssr: resolve(repository, "src/main/modelSpec.ts"), outDir: catalogDirectory, emptyOutDir: true, rollupOptions: { output: { entryFileNames: "model-spec.mjs" } } },
+  });
+  const { loadRuntimePlatformModelCatalog } = await import(pathToFileURL(resolve(catalogDirectory, "model-spec.mjs")).href);
+  const runtimeCatalog = loadRuntimePlatformModelCatalog(resolve(repository, "resources/model-manifest"), "darwin", "arm64");
+  const fixtureFamilies = Object.entries(runtimeCatalog.families).flatMap(([familyId, family]) => {
+    if (!family) return [];
+    const artifacts = new Map();
+    for (const tier of Object.values(family.tiers)) {
+      if (tier) artifacts.set(tier.artifactId, { artifactId: tier.artifactId, displayName: tier.manifest.displayName, backend: tier.manifest.backend, modelId: tier.manifest.modelId, storageDirectory: tier.manifest.storageDirectory, revision: tier.manifest.revision, license: tier.manifest.license, expectedDownloadBytes: tier.expectedDownloadBytes });
+    }
+    return [{ familyId, displayName: family.displayName, capabilities: family.capabilities, recommendedDefault: familyId === runtimeCatalog.recommendedDefaultFamilyId, active: false, inLibrary: false, artifacts: [...artifacts.values()], profiles: Object.values(family.tiers).filter(Boolean).map(tier => ({ profileId: tier.profileId, tier: tier.tier, artifactId: tier.artifactId, engine: tier.engine, precision: tier.precision, expectedMemoryMinBytes: tier.acceleratorMemory.minimumBytes, expectedMemoryMaxBytes: tier.acceleratorMemory.maximumBytes, memoryBasis: tier.acceleratorMemory.evidence.kind })) }];
+  });
+  await build({
+    define: { __LOCALSCRIBE_HARNESS_FAMILIES__: JSON.stringify(fixtureFamilies) },
     root: repository,
     configFile: false,
     plugins: [react()],
@@ -1178,6 +1232,7 @@ try {
     assertLongFooterStatus(size);
     assertPermissionPollGating(size);
   }
+  if (process.env.LOCALSCRIBE_LAYOUT_SCREENSHOT_DIR) await writeFile(resolve(process.env.LOCALSCRIBE_LAYOUT_SCREENSHOT_DIR, "layout-report.json"), JSON.stringify(report, null, 2));
   console.log(JSON.stringify(report, null, 2));
 } catch (error) {
   const stage = await readFile(`${resultFile}.stage`, "utf8").catch(() => "(no Electron stage log was written)");

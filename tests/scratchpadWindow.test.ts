@@ -3,7 +3,6 @@ import { resolve } from "node:path";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { GENERATIVE_TEXT_MODEL_REQUIRED_NOTICE } from "../src/renderer/generativeTextAvailability";
 import { scratchpadNoteSchema } from "../src/shared/contracts";
 import {
   ScratchpadWindow,
@@ -49,7 +48,7 @@ describe("scratchpad window presentation", () => {
 
   it("does not invent a persisted note title while data is loading or unavailable", () => {
     expect(scratchpadHeaderTitle(null, "loading")).toBe("Loading notes…");
-    expect(scratchpadHeaderTitle(null, "load-error")).toBe("Scratchpad");
+    expect(scratchpadHeaderTitle(null, "load-error")).toBe("Notes");
     expect(scratchpadHeaderTitle("Persisted note", "saved")).toBe("Persisted note");
   });
 
@@ -71,8 +70,8 @@ describe("scratchpad window presentation", () => {
     const macControls = renderToStaticMarkup(
       createElement(ScratchpadWindowControls, { onClose: () => undefined }),
     );
-    expect(macControls).toContain('aria-label="Toggle expanded Scratchpad"');
-    expect(macControls).toContain('aria-label="Close Scratchpad"');
+    expect(macControls).toContain('aria-label="Toggle expanded Notes"');
+    expect(macControls).toContain('aria-label="Close Notes"');
     expect(scratchpadSource).not.toContain("window.localScribe.system.appInfo()");
     expect(scratchpadSource).not.toContain("navigator.userAgent");
     expect(scratchpadSource).not.toContain("shortcutDisplayPlatform");
@@ -102,10 +101,9 @@ describe("scratchpad window presentation", () => {
     expect(html).not.toContain("0 words");
     expect(html).not.toContain("On-device only");
     expect(html).not.toContain("Stored locally");
-    expect(html).toContain("Generative Rewrite");
-    expect(html).toContain("Formatting");
-    expect(html.match(new RegExp(GENERATIVE_TEXT_MODEL_REQUIRED_NOTICE, "g"))).toHaveLength(2);
-    expect(html.match(/class="scratchpad-window__unavailable" type="button" disabled=""/g)).toHaveLength(2);
+    expect(html).not.toContain("Generative Rewrite");
+    expect(html).not.toContain("Formatting");
+    expect(html).not.toContain("Unavailable text tools");
     expect(html).not.toContain("not installed");
     expect(html).not.toContain("Additional generative text model required");
   });
@@ -114,13 +112,27 @@ describe("scratchpad window presentation", () => {
     expect(declarations(".scratchpad-window__workspace")).toMatch(/overflow:\s*hidden\s*;/);
     expect(declarations(".scratchpad-window__notes")).toMatch(/min-height:\s*0\s*;/);
     expect(declarations(".scratchpad-window__notes")).toMatch(
-      /grid-template-rows:\s*40px\s+minmax\(0,\s*1fr\)\s+minmax\(0,\s*auto\)\s*;/,
+      /grid-template-rows:\s*40px\s+minmax\(0,\s*1fr\)\s*;/,
     );
-    expect(declarations(".scratchpad-window__notes-bottom")).toMatch(/overflow-y:\s*auto\s*;/);
+    expect(declarations(".scratchpad-window__note-list")).toMatch(/overflow-y:\s*auto\s*;/);
     expect(declarations(".scratchpad-window__editor:focus-within")).toMatch(/box-shadow:/);
 
     const shortWindowRules = mediaBlock("(max-height: 360px)");
-    expect(shortWindowRules).toContain(".scratchpad-window__notes-bottom { display: none; }");
     expect(shortWindowRules).toContain(".scratchpad-window__editor textarea");
+  });
+
+  it("uses semantic appearance colors and a system-font editor", () => {
+    expect(declarations(".scratchpad-window__editor textarea")).toContain('"SF Pro Text"');
+    expect(declarations(".scratchpad-window__editor textarea")).toContain("font-size: 14px");
+    expect(declarations(".scratchpad-window__editor textarea")).toContain("line-height: 1.6");
+    expect(declarations(".scratchpad-window__copy")).toContain("color: var(--on-accent)");
+    expect(scratchpadCss).not.toContain("light-dark(");
+  });
+
+  it("routes Escape through the same save-before-close operation", () => {
+    const keyboardHandler = scratchpadSource.slice(scratchpadSource.indexOf("onKeyDown="), scratchpadSource.indexOf('<header className="scratchpad-window__titlebar">'));
+    expect(keyboardHandler).toContain('event.key === "Escape"');
+    expect(keyboardHandler).toContain("!event.nativeEvent.isComposing");
+    expect(keyboardHandler).toContain("void closeScratchpad()");
   });
 });

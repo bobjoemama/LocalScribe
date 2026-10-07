@@ -87,6 +87,19 @@ describe("model performance settings persistence", () => {
     database.close();
   });
 
+  it("persists appearance across reopen while preserving model, shortcuts and history preferences", () => {
+    const filePath = databasePath();
+    for (const appearance of ["dark", "light", "system"] as const) {
+      const database = new LocalDatabase(filePath);
+      const before = database.getSettings();
+      database.saveSettings({ ...before, appearance });
+      database.close();
+      const reopened = new LocalDatabase(filePath);
+      expect(reopened.getSettings()).toEqual({ ...before, appearance });
+      reopened.close();
+    }
+  });
+
   it("persists a field-level upgrade of legacy and partially invalid settings", () => {
     const filePath = databasePath();
     const initial = new LocalDatabase(filePath);

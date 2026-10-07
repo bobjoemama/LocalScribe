@@ -11,6 +11,7 @@ import {
   Menu,
   net,
   nativeImage,
+  nativeTheme,
   protocol,
   screen,
   // `session` is this file's dictation-session state; the Electron export is
@@ -74,6 +75,7 @@ import {
   sendToLiveRenderers,
 } from "./main/session/rendererResilience";
 import { normalizeDiagnosticCode } from "./shared/diagnosticsLog";
+import { TRAY_BRAND_PNG_1X, TRAY_BRAND_PNG_2X } from "./main/trayBrand";
 import {
   DiagnosticsRecorder,
   nullDiagnosticsRecorder,
@@ -916,6 +918,24 @@ function reportWindowVisibility(window: BrowserWindow): void {
   window.webContents.on("did-finish-load", () => send(window.isVisible()));
 }
 
+function workspaceBackgroundColor(): string {
+  return nativeTheme.shouldUseDarkColors ? "#141312" : "#F3F1ED";
+}
+
+function updateWorkspaceWindowBackgrounds(): void {
+  if (quitting) return;
+  const background = workspaceBackgroundColor();
+  for (const window of [settingsWindow, scratchpadWindow]) {
+    if (window && !window.isDestroyed()) window.setBackgroundColor(background);
+  }
+  // The floating recording panel deliberately remains black in both themes.
+}
+
+function applyAppearance(appearance: ReturnType<LocalDatabase["getSettings"]>["appearance"]): void {
+  nativeTheme.themeSource = appearance;
+  updateWorkspaceWindowBackgrounds();
+}
+
 function createSettingsWindow(readyVisibility: ReadyVisibility = "active"): BrowserWindow {
   const window = new BrowserWindow({
     width: SETTINGS_WINDOW_LAYOUT.defaultWidth,
@@ -924,7 +944,7 @@ function createSettingsWindow(readyVisibility: ReadyVisibility = "active"): Brow
     minHeight: SETTINGS_WINDOW_LAYOUT.minimumHeight,
     title: "LocalScribe",
     show: false,
-    backgroundColor: "#f3f1ed",
+    backgroundColor: workspaceBackgroundColor(),
     titleBarStyle: "hiddenInset",
     trafficLightPosition: { x: 18, y: 18 },
     webPreferences: commonWebPreferences(),
@@ -950,9 +970,9 @@ function createScratchpadWindow(readyVisibility: ReadyVisibility = "active"): Br
     minHeight: 340,
     maxWidth: 760,
     maxHeight: 860,
-    title: "Scratchpad",
+    title: "Notes",
     show: false,
-    backgroundColor: "#eeece7",
+    backgroundColor: workspaceBackgroundColor(),
     titleBarStyle: "hiddenInset",
     trafficLightPosition: { x: 18, y: 18 },
     alwaysOnTop: true,
@@ -991,6 +1011,7 @@ function showScratchpad(): void {
 }
 
 function showHub(target: NavigationTarget = "dictation"): void {
+  if (target === "style" || target === "transforms") target = "cleanup";
   if (target === "scratchpad") {
     showScratchpad();
     return;
@@ -2077,6 +2098,11 @@ function registerIpc(): void {
       throw error;
     }
     try {
+      applyAppearance(settings.appearance);
+    } catch (error) {
+      console.warn("LocalScribe could not refresh its appearance after saving", error);
+    }
+    try {
       const purged = database.purgeExpiredTranscriptions(settings.historyRetentionDays);
       if (purged > 0) notifyHistoryChanged();
     } catch (error) {
@@ -2386,7 +2412,7 @@ function buildTrayMenu(): Menu {
       click: runDictationMenuAction,
     },
     { label: "Open LocalScribe", click: () => showHub("dictation") },
-    { label: "Open Scratchpad", click: () => showScratchpad() },
+    { label: "Open Notes", click: () => showScratchpad() },
     { type: "separator" },
     { label: "Quit", click: () => app.quit() },
   ]);
@@ -2411,9 +2437,10 @@ function refreshNativeMenus(): void {
 }
 
 function createTray(): Tray {
-  const icon = nativeImage.createEmpty();
+  const icon = nativeImage.createFromBuffer(Buffer.from(TRAY_BRAND_PNG_1X, "base64"), { scaleFactor: 1 });
+  icon.addRepresentation({ scaleFactor: 2, buffer: Buffer.from(TRAY_BRAND_PNG_2X, "base64") });
+  icon.setTemplateImage(true);
   const result = new Tray(icon);
-  result.setTitle("L");
   result.setToolTip("LocalScribe — local dictation");
   result.setContextMenu(buildTrayMenu());
   result.on("click", () => showHub("dictation"));
@@ -2478,11 +2505,20 @@ function installApplicationMenu(): void {
         { type: "separator" },
         { label: "Open Dictionary", click: () => showHub("dictionary") },
         { label: "Open Snippets", click: () => showHub("snippets") },
-        { label: "Open Scratchpad", click: () => showScratchpad() },
+        { label: "Open Notes", click: () => showScratchpad() },
       ],
     },
     { role: "editMenu" },
-    { role: "windowMenu" },
+    {
+      role: "windowMenu",
+      submenu: [
+        { role: "close", accelerator: "CommandOrControl+W" },
+        { role: "minimize" },
+        { role: "zoom" },
+        { type: "separator" },
+        { role: "front" },
+      ],
+    },
   ];
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
@@ -2532,6 +2568,8 @@ startupPromise = app.whenReady().then(async () => {
     defaultSettingsForRuntimeCatalog(platformModelCatalog()),
   );
   databaseInitialized = true;
+  applyAppearance(database.getSettings().appearance);
+  nativeTheme.on("updated", updateWorkspaceWindowBackgrounds);
   database.purgeExpiredTranscriptions(database.getSettings().historyRetentionDays);
   const temporaryDirectory = app.getPath("temp");
   await cleanStaleAudioCaches(temporaryDirectory);
@@ -2607,8 +2645,8 @@ startupPromise = app.whenReady().then(async () => {
     });
     throw new Error(
       verification.verificationStatus === "missing"
-        ? "Local speech model is not installed. Open LocalScribe Settings > Model & Performance to install it before dictating."
-        : "The selected local speech model failed verification, so LocalScribe kept the model that is currently working. Reinstall it from Settings > Model & Performance.",
+        ? "Local speech model is not installed. Open Models in LocalScribe to install it before dictating."
+        : "The selected local speech model failed verification, so LocalScribe kept the model that is currently working. Reinstall it from Models.",
     );
   });
   // Startup is an unloaded boundary. Capture one unbiased hardware snapshot;
@@ -2738,6 +2776,7 @@ app.on("window-all-closed", () => {
 
 function releaseRuntimeResources(): Promise<void> {
   runtimeReleasePromise ??= (async () => {
+    nativeTheme.removeListener("updated", updateWorkspaceWindowBackgrounds);
     let releaseFailed = false;
     const workerShutdown = workerInitialized
       ? worker.shutdown().catch((error: unknown) => {

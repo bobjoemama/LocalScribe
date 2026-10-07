@@ -7,7 +7,7 @@ import { describe, expect, it, vi } from "vitest";
 // Exercise the real main-process callbacks without starting Electron. In the
 // shutdown race the window still exists, but SQLite has already been closed.
 const source = ts.createSourceFile("main.ts", readFileSync("src/main.ts", "utf8"), ts.ScriptTarget.Latest, true);
-const functionNames = ["showWhenReady", "createPillWindow", "createScratchpadWindow", "syncPillVisibility", "resizePill"];
+const functionNames = ["showWhenReady", "workspaceBackgroundColor", "createPillWindow", "createScratchpadWindow", "syncPillVisibility", "resizePill"];
 const functions = source.statements.filter((node): node is ts.FunctionDeclaration =>
   ts.isFunctionDeclaration(node) && functionNames.includes(node.name?.text ?? ""));
 const executable = ts.transpileModule(functions.map((node) => node.getText(source)).join("\n"), {
@@ -47,6 +47,7 @@ function harness() {
     session: { state: "idle", activation: "toggle" },
     pillMode: "collapsed",
     database: { getSettings },
+    nativeTheme: { shouldUseDarkColors: false },
     positionPill,
     pillSizeFor,
     BrowserWindow: FakeWindow,
@@ -92,7 +93,7 @@ describe("renderer callbacks during shutdown", () => {
     expect(fixture.window.show).not.toHaveBeenCalled();
   });
 
-  it("opening a scratchpad does not hide the app from the Dock", () => {
+  it("opening Notes does not hide the app from the Dock", () => {
     const fixture = harness();
     const scratchpad = fixture.createScratchpadWindow("hidden");
 
