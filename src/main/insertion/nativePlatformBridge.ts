@@ -9,6 +9,7 @@ import {
   digestRegularExecutable,
   proveRegularExecutable,
   sameRegularExecutableProof,
+  sameExecutableAuthority,
   type ExecutableProofReader,
   type RegularExecutableProof,
 } from "./nativeExecutableIntegrity";
@@ -18,6 +19,7 @@ import {
 } from "./types";
 import type {
   ActiveTarget,
+  AccessibilityStatus,
   PasteFailureReason,
   PasteInjectionResult,
   PlatformInsertionBridge,
@@ -64,13 +66,20 @@ interface HelperAccessibilityPayload {
   postEvents?: unknown;
 }
 
-function parseAccessibility(raw: string): boolean {
+function parseAccessibilityStatus(raw: string): AccessibilityStatus {
   try {
     const payload = JSON.parse(raw) as HelperAccessibilityPayload;
-    return payload.accessibility === true && payload.postEvents === true;
+    if (typeof payload?.accessibility !== "boolean" || typeof payload.postEvents !== "boolean") {
+      return "unavailable";
+    }
+    return payload.accessibility && payload.postEvents ? "granted" : "denied";
   } catch {
-    return false;
+    return "unavailable";
   }
+}
+
+function parseAccessibility(raw: string): boolean {
+  return parseAccessibilityStatus(raw) === "granted";
 }
 
 function parsePaste(raw: string): PasteInjectionResult {
@@ -223,10 +232,10 @@ export class NativeExecutableInsertionBridge implements PlatformInsertionBridge 
     return this.pinnedProof !== null;
   }
 
-  ready(): Promise<boolean> {
+  async ready(): Promise<boolean> {
     if (!this.executableMatchesPin()) {
-      this.readiness = Promise.resolve(false);
-      return this.readiness;
+      this.readiness = null;
+      return false;
     }
     this.readiness ??= this.run(["self-test"]).then((output) => {
       if (output === null) return false;
@@ -240,7 +249,12 @@ export class NativeExecutableInsertionBridge implements PlatformInsertionBridge 
         return false;
       }
     });
-    return this.readiness;
+    const pending = this.readiness;
+    const ready = await pending;
+    // Keep a successful deterministic self-test, but retry transient execution
+    // and protocol failures on the next request with a fresh integrity proof.
+    if (!ready && this.readiness === pending) this.readiness = null;
+    return ready;
   }
 
   async captureActiveTarget(): Promise<ActiveTarget | null> {
@@ -285,19 +299,23 @@ export class NativeExecutableInsertionBridge implements PlatformInsertionBridge 
   }
 
   async accessibilityReady(): Promise<boolean> {
+    return await this.accessibilityStatus() === "granted";
+  }
+
+  accessibilityStatus(): Promise<AccessibilityStatus> {
     return this.readAccessibility("accessibility-status");
   }
 
   async requestAccessibility(): Promise<boolean> {
-    return this.readAccessibility("request-accessibility");
+    return await this.readAccessibility("request-accessibility") === "granted";
   }
 
   private async readAccessibility(
     command: "accessibility-status" | "request-accessibility",
-  ): Promise<boolean> {
+  ): Promise<AccessibilityStatus> {
     const output = await this.run([command]);
-    if (output === null) return false;
-    return parseAccessibility(output);
+    if (output === null) return "unavailable";
+    return parseAccessibilityStatus(output);
   }
 
   private async run(
@@ -336,7 +354,7 @@ export class NativeExecutableInsertionBridge implements PlatformInsertionBridge 
     const currentProof = this.proveExecutable(this.executablePath);
     return this.pinnedProof !== null
       && currentProof !== null
-      && sameRegularExecutableProof(this.pinnedProof, currentProof);
+      && sameExecutableAuthority(this.pinnedProof, currentProof);
   }
 }
 
@@ -374,6 +392,7 @@ export const nativeBridgeInternals = {
   proveRegularExecutable,
   sameRegularExecutableProof,
   parseAccessibility,
+  parseAccessibilityStatus,
   pasteArguments,
   parsePaste,
   parseTarget,

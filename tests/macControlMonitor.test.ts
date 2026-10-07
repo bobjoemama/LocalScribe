@@ -21,6 +21,8 @@ function proofForDigest(digest: string): RegularExecutableProof {
     device: 1,
     inode: 2,
     mode: 0o100700,
+    ownerId: 501,
+    groupId: 20,
     size: 100,
     modifiedAtMs: 3,
     changedAtMs: 4,
@@ -112,6 +114,18 @@ describe("macOS hold monitor protocol", () => {
     const monitor = new MacControlMonitor(process.execPath, () => null);
 
     expect(monitor.start("Command+Control", vi.fn())).toBe(false);
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { device: 2 }, { inode: 3 }, { mode: 0o100777 }, { ownerId: 502 },
+    { groupId: 21 }, { size: 101 }, { modifiedAtMs: 5 }, { sha256: "b".repeat(64) },
+  ])("refuses changed executable authority %j despite ctime drift", (changed) => {
+    const pinned = proofForDigest("a".repeat(64));
+    let proof = pinned;
+    const monitor = new MacControlMonitor(process.execPath, () => proof);
+    proof = { ...pinned, changedAtMs: 9, ...changed };
+    expect(monitor.start("Control+Space", vi.fn())).toBe(false);
     expect(spawn).not.toHaveBeenCalled();
   });
 

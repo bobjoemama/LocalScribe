@@ -601,3 +601,17 @@
 
 .ls-model-experience-options button.is-selected { border-color: var(--control-line); background: var(--selection); color: var(--ink); box-shadow: none; }
 .ls-model-apply-state, .ls-model-apply-state.is-neutral { padding: 0; background: transparent; letter-spacing: 0; text-transform: none; font-size: 11px; font-weight: 500; }
+
+/* Controls acknowledge a press without moving the target under the pointer. */
+.ls-page button:active:not(:disabled),
+.ls-settings-modal button:active:not(:disabled),
+.ls-models-workspace button:active:not(:disabled) { filter: brightness(.92); }
+.ls-page button:disabled, .ls-settings-modal button:disabled, .ls-models-workspace button:disabled { cursor: default; }
+.ls-page :is(select, textarea, summary):focus-visible,
+.ls-settings-modal :is(textarea, summary):focus-visible,
+.ls-models-workspace :is(textarea, summary):focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.ls-small-button:hover:not(:disabled), .ls-text-button:hover:not(:disabled) { background: var(--selection); }
+.ls-data-actions > button:hover:not(:disabled) { background: var(--selection); }
+.ls-data-actions > button:disabled { opacity: .55; }
+
+.ls-settings-footer > span.is-error { white-space: normal; overflow-wrap: anywhere; line-height: 1.4; }

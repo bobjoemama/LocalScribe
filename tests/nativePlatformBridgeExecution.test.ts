@@ -49,6 +49,8 @@ function proofForDigest(digest: string): RegularExecutableProof {
     device: 1,
     inode: 2,
     mode: 0o100700,
+    ownerId: 501,
+    groupId: 20,
     size: 100,
     modifiedAtMs: 3,
     changedAtMs: 4,
@@ -122,6 +124,42 @@ describe("native platform bridge execution", () => {
     } finally {
       rmSync(directory, { recursive: true });
     }
+  });
+
+  it("revalidates metadata drift against pinned bytes, file identity, and permissions", async () => {
+    const pinned = proofForDigest("a".repeat(64));
+    let proof = pinned;
+    const bridge = new NativeExecutableInsertionBridge(process.execPath, () => proof);
+    mocks.stdout = JSON.stringify({ accessibility: true, postEvents: true });
+
+    proof = { ...pinned, changedAtMs: pinned.changedAtMs + 1 };
+    await expect(bridge.accessibilityStatus()).resolves.toBe("granted");
+    expect(mocks.execFile).toHaveBeenCalledOnce();
+    mocks.execFile.mockClear();
+
+    for (const changed of [
+      { sha256: "b".repeat(64) }, { device: 2 }, { inode: 3 },
+      { mode: 0o100777 }, { ownerId: 502 }, { groupId: 21 },
+      { size: 101 }, { modifiedAtMs: 5 },
+    ]) {
+      proof = { ...pinned, changedAtMs: 9, ...changed };
+      await expect(bridge.accessibilityStatus()).resolves.toBe("unavailable");
+    }
+    expect(mocks.execFile).not.toHaveBeenCalled();
+  });
+
+  it("keeps unavailable and malformed status separate from an explicit OS denial", async () => {
+    const bridge = bridgeWithDigest();
+    for (const output of ["not json", "null", "{}", '{"accessibility":false}']) {
+      mocks.stdout = output;
+      await expect(bridge.accessibilityStatus()).resolves.toBe("unavailable");
+    }
+    mocks.stdout = JSON.stringify({ accessibility: true, postEvents: false });
+    await expect(bridge.accessibilityStatus()).resolves.toBe("denied");
+    mocks.stdout = JSON.stringify({ accessibility: true, postEvents: true });
+    await expect(bridge.accessibilityStatus()).resolves.toBe("granted");
+    mocks.stdout = JSON.stringify({ accessibility: false, postEvents: false });
+    await expect(bridge.accessibilityStatus()).resolves.toBe("denied");
   });
 
   it("documents the residual pathname-exec race instead of claiming descriptor atomicity", async () => {
@@ -290,6 +328,9 @@ describe("native platform bridge execution", () => {
     const bridge = bridgeWithDigest();
 
     await expect(bridge.ready()).resolves.toBe(false);
+    mocks.stdout = JSON.stringify({ platform: "darwin", selfTest: true });
+    await expect(bridge.ready()).resolves.toBe(true);
+    expect(mocks.execFile).toHaveBeenCalledTimes(2);
   });
 
   it("refuses a helper whose bytes change after the verified pin", async () => {

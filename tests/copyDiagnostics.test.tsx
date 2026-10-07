@@ -109,10 +109,27 @@ describe("copying the trail", () => {
 
 describe("the control itself", () => {
   const actions = sliceFollowing(modal, 'className="ls-data-actions"', "</div>");
+  const control = (action: "copyDiagnostics" | "clearDiagnostics") => {
+    const invocation = requireIndex(actions, `, ${action})}`);
+    const start = actions.lastIndexOf("<button", invocation);
+    expect(start).toBeGreaterThanOrEqual(0);
+    return actions.slice(start, actions.indexOf("</button>", invocation) + "</button>".length);
+  };
 
   it("sits with the other data actions on the privacy screen", () => {
     expect(actions).toContain("Copy diagnostics");
-    expect(actions).toContain("void copyDiagnostics()");
+    expect(control("copyDiagnostics")).toContain('void runDataAction("Copying diagnostics", copyDiagnostics)');
+  });
+
+  it("disables diagnostics controls while a data or settings operation is pending", () => {
+    for (const action of ["copyDiagnostics", "clearDiagnostics"] as const) {
+      expect(control(action)).toContain('disabled={busy || shortcutSaving || dataAction !== null}');
+    }
+    const guard = sliceBetween(modal, "const runDataAction = async", "const openPermissionSettings = async");
+    expectPrecedes(guard, "if (settingsSaveInFlight.current || modelOperationInFlight.current) return;", "settingsSaveInFlight.current = true;");
+    expectPrecedes(guard, "settingsSaveInFlight.current = true;", "await action()");
+    expect(guard).toContain("setDataAction(label)");
+    expect(guard).toContain("finally { settingsSaveInFlight.current = false; setDataAction(null); }");
   });
 
   it("warns in the control what the log excludes, before it is pressed", () => {
@@ -122,7 +139,7 @@ describe("the control itself", () => {
   });
 
   it("is not styled as a destructive action, because it changes nothing", () => {
-    const button = sliceFollowing(actions, "void copyDiagnostics()", "</button>");
+    const button = control("copyDiagnostics");
 
     expect(button).not.toContain("is-danger");
   });
@@ -152,10 +169,12 @@ describe("clearing the trail", () => {
   it("shows the destructive control beside the other diagnostics actions", () => {
     const actions = sliceFollowing(modal, 'className="ls-data-actions"', "</div>");
     expect(actions).toContain("Clear diagnostics");
-    expect(actions).toContain("void clearDiagnostics()");
-    expect(sliceFollowing(actions, "void clearDiagnostics()", "</button>"))
-      .toContain("is-danger");
-    expect(sliceFollowing(actions, "void clearDiagnostics()", "</button>"))
-      .not.toMatch(/permanent/iu);
+    const invocation = requireIndex(actions, 'void runDataAction("Clearing diagnostics", clearDiagnostics)');
+    const start = actions.lastIndexOf("<button", invocation);
+    expect(start).toBeGreaterThanOrEqual(0);
+    const button = actions.slice(start, actions.indexOf("</button>", invocation) + "</button>".length);
+    expect(button).toContain('className="is-danger"');
+    expect(button).toContain('disabled={busy || shortcutSaving || dataAction !== null}');
+    expect(button).not.toMatch(/permanent/iu);
   });
 });

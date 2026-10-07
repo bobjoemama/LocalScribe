@@ -341,6 +341,13 @@ export async function inspectSettingsAppearance(appWindow) {
     const bounds = primary.getBoundingClientRect();
     return { foreground: style.color, background: style.backgroundColor, textContrast: contrast(style.color, style.backgroundColor), controls, point: { x: Math.round(bounds.x + bounds.width / 2), y: Math.round(bounds.y + bounds.height / 2) }, patchCalls: window.__localScribeSettingsHarness.patchCalls.length };
   });
+  await evaluate(() => {
+    const select = [...document.querySelectorAll(".ls-settings-row")].find(row => row.querySelector("strong")?.textContent === "Dictation language").querySelector("select");
+    const original = select.value;
+    select.value = [...select.options].find(option => !option.disabled && option.value !== original).value;
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+    return original;
+  });
   await wait();
   const normal = await measure();
   appWindow.webContents.sendInputEvent({ type: "mouseMove", ...normal.point });
@@ -360,5 +367,7 @@ export async function inspectSettingsAppearance(appWindow) {
   }
   if (normal.background === hover.background || hover.background === pressed.background) throw new Error("Primary action lacks hover/press feedback");
   if (after.patchCalls !== normal.patchCalls) throw new Error("Appearance measurement unexpectedly saved settings");
+  await evaluate(() => window.__localScribeSettingsHarness.remount());
+  await wait();
   return { normal, hover, pressed };
 }

@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { rendererSafeErrorMessage } from "../src/shared/rendererErrors";
+import { describe, expect, it, vi } from "vitest";
+import { rendererKnownErrorCode, rendererSafeErrorMessage } from "../src/shared/rendererErrors";
 
 const FALLBACK = "The item could not be loaded. Try again.";
 
@@ -57,5 +57,40 @@ describe("renderer-safe error presentation", () => {
       "context_not_supported: Parakeet Unified does not support dictionary prompts",
       FALLBACK,
     )).toBe(FALLBACK);
+  });
+});
+
+
+describe("closed renderer operational codes", () => {
+  const allowed = new Set(["audio_storage_unavailable", "audio_storage_full"]);
+
+  it("accepts exact own codes and IPC message prefixes without returning backend prose", () => {
+    const failure = Object.assign(new Error("private recorded text /Users/Alice/audio.wav"), { code: "audio_storage_full" });
+    expect(rendererKnownErrorCode(failure, allowed)).toBe("audio_storage_full");
+    expect(rendererKnownErrorCode({ code: "audio_storage_full", message: "token=secret" }, allowed)).toBe("audio_storage_full");
+    expect(rendererKnownErrorCode("Error invoking remote method 'session:transcribe': Error: audio_storage_unavailable: /Users/Alice/private.wav", allowed)).toBe("audio_storage_unavailable");
+    expect(rendererKnownErrorCode("private text mentioning audio_storage_full", allowed)).toBeUndefined();
+    expect(rendererKnownErrorCode({ code: "pin_1234", message: "private text" }, allowed)).toBeUndefined();
+    expect(rendererKnownErrorCode(Object.assign(new Error("private text"), { code: "pin_1234" }), allowed)).toBeUndefined();
+  });
+
+  it("follows bounded data causes and terminates on cycles", () => {
+    const inner = Object.assign(new Error("private text"), { code: "audio_storage_full" });
+    expect(rendererKnownErrorCode(new Error("Wrapped", { cause: inner }), allowed)).toBe("audio_storage_full");
+    let wrapped: Error = inner;
+    for (let depth = 0; depth < 8; depth += 1) wrapped = new Error("Wrapped", { cause: wrapped });
+    expect(rendererKnownErrorCode(wrapped, allowed)).toBeUndefined();
+    const cycle = new Error("Wrapped");
+    Object.defineProperty(cycle, "cause", { value: cycle });
+    expect(rendererKnownErrorCode(cycle, allowed)).toBeUndefined();
+  });
+
+  it("does not execute accessors or inherited attacker-provided fields", () => {
+    const getter = vi.fn(() => { throw new Error("Do not run"); });
+    const failure = Object.create({ code: "audio_storage_full" }) as object;
+    for (const property of ["code", "message", "cause"]) Object.defineProperty(failure, property, { get: getter });
+    expect(rendererKnownErrorCode(failure, allowed)).toBeUndefined();
+    expect(getter).not.toHaveBeenCalled();
+    expect(rendererKnownErrorCode(Object.create({ code: "audio_storage_full" }), allowed)).toBeUndefined();
   });
 });

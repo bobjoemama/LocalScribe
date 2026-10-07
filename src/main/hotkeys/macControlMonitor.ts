@@ -8,7 +8,7 @@ import {
 import { nativeHelperEnvironment } from "../nativeHelperEnvironment";
 import {
   proveRegularExecutable,
-  sameRegularExecutableProof,
+  sameExecutableAuthority,
   type ExecutableProofReader,
   type RegularExecutableProof,
 } from "../insertion/nativeExecutableIntegrity";
@@ -96,7 +96,7 @@ export class MacControlMonitor implements ControlMonitor {
     const currentProof = this.proveExecutable(this.executablePath);
     if (
       currentProof === null
-      || !sameRegularExecutableProof(this.pinnedProof, currentProof)
+      || !sameExecutableAuthority(this.pinnedProof, currentProof)
     ) return false;
 
     // This descriptor-backed proof is the final synchronous operation before

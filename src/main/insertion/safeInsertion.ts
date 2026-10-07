@@ -73,6 +73,14 @@ function sameApplicationProcess(expected: ActiveTarget, current: ActiveTarget): 
     && expected.applicationId === current.applicationId;
 }
 
+function sameCaptureAnchor(expected: ActiveTarget, current: ActiveTarget): boolean {
+  return sameApplicationProcess(expected, current)
+    && expected.windowFingerprint !== null
+    && expected.windowFingerprint === current.windowFingerprint
+    && (expected.focusedElementFingerprint == null
+      || expected.focusedElementFingerprint === current.focusedElementFingerprint);
+}
+
 function currentTargetFailure(
   expected: ActiveTarget,
   current: ActiveTarget,
@@ -160,13 +168,20 @@ export class SafeInsertionCoordinator {
       // AXManualAccessibility can make the target application's focused
       // control visible only after the first helper process has returned. Give
       // that one cold-start boundary exactly one fresh observation. This is
-      // deliberately not a general target retry: the first observation must
-      // report a completed/bounded activation attempt, and the second may only
-      // replace it when application and process identity remain pinned.
+      // deliberately not a general target retry: keep the original process
+      // and window pinned, as well as any already-observed control identity.
+      // Activation cannot authorize a sibling window in the same browser.
       const secondTarget = await this.platformBridge.captureActiveTarget().catch(() => null);
       if (!this.isCurrentSession(generation)) return null;
-      if (!secondTarget || !sameApplicationProcess(firstTarget, secondTarget)) {
-        return firstTarget;
+      if (!secondTarget || !sameCaptureAnchor(firstTarget, secondTarget)) {
+        // An activation-derived observation is never sufficient paste
+        // authority, including bridges that accidentally provide a control.
+        return { ...firstTarget, focusedEditable: null, focusedElementFingerprint: null };
+      }
+      if (shouldRetryColdAccessibilityCapture(secondTarget)) {
+        // A second tree mutation still lacks an independent, already-active
+        // control observation. Do not recursively retry or inherit authority.
+        return { ...secondTarget, focusedEditable: null, focusedElementFingerprint: null };
       }
       return secondTarget;
     })()

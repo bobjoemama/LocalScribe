@@ -449,6 +449,17 @@ private func focusedElementIdentityDescriptor(_ element: AXUIElement) -> String?
     )
 }
 
+private func explicitlyDisallowsInsertion(subrole: String?, enabled: Bool?) -> Bool {
+    subrole == (kAXSecureTextFieldSubrole as String) || enabled == false
+}
+
+private func focusedElementExplicitlyDisallowsInsertion(_ element: AXUIElement) -> Bool {
+    explicitlyDisallowsInsertion(
+        subrole: attributeString(element, kAXSubroleAttribute as CFString),
+        enabled: attributeBool(element, kAXEnabledAttribute as CFString)
+    )
+}
+
 private func editabilityFromCapabilities(
     role: String?,
     subrole: String?,
@@ -457,8 +468,7 @@ private func editabilityFromCapabilities(
     selectedTextSettable: Bool,
     selectedTextRangeSettable: Bool
 ) -> Bool {
-    if subrole == (kAXSecureTextFieldSubrole as String) { return false }
-    if enabled == false { return false }
+    if explicitlyDisallowsInsertion(subrole: subrole, enabled: enabled) { return false }
 
     let knownStaticRoles: Set<String> = [
         kAXStaticTextRole as String,
@@ -573,7 +583,7 @@ private func manualAccessibilityFailureOutcome(_ error: AXError) -> String {
 }
 
 private func activationProvidesPasteAuthority(_ activation: String) -> Bool {
-    // AXManualAccessibility can materialize a completely different element
+    // An application role query or AXManualAccessibility can materialize a different element
     // graph. Nothing observed after that mutation inherits authority from the
     // pre-activation focus. A later helper invocation must establish a fresh,
     // already-active target from one observation boundary.
@@ -583,8 +593,20 @@ private func activationProvidesPasteAuthority(_ activation: String) -> Bool {
 private func focusedUIElementEnablingManualAccessibilityIfNeeded(
     _ application: AXUIElement,
     initialFocusedElement: AXUIElement?,
+    initialInsertionDisallowed: Bool,
     processId: pid_t
 ) -> FocusedElementObservation {
+    // Known secure or disabled focus is negative evidence, not a cold tree.
+    // Retain it without activation or adopting another control during recovery.
+    if initialInsertionDisallowed {
+        return FocusedElementObservation(
+            roleCategory: focusedElementRoleCategory(initialFocusedElement.flatMap {
+                attributeString($0, kAXRoleAttribute as CFString)
+            }),
+            activation: "not_needed",
+            lookupAttempts: 1
+        )
+    }
     let initialEditableElement = initialFocusedElement.flatMap {
         focusedEditableElement($0, processId: processId)
     }
@@ -603,6 +625,13 @@ private func focusedUIElementEnablingManualAccessibilityIfNeeded(
         )
     }
 
+    // Gecko and Chromium activate their native accessibility APIs when an
+    // assistive client queries the application role. Read only this content-free
+    // standard attribute; never toggle screen-reader mode via AXEnhancedUserInterface.
+    // See Mozilla accessible/mac/Platform.mm accessibilityRole and Chromium
+    // chrome/browser/chrome_browser_application_mac.mm accessibilityRole.
+    let applicationRoleAvailable = attributeString(application, kAXRoleAttribute as CFString) != nil
+
     // Electron documents AXManualAccessibility as the third-party integration
     // point for enabling Chromium's otherwise lazy accessibility tree. Cold
     // trees do not have one stable placeholder shape: physical targets have
@@ -619,7 +648,7 @@ private func focusedUIElementEnablingManualAccessibilityIfNeeded(
         manualAccessibilityAttribute,
         kCFBooleanTrue
     )
-    guard activationError == .success else {
+    guard activationError == .success || applicationRoleAvailable else {
         return FocusedElementObservation(
             roleCategory: focusedElementRoleCategory(
                 initialFocusedElement.flatMap {
@@ -650,7 +679,11 @@ private func focusedUIElementEnablingManualAccessibilityIfNeeded(
         roleCategory: focusedElementRoleCategory(
             finalElement.flatMap { attributeString($0, kAXRoleAttribute as CFString) }
         ),
-        activation: resolvedElement == nil ? "timed_out" : "resolved",
+        activation: resolvedElement != nil
+            ? "resolved"
+            : activationError == .success
+                ? "timed_out"
+                : manualAccessibilityFailureOutcome(activationError),
         lookupAttempts: lookupAttempts
     )
 }
@@ -696,6 +729,7 @@ private func focusedEditableElement(
     _ focusedElement: AXUIElement,
     processId: pid_t
 ) -> AXUIElement? {
+    guard !focusedElementExplicitlyDisallowsInsertion(focusedElement) else { return nil }
     if focusedElementIsEditable(focusedElement) { return focusedElement }
 
     // Chromium can focus a static descendant (for example a text node inside
@@ -764,11 +798,14 @@ private func captureTarget() throws -> TargetPayload {
     let focusedApplication = AXUIElementCreateApplication(application.processIdentifier)
     // Capture the complete authority boundary before any possible tree
     // activation. If activation is attempted, this invocation returns only
-    // closed diagnostics plus app/process identity. A later invocation must
+    // closed diagnostics plus app/process/window continuity. A later invocation must
     // establish a fresh target after the accessibility tree is already active.
     let initialFocusedUIElement = accessibilityTrusted
         ? copyFocusedUIElement(focusedApplication)
         : nil
+    let initialInsertionDisallowed = initialFocusedUIElement.map {
+        focusedElementExplicitlyDisallowsInsertion($0)
+    } ?? false
     let initialWindowFingerprint = accessibilityTrusted
         ? focusedWindowFingerprint(
             for: application.processIdentifier,
@@ -780,6 +817,7 @@ private func captureTarget() throws -> TargetPayload {
         ? focusedUIElementEnablingManualAccessibilityIfNeeded(
             focusedApplication,
             initialFocusedElement: initialFocusedUIElement,
+            initialInsertionDisallowed: initialInsertionDisallowed,
             processId: application.processIdentifier
         )
         : FocusedElementObservation(
@@ -791,12 +829,16 @@ private func captureTarget() throws -> TargetPayload {
         focusedObservation.activation
     )
     let focusedUIElement = mayAuthorizePaste ? initialFocusedUIElement : nil
-    let windowFingerprint = mayAuthorizePaste ? initialWindowFingerprint : nil
-    let focusedElement = focusedElementState(
-        for: application.processIdentifier,
-        focusedElement: focusedUIElement,
-        windowFingerprint: windowFingerprint
-    )
+    // A pre-activation window identifies continuity for the later observation;
+    // it grants no focused-control authority by itself.
+    let windowFingerprint = initialWindowFingerprint
+    let focusedElement = initialInsertionDisallowed
+        ? FocusedElementState(editable: false, fingerprint: nil)
+        : focusedElementState(
+            for: application.processIdentifier,
+            focusedElement: focusedUIElement,
+            windowFingerprint: windowFingerprint
+        )
     let payload = TargetPayload(
         processId: application.processIdentifier,
         applicationId: applicationId,
@@ -949,6 +991,10 @@ private func selfTest() -> Bool {
         identifierIdentity == "identifier:AXWebArea::editor-id",
         geometryIdentity == "geometry:AXWebArea::10:20:30:40",
         ancestryIdentity == "ancestry:0:AXWebArea:",
+        explicitlyDisallowsInsertion(subrole: kAXSecureTextFieldSubrole as String, enabled: true),
+        explicitlyDisallowsInsertion(subrole: nil, enabled: false),
+        !explicitlyDisallowsInsertion(subrole: nil, enabled: true),
+        !explicitlyDisallowsInsertion(subrole: nil, enabled: nil),
         editabilityFromCapabilities(
             role: "AXWebArea",
             subrole: nil,

@@ -68,8 +68,12 @@ export interface PlatformInsertionBridge {
     expectedClipboardSequence: number,
   ): Promise<PasteInjectionResult>;
   accessibilityReady?(): Promise<boolean>;
+  /** A helper failure is unknown OS permission state, never evidence of denial. */
+  accessibilityStatus?(): Promise<AccessibilityStatus>;
   requestAccessibility?(): Promise<boolean>;
 }
+
+export type AccessibilityStatus = "granted" | "denied" | "unavailable";
 
 export type PasteInjectionResult =
   | {

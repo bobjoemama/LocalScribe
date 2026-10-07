@@ -44,6 +44,16 @@ describe("insertion diagnostics", () => {
     });
   });
 
+  it.each(["helper_unavailable", "session_invalidated", "clipboard_changed"] as const)(
+    "retains the concrete %s failure when aggregate readiness is unavailable",
+    (reason) => {
+      expect(insertionDiagnosticEvent({ outcome: "copied", reason }, true, false)).toMatchObject({
+        permission: "not_ready",
+        detail: reason,
+      });
+    },
+  );
+
   it("records a fully acknowledged native insertion without a failure reason", () => {
     expect(insertionDiagnosticEvent({ outcome: "pasted" }, true, true)).toEqual({
       stage: "insertion",

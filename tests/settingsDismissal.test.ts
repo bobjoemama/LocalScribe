@@ -166,7 +166,7 @@ describe("every path that unmounts the dialog consults the decision", () => {
     const footer = sliceBetween(modal, "ls-settings-footer", "</footer>");
     const cancel = footer.slice(requireIndex(footer, "ls-secondary-button"));
 
-    expect(cancel).toContain("disabled={busy || modelApplying || modelRefreshing || modelAction !== null}");
+    expect(cancel).toContain("disabled={busy || shortcutSaving || dataAction !== null || modelApplying || modelRefreshing || modelAction !== null}");
   });
 });
 

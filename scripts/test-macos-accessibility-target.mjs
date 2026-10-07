@@ -6,8 +6,8 @@
  * Electron's accessibility tree remains cold. The packaged helper alone must
  * activate the tree, return no paste authority from that mutation boundary,
  * and establish authority only through a second fresh target invocation.
- * A DOM paste event proves that the verified control consumed Command-V while
- * preserving arbitrary clipboard data; actual text mutation remains a
+ * A canceled DOM paste event proves dispatch to the verified control without
+ * reading or inserting arbitrary clipboard data; actual text mutation remains a
  * physical workflow acceptance requirement.
  *
  * TCC cannot be granted by an unattended test. Without an existing grant this
@@ -99,7 +99,9 @@ app.whenReady().then(async () => {
     (() => {
       const editor = document.getElementById("editor");
       globalThis.__localscribePasteObserved = false;
-      editor.addEventListener("paste", () => {
+      editor.addEventListener("paste", (event) => {
+        // Confirm dispatch without inserting or reading the user's clipboard.
+        event.preventDefault();
         globalThis.__localscribePasteObserved = true;
       });
       editor.focus();
@@ -206,7 +208,8 @@ try {
   if (
     firstTarget.applicationId !== "com.github.Electron"
     || firstTarget.processId !== child.pid
-    || firstTarget.windowFingerprint !== null
+    || typeof firstTarget.windowFingerprint !== "string"
+    || !/^[a-f0-9]{64}$/.test(firstTarget.windowFingerprint)
     || firstTarget.focusedEditable !== null
     || firstTarget.focusedElementFingerprint !== null
     || !["resolved", "timed_out"].includes(firstTarget.accessibilityActivation)
@@ -232,6 +235,7 @@ try {
   if (
     target.applicationId !== firstTarget.applicationId
     || target.processId !== firstTarget.processId
+    || target.windowFingerprint !== firstTarget.windowFingerprint
     || target.focusedEditable !== true
     || !/^[a-f0-9]{64}$/u.test(target.windowFingerprint)
     || !/^[a-f0-9]{64}$/u.test(target.focusedElementFingerprint)
@@ -278,7 +282,7 @@ try {
   if (stalePaste.injected !== false || stalePaste.reason !== "clipboard_changed") {
     throw new Error("Packaged helper did not reject a stale clipboard sequence.");
   }
-  // The renderer reports paste consumption on a 50 ms privacy-safe poll. Wait
+  // The renderer reports paste dispatch on a 50 ms privacy-safe poll. Wait
   // across several polls before asserting the negative stale-dispatch result.
   await new Promise((resolve) => setTimeout(resolve, 200));
   if (stdout.includes("localscribe-accessibility-paste-observed")) {
@@ -286,9 +290,9 @@ try {
   }
 
   // Dispatch the user's existing clipboard contents without reading, logging,
-  // clearing, or rewriting them. The fixture observes only whether the target
-  // consumed Command-V as a DOM paste event; it never reads editor or clipboard
-  // content and therefore does not claim that text was inserted.
+  // clearing, or rewriting them. The fixture cancels the DOM paste event and
+  // observes only its dispatch; it never reads or inserts clipboard content
+  // and therefore does not claim that text was inserted.
   const pasteResult = await execFileAsync(
     helperPath,
     pasteArgumentsFor(sequencePayload.sequence),
@@ -329,7 +333,7 @@ try {
     throw new Error("Clipboard changed while testing native paste dispatch.");
   }
   process.stdout.write(
-    `Packaged helper activated a cold Electron editor after ${firstTarget.accessibilityLookupAttempts} observations; a fresh call established authority; the target consumed native Command-V with clipboard preserved. Physical acceptance must prove text insertion.\n`,
+    `Packaged helper activated a cold Electron editor after ${firstTarget.accessibilityLookupAttempts} observations; a fresh call established authority; native Command-V reached the target with clipboard preserved and insertion canceled. Physical acceptance must prove text insertion.\n`,
   );
 } finally {
   if (child && child.exitCode === null && child.signalCode === null) {

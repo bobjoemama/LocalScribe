@@ -22,6 +22,41 @@ function unwrapErrorEnvelope(value: string): string {
     .replace(/^(?:Error:\s*)+/i, "");
 }
 
+/** Preserve only explicitly allowed operational codes across error wrappers.
+ * The message itself is never returned, and accessor properties are not run.
+ */
+export function rendererKnownErrorCode(error: unknown, allowed: ReadonlySet<string>): string | undefined {
+  const seen = new Set<unknown>();
+  let current = error;
+  for (let depth = 0; depth < 8 && !seen.has(current); depth += 1) {
+    seen.add(current);
+    if (typeof current === "string") return codeFromMessage(current, allowed);
+    if (current === null || typeof current !== "object") return undefined;
+    let code: unknown;
+    let message: unknown;
+    let cause: unknown;
+    try {
+      code = Object.getOwnPropertyDescriptor(current, "code")?.value;
+      message = Object.getOwnPropertyDescriptor(current, "message")?.value;
+      cause = Object.getOwnPropertyDescriptor(current, "cause")?.value;
+    } catch {
+      return undefined;
+    }
+    if (typeof code === "string" && allowed.has(code)) return code;
+    if (typeof message === "string") {
+      const recognized = codeFromMessage(message, allowed);
+      if (recognized) return recognized;
+    }
+    current = cause;
+  }
+  return undefined;
+}
+
+function codeFromMessage(message: string, allowed: ReadonlySet<string>): string | undefined {
+  const prefix = unwrapErrorEnvelope(message).trim().match(/^([a-z][a-z0-9_]{1,48})(?::|$)/u)?.[1];
+  return prefix && allowed.has(prefix) ? prefix : undefined;
+}
+
 function containsPrivateOrTechnicalDetail(value: string): boolean {
   return PRIVATE_PATH_PATTERN.test(value)
     || TECHNICAL_DETAIL_PATTERN.test(value)

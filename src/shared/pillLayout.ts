@@ -109,7 +109,7 @@ export const PILL_LAYOUT = {
    * signal that automatic paste degraded to clipboard-only, was unreadable.
    * Measured in Chromium at the shipped 10px/600 type by
    * `scripts/measure-pill-status-widths.mjs`: the widest message
-   * ("Copied — allow Accessibility") is 143px, and the surrounding chrome
+   * ("Paste sent · copied as backup") is 150px, and the surrounding chrome
    * (14px padding + 22px mark + 22px close + two 7px gaps) is 72px.
    *
    * The width is fixed rather than per-message: the pill is centred on the

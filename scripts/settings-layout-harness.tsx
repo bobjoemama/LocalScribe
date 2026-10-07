@@ -48,6 +48,8 @@ let failNextLibrarySave = false;
 let releaseLibrarySave: (() => void) | null = null;
 let nextLibrarySaveWait: Promise<void> | null = null;
 let nextLibraryId = 1;
+let settingsSaveWait: Promise<void> | null = null;
+let finishSettingsSave: (() => void) | null = null;
 const waitForLibrarySave = async () => {
   const waiting = nextLibrarySaveWait;
   nextLibrarySaveWait = null;
@@ -262,6 +264,7 @@ window.localScribe = {
     get: async () => appSettingsSchema.parse(persistedSettings),
     patch: async (patch: AppSettingsPatch) => {
       settingsPatchCalls.push({ ...patch });
+      if (settingsSaveWait) { const waiting = settingsSaveWait; settingsSaveWait = null; await waiting; }
       if (harnessSaveFails) throw new Error(LONGEST_SAVE_FAILURE_DETAIL);
       persistedSettings = appSettingsSchema.parse({ ...persistedSettings, ...patch });
       if (patch.launchAtLogin !== undefined) {
@@ -487,6 +490,8 @@ const renderSettings = () => {
     clipboardWrites: string[];
     confirmCalls: string[];
     setConfirmAnswer(answer: boolean): void;
+    delaySettingsSave(): void;
+    finishSettingsSave(): void;
     delayModelOperation(): void;
     sendModelProgress(progress: ModelInstallProgress): void;
     finishModelOperation(): void;
@@ -513,6 +518,8 @@ const renderSettings = () => {
   clipboardWrites,
   confirmCalls,
   setConfirmAnswer: (answer: boolean) => { confirmAnswer = answer; },
+  delaySettingsSave: () => { settingsSaveWait = new Promise(resolve => { finishSettingsSave = resolve; }); },
+  finishSettingsSave: () => { finishSettingsSave?.(); finishSettingsSave = null; },
   delayModelOperation: () => { modelOperationWait = new Promise(resolve => { finishModelWait = resolve; }); },
   sendModelProgress: (progress: ModelInstallProgress) => { for (const listener of modelProgressListeners) listener(progress); },
   finishModelOperation: () => { finishModelWait?.(); finishModelWait = null; },

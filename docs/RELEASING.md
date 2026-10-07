@@ -294,9 +294,44 @@ checks, startup/shutdown smoke, 1,576 source tests (two skipped), and 73
 bundled-worker tests. Physical microphone-to-third-party-app acceptance was
 not rerun against these exact public binaries; automated checks do not replace it.
 
-The separate iPhone app's 0.7.0/build 10 was rebuilt with the required privacy
-and encryption metadata and Apple Distribution signing for the app and both
-extensions. Upload succeeded for App Store Connect record `6820165376`,
-**LocalScribe – Local Dictation**. External TestFlight approval and a public
-invitation are still pending, as is the beta contact phone number. See its
-[installation guide](https://github.com/bobjoemama/LocalScribeiOS/blob/main/docs/INSTALLATION.md).
+The separate iPhone app's 0.7.1/build 11 uploaded successfully at
+2026-10-07T17:06:14Z. Apple reports **PROCESSING**; no eligible portal build is
+available, external beta review has not been submitted, and there is no public
+TestFlight invitation URL. Upload completion does not establish eligibility or
+review approval. See the authoritative
+[current iOS beta status](https://github.com/bobjoemama/LocalScribeiOS/blob/main/tasklist.md#current-ios-beta-status)
+and [installation guide](https://github.com/bobjoemama/LocalScribeiOS/blob/main/docs/INSTALLATION.md).
+
+## Audio cache recovery correction
+
+The reported completion failure was reproduced before inference: launching
+another app instance removed the running app's private temporary audio directory,
+and staging its next WAV failed with ENOENT. The installed app's missing directory
+was restored at the same path with private permissions and a verified process
+lease; its next actual dictation completed without restarting or unloading Canary.
+
+The dev.22 correction leases each cache to its owning process. Startup cleanup
+removes a marked cache only when its owner is definitively gone; it preserves live,
+unmarked and uncertain roots. Completion securely restores its original cache
+when needed, preserving the warm worker's temporary-root policy. Tests exercise
+two real processes, dead-owner cleanup, missing-root recovery, cancellation and
+filesystem failures. Diagnostics and the pill use fixed storage-error codes and
+actionable messages, without private paths or dictated text. New public artifacts
+require the usual exact-source release gate; published dev.21 assets are immutable.
+
+## dev.24 source candidate
+
+The dev.22 private artifact was validated locally and never published. The next
+dev.24 candidate includes the audio-cache recovery correction, retryable native
+helper metadata and fresh Accessibility status (granted, denied or unavailable),
+browser target continuity through model warmup, and guards for secure or disabled
+editors. Permission and copy fallback advice reflects current readiness. Settings
+now confirm discarding drafts, preserve edits during pending saves, support
+Command-S, and show pending and failure feedback.
+
+Focused source checks passed 300 tests across 16 files, followed by 94 final tests;
+the native helper compiled and passed its self-test. Final source verification passed 1,652 tests with two existing skips; the insertion fallback message was measured to fit the original pill size. The full public dev.24 gate
+is pending, and physical browser insertion remains unverified. These checks do
+not establish packaged acceptance, notarization or publication. Published
+dev.21 remains the public installer until a new candidate completes its release
+gates and is published.

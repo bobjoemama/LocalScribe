@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { AudioCacheError } from "../src/main/audioCache";
 
 import {
   FORBIDDEN_DIAGNOSTIC_PATTERNS,
@@ -111,6 +112,34 @@ describe("codes the supervisor carries as a property", () => {
   it("ignores a non-string code", () => {
     expect(normalizeDiagnosticCode(Object.assign(new Error("boom"), { code: 7 })))
       .toBe("unknown_error");
+  });
+});
+
+describe("private recording storage failures", () => {
+  const filesystemFailure = Object.assign(
+    new Error("ENOENT: open '/Users/private-person/private-speech.wav'"),
+    { code: "ENOENT" },
+  );
+
+  it("records the cache boundary's code without the filesystem path", () => {
+    expect(normalizeDiagnosticCode(new AudioCacheError(undefined, { cause: filesystemFailure })))
+      .toBe("audio_storage_unavailable");
+  });
+
+  it.each([
+    "audio_storage_unavailable",
+    "audio_storage_write_failed",
+    "audio_storage_full",
+    "audio_storage_permission_denied",
+  ])("keeps %s useful and safe in persisted diagnostics", (code) => {
+    const failure = new Error("Dictation could not finish", {
+      cause: Object.assign(new Error(code, { cause: filesystemFailure }), { code }),
+    });
+    const detail = normalizeDiagnosticCode(failure);
+    expect(detail).toBe(code);
+    expect(DIAGNOSTIC_DETAILS.has(detail)).toBe(true);
+    expect(detail).not.toContain("private-person");
+    expect(detail).not.toContain("speech.wav");
   });
 });
 
