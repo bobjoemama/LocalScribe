@@ -1,7 +1,6 @@
 import {
   useCallback,
   useEffect,
-  useMemo,
   useRef,
   useState,
   type FormEvent,
@@ -14,7 +13,6 @@ import {
   type AppProfile,
   type AppSettings,
   type AppSettingsPatch,
-  type DictionaryEntry,
   type Diagnostics,
   type LaunchAtLoginStatus,
   type ModelCatalog,
@@ -26,10 +24,6 @@ import {
 import { selectableMicrophones } from "../../../shared/microphones";
 import { rendererSafeErrorMessage } from "../../../shared/rendererErrors";
 import { shortcutDisplayLabel } from "../../../shared/shortcuts";
-import {
-  GENERATIVE_TEXT_MODEL_REQUIRED_NOTICE,
-  UNAVAILABLE_IN_THIS_BUILD_NOTICE,
-} from "../../generativeTextAvailability";
 import { ShortcutRecorder, type ShortcutValidationOutcome } from "../components/ShortcutRecorder";
 import { decideSettingsDismissal } from "../dismissal";
 import {
@@ -43,7 +37,6 @@ import {
 } from "./ModelPerformanceSettings";
 import "./style-settings.css";
 
-type StyleTab = "personal" | "work" | "email" | "other" | "cleanup";
 export type SettingsTab = "general" | "system" | "model" | "writing" | "experimental" | "privacy";
 type CleanupLevel = "none" | "light" | "medium";
 export type CleanupSelection = CleanupLevel | "custom";
@@ -220,7 +213,7 @@ export function automaticPasteSettingsPresentation(
   if (!permissions.automaticPaste.ready) {
     return {
       editable: true,
-      detail: "Accessibility is not granted, so completed dictation is copied instead. Grant it under Privacy and this starts pasting.",
+      detail: "Accessibility is not granted, so completed dictation is copied instead. Grant it under General → Permissions and this starts pasting.",
       value: null,
     };
   }
@@ -323,117 +316,21 @@ export function settingsHistoryExportMessage(path: string | null): string {
   return path ? "History exported locally." : "Export cancelled";
 }
 
-const styleTabs: { id: StyleTab; label: string }[] = [
-  { id: "personal", label: "Personal messages" },
-  { id: "work", label: "Work messages" },
-  { id: "email", label: "Email" },
-  { id: "other", label: "Other" },
-  { id: "cleanup", label: "Auto cleanup" },
+export const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
+  { id: "general", label: "General" },
+  { id: "system", label: "System" },
+  { id: "privacy", label: "Data & Privacy" },
 ];
 
-export const SETTINGS_TABS: { id: SettingsTab; label: string; icon: ReactNode }[] = [
-  { id: "general", label: "General", icon: <SlidersIcon /> },
-  { id: "system", label: "System", icon: <DesktopIcon /> },
-  { id: "model", label: "Model & Performance", icon: <GaugeIcon /> },
-  { id: "writing", label: "Writing", icon: <PenIcon /> },
-  { id: "experimental", label: "Experimental", icon: <FlaskIcon /> },
-  { id: "privacy", label: "Data & Privacy", icon: <LockIcon /> },
-];
+export function cleanupPatchForLevel(level: CleanupLevel): AppSettingsPatch {
+  return {
+    removeFillers: level === "medium",
+    spokenCommands: level !== "none",
+    smartPunctuation: level !== "none",
+  };
+}
 
-const toneOptions: Record<Exclude<StyleTab, "cleanup">, { title: string; description: string; preview: string }[]> = {
-  personal: [
-    {
-      title: "Casual",
-      description: "Relaxed language for everyday conversations.",
-      preview: "Hey! I’m running a little late, but I should be there in about ten minutes.",
-    },
-    {
-      title: "Very casual",
-      description: "Short, easygoing messages for people you know well.",
-      preview: "Running a bit late — be there in ten!",
-    },
-    {
-      title: "Excited",
-      description: "An energetic reference for celebrations and good news.",
-      preview: "That’s amazing news! I can’t wait to celebrate with you.",
-    },
-  ],
-  work: [
-    {
-      title: "Professional",
-      description: "Clear, direct language for teammates and clients.",
-      preview: "I reviewed the proposal and added comments to the final two sections.",
-    },
-    {
-      title: "Concise",
-      description: "A compact reference for quick status updates.",
-      preview: "Proposal reviewed. Comments added to the final two sections.",
-    },
-    {
-      title: "Approachable",
-      description: "Professional without sounding overly formal.",
-      preview: "I took a look at the proposal and left a few notes near the end.",
-    },
-  ],
-  email: [
-    {
-      title: "Formal",
-      description: "A measured reference for external correspondence.",
-      preview: "Hello Morgan, thank you for sending the revised timeline. I will review it this afternoon.",
-    },
-    {
-      title: "Friendly",
-      description: "Warm language for familiar collaborators.",
-      preview: "Hi Morgan, thanks for sending this over! I’ll review it this afternoon.",
-    },
-    {
-      title: "Brief",
-      description: "A practical reference for fast replies.",
-      preview: "Thanks, Morgan. I’ll review the revised timeline this afternoon.",
-    },
-  ],
-  other: [
-    {
-      title: "Neutral",
-      description: "Straightforward language that works in most text fields.",
-      preview: "The appointment has moved to Thursday at 2:30 PM.",
-    },
-    {
-      title: "Detailed",
-      description: "A reference for preserving context and specifics.",
-      preview: "The appointment originally planned for Tuesday has moved to Thursday at 2:30 PM.",
-    },
-    {
-      title: "Plain language",
-      description: "Simple wording with a direct sentence structure.",
-      preview: "Your appointment is now Thursday at 2:30 PM.",
-    },
-  ],
-};
-
-const cleanupOptions: { id: CleanupLevel; title: string; description: string; bullets: string[] }[] = [
-  {
-    id: "none",
-    title: "None",
-    description: "Keep the recognizer output close to what was spoken.",
-    bullets: ["No filler removal", "No spoken editing commands", "No punctuation normalization"],
-  },
-  {
-    id: "light",
-    title: "Light",
-    description: "Apply punctuation and spoken editing commands, while preserving fillers.",
-    bullets: ["Spoken punctuation", "Paragraph and backtracking commands", "Preserves hesitation words"],
-  },
-  {
-    id: "medium",
-    title: "Medium",
-    description: "Use every deterministic cleanup behavior available locally.",
-    bullets: ["Filler removal", "Spoken punctuation and paragraphs", "Backtracking and spacing cleanup"],
-  },
-];
-
-export function StyleScreen() {
-  const [tab, setTab] = useState<StyleTab>("personal");
+export function CleanupScreen({ onOpenDictionary }: { onOpenDictionary?(): void }) {
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [settingsLoadError, setSettingsLoadError] = useState<unknown | null>(null);
   const [profiles, setProfiles] = useState<AppProfile[]>([]);
@@ -443,72 +340,36 @@ export function StyleScreen() {
   const [profileMessage, setProfileMessage] = useState("");
   const [profileMessageIsError, setProfileMessageIsError] = useState(false);
   const [profileBusy, setProfileBusy] = useState(false);
+  const profileOperationInFlight = useRef(false);
   const [cleanupSaving, setCleanupSaving] = useState(false);
-  const cleanupDraft = useRef<AppSettingsPatch>({});
   const cleanupSaveInFlight = useRef(false);
-
   const loadProfiles = useCallback(() => window.localScribe.profiles.list().then(setProfiles), []);
 
   useEffect(() => {
-    const applySettings = (next: AppSettings) => {
-      setSettings(settingsWithPendingDraft(next, cleanupDraft.current));
+    const unsubscribe = subscribeToSettingsWithInitialLoad(window.localScribe.settings, (next) => {
+      setSettings(next);
       setSettingsLoadError(null);
-    };
-    const unsubscribeSettings = subscribeToSettingsWithInitialLoad(
-      window.localScribe.settings,
-      applySettings,
-      setSettingsLoadError,
-    );
+    }, setSettingsLoadError);
     void loadProfiles().catch((error: unknown) => {
       setProfileMessageIsError(true);
       setProfileMessage(`Could not load app profiles: ${errorDetail(error)}`);
     });
-    return unsubscribeSettings;
+    return unsubscribe;
   }, [loadProfiles]);
 
-  const cleanupLevel = useMemo<CleanupSelection | null>(
-    () => settings ? cleanupSelectionForSettings(settings) : null,
-    [settings],
-  );
+  const cleanupLevel = settings ? cleanupSelectionForSettings(settings) : null;
   const cleanupControls = settingsControlAvailability(settings, settingsLoadError);
   const profilePresentation = appProfilePresentation();
 
-  const chooseCleanup = (level: CleanupLevel) => {
-    if (!settings) return;
-    const next: AppSettings = {
-      ...settings,
-      removeFillers: level === "medium",
-      spokenCommands: level !== "none",
-      smartPunctuation: level !== "none",
-    };
-    cleanupDraft.current = {
-      removeFillers: next.removeFillers,
-      spokenCommands: next.spokenCommands,
-      smartPunctuation: next.smartPunctuation,
-    };
-    setSettings(next);
-    setMessage("");
-    setMessageIsError(false);
-  };
-
-  const saveCleanup = async () => {
+  const saveCleanup = async (patch: AppSettingsPatch) => {
     if (!settings || cleanupSaveInFlight.current) return;
-    const patch: AppSettingsPatch = {
-      removeFillers: settings.removeFillers,
-      spokenCommands: settings.spokenCommands,
-      smartPunctuation: settings.smartPunctuation,
-    };
     cleanupSaveInFlight.current = true;
     setCleanupSaving(true);
+    setMessage("");
     try {
-      const saved = await window.localScribe.settings.patch(patch);
-      const remaining = pendingSettingsAfterSave(cleanupDraft.current, patch);
-      cleanupDraft.current = remaining;
-      setSettings(settingsWithPendingDraft(saved, remaining));
+      setSettings(await window.localScribe.settings.patch(patch));
       setMessageIsError(false);
-      setMessage(Object.keys(remaining).length > 0
-        ? "Saved the submitted cleanup. Newer changes still need to be saved."
-        : "Cleanup saved");
+      setMessage("Cleanup saved");
     } catch (error) {
       setMessageIsError(true);
       setMessage(`Could not save cleanup: ${errorDetail(error)}`);
@@ -520,13 +381,14 @@ export function StyleScreen() {
 
   const saveProfile = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (profileOperationInFlight.current) return;
+    profileOperationInFlight.current = true;
     const form = event.currentTarget;
     const data = new FormData(form);
     setProfileBusy(true);
     try {
       await window.localScribe.profiles.save({
-        label: String(data.get("label")),
-        appId: String(data.get("appId")),
+        label: String(data.get("label")), appId: String(data.get("appId")),
         removeFillers: data.get("removeFillers") === "on",
         spokenCommands: data.get("spokenCommands") === "on",
         smartPunctuation: data.get("smartPunctuation") === "on",
@@ -539,173 +401,57 @@ export function StyleScreen() {
     } catch (error) {
       setProfileMessageIsError(true);
       setProfileMessage(`Could not save profile: ${errorDetail(error)}`);
-    } finally {
-      setProfileBusy(false);
-    }
+    } finally { profileOperationInFlight.current = false; setProfileBusy(false); }
   };
 
-  const deleteProfile = async (id: string) => {
+  const deleteProfile = async (profile: AppProfile) => {
+    if (profileOperationInFlight.current || !window.confirm(`Delete the cleanup profile for ${profile.label}?`)) return;
+    profileOperationInFlight.current = true;
     setProfileBusy(true);
     try {
-      await window.localScribe.profiles.delete(id);
+      await window.localScribe.profiles.delete(profile.id);
       await loadProfiles();
       setProfileMessageIsError(false);
       setProfileMessage("Profile deleted");
     } catch (error) {
       setProfileMessageIsError(true);
       setProfileMessage(`Could not delete profile: ${errorDetail(error)}`);
-    } finally {
-      setProfileBusy(false);
-    }
+    } finally { profileOperationInFlight.current = false; setProfileBusy(false); }
   };
 
   return (
-    <div className="ls-page ls-style-screen">
-      <ScreenHeader
-        eyebrow="Writing preferences"
-        title="Style"
-        description="Deterministic cleanup works now. Tone rewrites require a separate generative text model."
-      />
-
-      <nav className="ls-tabbar" aria-label="Style categories">
-        {styleTabs.map((item) => (
-          <button
-            type="button"
-            key={item.id}
-            className={tab === item.id ? "is-active" : ""}
-            aria-current={tab === item.id ? "page" : undefined}
-            onClick={() => setTab(item.id)}
-          >
-            {item.label}
-          </button>
-        ))}
-      </nav>
-
-      {cleanupControls.presentation && (
-        <p className={cleanupControls.presentation.isError ? "ls-action-feedback is-error" : "ls-action-feedback"} role={cleanupControls.presentation.isError ? "alert" : "status"} aria-live="polite">
-          <strong>{cleanupControls.presentation.title}</strong><br />{cleanupControls.presentation.detail}
-        </p>
-      )}
-
-      {tab !== "cleanup" ? (
-        <section className="ls-section" aria-labelledby="tone-heading">
-          <div className="ls-section-heading">
-            <div>
-              <h2 id="tone-heading">How should it sound?</h2>
-              <p>These are local preview references. Speech transcription and tone rewriting use different model capabilities.</p>
-            </div>
-            <span className="ls-status-chip ls-status-chip--muted ls-status-chip--model-required">{GENERATIVE_TEXT_MODEL_REQUIRED_NOTICE}</span>
-          </div>
-          <div className="ls-tone-grid">
-            {toneOptions[tab].map((option) => (
-              <article
-                className="ls-tone-card ls-tone-card--preview ls-tone-card--unavailable"
-                key={option.title}
-                aria-disabled="true"
-              >
-                <span className="ls-status-chip ls-status-chip--muted ls-status-chip--model-required">{GENERATIVE_TEXT_MODEL_REQUIRED_NOTICE}</span>
-                <strong>{option.title}</strong>
-                <small>{option.description}</small>
-                <span className="ls-preview">“{option.preview}”</span>
-              </article>
-            ))}
-          </div>
-          <div className="ls-info-callout">
-            <SparkIcon />
-            <div>
-              <strong>{GENERATIVE_TEXT_MODEL_REQUIRED_NOTICE}</strong>
-              <p>LocalScribe currently has only the speech model. These examples are previews; selecting a tone does not rewrite text.</p>
-            </div>
-          </div>
-        </section>
-      ) : (
-        <section className="ls-section" aria-labelledby="cleanup-heading">
-          <div className="ls-section-heading">
-            <div>
-              <h2 id="cleanup-heading">Automatic cleanup</h2>
-              <p>These levels map directly to the deterministic writing pipeline.</p>
-            </div>
-            {message ? (
-              <span className={messageIsError ? "ls-status-chip ls-status-chip--error" : "ls-status-chip"} role="status" aria-live="polite">{message}</span>
-            ) : cleanupLevel === "custom" ? (
-              <span className="ls-status-chip ls-status-chip--muted">Custom mix</span>
-            ) : null}
-          </div>
-          <div className="ls-cleanup-grid">
-            {cleanupOptions.map((option) => (
-              <button
-                type="button"
-                key={option.id}
-                className={cleanupLevel === option.id ? "ls-cleanup-card is-selected" : "ls-cleanup-card"}
-                onClick={() => chooseCleanup(option.id)}
-                aria-pressed={cleanupControls.enabled ? cleanupLevel === option.id : undefined}
-                disabled={!cleanupControls.enabled}
-              >
-                <span className="ls-radio-dot" />
-                <strong>{option.title}</strong>
-                <p>{option.description}</p>
-                <ul>{option.bullets.map((bullet) => <li key={bullet}>{bullet}</li>)}</ul>
-              </button>
-            ))}
-          </div>
-          {cleanupLevel === "custom" && (
-            <p className="ls-honesty-note"><InfoIcon /> Individual cleanup switches are using a custom combination. Choose a level to replace it.</p>
-          )}
-          <button type="button" className="ls-primary-button" disabled={!cleanupControls.enabled || cleanupSaving} onClick={() => void saveCleanup()}>{cleanupSaving ? "Saving…" : "Save cleanup"}</button>
-        </section>
-      )}
-
-      <section className="ls-section ls-profiles-section" aria-labelledby="profiles-heading">
-        <div className="ls-section-heading">
-          <div>
-            <h2 id="profiles-heading">App profiles</h2>
-            <p>{profilePresentation.detail}</p>
-          </div>
-          <button type="button" className="ls-secondary-button" onClick={() => setProfileOpen((open) => !open)}>
-            {profileOpen ? "Cancel" : "+ Add profile"}
-          </button>
+    <div className="ls-page ls-cleanup-screen">
+      <header className="ls-screen-header"><h1>Cleanup</h1></header>
+      {cleanupControls.presentation && <p className={cleanupControls.presentation.isError ? "ls-action-feedback is-error" : "ls-action-feedback"} role={cleanupControls.presentation.isError ? "alert" : "status"}><strong>{cleanupControls.presentation.title}</strong><br />{cleanupControls.presentation.detail}</p>}
+      <section className="ls-section" aria-labelledby="cleanup-heading" aria-busy={cleanupSaving || undefined}>
+        <h2 id="cleanup-heading">Level</h2>
+        <div className="ls-cleanup-levels" role="group" aria-label="Cleanup level">
+          {(["none", "light", "medium"] as const).map((level) => <button type="button" key={level} className={cleanupLevel === level ? "is-selected" : ""} aria-pressed={cleanupLevel === level} disabled={!cleanupControls.enabled || cleanupSaving} onClick={() => void saveCleanup(cleanupPatchForLevel(level))}>{level.charAt(0).toUpperCase() + level.slice(1)}</button>)}
+          {cleanupLevel === "custom" && <span className="ls-cleanup-custom">Custom</span>}
         </div>
-
-        {profileOpen && (
-          <ProfileForm
-            onSubmit={saveProfile}
-            busy={profileBusy}
-            labelPlaceholder={profilePresentation.labelPlaceholder}
-            appIdPlaceholder={profilePresentation.appIdPlaceholder}
-            cleanupDefaults={profileCleanupDefaults(settings)}
-          />
-        )}
-        {profileMessage && (
-          <p className={profileMessageIsError ? "ls-action-feedback is-error" : "ls-action-feedback"} role={profileMessageIsError ? "alert" : "status"} aria-live="polite">
-            {profileMessage}
-          </p>
-        )}
-
+        <fieldset className="ls-cleanup-switches" disabled={!cleanupControls.enabled || cleanupSaving}>
+          <SettingsToggle label="Remove filler words" detail="Remove isolated um and uh." value={settings?.removeFillers ?? false} onChange={(value) => void saveCleanup({ removeFillers: value })} />
+          <SettingsToggle label="Spoken commands" detail="Apply spoken punctuation, new paragraph and scratch that." value={settings?.spokenCommands ?? false} onChange={(value) => void saveCleanup({ spokenCommands: value })} />
+          <SettingsToggle label="Smart punctuation" detail="Normalize spacing, capitalization and terminal punctuation." value={settings?.smartPunctuation ?? false} onChange={(value) => void saveCleanup({ smartPunctuation: value })} />
+        </fieldset>
+        <p className="ls-honesty-note">Changes apply immediately. These rules change recognized text without an extra model.</p>
+        {message && <p className={messageIsError ? "ls-action-feedback is-error" : "ls-action-feedback"} role={messageIsError ? "alert" : "status"}>{message}</p>}
+      </section>
+      <section className="ls-section ls-profiles-section" aria-labelledby="profiles-heading">
+        <div className="ls-section-heading"><div><h2 id="profiles-heading">App profiles</h2><p>{profilePresentation.detail}</p></div><button type="button" className="ls-secondary-button" disabled={profileBusy} onClick={() => setProfileOpen((open) => !open)}>{profileOpen ? "Cancel" : "+ Add profile"}</button></div>
+        {profileOpen && <ProfileForm onSubmit={saveProfile} busy={profileBusy} labelPlaceholder={profilePresentation.labelPlaceholder} appIdPlaceholder={profilePresentation.appIdPlaceholder} cleanupDefaults={profileCleanupDefaults(settings)} />}
+        {profileMessage && <p className={profileMessageIsError ? "ls-action-feedback is-error" : "ls-action-feedback"} role={profileMessageIsError ? "alert" : "status"}>{profileMessage}</p>}
         <div className="ls-profile-list">
-          {profiles.length === 0 ? (
-            <div className="ls-empty-row"><strong>No app profiles</strong><span>Global cleanup applies everywhere.</span></div>
-          ) : profiles.map((profile) => (
-            <div className="ls-profile-row" key={profile.id}>
-              <span className="ls-app-monogram">{profile.label.slice(0, 1).toUpperCase()}</span>
-              <div>
-                <strong>{profile.label}</strong>
-                <small>{profile.appId}</small>
-              </div>
-              <div className="ls-profile-flags">
-                {profile.removeFillers && <span>Fillers</span>}
-                {profile.spokenCommands && <span>Commands</span>}
-                {profile.smartPunctuation && <span>Punctuation</span>}
-              </div>
-              <button type="button" className="ls-icon-button" disabled={profileBusy} aria-label={`Delete ${profile.label}`} onClick={() => void deleteProfile(profile.id)}>
-                <TrashIcon />
-              </button>
-            </div>
-          ))}
+          {profiles.length === 0 ? <div className="ls-empty-row"><strong>No app profiles</strong><span>Global cleanup applies everywhere.</span></div> : profiles.map((profile) => <div className="ls-profile-row" key={profile.id}><div><strong>{profile.label}</strong><small>{profile.appId}</small></div><div className="ls-profile-flags">{[profile.removeFillers && "Fillers", profile.spokenCommands && "Commands", profile.smartPunctuation && "Punctuation"].filter(Boolean).join(" · ") || "No cleanup"}</div><button type="button" className="ls-text-button is-danger" disabled={profileBusy} onClick={() => void deleteProfile(profile)}>Delete</button></div>)}
         </div>
       </section>
+      <section className="ls-section ls-cleanup-dictionary"><h2>Word replacements</h2><p>Custom replacement rules are your dictionary terms.</p><button type="button" className="ls-secondary-button" onClick={() => onOpenDictionary ? onOpenDictionary() : void window.localScribe.windows.showSettings("dictionary")}>Open Dictionary</button></section>
     </div>
   );
 }
+
+// Legacy exports keep existing integrations pointing at the same active tools.
+export function StyleScreen() { return <CleanupScreen />; }
 
 function ProfileForm({
   onSubmit,
@@ -740,193 +486,16 @@ function ProfileForm({
   );
 }
 
-export function TransformsScreen() {
-  const [settings, setSettings] = useState<AppSettings | null>(null);
-  const [settingsLoadError, setSettingsLoadError] = useState<unknown | null>(null);
-  const [rules, setRules] = useState<DictionaryEntry[]>([]);
-  const [phrase, setPhrase] = useState("");
-  const [replacement, setReplacement] = useState("");
-  const [message, setMessage] = useState("");
-  const [messageIsError, setMessageIsError] = useState(false);
-  const [busy, setBusy] = useState(false);
+export function TransformsScreen() { return <CleanupScreen />; }
 
-  const loadRules = useCallback(() => window.localScribe.dictionary.list().then(setRules), []);
-
-  useEffect(() => {
-    const applySettings = (next: AppSettings) => {
-      setSettings(next);
-      setSettingsLoadError(null);
-    };
-    const unsubscribeSettings = subscribeToSettingsWithInitialLoad(
-      window.localScribe.settings,
-      applySettings,
-      setSettingsLoadError,
-    );
-    void loadRules().catch((error: unknown) => {
-      setMessageIsError(true);
-      setMessage(`Could not load replacement rules: ${errorDetail(error)}`);
-    });
-    return unsubscribeSettings;
-  }, [loadRules]);
-
-  const transformControls = settingsControlAvailability(settings, settingsLoadError);
-
-  const setTransform = async (key: "smartPunctuation" | "spokenCommands", enabled: boolean) => {
-    if (!settings) return;
-    setBusy(true);
-    try {
-      const saved = await window.localScribe.settings.patch({ [key]: enabled });
-      setSettings(saved);
-      setMessageIsError(false);
-      setMessage(enabled ? "Transform enabled" : "Transform disabled");
-    } catch (error) {
-      setMessageIsError(true);
-      setMessage(`Could not update transform: ${errorDetail(error)}`);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const addRule = async () => {
-    const nextPhrase = phrase.trim();
-    const nextReplacement = replacement.trim();
-    if (!nextPhrase || !nextReplacement) return;
-    setBusy(true);
-    try {
-      await window.localScribe.dictionary.save({ phrase: nextPhrase, replacement: nextReplacement });
-      await loadRules();
-      setPhrase("");
-      setReplacement("");
-      setMessageIsError(false);
-      setMessage("Replacement saved and active");
-    } catch (error) {
-      setMessageIsError(true);
-      setMessage(`Could not save replacement: ${errorDetail(error)}`);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const removeRule = async (id: string) => {
-    setBusy(true);
-    try {
-      await window.localScribe.dictionary.delete(id);
-      await loadRules();
-      setMessageIsError(false);
-      setMessage("Replacement removed");
-    } catch (error) {
-      setMessageIsError(true);
-      setMessage(`Could not delete replacement: ${errorDetail(error)}`);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const transforms = [
-    {
-      id: "polish",
-      icon: <SparkIcon />,
-      title: "Polish",
-      description: "Normalize spacing, capitalization, and terminal punctuation after every transcription.",
-      availability: settings ? settings.smartPunctuation ? "Enabled" : "Off" : transformControls.presentation?.title ?? "Loading settings",
-      enabled: settings?.smartPunctuation ?? false,
-      toggle: settings ? () => setTransform("smartPunctuation", !settings.smartPunctuation) : null,
-      unavailable: !settings,
-    },
-    {
-      id: "structured",
-      icon: <ListIcon />,
-      title: "Spoken structure",
-      description: "Apply spoken punctuation, new-line, new-paragraph, and scratch-that commands.",
-      availability: settings ? settings.spokenCommands ? "Enabled" : "Off" : transformControls.presentation?.title ?? "Loading settings",
-      enabled: settings?.spokenCommands ?? false,
-      toggle: settings ? () => setTransform("spokenCommands", !settings.spokenCommands) : null,
-      unavailable: !settings,
-    },
-    {
-      id: "concise",
-      icon: <CompressIcon />,
-      title: "Concise rewrite",
-      description: "Shorten prose while preserving meaning. This requires a local text-generation model.",
-      availability: GENERATIVE_TEXT_MODEL_REQUIRED_NOTICE,
-      enabled: false,
-      toggle: null,
-      unavailable: true,
-    },
-  ];
-
-  return (
-    <div className="ls-page ls-transforms-screen">
-      <ScreenHeader
-        eyebrow="Deterministic tools"
-        title="Transforms"
-        description="Exact local transforms work now. Semantic rewriting is unavailable in this build."
-      />
-      <div className="ls-local-banner">
-        <LockIcon />
-        <div><strong>Current transforms run locally</strong><span>Speech uses the selected local ASR profile when its model data is verified. Generative rewriting is unavailable in this build.</span></div>
-      </div>
-
-      {transformControls.presentation && (
-        <p className={transformControls.presentation.isError ? "ls-action-feedback is-error" : "ls-action-feedback"} role={transformControls.presentation.isError ? "alert" : "status"} aria-live="polite">
-          <strong>{transformControls.presentation.title}</strong><br />{transformControls.presentation.detail}
-        </p>
-      )}
-
-      <section className="ls-section">
-        <div className="ls-transform-grid">
-          {transforms.map((transform) => (
-            <button
-              type="button"
-              key={transform.id}
-              className={transform.enabled ? "ls-transform-card is-selected" : transform.unavailable ? "ls-transform-card is-unavailable" : "ls-transform-card"}
-              onClick={() => void transform.toggle?.()}
-              aria-pressed={transform.toggle ? transform.enabled : undefined}
-              disabled={!transform.toggle || busy}
-            >
-              <span className="ls-transform-icon">{transform.icon}</span>
-              <span className={transform.id === "concise" ? "ls-status-chip ls-status-chip--muted ls-status-chip--model-required" : "ls-status-chip ls-status-chip--muted"}>{transform.availability}</span>
-              <strong>{transform.title}</strong>
-              <p>{transform.description}</p>
-              <span className="ls-card-link">{transform.toggle ? transform.enabled ? "Click to turn off" : "Click to enable" : transform.id === "concise" ? GENERATIVE_TEXT_MODEL_REQUIRED_NOTICE : "Available when saved settings load"} <ArrowIcon /></span>
-            </button>
-          ))}
-        </div>
-      </section>
-
-      <section className="ls-section ls-rule-editor" aria-labelledby="rules-heading">
-        <div className="ls-section-heading">
-          <div>
-            <h2 id="rules-heading">Custom rules</h2>
-            <p>Exact replacements saved locally and applied after every transcription.</p>
-          </div>
-          <span className="ls-status-chip">Active now</span>
-        </div>
-        <div className="ls-rule-pair">
-          <label><span>When LocalScribe hears</span><input value={phrase} onChange={(event) => setPhrase(event.target.value)} placeholder="road map" maxLength={200} /></label>
-          <ArrowIcon />
-          <label><span>Replace it with</span><input value={replacement} onChange={(event) => setReplacement(event.target.value)} placeholder="roadmap" maxLength={200} /></label>
-          <button type="button" className="ls-primary-button" disabled={busy || !phrase.trim() || !replacement.trim()} onClick={() => void addRule()}>{busy ? "Saving…" : "Save rule"}</button>
-        </div>
-        {rules.length > 0 && (
-          <div className="ls-draft-rules">
-            {rules.map((rule) => (
-              <div key={rule.id}><span><strong>{rule.phrase}</strong> → {rule.replacement}</span><button type="button" disabled={busy} aria-label={`Remove ${rule.phrase}`} onClick={() => void removeRule(rule.id)}><CloseIcon /></button></div>
-            ))}
-          </div>
-        )}
-        <p className="ls-honesty-note"><InfoIcon /> These exact replacements are shared with Dictionary and never leave this computer.</p>
-        {message && (
-          <p className={messageIsError ? "ls-action-feedback is-error" : "ls-action-feedback"} role={messageIsError ? "alert" : "status"} aria-live="polite">{message}</p>
-        )}
-      </section>
-    </div>
-  );
+export function ModelsScreen({ registerDismissalGate }: { registerDismissalGate?(gate: (() => boolean) | null): void }) {
+  return <SettingsModal initialTab="model" presentation="page" onClose={() => undefined} registerDismissalGate={registerDismissalGate} />;
 }
 
-export function SettingsModal({ onClose, registerDismissalGate, initialTab = "general", onSavedDataReset }: {
+export function SettingsModal({ onClose, registerDismissalGate, initialTab = "general", onSavedDataReset, presentation = "modal" }: {
   onClose(): void;
   initialTab?: SettingsTab;
+  presentation?: "modal" | "page";
   onSavedDataReset?(): void;
   /**
    * Publishes the dialog's own dismissal gate so the hub can consult it before
@@ -936,6 +505,8 @@ export function SettingsModal({ onClose, registerDismissalGate, initialTab = "ge
   registerDismissalGate?(gate: (() => boolean) | null): void;
 }) {
   const [tab, setTab] = useState<SettingsTab>(initialTab);
+  // Native Data/Settings navigation can retarget an already-open dialog.
+  useEffect(() => { setTab(initialTab); }, [initialTab]);
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [settingsLoadError, setSettingsLoadError] = useState<unknown | null>(null);
   const [permissions, setPermissions] = useState<PermissionSnapshot | null>(null);
@@ -944,7 +515,6 @@ export function SettingsModal({ onClose, registerDismissalGate, initialTab = "ge
   const [modelCatalog, setModelCatalog] = useState<ModelCatalog | null>(null);
   const [modelCatalogError, setModelCatalogError] = useState<string | null>(null);
   const [microphones, setMicrophones] = useState<MediaDeviceInfo[]>([]);
-  const [profiles, setProfiles] = useState<AppProfile[]>([]);
   const [status, setStatus] = useState("");
   const [busy, setBusy] = useState(false);
   const dirtySettings = useRef<AppSettingsPatch>({});
@@ -975,12 +545,13 @@ export function SettingsModal({ onClose, registerDismissalGate, initialTab = "ge
    * marks the hub itself `inert` for the duration.
    */
   useEffect(() => {
+    if (presentation === "page") return;
     const opener = document.activeElement;
     dialogRef.current?.focus();
     return () => {
       if (opener instanceof HTMLElement && opener.isConnected) opener.focus();
     };
-  }, []);
+  }, [presentation]);
 
   // The worker reports measured bytes as it downloads and verifies. Keep only
   // the update for the operation this view started: a delayed terminal event
@@ -1006,10 +577,12 @@ export function SettingsModal({ onClose, registerDismissalGate, initialTab = "ge
       setModelFeedback({ message: decision.message, isError: false });
       return false;
     }
-    setPendingModelSelection(null);
-    onClose();
+    if (presentation === "modal") {
+      setPendingModelSelection(null);
+      onClose();
+    }
     return true;
-  }, [onClose]);
+  }, [onClose, presentation]);
 
   const closeSettings = useCallback(() => {
     attemptDismissal();
@@ -1021,19 +594,17 @@ export function SettingsModal({ onClose, registerDismissalGate, initialTab = "ge
   }, [registerDismissalGate, attemptDismissal]);
 
   const refresh = useCallback(async () => {
-    const [permissionResult, launchAtLoginResult, diagnosticsResult, profileResult] = await Promise.allSettled([
+    const [permissionResult, launchAtLoginResult, diagnosticsResult] = await Promise.allSettled([
       window.localScribe.system.getPermissions(),
       window.localScribe.system.getLaunchAtLoginStatus(),
       window.localScribe.system.diagnostics(),
-      window.localScribe.profiles.list(),
     ]);
     setPermissions(permissionResult.status === "fulfilled" ? permissionResult.value : null);
     setLaunchAtLoginStatus(
       launchAtLoginResult.status === "fulfilled" ? launchAtLoginResult.value : null,
     );
     setDiagnostics(diagnosticsResult.status === "fulfilled" ? diagnosticsResult.value : null);
-    setProfiles(profileResult.status === "fulfilled" ? profileResult.value : []);
-    const failures = [permissionResult, launchAtLoginResult, diagnosticsResult, profileResult]
+    const failures = [permissionResult, launchAtLoginResult, diagnosticsResult]
       .filter((result): result is PromiseRejectedResult => result.status === "rejected")
       .map((result) => errorDetail(result.reason));
     if (failures.length > 0) throw new Error(failures.join("; "));
@@ -1113,6 +684,7 @@ export function SettingsModal({ onClose, registerDismissalGate, initialTab = "ge
   }, [refreshMicrophones]);
 
   useEffect(() => {
+    if (presentation === "page") return;
     let disposed = false;
     const refreshPermissions = () => {
       void window.localScribe.system.getPermissions().then((next) => {
@@ -1173,15 +745,23 @@ export function SettingsModal({ onClose, registerDismissalGate, initialTab = "ge
       window.removeEventListener("focus", refreshForegroundState);
       document.removeEventListener("visibilitychange", refreshVisibleState);
     };
-  }, []);
+  }, [presentation]);
 
   useEffect(() => {
+    if (presentation === "page") return;
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key === "Escape") closeSettings();
+      if (event.key === "Tab") {
+        const controls = [...(dialogRef.current?.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex="0"]') ?? [])].filter((control) => control.getClientRects().length > 0);
+        const first = controls[0];
+        const last = controls[controls.length - 1];
+        if (event.shiftKey && (document.activeElement === first || document.activeElement === dialogRef.current)) { event.preventDefault(); last?.focus(); }
+        else if (!event.shiftKey && (document.activeElement === last || document.activeElement === dialogRef.current)) { event.preventDefault(); first?.focus(); }
+      }
     };
     window.addEventListener("keydown", closeOnEscape);
     return () => window.removeEventListener("keydown", closeOnEscape);
-  }, [closeSettings]);
+  }, [closeSettings, presentation]);
 
   const update = <K extends keyof AppSettings>(key: K, value: AppSettings[K]) => {
     if (!settings) return;
@@ -1257,6 +837,12 @@ export function SettingsModal({ onClose, registerDismissalGate, initialTab = "ge
       settingsSaveInFlight.current = false;
       setBusy(false);
     }
+  };
+
+  const copyDataPath = async () => {
+    if (!diagnostics?.dataPath) return;
+    try { await navigator.clipboard.writeText(diagnostics.dataPath); setStatus("Data path copied"); }
+    catch { setStatus("Could not copy the data path. Try again."); }
   };
 
   const exportHistory = async () => {
@@ -1621,34 +1207,33 @@ export function SettingsModal({ onClose, registerDismissalGate, initialTab = "ge
 
   return (
     <div
-      className="ls-modal-backdrop"
+      className={presentation === "page" ? "ls-models-page" : "ls-modal-backdrop"}
       role="presentation"
-      onMouseDown={(event) => { if (event.target === event.currentTarget) closeSettings(); }}
+      onMouseDown={(event) => { if (presentation === "modal" && event.target === event.currentTarget) closeSettings(); }}
     >
       <section
         ref={dialogRef}
-        className="ls-settings-modal"
-        role="dialog"
-        aria-modal="true"
+        className={presentation === "page" ? "ls-models-workspace" : "ls-settings-modal"}
+        role={presentation === "page" ? undefined : "dialog"}
+        aria-modal={presentation === "page" ? undefined : true}
         aria-labelledby="settings-title"
         tabIndex={-1}
       >
-        <aside className="ls-settings-sidebar">
-          <div className="ls-settings-brand"><span>L</span><strong>Settings</strong></div>
+        {presentation === "modal" && <aside className="ls-settings-sidebar">
+          <div className="ls-settings-brand"><strong>Settings</strong></div>
           <nav aria-label="Settings categories">
             {SETTINGS_TABS.map((item) => (
               <button type="button" key={item.id} className={tab === item.id ? "is-active" : ""} aria-current={tab === item.id ? "page" : undefined} onClick={() => { setTab(item.id); setStatus(""); }}>
-                {item.icon}<span>{item.label}</span>
+                <span>{item.label}</span>
               </button>
             ))}
           </nav>
-          <div className="ls-settings-local"><span /> Local only<small>No audio uploads</small></div>
-        </aside>
+        </aside>}
 
         <div className="ls-settings-main">
           <header className="ls-settings-header">
-            <div><span>LocalScribe</span><h1 id="settings-title">{SETTINGS_TABS.find((item) => item.id === tab)?.label}</h1></div>
-            <button type="button" className="ls-close-button" disabled={busy || modelApplying || modelRefreshing || modelAction !== null} onClick={closeSettings} aria-label="Close settings"><CloseIcon /></button>
+            <div><h1 id="settings-title">{presentation === "page" ? "Models" : SETTINGS_TABS.find((item) => item.id === tab)?.label}</h1></div>
+            {presentation === "modal" && <button type="button" className="ls-close-button" disabled={busy || modelApplying || modelRefreshing || modelAction !== null} onClick={closeSettings} aria-label="Close settings"><CloseIcon /></button>}
           </header>
 
           <div
@@ -1716,7 +1301,7 @@ export function SettingsModal({ onClose, registerDismissalGate, initialTab = "ge
                     label="Microphone"
                     detail="Required only while recording dictation."
                     ready={permissions?.microphone === "granted"}
-                    value={permissions?.microphone ?? "Checking"}
+                    value={microphonePermissionLabel(permissions?.microphone)}
                     onOpen={permissions?.microphoneSettingsAvailable
                       ? () => void window.localScribe.system.openPermission("microphone")
                       : undefined}
@@ -1726,7 +1311,7 @@ export function SettingsModal({ onClose, registerDismissalGate, initialTab = "ge
                       label="Accessibility"
                       detail="Required for automatic paste and global push-to-talk. Without it, use the toggle shortcut; completed dictation is copied to the clipboard."
                       ready={permissions.accessibility.granted}
-                      value={permissions.accessibility.granted ? "Granted" : "Needs access"}
+                      value={permissions.accessibility.granted ? "Granted" : "Denied"}
                       onOpen={() => void window.localScribe.system.openPermission("accessibility")}
                     />
                   )}
@@ -1744,6 +1329,9 @@ export function SettingsModal({ onClose, registerDismissalGate, initialTab = "ge
                   {automaticPastePresentation.editable
                     ? <SettingsToggle label="Paste automatically" detail={automaticPastePresentation.detail} value={settings.autoPaste} onChange={(value) => update("autoPaste", value)} />
                     : <SettingsReadOnly label="Paste automatically" detail={automaticPastePresentation.detail} value={automaticPastePresentation.value ?? "Unavailable"} />}
+                  <SettingsSelect label="Appearance" detail="Applies to every LocalScribe window." value={settings.appearance} onChange={(value) => update("appearance", value as AppSettings["appearance"])}>
+                    <option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option>
+                  </SettingsSelect>
                   <SettingsToggle label="Save transcript history" detail="Text is encrypted locally. Raw audio is not retained." value={settings.keepHistory} onChange={(value) => update("keepHistory", value)} />
                   <SettingsSelect label="History retention" detail="Expired encrypted transcripts are deleted locally." value={String(settings.historyRetentionDays)} onChange={(value) => update("historyRetentionDays", Number(value) as AppSettings["historyRetentionDays"])}>
                     {HISTORY_RETENTION_OPTIONS.map((days) => <option key={days} value={days}>{historyRetentionLabel(days)}</option>)}
@@ -1867,47 +1455,19 @@ export function SettingsModal({ onClose, registerDismissalGate, initialTab = "ge
               />
             )}
 
-            {tab === "writing" && (
-              <>
-                <SettingsGroup title="Automatic cleanup">
-                  <SettingsToggle label="Remove filler words" detail="Remove isolated hesitation words such as um and uh." value={settings.removeFillers} onChange={(value) => update("removeFillers", value)} />
-                  <SettingsToggle label="Spoken commands" detail="Understand new paragraph, scratch that, comma, and supported commands." value={settings.spokenCommands} onChange={(value) => update("spokenCommands", value)} />
-                  <SettingsToggle label="Smart punctuation" detail="Normalize spacing, capitalization, and terminal punctuation." value={settings.smartPunctuation} onChange={(value) => update("smartPunctuation", value)} />
-                </SettingsGroup>
-                <SettingsGroup title="App profiles">
-                  {profiles.length === 0 ? <SettingsReadOnly label="No app profiles" detail="Global cleanup applies to every application." value="None" /> : profiles.map((profile) => (
-                    <SettingsReadOnly key={profile.id} label={profile.label} detail={profile.appId} value={[profile.removeFillers && "Fillers", profile.spokenCommands && "Commands", profile.smartPunctuation && "Punctuation"].filter(Boolean).join(" · ") || "No cleanup"} />
-                  ))}
-                </SettingsGroup>
-                <div className="ls-settings-note"><InfoIcon /><span>Dictionary, snippets, style references, and profile editing live in their corresponding sidebar pages.</span></div>
-              </>
-            )}
-
-            {tab === "experimental" && (
-              <>
-                <div className="ls-experimental-banner"><FlaskIcon /><div><strong>Nothing here changes dictation yet</strong><p>These concepts are visible for roadmap clarity. They remain disabled until the behavior is implemented and tested locally.</p></div></div>
-                <SettingsGroup title="Future behaviors">
-                  <ModelRequiredToggle label="Free-form command mode" detail="Interpret an entire recording as a semantic app command." />
-                  <UnavailableToggle label="Press Enter after command" detail="Submit a command after target-guarded insertion." />
-                  <UnavailableToggle label="Stacked messages" detail="Queue several dictations before inserting them." />
-                  <UnavailableToggle label="Bulk vocabulary import" detail="Validate and import a local vocabulary file." />
-                </SettingsGroup>
-              </>
-            )}
-
             {tab === "privacy" && (
               <>
                 <div className="ls-settings-note"><LockIcon /><span>Speech is processed locally. Saved text is encrypted using macOS Keychain.</span></div>
                 <SettingsGroup title="Storage and diagnostics">
                   <SettingsReadOnly label="Processing" detail="No listening server or transcription API." value={resolvedModelEngine(diagnostics)} />
                   <SettingsReadOnly label="Database" detail="Encrypted transcript and scratchpad storage." value={diagnostics?.databaseIntegrity ?? "Checking"} />
-                  <SettingsReadOnly label="Data path" detail="Local application data with OS-encrypted private text fields." value={diagnostics?.dataPath ?? "Checking"} monospace />
+                  <div className="ls-settings-row"><span><strong>Data path</strong><small>Local application data with encrypted private text.</small></span><button type="button" className="ls-small-button" disabled={!diagnostics?.dataPath} onClick={() => void copyDataPath()}>Copy path</button></div>
                   <SettingsReadOnly label="Model revision" detail="Resolved local speech model" value={diagnostics?.model.revision.slice(0, 10) ?? "Checking"} monospace />
                 </SettingsGroup>
                 <div className="ls-data-actions">
-                  <button type="button" disabled={busy || modelApplying || modelRefreshing || modelAction !== null} onClick={() => void resetSavedData()} className="is-danger"><TrashIcon /><span><strong>{busy ? "Please wait…" : "Reset saved data…"}</strong><small>Clear history, dictionary, snippets and notes. Keeps settings and models.</small></span></button>
-                  <button type="button" onClick={() => void showDataBackups()}><FolderIcon /><span><strong>Show recovery copies</strong><small>Open encrypted database backups in Finder.</small></span></button>
                   <button type="button" onClick={() => void exportHistory()}><DownloadIcon /><span><strong>Export history</strong><small>Save a local copy of your transcripts.</small></span></button>
+                  <button type="button" onClick={() => void showDataBackups()}><FolderIcon /><span><strong>Show recovery copies</strong><small>Open encrypted database backups in Finder.</small></span></button>
+                  <button type="button" disabled={busy || modelApplying || modelRefreshing || modelAction !== null} onClick={() => void resetSavedData()} className="is-danger"><TrashIcon /><span><strong>{busy ? "Please wait…" : "Reset saved data…"}</strong><small>Clear history, dictionary, snippets and notes. Keeps settings and models.</small></span></button>
                   <button type="button" onClick={() => void clearHistory()} className="is-danger"><TrashIcon /><span><strong>Clear history</strong><small>Delete encrypted transcripts from LocalScribe history.</small></span></button>
                   <button type="button" onClick={() => void refreshWithStatus()}><RefreshIcon /><span><strong>Refresh diagnostics</strong><small>Recheck permissions, storage, and model.</small></span></button>
                   <button type="button" onClick={() => void copyDiagnostics()}><CopyIcon /><span><strong>Copy diagnostics</strong><small>Redacted failure log — no transcripts or paths.</small></span></button>
@@ -1920,7 +1480,7 @@ export function SettingsModal({ onClose, registerDismissalGate, initialTab = "ge
             )}
           </div>
 
-          <footer className="ls-settings-footer">
+          {presentation === "modal" && <footer className="ls-settings-footer">
             {/*
               The status ellipsizes rather than widening the footer, so a long
               failure would otherwise lose its tail. `title` keeps the whole
@@ -1943,15 +1503,11 @@ export function SettingsModal({ onClose, registerDismissalGate, initialTab = "ge
             {tab !== "model" && (
               <button type="button" className="ls-primary-button" disabled={busy || !settings} onClick={() => void save()}>{busy ? "Saving…" : "Save changes"}</button>
             )}
-          </footer>
+          </footer>}
         </div>
       </section>
     </div>
   );
-}
-
-function ScreenHeader({ eyebrow, title, description }: { eyebrow: string; title: string; description: string }) {
-  return <header className="ls-screen-header"><span>{eyebrow}</span><h1>{title}</h1><p>{description}</p></header>;
 }
 
 function SettingsGroup({ title, children }: { title: string; children: ReactNode }) {
@@ -1963,24 +1519,6 @@ function SettingsToggle({ label, detail, value, onChange }: { label: string; det
     <label className="ls-settings-row">
       <span><strong>{label}</strong><small>{detail}</small></span>
       <input className="ls-switch" type="checkbox" checked={value} onChange={(event) => onChange(event.target.checked)} />
-    </label>
-  );
-}
-
-function UnavailableToggle({ label, detail }: { label: string; detail: string }) {
-  return (
-    <label className="ls-settings-row is-disabled">
-      <span><strong>{label}<em>{UNAVAILABLE_IN_THIS_BUILD_NOTICE}</em></strong><small>{detail}</small></span>
-      <input className="ls-switch" type="checkbox" disabled checked={false} readOnly />
-    </label>
-  );
-}
-
-function ModelRequiredToggle({ label, detail }: { label: string; detail: string }) {
-  return (
-    <label className="ls-settings-row is-disabled">
-      <span><strong>{label}<em>{GENERATIVE_TEXT_MODEL_REQUIRED_NOTICE}</em></strong><small>{detail}</small></span>
-      <input className="ls-switch" type="checkbox" disabled checked={false} readOnly />
     </label>
   );
 }
@@ -2254,20 +1792,19 @@ function errorDetail(error: unknown): string {
 
 type IconProps = { className?: string };
 function Icon({ children, className = "" }: { children: ReactNode; className?: string }) { return <svg className={className} viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">{children}</svg>; }
-function SlidersIcon(props: IconProps) { return <Icon {...props}><path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2"/><circle cx="8" cy="17" r="2"/></Icon>; }
-function DesktopIcon(props: IconProps) { return <Icon {...props}><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8M12 17v4"/></Icon>; }
-function PenIcon(props: IconProps) { return <Icon {...props}><path d="m4 20 4.2-1 10.5-10.5a2.1 2.1 0 0 0-3-3L5.2 16Z"/><path d="m14.5 6.5 3 3"/></Icon>; }
-function FlaskIcon(props: IconProps) { return <Icon {...props}><path d="M9 3h6M10 3v6l-5.5 9.2A1.8 1.8 0 0 0 6 21h12a1.8 1.8 0 0 0 1.5-2.8L14 9V3"/><path d="M7 15h10"/></Icon>; }
 function LockIcon(props: IconProps) { return <Icon {...props}><rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></Icon>; }
 function FolderIcon(props: IconProps) { return <Icon {...props}><path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/></Icon>; }
-function SparkIcon(props: IconProps) { return <Icon {...props}><path d="m12 3 1.4 4.1L17.5 8.5l-4.1 1.4L12 14l-1.4-4.1-4.1-1.4 4.1-1.4Z"/><path d="m18.5 14 .7 2.3 2.3.7-2.3.7-.7 2.3-.7-2.3-2.3-.7 2.3-.7Z"/></Icon>; }
 function TrashIcon(props: IconProps) { return <Icon {...props}><path d="M4 7h16M9 7V4h6v3M7 7l1 14h8l1-14M10 11v6M14 11v6"/></Icon>; }
-function CompressIcon(props: IconProps) { return <Icon {...props}><path d="M8 3v5H3M16 3v5h5M8 21v-5H3M16 21v-5h5"/></Icon>; }
-function ListIcon(props: IconProps) { return <Icon {...props}><path d="M9 6h11M9 12h11M9 18h11"/><circle cx="4" cy="6" r="1" fill="currentColor" stroke="none"/><circle cx="4" cy="12" r="1" fill="currentColor" stroke="none"/><circle cx="4" cy="18" r="1" fill="currentColor" stroke="none"/></Icon>; }
-function ArrowIcon(props: IconProps) { return <Icon {...props}><path d="M5 12h14M14 7l5 5-5 5"/></Icon>; }
 function CloseIcon(props: IconProps) { return <Icon {...props}><path d="m6 6 12 12M18 6 6 18"/></Icon>; }
 function InfoIcon(props: IconProps) { return <Icon {...props}><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></Icon>; }
 function DownloadIcon(props: IconProps) { return <Icon {...props}><path d="M12 3v12M7 10l5 5 5-5M5 21h14"/></Icon>; }
 function RefreshIcon(props: IconProps) { return <Icon {...props}><path d="M20 7v5h-5M4 17v-5h5"/><path d="M6.1 8a7 7 0 0 1 11.7-1L20 12M4 12l2.2 5a7 7 0 0 0 11.7-1"/></Icon>; }
 function CopyIcon(props: IconProps) { return <Icon {...props}><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h8"/></Icon>; }
-function GaugeIcon(props: IconProps) { return <Icon {...props}><path d="M4 14a8 8 0 1 1 16 0"/><path d="m12 14 4-4"/><path d="M5 18h14"/></Icon>; }
+
+export function microphonePermissionLabel(value: PermissionSnapshot["microphone"] | undefined): string {
+  if (value === "granted") return "Granted";
+  if (value === "denied") return "Denied";
+  if (value === "restricted") return "Restricted";
+  if (value === "not-determined") return "Not asked";
+  return "Unknown";
+}

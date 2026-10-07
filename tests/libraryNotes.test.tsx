@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { dictionaryEntrySchema, dictionarySaveInputSchema, snippetSaveInputSchema, snippetSchema } from "../src/shared/contracts";
 import {
   DICTIONARY_PHRASE_MAX_LENGTH,
@@ -14,6 +14,7 @@ import {
   SNIPPET_TRIGGER_MAX_LENGTH,
   libraryCountLabel,
   libraryErrorMessage,
+  libraryEditorCanClose,
   libraryListMessage,
   modalTabTarget,
   SnippetModal,
@@ -178,6 +179,19 @@ describe("library dialog keyboard behavior", () => {
     expect(modalTabTarget(-1, 3, true)).toBe(2);
     expect(modalTabTarget(1, 3, false)).toBeNull();
     expect(modalTabTarget(0, 0, false)).toBeNull();
+  });
+
+  it("preserves edited drafts when discard is declined and blocks close during save", () => {
+    const deny = vi.fn(() => false);
+    expect(libraryEditorCanClose(false, true, deny)).toBe(false);
+    expect(deny).toHaveBeenCalledOnce();
+    const allow = vi.fn(() => true);
+    expect(libraryEditorCanClose(false, true, allow)).toBe(true);
+    expect(allow).toHaveBeenCalledOnce();
+    const unused = vi.fn(() => true);
+    expect(libraryEditorCanClose(true, true, unused)).toBe(false);
+    expect(libraryEditorCanClose(false, false, unused)).toBe(true);
+    expect(unused).not.toHaveBeenCalled();
   });
 
   it("renders a named modal focus boundary", () => {

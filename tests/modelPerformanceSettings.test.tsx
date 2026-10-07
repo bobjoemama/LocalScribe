@@ -6,6 +6,7 @@ import {
   modelActionProgressPresentation,
   modelFamilyPresentation,
   modelProfileLabel,
+  modelPrecisionLabel,
   ModelPerformanceSettings,
   supportedModeChoices,
   type ModelPerformanceSettingsProps,
@@ -329,26 +330,26 @@ describe("ModelPerformanceSettings", () => {
     expect(supportedModeChoices(undefined)).toEqual([]);
   });
 
-  it("puts status first and collapses secondary details without hiding the selected profiles", () => {
+  it("puts status first, flattens profiles and keeps secondary evidence collapsed", () => {
     const html = renderModelSettings();
     expect(html).toMatch(/^<div class="ls-model-performance"><section class="ls-model-apply-card"/);
     expect(html).toContain('<details class="ls-model-selection-details">');
     expect(html).toContain('<details class="ls-model-hardware-details">');
-    expect(html.match(/<details class="ls-model-profiles" open=""/g)).toHaveLength(1);
-    expect(html).toContain('<details class="ls-model-profiles">');
+    expect(html.match(/<div class="ls-model-profiles">/g)).toHaveLength(2);
+    expect(html).not.toContain('<details class="ls-model-profiles"');
     expect(html).toContain('<details class="ls-model-comparison ls-model-evidence">');
     expect(html).toContain("Change quality");
     expect(html).not.toContain('class="ls-model-auto-card"');
   });
 
-  it("keeps an active download visible outside its collapsible profiles", () => {
+  it("keeps active download progress visible above profile rows", () => {
     const html = renderModelSettings({ action: {
       action: "installing", familyId: "qwen3-asr-0-6b", tier: "high",
       progress: { phase: "downloading", completedBytes: 10, totalBytes: 100 },
     } });
     expect(html.indexOf('class="ls-model-operation-progress"')).toBeLessThan(html.indexOf('class="ls-model-profiles"'));
     expect(html.match(/role="progressbar"/g)).toHaveLength(1);
-    expect(html).toContain('class="ls-model-profiles" open=""');
+    expect(html).toContain('<div class="ls-model-profiles">');
   });
 
   it("labels comparison controls, benchmark limits, and conversion provenance", () => {
@@ -416,7 +417,7 @@ describe("ModelPerformanceSettings", () => {
   it("uses a mode-first picker and keeps unavailable live recognition visibly unavailable", () => {
     const html = renderModelSettings();
 
-    expect(html).toContain("When should text appear?");
+    expect(html).toContain("Text appears");
     expect(html).toContain('<strong>After I stop</strong>');
     expect(html).toContain('<strong>Live</strong>');
     expect(html).toContain("No streaming model in this catalog");
@@ -477,7 +478,7 @@ describe("ModelPerformanceSettings", () => {
 
     expect(html).toContain("Refreshing…");
     expect(html).toContain("Refreshing model status…");
-    expect(applyButtonTag(html)).toContain('disabled=""');
+    expect(html).not.toContain('class="ls-primary-button ls-model-apply-button"');
     expect(storageButtonTags(html).every((tag) => tag.includes('disabled=""'))).toBe(true);
   });
 
@@ -552,8 +553,7 @@ describe("ModelPerformanceSettings", () => {
   it("keeps exact warm Apply idempotent", () => {
     const warm = renderModelSettings({ currentModelLoaded: true });
     expect(warm).toContain("Current model is loaded and ready.");
-    expect(applyButtonTag(warm)).toContain('disabled=""');
-    expect(applyButtonTag(warm)).toContain('aria-disabled="true"');
+    expect(warm).not.toContain('class="ls-primary-button ls-model-apply-button"');
 
     const changed = renderModelSettings({
       pendingSelection: { familyId: "qwen3-asr-0-6b", asrMode: "after-stop", performanceMode: "medium" },
@@ -927,7 +927,7 @@ describe("ModelPerformanceSettings", () => {
 
     expect(html).toContain("In your library");
     expect(html).toContain("Select");
-    expect(html).toContain("Profiles &amp; downloads");
+    expect(html).toContain('<div class="ls-model-profiles">');
     expect(html).toContain("Undeclared — review required");
     expect(html).toContain("Check / download");
   });
@@ -1029,5 +1029,16 @@ describe("ModelPerformanceSettings", () => {
     expect(html).toContain("Could not load the curated model catalog: IPC unavailable");
     expect(html).toContain("Memory information is unavailable");
     expect(html).not.toContain("Loading curated model catalog");
+  });
+});
+
+
+describe("runtime precision labels", () => {
+  it("translates installed runtimes while preserving unknown future labels", () => {
+    expect(modelPrecisionLabel("coreml-lut6-ane")).toBe("LUT6 · Neural Engine");
+    expect(modelPrecisionLabel("coreml-lut3-gpu")).toBe("LUT3 · GPU");
+    expect(modelPrecisionLabel("onnx-cpu")).toBe("CPU");
+    expect(modelPrecisionLabel("fp16")).toBe("FP16");
+    expect(modelPrecisionLabel("future-precision")).toBe("future-precision");
   });
 });

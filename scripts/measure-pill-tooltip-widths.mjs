@@ -25,7 +25,7 @@ import { app, BrowserWindow } from "electron";
 
 /** Kept in sync with the pinned set in tests/pillTooltipWidths.test.ts. */
 const TOOLTIPS = [
-  "Scratchpad",
+  "Notes",
   "Choose microphone",
   "Close microphone menu",
   "Dictate · hold ⌥Space",
@@ -161,4 +161,7 @@ app.whenReady().then(async () => {
   }
   console.log("  ok: the text stops short of the edge, so the ellipsis is being painted.");
   app.exit(0);
+}).catch((error) => {
+  console.error(error);
+  app.exit(1);
 });

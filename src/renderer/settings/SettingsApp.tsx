@@ -1,27 +1,27 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { AppInfo } from "../../shared/contracts";
+import type { AppInfo, NavigationTarget } from "../../shared/contracts";
 import { HistoryScreen, InsightsScreen } from "./screens/HistoryInsights";
 import { DictionaryScreen, SnippetsScreen } from "./screens/LibraryNotes";
-import { SettingsModal, StyleScreen, TransformsScreen, type SettingsTab } from "./screens/StyleSettings";
+import { CleanupScreen, ModelsScreen, SettingsModal, type SettingsTab } from "./screens/StyleSettings";
 
-type Section =
-  | "dictation"
-  | "insights"
-  | "dictionary"
-  | "snippets"
-  | "style"
-  | "transforms"
-  | "scratchpad";
+type Section = "dictation" | "insights" | "dictionary" | "snippets" | "cleanup" | "models";
+type NavigationSection = Section | "scratchpad";
 
-const primaryNavigation: Array<{ id: Section; label: string }> = [
+const primaryNavigation: Array<{ id: NavigationSection; label: string }> = [
   { id: "dictation", label: "Dictation" },
   { id: "insights", label: "Insights" },
-  { id: "scratchpad", label: "Scratchpad" },
+  { id: "scratchpad", label: "Notes" },
   { id: "dictionary", label: "Dictionary" },
   { id: "snippets", label: "Snippets" },
-  { id: "style", label: "Style" },
-  { id: "transforms", label: "Transforms" },
+  { id: "cleanup", label: "Cleanup" },
+  { id: "models", label: "Models" },
 ];
+
+export function navigationSection(target: NavigationTarget): NavigationSection | null {
+  if (target === "style" || target === "transforms") return "cleanup";
+  if (target === "settings" || target === "data") return null;
+  return target;
+}
 
 export function SettingsApp() {
   const [section, setSection] = useState<Section>("dictation");
@@ -30,38 +30,52 @@ export function SettingsApp() {
   const [appInfo, setAppInfo] = useState<AppInfo | null>(null);
   const [dataRevision, setDataRevision] = useState(0);
 
-  const openSection = (target: Section) => {
+  // Model operations publish the same live guard whether shown as a page or dialog.
+  const dismissalGate = useRef<(() => boolean) | null>(null);
+  const modelPageGate = useRef<(() => boolean) | null>(null);
+  const registerDismissalGate = useCallback((gate: (() => boolean) | null) => { dismissalGate.current = gate; }, []);
+  const registerModelPageGate = useCallback((gate: (() => boolean) | null) => { modelPageGate.current = gate; }, []);
+
+  const openSection = useCallback((target: NavigationSection) => {
+    if (dismissalGate.current && !dismissalGate.current()) return;
+    if (modelPageGate.current && !modelPageGate.current()) return;
+    setSettingsOpen(false);
     if (target === "scratchpad") {
       void window.localScribe.windows.showSettings("scratchpad");
       return;
     }
     setSection(target);
-  };
+  }, []);
 
-  /*
-   * The dialog publishes its own dismissal gate here. Navigation used to close
-   * the dialog unconditionally, which meant every tray entry could unmount it
-   * in the middle of a model apply or install — the one path that bypassed the
-   * guard `closeSettings` already had. A refused dismissal leaves the hub on
-   * its current section too, because navigating behind a dialog that stayed
-   * open only makes the refusal harder to understand.
-   */
-  const dismissalGate = useRef<(() => boolean) | null>(null);
-  const registerDismissalGate = useCallback((gate: (() => boolean) | null) => {
-    dismissalGate.current = gate;
+  const openSettings = useCallback((tab: SettingsTab = "general") => {
+    if (modelPageGate.current && !modelPageGate.current()) return;
+    setSettingsInitialTab(tab);
+    setSettingsOpen(true);
   }, []);
 
   useEffect(() => window.localScribe.windows.onNavigate((target) => {
-    if (target === "settings" || target === "data") {
-      setSettingsInitialTab(target === "data" ? "privacy" : "general");
-      setSettingsOpen(true);
-      return;
-    }
-    // The gate is null whenever the dialog is closed, so this is a no-op then.
-    if (dismissalGate.current && !dismissalGate.current()) return;
-    setSettingsOpen(false);
-    openSection(target);
-  }), []);
+    const destination = navigationSection(target);
+    if (!destination) { openSettings(target === "data" ? "privacy" : "general"); return; }
+    openSection(destination);
+  }), [openSection, openSettings]);
+
+  useEffect(() => {
+    const handleKeyboard = (event: KeyboardEvent) => {
+      if (!event.metaKey || event.altKey || event.ctrlKey) return;
+      if (event.key === ",") { event.preventDefault(); openSettings(); return; }
+      if (settingsOpen) return;
+      const entry = primaryNavigation[Number(event.key) - 1];
+      if (/^[1-7]$/.test(event.key) && entry) { event.preventDefault(); openSection(entry.id); return; }
+      if (event.key.toLowerCase() === "f") {
+        const content = document.querySelector<HTMLElement>(".hub-content");
+        const search = content?.querySelector<HTMLInputElement>('input[type="search"], input[placeholder^="Search"]');
+        if (search) { event.preventDefault(); search.focus(); }
+        else content?.querySelector<HTMLButtonElement>('button[aria-label="Search transcripts"]')?.click();
+      }
+    };
+    window.addEventListener("keydown", handleKeyboard);
+    return () => window.removeEventListener("keydown", handleKeyboard);
+  }, [settingsOpen, openSection, openSettings]);
 
   useEffect(() => {
     void window.localScribe.system.appInfo().then(setAppInfo).catch(() => undefined);
@@ -101,7 +115,7 @@ export function SettingsApp() {
           <button
             className="hub-nav-item"
             type="button"
-            onClick={() => { setSettingsInitialTab("general"); setSettingsOpen(true); }}
+            onClick={() => openSettings()}
             aria-haspopup="dialog"
             aria-expanded={settingsOpen}
           >
@@ -123,14 +137,14 @@ export function SettingsApp() {
         */}
       <section className="hub-content" inert={settingsOpen} key={dataRevision}>
         {section === "dictation" && <HistoryScreen
-          onOpenSettings={() => { setSettingsInitialTab("general"); setSettingsOpen(true); }}
-          onChooseModel={() => { setSettingsInitialTab("model"); setSettingsOpen(true); }}
+          onOpenSettings={() => openSettings()}
+          onChooseModel={() => openSection("models")}
         />}
         {section === "insights" && <InsightsScreen />}
         {section === "dictionary" && <DictionaryScreen />}
         {section === "snippets" && <SnippetsScreen />}
-        {section === "style" && <StyleScreen />}
-        {section === "transforms" && <TransformsScreen />}
+        {section === "cleanup" && <CleanupScreen onOpenDictionary={() => openSection("dictionary")} />}
+        {section === "models" && <ModelsScreen registerDismissalGate={registerModelPageGate} />}
       </section>
 
       {settingsOpen && (

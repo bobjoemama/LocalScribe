@@ -85,6 +85,11 @@ export function libraryListMessage(
       };
 }
 
+export function libraryEditorCanClose(saving: boolean, changed: boolean, confirmDiscard: () => boolean): boolean {
+  if (saving) return false;
+  return !changed || confirmDiscard();
+}
+
 export function libraryErrorMessage(error: unknown, fallback: string): string {
   return rendererSafeErrorMessage(error, fallback);
 }
@@ -210,7 +215,7 @@ export function DictionaryScreen() {
         <section className="ln-list" aria-label="Dictionary entries" aria-busy={loading}>
           <div className="ln-list__heading ln-list__heading--dictionary" aria-hidden="true">
             <span>Heard phrase</span>
-            <span>Preferred spelling</span>
+            <span>Replace with</span>
             <span />
           </div>
           {loading ? (
@@ -225,7 +230,8 @@ export function DictionaryScreen() {
                   <strong>{item.phrase}</strong>
                 </div>
                 <div className="ln-row__cell ln-row__preferred">
-                  <span className="ln-row__label">Preferred spelling</span>
+                  <span className="ln-row__arrow" aria-hidden="true">→</span>
+                  <span className="ln-row__label">Replace with</span>
                   <strong>{item.replacement}</strong>
                 </div>
                 <div className="ln-row__actions">
@@ -374,8 +380,8 @@ export function SnippetsScreen() {
         )}
         <section className="ln-list" aria-label="Saved snippets" aria-busy={loading}>
           <div className="ln-list__heading ln-list__heading--snippets" aria-hidden="true">
-            <span>Spoken trigger</span>
-            <span>Expansion</span>
+            <span>Say</span>
+            <span>Insert</span>
             <span />
           </div>
           {loading ? (
@@ -470,7 +476,6 @@ function LibraryToolbar({
   return (
     <div className="ln-toolbar">
       <div className="ln-toolbar__count">
-        <strong>Your {kind === "dictionary" ? "terms" : "snippets"}</strong>
         <span aria-live="polite">{libraryCountLabel(kind, count, countState)}</span>
       </div>
       <div className="ln-search">
@@ -500,7 +505,8 @@ export function DictionaryModal({ entry, onClose, onSaved }: { entry?: Dictionar
   const [error, setError] = useState<string | null>(null);
   const saveInFlight = useRef(false);
   const requestClose = () => {
-    if (!saveInFlight.current) onClose();
+    const changed = phrase !== (entry?.phrase ?? "") || replacement !== (entry?.replacement ?? "");
+    if (libraryEditorCanClose(saveInFlight.current, changed, () => window.confirm("Discard your unsaved dictionary changes?"))) onClose();
   };
 
   const submit = async (event: FormEvent<HTMLFormElement>) => {
@@ -524,10 +530,10 @@ export function DictionaryModal({ entry, onClose, onSaved }: { entry?: Dictionar
   };
 
   return (
-    <LibraryModal title={entry ? "Edit dictionary term" : "Add dictionary term"} description="Replace a recognized phrase with the text you want." onClose={requestClose} busy={saving}>
+    <LibraryModal title={entry ? "Edit dictionary term" : "Add dictionary term"} description="Replaces the recognized phrase without changing the speech model." onClose={requestClose} busy={saving}>
       <form className="ln-modal__form" onSubmit={(event) => void submit(event)}>
         <label>
-          <span>Phrase it may hear</span>
+          <span>Say</span>
           <input
             autoFocus
             value={phrase}
@@ -539,7 +545,7 @@ export function DictionaryModal({ entry, onClose, onSaved }: { entry?: Dictionar
           />
         </label>
         <label>
-          <span>Preferred spelling</span>
+          <span>Replace with</span>
           <input
             value={replacement}
             disabled={saving}
@@ -568,7 +574,8 @@ export function SnippetModal({ entry, onClose, onSaved }: { entry?: Snippet; onC
   const [error, setError] = useState<string | null>(null);
   const saveInFlight = useRef(false);
   const requestClose = () => {
-    if (!saveInFlight.current) onClose();
+    const changed = trigger !== (entry?.trigger ?? "") || expansion !== (entry?.expansion ?? "");
+    if (libraryEditorCanClose(saveInFlight.current, changed, () => window.confirm("Discard your unsaved snippet changes?"))) onClose();
   };
 
   const submit = async (event: FormEvent<HTMLFormElement>) => {
@@ -595,7 +602,7 @@ export function SnippetModal({ entry, onClose, onSaved }: { entry?: Snippet; onC
     <LibraryModal title={entry ? "Edit snippet" : "Create a snippet"} description="Say the trigger to insert the saved text." onClose={requestClose} busy={saving}>
       <form className="ln-modal__form" onSubmit={(event) => void submit(event)}>
         <label>
-          <span>Spoken trigger</span>
+          <span>Say</span>
           <input
             autoFocus
             value={trigger}
@@ -607,7 +614,7 @@ export function SnippetModal({ entry, onClose, onSaved }: { entry?: Snippet; onC
           />
         </label>
         <label>
-          <span>Expansion</span>
+          <span>Insert</span>
           <textarea
             value={expansion}
             disabled={saving}

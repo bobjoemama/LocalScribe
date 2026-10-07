@@ -16,6 +16,8 @@ import {
   modelInstallProgressSchema,
   modelRemoveRequestSchema,
   modelSelectionApplyRequestSchema,
+  migratePersistedAppSettings,
+  navigationTargetSchema,
   scratchpadNoteSchema,
   sanitizeSourceApplicationId,
   sessionFailureSchema,
@@ -26,6 +28,25 @@ import {
 describe("IPC contracts", () => {
   it("accepts the local default settings", () => {
     expect(appSettingsSchema.parse(DEFAULT_SETTINGS)).toEqual(DEFAULT_SETTINGS);
+  });
+
+  it("supports explicit appearance choices without changing legacy dictation settings", () => {
+    const { appearance: _appearance, ...legacy } = DEFAULT_SETTINGS;
+    expect(appSettingsSchema.parse(legacy)).toEqual(DEFAULT_SETTINGS);
+    expect(migratePersistedAppSettings({ ...legacy, appearance: "retired-theme", toggleShortcut: "F13" }))
+      .toEqual({ ...DEFAULT_SETTINGS, toggleShortcut: "F13" });
+    for (const appearance of ["system", "light", "dark"] as const) {
+      expect(appSettingsPatchSchema.parse({ appearance })).toEqual({ appearance });
+      expect(migratePersistedAppSettings({ ...legacy, appearance }).appearance).toBe(appearance);
+    }
+    expect(() => appSettingsPatchSchema.parse({ appearance: "blue" })).toThrow();
+    expect(appSettingsPatchSchema.parse({ keepHistory: false })).toEqual({ keepHistory: false });
+  });
+
+  it("allows Models and Cleanup destinations while preserving old navigation links", () => {
+    for (const target of ["models", "cleanup", "style", "transforms", "scratchpad"] as const) {
+      expect(navigationTargetSchema.parse(target)).toBe(target);
+    }
   });
 
   it("uses the shared history-retention choices as the only persisted values", () => {

@@ -78,7 +78,8 @@ export const PILL_LAYOUT = {
     hold: { width: 76, height: 26 },
     /*
      * The after-stop toggle has three fixed flex items: two 22px end buttons
-     * and a 48px waveform. Its two 6px gaps and 5px padding on each side bring
+     * and a 54px recording meter (dot, waveform, elapsed time). Its two 3px
+     * gaps and 5px padding on each side bring
      * the border-box minimum to 114px. A 100px native window clipped the right
      * edge of the finish check even though the renderer laid out the complete
      * control.

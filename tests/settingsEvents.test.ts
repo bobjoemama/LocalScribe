@@ -23,8 +23,8 @@ describe("validated settings-change delivery", () => {
     expect(source("src/renderer/settings/screens/HistoryInsights.tsx")).toContain("settings.onChanged((settings) =>");
     expect(source("src/renderer/settings/screens/HistoryInsights.tsx")).toContain("setShortcutSettings(settings);");
     const settingsSource = source("src/renderer/settings/screens/StyleSettings.tsx");
-    expect(settingsSource.match(/const unsubscribeSettings = subscribeToSettingsWithInitialLoad\(/gu))
-      .toHaveLength(3);
+    expect(settingsSource.match(/= subscribeToSettingsWithInitialLoad\(/gu))
+      .toHaveLength(2);
   });
 
   it("uses the field patch path for stale-prone settings writers and direct commit for recording", () => {
@@ -32,7 +32,8 @@ describe("validated settings-change delivery", () => {
     expect(IPC).not.toHaveProperty("settingsSave");
     expect(source("src/preload.ts")).not.toContain("settings.save");
     const settings = source("src/renderer/settings/screens/StyleSettings.tsx");
-    expect(settings).toContain("settings.patch({");
+    expect(settings).toContain("settings.patch(patch)");
+    expect(settings).toContain("settingsPatchWithoutModelSelection(dirtySettings.current)");
     expect(settings).toContain("shortcuts.update({ kind, shortcut })");
     expect(settings).not.toContain("settings.save(");
   });

@@ -1,7 +1,7 @@
 import type { AsrMode, ModelFamilyId, ModelPerformanceMode } from "./contracts";
 
 export const UNAVAILABLE_MODEL_SELECTION_MESSAGE =
-  "This saved model or quality profile is unavailable in this build. Choose a supported model and quality in Settings > Model & Performance, then press Apply model. Your saved selection and model files have not been changed.";
+  "This saved model or quality profile is unavailable in this build. Choose a supported model and quality in Models, then press Apply model. Your saved selection and model files have not been changed.";
 
 /** Curated names shared by the catalog and the lightweight workspace label. */
 export function modelFamilyDisplayName(familyId: ModelFamilyId): string {

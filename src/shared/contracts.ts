@@ -264,7 +264,10 @@ const modelLibraryFamilyIdsSchema = z.array(modelFamilyIdSchema)
     message: "Each model family can appear in the library only once.",
   });
 
+const appearanceSchema = z.enum(["system", "light", "dark"]);
+
 const appSettingsFieldsSchema = z.object({
+  appearance: appearanceSchema.default("system"),
   launchAtLogin: z.boolean(),
   showPillWhenIdle: z.boolean(),
   autoPaste: z.boolean(),
@@ -313,6 +316,9 @@ export const appSettingsPatchSchema = appSettingsFieldsSchema.omit({
   modelPerformanceMode: true,
   activeModelFamilyId: true,
   modelLibraryFamilyIds: true,
+}).extend({
+  // A field patch must never apply a default for an omitted preference.
+  appearance: appearanceSchema,
 }).partial().strict().refine(
   (patch) => Object.keys(patch).length > 0,
   "Choose at least one setting to update.",
@@ -848,6 +854,8 @@ export type ModelRemoveRequest = z.infer<typeof modelRemoveRequestSchema>;
 export const NAVIGATION_TARGETS = [
   "dictation",
   "insights",
+  "models",
+  "cleanup",
   "dictionary",
   "snippets",
   "style",
@@ -864,6 +872,7 @@ export const pillModeSchema = z.enum(PILL_MODES);
 export type PillMode = z.infer<typeof pillModeSchema>;
 
 export const DEFAULT_SETTINGS: AppSettings = {
+  appearance: "system",
   launchAtLogin: false,
   showPillWhenIdle: true,
   autoPaste: true,

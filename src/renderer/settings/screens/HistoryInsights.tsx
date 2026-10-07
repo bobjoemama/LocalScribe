@@ -21,7 +21,6 @@ import {
 } from "../../../shared/insights";
 import { rendererSafeErrorMessage } from "../../../shared/rendererErrors";
 import { modelFamilyDisplayName } from "../../../shared/modelAvailability";
-import { modelPerformanceTierLabel } from "../../../shared/modelPerformance";
 import "./history-insights.css";
 
 type HistoryState = {
@@ -38,7 +37,6 @@ export function startHistoryRefresh(current: HistoryState): HistoryState {
   return { ...current, loading: !current.hasLoaded, error: null };
 }
 
-export type InsightTab = "usage" | "voice";
 type ShortcutRuntimeStatus = "loading" | "unavailable" | "ready";
 
 export function historyShortcutPresentation(
@@ -110,15 +108,6 @@ export function historyStoragePresentation(enabled: HistorySavingState): {
   };
 }
 
-export function insightTabForKey(current: InsightTab, key: string): InsightTab | null {
-  if (key === "Home") return "usage";
-  if (key === "End") return "voice";
-  if (key === "ArrowLeft" || key === "ArrowRight") {
-    return current === "usage" ? "voice" : "usage";
-  }
-  return null;
-}
-
 export function createLatestRequestGate() {
   let latestRequest = 0;
   return {
@@ -150,8 +139,27 @@ export function HistoryTranscriptText({
   label: string;
   text: string;
 }) {
+  const textRef = useRef<HTMLTextAreaElement>(null);
+  useEffect(() => {
+    const field = textRef.current;
+    if (!field) return;
+    const resize = () => {
+      field.style.height = "auto";
+      field.style.height = `${Math.min(Math.max(field.scrollHeight, 22), 176)}px`;
+    };
+    resize();
+    let lastWidth = field.getBoundingClientRect().width;
+    const observer = new ResizeObserver(([entry]) => {
+      if (!entry || Math.abs(entry.contentRect.width - lastWidth) < 0.5) return;
+      lastWidth = entry.contentRect.width;
+      resize();
+    });
+    observer.observe(field);
+    return () => observer.disconnect();
+  }, [text]);
   return (
     <textarea
+      ref={textRef}
       aria-label={label}
       className="hi-transcript-text"
       readOnly
@@ -253,7 +261,7 @@ export function HistoryScreen({ onOpenSettings, onChooseModel }: { onOpenSetting
   const [shortcuts, setShortcuts] = useState<Pick<AppSettings, "holdShortcut" | "toggleShortcut"> | null>(null);
   const [shortcutSettingsStatus, setShortcutSettingsStatus] = useState<ShortcutRuntimeStatus>("loading");
   const [historySavingEnabled, setHistorySavingEnabled] = useState<HistorySavingState>("loading");
-  const [modelChoice, setModelChoice] = useState<Pick<AppSettings, "activeModelFamilyId" | "modelPerformanceMode"> | null>(null);
+  const [modelChoice, setModelChoice] = useState<Pick<AppSettings, "activeModelFamilyId" | "asrMode"> | null>(null);
 
   useEffect(() => {
     const screen = screenRef.current;
@@ -270,7 +278,17 @@ export function HistoryScreen({ onOpenSettings, onChooseModel }: { onOpenSetting
       }
     };
     const onKeyDown = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "f") {
+        event.preventDefault();
+        setSearchOpen(true);
+        window.requestAnimationFrame(() => screen.querySelector<HTMLInputElement>(".hi-search input")?.focus());
+        return;
+      }
       if (event.key === "Escape") {
+        if (openMenus().length === 0) {
+          setQuery("");
+          setSearchOpen(false);
+        }
         for (const menu of openMenus()) {
           event.preventDefault();
           menu.open = false;
@@ -343,14 +361,14 @@ export function HistoryScreen({ onOpenSettings, onChooseModel }: { onOpenSetting
 
   useEffect(() => {
     const setShortcutSettings = (
-      settings: Pick<AppSettings, "holdShortcut" | "toggleShortcut" | "keepHistory" | "activeModelFamilyId" | "modelPerformanceMode">,
+      settings: Pick<AppSettings, "holdShortcut" | "toggleShortcut" | "keepHistory" | "activeModelFamilyId" | "asrMode">,
     ) => {
       setShortcuts({
         holdShortcut: settings.holdShortcut,
         toggleShortcut: settings.toggleShortcut,
       });
       setHistorySavingEnabled(settings.keepHistory);
-      setModelChoice({ activeModelFamilyId: settings.activeModelFamilyId, modelPerformanceMode: settings.modelPerformanceMode });
+      setModelChoice({ activeModelFamilyId: settings.activeModelFamilyId, asrMode: settings.asrMode });
       setShortcutSettingsStatus("ready");
     };
     let active = true;
@@ -387,11 +405,6 @@ export function HistoryScreen({ onOpenSettings, onChooseModel }: { onOpenSetting
   }, [items, query]);
 
   const groups = useMemo(() => groupTranscriptions(filtered), [filtered]);
-  const allStats = useMemo(() => summarizeTranscriptions(items), [items]);
-  const todayItems = useMemo(() => items.filter((item) => isToday(item.createdAt)), [items]);
-  const todayStats = useMemo(() => summarizeTranscriptions(todayItems), [todayItems]);
-  const primaryCategory = useMemo(() => categoryBreakdown(items)[0]?.label ?? "No apps yet", [items]);
-
   const copyText = useCallback(async (text: string, successMessage: string) => {
     try {
       await navigator.clipboard.writeText(text);
@@ -491,6 +504,7 @@ export function HistoryScreen({ onOpenSettings, onChooseModel }: { onOpenSetting
           <span className="hi-visually-hidden">Search transcript text</span>
           <input
             autoFocus
+            aria-label="Search history"
             value={query}
             onChange={(event) => setQuery(event.target.value)}
             placeholder="Search your local transcripts"
@@ -499,34 +513,18 @@ export function HistoryScreen({ onOpenSettings, onChooseModel }: { onOpenSetting
         </label>
       )}
 
-      <section className="hi-local-hero" aria-label="Dictation shortcuts">
-        <div
-          className="hi-shortcut-card"
-          role="group"
-          aria-label={shortcutPresentation.ariaLabel}
-        >
-          <span className="hi-shortcut-card__title">Shortcuts</span>
-          <div className="hi-shortcut-card__keys">
-            {shortcutPresentation.toggleLabel
-              ? (
-                  <>
-                    <div><span>Hold to talk</span><kbd>{shortcutPresentation.holdLabel.replace(/^Hold /, "")}</kbd></div>
-                    <div><span>Press to toggle</span><kbd>{shortcutPresentation.toggleLabel}</kbd></div>
-                  </>
-                )
-              : <span className="hi-shortcut-status" role="status">{shortcutPresentation.holdLabel}</span>}
-          </div>
-          {onOpenSettings && <button type="button" className="hi-shortcut-edit" onClick={onOpenSettings}>Edit shortcuts…</button>}
-        </div>
-      </section>
-
-      <div className="hi-model-choice" aria-label="Saved dictation model">
-        <div>
-          <span>Dictation model</span>
-          <strong>{modelChoice ? modelFamilyDisplayName(modelChoice.activeModelFamilyId) : shortcutSettingsStatus === "unavailable" ? "Model unavailable" : "Loading model…"}</strong>
-          {modelChoice && <span>{modelChoice.modelPerformanceMode === "auto" ? "Auto" : modelPerformanceTierLabel(modelChoice.modelPerformanceMode)}</span>}
-        </div>
-        {onChooseModel && <button type="button" onClick={onChooseModel}>Choose model…</button>}
+      <div className="hi-dictation-status" aria-label="Dictation settings">
+        <span aria-label={shortcutPresentation.ariaLabel}>
+          {shortcutPresentation.toggleLabel
+            ? <>{shortcutPresentation.holdLabel} to talk · {shortcutPresentation.toggleLabel} to toggle</>
+            : <span className="hi-shortcut-status" role="status">{shortcutPresentation.holdLabel}</span>}
+        </span>
+        <span aria-hidden="true">·</span>
+        {modelChoice
+          ? <button type="button" onClick={onChooseModel} disabled={!onChooseModel}>{modelFamilyDisplayName(modelChoice.activeModelFamilyId)}</button>
+          : <span>{shortcutSettingsStatus === "unavailable" ? "Model unavailable" : "Loading model…"}</span>}
+        {modelChoice && <span>· {modelChoice.asrMode === "live" ? "Live" : "After I stop"}</span>}
+        {onOpenSettings && <button type="button" className="hi-shortcut-edit" onClick={onOpenSettings}>Edit…</button>}
       </div>
 
       <div className="hi-history-layout">
@@ -568,7 +566,13 @@ export function HistoryScreen({ onOpenSettings, onChooseModel }: { onOpenSetting
               </div>
               <div className="hi-transcript-list">
                 {group.items.map((item) => (
-                  <article className="hi-transcript-row" key={item.id}>
+                  <article className="hi-transcript-row" key={item.id} tabIndex={0} aria-label={`Dictation from ${formatTime(item.createdAt)}`} onKeyDown={(event) => {
+                    if (event.target !== event.currentTarget || !["ArrowUp", "ArrowDown"].includes(event.key)) return;
+                    const rows = [...(screenRef.current?.querySelectorAll<HTMLElement>(".hi-transcript-row") ?? [])];
+                    const index = rows.indexOf(event.currentTarget);
+                    const next = rows[index + (event.key === "ArrowDown" ? 1 : -1)];
+                    if (next) { event.preventDefault(); next.focus(); }
+                  }}>
                     <div className="hi-transcript-time">
                       <time dateTime={new Date(item.createdAt).toISOString()}>{formatTime(item.createdAt)}</time>
                       <span>{formatDuration(item.durationMs)}</span>
@@ -605,28 +609,6 @@ export function HistoryScreen({ onOpenSettings, onChooseModel }: { onOpenSetting
             </section>
           ))}
         </section>
-
-        <aside className="hi-history-aside" aria-label="Dictation statistics">
-          <section className="hi-aside-card">
-            <div className="hi-aside-card__title"><h2>Today</h2></div>
-            <div className="hi-stat-pair">
-              <Stat value={formatNumber(todayStats.words)} label="words" />
-              <Stat value={formatDuration(todayStats.durationMs)} label="dictated" />
-            </div>
-            <div className="hi-progress-row">
-              <span>Sessions</span><strong>{todayItems.length}</strong>
-            </div>
-          </section>
-          <section className="hi-aside-card">
-            <div className="hi-aside-card__title"><h2>Summary</h2><span>{historySampleLabel(items.length)}</span></div>
-            <div className="hi-large-stat"><strong>{allStats.wpm || "—"}</strong><span>average words per minute</span></div>
-            <div className="hi-mini-rows">
-              <div><span>Active streak</span><strong>{calculateStreak(items)} {calculateStreak(items) === 1 ? "day" : "days"}</strong></div>
-              <div><span>Most-used category</span><strong>{primaryCategory}</strong></div>
-              <div><span>Time dictated</span><strong>{formatDuration(allStats.durationMs)}</strong></div>
-            </div>
-          </section>
-        </aside>
       </div>
     </div>
   );
@@ -634,7 +616,6 @@ export function HistoryScreen({ onOpenSettings, onChooseModel }: { onOpenSetting
 
 export function InsightsScreen() {
   const [{ items, skippedUnreadable, loading, error }, load] = useLocalHistory("Insights could not be calculated.");
-  const [tab, setTab] = useState<InsightTab>("usage");
   const [range, setRange] = useState<InsightRange>("30d");
   const [historySavingEnabled, setHistorySavingEnabled] = useState<HistorySavingState>("loading");
 
@@ -663,16 +644,8 @@ export function InsightsScreen() {
   const stats = useMemo(() => summarizeTranscriptions(rangedItems), [rangedItems]);
   const categories = useMemo(() => categoryBreakdown(rangedItems), [rangedItems]);
   const activity = useMemo(() => activityForRange(rangedItems, range), [rangedItems, range]);
-  const voice = useMemo(() => createVoiceProfile(rangedItems), [rangedItems]);
+  const voice = useMemo(() => summarizeWriting(rangedItems), [rangedItems]);
   const storagePresentation = historyStoragePresentation(historySavingEnabled);
-  const onTabKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>) => {
-    const nextTab = insightTabForKey(tab, event.key);
-    if (!nextTab) return;
-    event.preventDefault();
-    setTab(nextTab);
-    document.getElementById(`${nextTab}-tab`)?.focus();
-  };
-
   return (
     <div className="hi-screen hi-insights-screen">
       <header className="hi-insights-header">
@@ -682,31 +655,6 @@ export function InsightsScreen() {
       </header>
 
       <HistoryIntegrityWarning skippedUnreadable={skippedUnreadable} />
-
-      <div className="hi-tabs" role="tablist" aria-label="Insight views">
-        <button
-          id="usage-tab"
-          type="button"
-          role="tab"
-          aria-selected={tab === "usage"}
-          aria-controls="usage-panel"
-          tabIndex={tab === "usage" ? 0 : -1}
-          className={tab === "usage" ? "hi-tab hi-tab--active" : "hi-tab"}
-          onClick={() => setTab("usage")}
-          onKeyDown={onTabKeyDown}
-        >Usage</button>
-        <button
-          id="voice-tab"
-          type="button"
-          role="tab"
-          aria-selected={tab === "voice"}
-          aria-controls="voice-panel"
-          tabIndex={tab === "voice" ? 0 : -1}
-          className={tab === "voice" ? "hi-tab hi-tab--active" : "hi-tab"}
-          onClick={() => setTab("voice")}
-          onKeyDown={onTabKeyDown}
-        >Voice profile</button>
-      </div>
 
       {!loading && !error && (
         <div className="hi-period-row">
@@ -725,13 +673,9 @@ export function InsightsScreen() {
       )}
 
       <section
-        id="usage-panel"
-        role="tabpanel"
-        aria-labelledby="usage-tab"
+        aria-label="Usage and writing measurements"
         aria-busy={loading}
         className="hi-insight-panel"
-        hidden={tab !== "usage"}
-        tabIndex={tab === "usage" ? 0 : -1}
       >
         {!loading && (!error || items.length > 0) && (
           rangedItems.length === 0 ? (
@@ -743,96 +687,48 @@ export function InsightsScreen() {
             <>
               <div className="hi-usage-summary">
                 <MetricCard
-                  icon={<WordIcon />}
                   value={formatNumber(stats.words)}
                   label="Words dictated"
                   detail={`${rangedItems.length} ${rangedItems.length === 1 ? "session" : "sessions"}`}
                 />
-                <MetricCard icon={<TimerIcon />} value={String(stats.wpm || "—")} label="Average WPM" detail="Based on audio duration" />
-                <MetricCard icon={<ClockIcon />} value={formatDuration(stats.durationMs)} label="Time dictated" detail={`${formatNumber(stats.characters)} characters`} />
-                <MetricCard icon={<AppIcon />} value={String(stats.appCount)} label="Apps used" detail={`${calculateStreak(rangedItems)} day streak`} />
+                <MetricCard value={String(stats.wpm || "—")} label="Average WPM" detail="Based on audio duration" />
+                <MetricCard value={formatDuration(stats.durationMs)} label="Time dictated" detail={`${formatNumber(stats.characters)} characters`} />
+                <MetricCard value={String(stats.appCount)} label="Apps used" detail={`${calculateStreak(rangedItems)} day streak`} />
               </div>
 
               <div className="hi-insights-grid">
                 <section className="hi-insight-card hi-activity-card">
                   <div className="hi-card-heading">
-                    <div><p className="hi-eyebrow">Activity</p><h2>Words over time</h2></div>
+                    <div><h2>Words over time</h2></div>
                     <span>{formatNumber(stats.words)} total</span>
                   </div>
                   <ActivityChart points={activity} />
                 </section>
                 <section className="hi-insight-card hi-category-card">
                   <div className="hi-card-heading">
-                    <div><p className="hi-eyebrow">Where you dictate</p><h2>App categories</h2></div>
+                    <div><h2>App categories</h2></div>
                   </div>
                   <CategoryList categories={categories} />
                 </section>
               </div>
-
+              <section className="hi-writing-section" aria-labelledby="writing-heading">
+                <h2 id="writing-heading">Writing</h2>
+                <dl className="hi-writing-measures">
+                  <div><dt>Speaking pace</dt><dd>{stats.wpm ? `${stats.wpm} wpm` : "Not measured"}</dd></div>
+                  <div><dt>Sentence length</dt><dd>{voice.averageSentenceWords} words</dd></div>
+                  <div><dt>Word variety</dt><dd>{voice.uniquePercent}% unique</dd></div>
+                </dl>
+                <p className="hi-profile-disclosure">Calculated from word counts, sentence lengths and audio duration in your saved dictations.</p>
+                <h3>Frequent words</h3>
+                <div className="hi-word-cloud">
+                  {voice.frequentWords.length > 0
+                    ? voice.frequentWords.map((entry) => <span key={entry.word}>{entry.word}<small>{entry.count}</small></span>)
+                    : <p>More words are needed for this summary.</p>}
+                </div>
+              </section>
 
             </>
           )
-        )}
-      </section>
-
-      <section
-        id="voice-panel"
-        role="tabpanel"
-        aria-labelledby="voice-tab"
-        aria-busy={loading}
-        className="hi-insight-panel hi-voice-panel"
-        hidden={tab !== "voice"}
-        tabIndex={tab === "voice" ? 0 : -1}
-      >
-        {!loading && (!error || items.length > 0) && (
-          <>
-            <div className="hi-profile-disclosure">
-              <InfoIcon />
-              <p><strong>A deterministic local summary.</strong> This profile uses counts and simple thresholds—not a generative model or personality inference.</p>
-            </div>
-
-            {rangedItems.length === 0 ? (
-              <div className="hi-empty-state hi-empty-state--insights">
-                  <h2>No voice data</h2>
-                <p>{historySavingEnabled === true
-                  ? "Dictate a few passages to build a private, factual summary."
-                  : storagePresentation.insightsEmptyBody}</p>
-              </div>
-            ) : (
-              <>
-                <section className="hi-voice-hero">
-                  <div className="hi-voice-hero__copy">
-                    <p className="hi-eyebrow">Your measured style</p>
-                    <h2>{voice.headline}</h2>
-                    <p>{voice.summary}</p>
-                    <span>{rangeLabel(range)} · {formatNumber(stats.words)} locally stored words</span>
-                  </div>
-
-                </section>
-
-                <div className="hi-voice-grid">
-                  <VoiceTrait title="Speaking pace" value={voice.paceLabel} detail={`${stats.wpm || "—"} measured WPM`} percent={voice.pacePercent} />
-                  <VoiceTrait title="Sentence shape" value={voice.sentenceLabel} detail={`${voice.averageSentenceWords} words per sentence`} percent={voice.sentencePercent} />
-                  <VoiceTrait title="Word variety" value={voice.varietyLabel} detail={`${voice.uniquePercent}% unique words`} percent={voice.varietyPercent} />
-                </div>
-
-                <div className="hi-insights-grid hi-voice-detail-grid">
-                  <section className="hi-insight-card">
-                    <div className="hi-card-heading"><div><p className="hi-eyebrow">Vocabulary</p><h2>Frequent words</h2></div></div>
-                    <div className="hi-word-cloud">
-                      {voice.frequentWords.length > 0
-                        ? voice.frequentWords.map((entry, index) => <span key={entry.word} data-rank={Math.min(index + 1, 4)}>{entry.word}<small>{entry.count}</small></span>)
-                        : <p>More words are needed for this summary.</p>}
-                    </div>
-                  </section>
-                  <section className="hi-insight-card">
-                    <div className="hi-card-heading"><div><p className="hi-eyebrow">Context</p><h2>App categories</h2></div></div>
-                    <CategoryList categories={categories} />
-                  </section>
-                </div>
-              </>
-            )}
-          </>
         )}
       </section>
     </div>
@@ -847,14 +743,9 @@ function InsightsLoading() {
   return <div className="hi-loading hi-loading--insights" aria-label="Calculating local insights" aria-busy="true">{[0, 1, 2, 3].map((item) => <span key={item} />)}</div>;
 }
 
-function Stat({ value, label }: { value: string; label: string }) {
-  return <div><strong>{value}</strong><span>{label}</span></div>;
-}
-
-function MetricCard({ icon, value, label, detail }: { icon: React.ReactNode; value: string; label: string; detail: string }) {
+function MetricCard({ value, label, detail }: { value: string; label: string; detail: string }) {
   return (
     <article className="hi-metric-card">
-      <span className="hi-metric-icon">{icon}</span>
       <strong>{value}</strong>
       <h2>{label}</h2>
       <p>{detail}</p>
@@ -943,17 +834,6 @@ export function ActivityChart({ points }: { points: ReturnType<typeof activityFo
   );
 }
 
-function VoiceTrait({ title, value, detail, percent }: { title: string; value: string; detail: string; percent: number }) {
-  return (
-    <article className="hi-voice-trait">
-      <span>{title}</span>
-      <strong>{value}</strong>
-      <p>{detail}</p>
-      <div aria-hidden="true"><i style={{ width: `${percent}%` }} /></div>
-    </article>
-  );
-}
-
 function words(text: string): string[] {
   return (text.toLocaleLowerCase().match(WORD_PATTERN) ?? []).map((word) => word.replace("’", "'"));
 }
@@ -1014,10 +894,6 @@ function friendlyDate(timestamp: number): string {
   return dayFormat.format(date);
 }
 
-function isToday(timestamp: number): boolean {
-  return dateKey(timestamp) === dateKey(Date.now());
-}
-
 function formatTime(timestamp: number): string {
   return timeFormat.format(new Date(timestamp));
 }
@@ -1045,8 +921,7 @@ export function historyErrorMessage(error: unknown, fallback: string): string {
  * `position: fixed; left: -9999px`. A sighted user who clicked Delete and hit a
  * locked database saw the row stay exactly where it was and got no explanation
  * anywhere in the window — the message existed, it was just parked off-screen.
- * Failures now carry a tone so they can be rendered in the layout; successes
- * stay in the polite region, where the visible result is the list itself.
+ * Failures remain in the layout; successes appear in a transient polite toast.
  */
 export type HistoryNotice = { message: string; tone: "success" | "error" };
 
@@ -1078,27 +953,19 @@ export function HistoryNoticeSurface({
         * Errors are announced by the role="alert" above; repeating them here
         * would make a screen reader say them twice.
         */}
-      <p className="hi-live-region" aria-live="polite">
+      <p className={notice?.tone === "success" ? "hi-success-toast" : "hi-live-region"} role="status" aria-live="polite">
         {notice?.tone === "success" ? notice.message : ""}
       </p>
     </>
   );
 }
 
-function createVoiceProfile(items: Transcription[]) {
-  const stats = summarizeTranscriptions(items);
+export function summarizeWriting(items: Transcription[]) {
   const allWords = items.flatMap((item) => words(item.text));
   const uniqueWords = new Set(allWords);
   const uniquePercent = allWords.length > 0 ? Math.round((uniqueWords.size / allWords.length) * 100) : 0;
   const sentenceCount = items.reduce((total, item) => total + (item.text.match(SENTENCE_PATTERN)?.filter((sentence) => sentence.trim()).length ?? 0), 0);
   const averageSentenceWords = sentenceCount > 0 ? Math.max(1, Math.round(allWords.length / sentenceCount)) : allWords.length;
-
-  const paceLabel = stats.wpm === 0 ? "Not measured" : stats.wpm < 105 ? "Measured" : stats.wpm <= 155 ? "Steady" : "Quick";
-  const sentenceLabel = averageSentenceWords < 10 ? "Compact" : averageSentenceWords <= 19 ? "Balanced" : "Expansive";
-  const varietyLabel = uniquePercent >= 70 ? "Varied" : uniquePercent >= 50 ? "Balanced" : "Consistent";
-  const pacePercent = stats.wpm === 0 ? 0 : clamp(Math.round((stats.wpm / 190) * 100), 0, 100);
-  const sentencePercent = clamp(Math.round((averageSentenceWords / 28) * 100), 0, 100);
-  const varietyPercent = clamp(uniquePercent, 0, 100);
 
   const counts = new Map<string, number>();
   allWords.filter((word) => word.length > 2 && !STOP_WORDS.has(word)).forEach((word) => counts.set(word, (counts.get(word) ?? 0) + 1));
@@ -1107,37 +974,16 @@ function createVoiceProfile(items: Transcription[]) {
     .slice(0, 8)
     .map(([word, count]) => ({ word, count }));
 
-  return {
-    paceLabel,
-    sentenceLabel,
-    varietyLabel,
-    pacePercent,
-    sentencePercent,
-    varietyPercent,
-    averageSentenceWords,
-    uniquePercent,
-    frequentWords,
-    headline: `${paceLabel === "Not measured" ? "A" : paceLabel} pace with ${sentenceLabel.toLocaleLowerCase()} phrasing`,
-    summary: `Your saved dictations average ${averageSentenceWords} words per sentence, with ${uniquePercent}% unique vocabulary in this period.`,
-  };
-}
-
-function clamp(value: number, minimum: number, maximum: number): number {
-  return Math.min(Math.max(value, minimum), maximum);
+  return { averageSentenceWords, uniquePercent, frequentWords };
 }
 
 function SearchIcon() { return <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="8.5" cy="8.5" r="5.5" /><path d="m13 13 4 4" /></svg>; }
 function ExportIcon() { return <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 2v10m0-10L6.5 5.5M10 2l3.5 3.5M4 10v6a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2v-6" /></svg>; }
 function MoreIcon() { return <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="4" cy="10" r="1" /><circle cx="10" cy="10" r="1" /><circle cx="16" cy="10" r="1" /></svg>; }
 function CopyIcon() { return <svg viewBox="0 0 20 20" aria-hidden="true"><rect x="6" y="6" width="10" height="10" rx="2" /><path d="M14 6V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h1" /></svg>; }
-function WordIcon() { return <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 5h14M3 10h10M3 15h7" /></svg>; }
-function TimerIcon() { return <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="11" r="6.5" /><path d="M10 11 13 9M8 2h4" /></svg>; }
-function ClockIcon() { return <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="7" /><path d="M10 6v4l3 2" /></svg>; }
-function AppIcon() { return <svg viewBox="0 0 20 20" aria-hidden="true"><rect x="3" y="3" width="6" height="6" rx="1" /><rect x="11" y="3" width="6" height="6" rx="1" /><rect x="3" y="11" width="6" height="6" rx="1" /><rect x="11" y="11" width="6" height="6" rx="1" /></svg>; }
-function InfoIcon() { return <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="7" /><path d="M10 9v5M10 6.5h.01" /></svg>; }
 function CategoryIcon({ category }: { category: AppCategoryKey }) {
   if (category === "personal" || category === "work") return <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 4h12v9H9l-4 3v-3H4V4Z" /></svg>;
-  if (category === "ai") return <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 2v3m0 10v3M2 10h3m10 0h3M4.3 4.3l2.1 2.1m7.2 7.2 2.1 2.1m0-11.4-2.1 2.1m-7.2 7.2-2.1 2.1" /><circle cx="10" cy="10" r="3" /></svg>;
+  if (category === "ai") return <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M7 3h6M10 3v14m-3 0h6M3 7h3m-3 3h3m-3 3h3" /></svg>;
   if (category === "email") return <svg viewBox="0 0 20 20" aria-hidden="true"><rect x="3" y="5" width="14" height="10" rx="1.5" /><path d="m4 6 6 5 6-5" /></svg>;
   if (category === "development") return <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m7 5-4 5 4 5m6-10 4 5-4 5m-2-12L9 17" /></svg>;
   if (category === "browser") return <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="7" /><path d="M3 10h14M10 3c2 2 3 4.3 3 7s-1 5-3 7c-2-2-3-4.3-3-7s1-5 3-7Z" /></svg>;

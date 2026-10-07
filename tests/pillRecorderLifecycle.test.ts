@@ -11,6 +11,8 @@ import {
   livePartialText,
   listeningRecorderStart,
   scrollLiveTranscriptToEnd,
+  recordingElapsedLabel,
+  splitRecentLiveText,
   selectedMicrophoneIsUnavailable,
   startLiveRecorderForCurrentSession,
   trySelectMicrophone,
@@ -20,6 +22,33 @@ const FIRST_SESSION_ID = "11111111-1111-4111-8111-111111111111";
 const SECOND_SESSION_ID = "22222222-2222-4222-8222-222222222222";
 
 describe("pill recorder lifecycle", () => {
+  it("uses the authoritative session start for elapsed time without inventing missing timestamps", () => {
+    expect(recordingElapsedLabel(10_000, 22_999)).toBe("0:12");
+    expect(recordingElapsedLabel(10_000, 75_000)).toBe("1:05");
+    expect(recordingElapsedLabel(10_000, 3_610_000)).toBe("60:00");
+    expect(recordingElapsedLabel(10_000, 9_000)).toBe("0:00");
+    expect(recordingElapsedLabel(undefined, 20_000)).toBeNull();
+    expect(recordingElapsedLabel(-1, 20_000)).toBeNull();
+    expect(recordingElapsedLabel(Number.NaN, 20_000)).toBeNull();
+  });
+
+  it("emphasizes the latest three sentences while retaining every recognized character", () => {
+    const text = "First sentence. Second sentence. Third sentence. Fourth sentence.";
+    const parts = splitRecentLiveText(text);
+    expect(parts.earlier).toBe("First sentence. ");
+    expect(parts.recent).toBe("Second sentence. Third sentence. Fourth sentence.");
+    expect(parts.earlier + parts.recent).toBe(text);
+    expect(splitRecentLiveText("One sentence still being revised")).toEqual({ earlier: "", recent: "One sentence still being revised" });
+  });
+
+  it("bounds recent text to 65 words for unpunctuated streaming output", () => {
+    const text = Array.from({ length: 100 }, (_, index) => `word${index}`).join(" ");
+    const parts = splitRecentLiveText(text);
+    expect(parts.recent.split(" ")).toHaveLength(65);
+    expect(parts.recent.startsWith("word35 ")).toBe(true);
+    expect(parts.earlier + parts.recent).toBe(text);
+  });
+
   it("renders only the newest live partial for the current listening session", () => {
     const listening: SessionSnapshot = {
       state: "listening",

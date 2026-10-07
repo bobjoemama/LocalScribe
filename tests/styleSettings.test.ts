@@ -13,6 +13,9 @@ import {
   automaticPasteSettingsPresentation,
   appliedModelSelectionMessage,
   cleanupSelectionForSettings,
+  cleanupPatchForLevel,
+  microphonePermissionLabel,
+  ModelsScreen,
   GENERATIVE_TEXT_MODEL_REQUIRED_NOTICE,
   modelActionFailureMessage,
   modelActionWithInstallProgress,
@@ -123,9 +126,10 @@ describe("settings loading truthfulness", () => {
 
     const transformsHtml = renderToStaticMarkup(createElement(TransformsScreen));
     expect(transformsHtml).toContain("Loading settings");
-    expect(transformsHtml).toContain("Available when saved settings load");
+    expect(transformsHtml).toContain("Controls will be available when that finishes.");
     expect(transformsHtml).toContain('disabled=""');
-    expect(transformsHtml).toContain('placeholder="road map"');
+    expect(transformsHtml).toContain("Open Dictionary");
+    expect(transformsHtml).not.toContain("Concise rewrite");
   });
 
   it("keeps persisted settings unavailable rather than rendering writable defaults", () => {
@@ -552,13 +556,10 @@ describe("cleanup level display", () => {
 });
 
 describe("model and performance presentation", () => {
-  it("adds Model & Performance as the sixth settings tab", () => {
+  it("keeps settings to General, System and Data & Privacy while models have their own page", () => {
     expect(SETTINGS_TABS.map(({ id, label }) => ({ id, label }))).toEqual([
       { id: "general", label: "General" },
       { id: "system", label: "System" },
-      { id: "model", label: "Model & Performance" },
-      { id: "writing", label: "Writing" },
-      { id: "experimental", label: "Experimental" },
       { id: "privacy", label: "Data & Privacy" },
     ]);
   });
@@ -937,5 +938,24 @@ describe("model-library actions are mutually exclusive before the next render", 
     // rather than being an unrelated dialog that happens to appear earlier.
     expect(body("removeModel")).toContain("from this computer?");
     expect(body("installModel")).toContain("of curated model data.");
+  });
+});
+
+
+describe("redesigned settings and cleanup", () => {
+  it("maps each cleanup preset to the existing deterministic flags", () => {
+    for (const level of ["none", "light", "medium"] as const) {
+      expect(cleanupSelectionForSettings({ ...DEFAULT_SETTINGS, ...cleanupPatchForLevel(level) })).toBe(level);
+    }
+  });
+  it("shows a model workspace without claiming it is a modal dialog", () => {
+    const html = renderToStaticMarkup(createElement(ModelsScreen));
+    expect(html).toContain("Models");
+    expect(html).toContain("Loading settings");
+    expect(html).not.toContain('aria-modal="true"');
+    expect(html).not.toContain("Save changes");
+  });
+  it("uses explicit permission labels", () => {
+    expect(["granted", "denied", "restricted", "not-determined", "unknown"].map((value) => microphonePermissionLabel(value as never))).toEqual(["Granted", "Denied", "Restricted", "Not asked", "Unknown"]);
   });
 });

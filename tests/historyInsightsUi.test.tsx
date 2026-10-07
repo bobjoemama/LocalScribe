@@ -20,9 +20,9 @@ import {
   historySampleLabel,
   historySuccessNotice,
   historyStoragePresentation,
-  insightTabForKey,
   startHistoryRefresh,
   summarizeTranscriptions,
+  summarizeWriting,
 } from "../src/renderer/settings/screens/HistoryInsights";
 
 const insightsCss = readFileSync(
@@ -116,22 +116,11 @@ describe("History Insights interaction and data presentation", () => {
     expect(listeners).toHaveLength(0);
   });
 
-  it("implements the expected arrow, Home, and End tab navigation", () => {
-    expect(insightTabForKey("usage", "ArrowRight")).toBe("voice");
-    expect(insightTabForKey("usage", "ArrowLeft")).toBe("voice");
-    expect(insightTabForKey("voice", "ArrowRight")).toBe("usage");
-    expect(insightTabForKey("voice", "Home")).toBe("usage");
-    expect(insightTabForKey("usage", "End")).toBe("voice");
-    expect(insightTabForKey("usage", "Tab")).toBeNull();
-  });
-
-  it("keeps both controlled tabpanels mounted and hides only the inactive panel", () => {
+  it("shows usage and measured writing in one accessible view", () => {
     const html = renderToStaticMarkup(createElement(InsightsScreen));
-
-    expect(html).toMatch(/id="usage-tab"[^>]*aria-selected="true"[^>]*tabindex="0"/);
-    expect(html).toMatch(/id="voice-tab"[^>]*aria-selected="false"[^>]*tabindex="-1"/);
-    expect(html).toMatch(/id="usage-panel"[^>]*role="tabpanel"[^>]*tabindex="0"/);
-    expect(html).toMatch(/id="voice-panel"[^>]*role="tabpanel"[^>]*hidden=""[^>]*tabindex="-1"/);
+    expect(html).toContain('aria-label="Usage and writing measurements"');
+    expect(html).not.toContain('role="tablist"');
+    expect(html).not.toContain("Voice profile");
   });
 
   it("renders shortcut loading copy as status text instead of a keyboard key", () => {
@@ -190,6 +179,19 @@ describe("History Insights interaction and data presentation", () => {
 
     expect(summary.appCount).toBe(1);
     expect(summary.words).toBe(9);
+  });
+
+  it("derives Writing measurements and frequent words from the selected saved sample", () => {
+    const sample = summarizeWriting([
+      transcript({ text: "Local models work. Local models stay." }),
+    ]);
+    expect(sample.averageSentenceWords).toBe(3);
+    expect(sample.uniquePercent).toBe(67);
+    expect(sample.frequentWords).toEqual([
+      { word: "local", count: 2 }, { word: "models", count: 2 },
+      { word: "stay", count: 1 }, { word: "work", count: 1 },
+    ]);
+    expect(summarizeWriting([])).toEqual({ averageSentenceWords: 0, uniquePercent: 0, frequentWords: [] });
   });
 
   it("describes the actual history sample instead of a fixture-like fixed total", () => {
@@ -292,7 +294,7 @@ describe("History Insights interaction and data presentation", () => {
       expect(html).toContain("Dismiss");
     });
 
-    it("leaves successes in the polite region rather than adding a banner", () => {
+    it("shows successes in a visible polite toast without an error banner", () => {
       const html = renderToStaticMarkup(createElement(HistoryNoticeSurface, {
         notice: historySuccessNotice("Transcript deleted."),
         onDismiss: () => undefined,
@@ -301,8 +303,9 @@ describe("History Insights interaction and data presentation", () => {
       // The deleted row disappearing is the visible confirmation; a card for
       // every successful copy would be noise.
       expect(html).not.toContain('role="alert"');
-      const liveRegion = html.slice(html.indexOf('class="hi-live-region"'));
-      expect(liveRegion).toContain("Transcript deleted.");
+      expect(html).toContain('class="hi-success-toast" role="status" aria-live="polite"');
+      expect(html).toContain("Transcript deleted.");
+      expect(isHiddenByStylesheet("hi-success-toast")).toBe(false);
     });
 
     it("renders nothing at all when no action has run", () => {
@@ -357,7 +360,7 @@ describe("History Insights interaction and data presentation", () => {
     expect(insightsCss).toContain(".hi-overflow--row summary:focus-visible");
     expect(insightsCss).toMatch(/@media \(hover: none\)[\s\S]*\.hi-overflow--row summary \{ opacity: 1; \}/);
     expect(insightsCss).toMatch(/\.hi-period-row \{[^}]*flex-wrap: wrap;/);
-    expect(insightsCss).toMatch(/\.hi-overflow--row \.hi-overflow-menu \{[^}]*bottom: calc\(100% \+ 6px\);/);
+    expect(insightsCss).toMatch(/\.hi-overflow--row \.hi-overflow-menu(?:,[^{]+)? \{[^}]*bottom: calc\(100% \+ 6px\);/);
   });
 
   /*

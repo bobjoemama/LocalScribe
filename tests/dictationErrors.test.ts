@@ -53,7 +53,7 @@ describe("dictation error presentation", () => {
   it("routes model recovery to the current model screen without assuming the active family", () => {
     for (const message of ["model_not_installed", "model_not_loaded", "model_checksum_failed"]) {
       const presentation = presentDictationError(message);
-      expect(presentation.detail).toContain("Settings > Model & Performance");
+      expect(presentation.detail).toContain("Models");
       expect(presentation.detail).toContain("selected local model");
       expect(presentation.detail).not.toMatch(/Whisper|Qwen|Settings > System/i);
     }
@@ -64,7 +64,7 @@ describe("dictation error presentation", () => {
       "context_not_supported: Parakeet Unified does not support dictionary prompts",
     )).toEqual({
       title: "This model cannot use an optional speech hint",
-      detail: "Your Dictionary entries still correct finished text locally. Try again; if this repeats, quit and reopen LocalScribe, then check Settings > Model & Performance.",
+      detail: "Your Dictionary entries still correct finished text locally. Try again; if this repeats, quit and reopen LocalScribe, then check Models.",
     });
   });
 

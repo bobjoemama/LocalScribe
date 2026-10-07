@@ -4,9 +4,6 @@ import {
   type ScratchpadListResult,
   type ScratchpadNote,
 } from "../../shared/contracts";
-import {
-  GENERATIVE_TEXT_MODEL_REQUIRED_NOTICE,
-} from "../generativeTextAvailability";
 import { scratchpadNoteMatches } from "./search";
 import { createWordCountCache } from "./wordCounts";
 import "./scratchpad-window.css";
@@ -22,6 +19,8 @@ function requiredMaxLength(value: number | null): number {
 }
 
 const SCRATCHPAD_BODY_MAX_LENGTH = requiredMaxLength(scratchpadNoteSchema.shape.body.maxLength);
+const modifiedDate = new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" });
+const modifiedDateTime = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" });
 
 export function scratchpadStatusLabel(state: ScratchpadStatus): string {
   if (state === "loading") return "Loading";
@@ -47,7 +46,7 @@ export function scratchpadHeaderTitle(
   status: ScratchpadStatus,
 ): string {
   if (activeTitle) return activeTitle;
-  return status === "loading" ? "Loading notes…" : "Scratchpad";
+  return status === "loading" ? "Loading notes…" : "Notes";
 }
 
 export function scratchpadInitialLoadAction(
@@ -87,14 +86,6 @@ function PlusIcon() {
   return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>;
 }
 
-function WandIcon() {
-  return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 19 14-14M14 4l1 3 3 1-3 1-1 3-1-3-3-1 3-1zM5 13l.6 1.7L7.3 15l-1.7.6L5 17.3l-.6-1.7L2.7 15l1.7-.6z" /></svg>;
-}
-
-function FormattingIcon() {
-  return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5h14M12 5v14M8 19h8" /></svg>;
-}
-
 function TrashIcon() {
   return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3M7 7l1 13h8l1-13M10 11v5M14 11v5" /></svg>;
 }
@@ -116,10 +107,10 @@ export function ScratchpadWindowControls({
 }) {
   return (
     <>
-      <button className="scratchpad-window__window-action" type="button" onClick={() => void window.localScribe.windows.toggleScratchpadSize()} aria-label="Toggle expanded Scratchpad" title="Toggle expanded Scratchpad">
+      <button className="scratchpad-window__window-action" type="button" onClick={() => void window.localScribe.windows.toggleScratchpadSize()} aria-label="Toggle expanded Notes" title="Toggle expanded Notes">
         <ExpandIcon />
       </button>
-      <button className="scratchpad-window__window-action" type="button" disabled={closing} onClick={onClose} aria-label="Close Scratchpad" title={closing ? "Saving before close…" : "Close Scratchpad"}>
+      <button className="scratchpad-window__window-action" type="button" disabled={closing} onClick={onClose} aria-label="Close Notes" title={closing ? "Saving before close…" : "Close Notes"}>
         <CloseIcon />
       </button>
     </>
@@ -466,7 +457,13 @@ export function ScratchpadWindow() {
       className={`scratchpad-window${notesCollapsed ? " scratchpad-window--notes-collapsed" : ""}${integrityWarning ? " scratchpad-window--integrity-warning" : ""}`}
       data-window-controls={windowControlMode}
       aria-busy={status === "loading"}
-      aria-label="Scratchpad"
+      aria-label="Notes"
+      onKeyDown={(event) => {
+        if (event.key === "Escape" && !event.nativeEvent.isComposing) {
+          event.preventDefault();
+          void closeScratchpad();
+        }
+      }}
     >
       <header className="scratchpad-window__titlebar">
         <div className="scratchpad-window__drag-region" />
@@ -506,7 +503,7 @@ export function ScratchpadWindow() {
               onClick={() => setNotesCollapsed((collapsed) => !collapsed)}
             >
               <ChevronIcon direction={notesCollapsed ? "right" : "left"} />
-              <span>{notesCollapsed ? "Expand Notes" : "Collapse Notes"}</span>
+              <span>Notes</span>
             </button>
           </div>
 
@@ -538,7 +535,7 @@ export function ScratchpadWindow() {
                       <span className="scratchpad-window__note-icon"><NoteIcon /></span>
                       <span className="scratchpad-window__note-details">
                         <strong>{note.title}</strong>
-                        <small>{noteWordCount} {noteWordCount === 1 ? "word" : "words"}</small>
+                        <small title={modifiedDateTime.format(note.updatedAt)}>{noteWordCount} {noteWordCount === 1 ? "word" : "words"} · {modifiedDate.format(note.updatedAt)}</small>
                       </span>
                     </button>
                     <button className="scratchpad-window__delete-note" type="button" disabled={deleting} onClick={() => void deleteNote(note)} aria-label={`Delete ${note.title}`} title="Delete note">
@@ -551,16 +548,6 @@ export function ScratchpadWindow() {
             </div>
           </div>
 
-          <div className="scratchpad-window__notes-bottom" aria-label="Unavailable text tools">
-            <button className="scratchpad-window__unavailable" type="button" disabled>
-              <WandIcon />
-              <span><strong>Generative Rewrite</strong><small>{GENERATIVE_TEXT_MODEL_REQUIRED_NOTICE}</small></span>
-            </button>
-            <button className="scratchpad-window__unavailable" type="button" disabled>
-              <FormattingIcon />
-              <span><strong>Formatting</strong><small>{GENERATIVE_TEXT_MODEL_REQUIRED_NOTICE}</small></span>
-            </button>
-          </div>
         </aside>
 
         <section className="scratchpad-window__editor-panel" aria-label="Note editor">
@@ -582,7 +569,7 @@ export function ScratchpadWindow() {
             {activeNote && <span>{activeWordCount} {activeWordCount === 1 ? "word" : "words"}</span>}
           </div>
           <label className="scratchpad-window__editor">
-            <span className="scratchpad-window__visually-hidden">Scratchpad note</span>
+            <span className="scratchpad-window__visually-hidden">Note text</span>
             <textarea
               ref={textareaRef}
               value={activeBody}

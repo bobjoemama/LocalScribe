@@ -64,9 +64,9 @@ async function inspectFocusedWorkspace(appWindow, { screenshotDirectory, appeara
   await wait();
   await wait();
   const evidence = { menus: [], pages: [], reading: null };
-  const modelBefore = await evaluate(() => ({ label: document.querySelector(".hi-model-choice").textContent, settings: window.__localScribeSettingsHarness.persisted(), writes: window.__localScribeSettingsHarness.patchCalls.length, applies: window.__localScribeSettingsHarness.applyCalls.length }));
+  const modelBefore = await evaluate(() => ({ label: document.querySelector(".hi-dictation-status").textContent, settings: window.__localScribeSettingsHarness.persisted(), writes: window.__localScribeSettingsHarness.patchCalls.length, applies: window.__localScribeSettingsHarness.applyCalls.length }));
   assert(!modelBefore.label.includes("Loading") && !modelBefore.label.includes("unavailable"), "Saved model choice did not load");
-  await click(".hi-model-choice button");
+  await click(".hi-dictation-status button:not(.hi-shortcut-edit)");
   const modelNavigation = await evaluate(() => ({
     title: document.querySelector(".ls-settings-header h1")?.textContent,
     tab: document.querySelector(".ls-settings-sidebar nav button.is-active")?.textContent.trim(),
@@ -74,13 +74,13 @@ async function inspectFocusedWorkspace(appWindow, { screenshotDirectory, appeara
     writes: window.__localScribeSettingsHarness.patchCalls.length,
     applies: window.__localScribeSettingsHarness.applyCalls.length,
   }));
-  assert(modelNavigation.title === "Model & Performance" && modelNavigation.tab === "Model & Performance", "Choose model did not open the existing model settings");
+  assert(modelNavigation.title === "Models" && !modelNavigation.tab, "Choose model did not open the model workspace");
   assert(modelBefore.writes === modelNavigation.writes && modelBefore.applies === modelNavigation.applies && JSON.stringify(modelBefore.settings) === JSON.stringify(modelNavigation.settings), "Choose model unexpectedly changed saved selection or applied a model");
   await capture("choose-model-settings");
-  await click(".ls-close-button");
-  assert(await evaluate(() => document.activeElement === document.querySelector(".hi-model-choice button")), "Closing model settings did not restore Choose model focus");
-  evidence.modelChoice = { before: modelBefore, navigation: modelNavigation, focusRestored: true };
-  for (const page of ["Dictation", "Insights", "Dictionary", "Snippets", "Style", "Transforms"]) {
+  await selectPage("Dictation");
+  assert(await evaluate(() => !!document.querySelector(".hi-dictation-status button:not(.hi-shortcut-edit)") && !document.querySelector(".ls-settings-modal")), "Returning from Models did not restore Dictation workspace");
+  evidence.modelChoice = { before: modelBefore, navigation: modelNavigation, returnsToDictation: true };
+  for (const page of ["Dictation", "Insights", "Dictionary", "Snippets", "Cleanup", "Models"]) {
     await selectPage(page);
     await capture(page.toLowerCase());
     const pageState = await evaluate(() => {
@@ -90,7 +90,7 @@ async function inspectFocusedWorkspace(appWindow, { screenshotDirectory, appeara
         const channels = value.match(/[0-9.]+/g).slice(0, 3).map(Number).map(n => n / 255).map(n => n <= .04045 ? n / 12.92 : ((n + .055) / 1.055) ** 2.4);
         return channels[0] * .2126 + channels[1] * .7152 + channels[2] * .0722;
       };
-      const samples = [...document.querySelectorAll(".hub-nav-item--active, .hub-version, .hi-welcome h1, .hi-welcome p, .hi-model-choice span, .hi-model-choice strong, .hi-model-choice button, .hi-transcript-text, .hi-transcript-meta, .hi-time strong, .hi-section-title h2, .ln-page__topbar h1, .ln-page__topbar p, .ln-row__actions button, .ls-screen-header h1, .ls-screen-header p")].map(node => {
+      const samples = [...document.querySelectorAll(".hub-nav-item--active, .hub-version, .hi-welcome h1, .hi-welcome p, .hi-dictation-status span, .hi-dictation-status strong, .hi-dictation-status button:not(.hi-shortcut-edit), .hi-transcript-text, .hi-transcript-meta, .hi-time strong, .hi-section-title h2, .ln-page__topbar h1, .ln-page__topbar p, .ln-row__actions button, .ls-screen-header h1, .ls-screen-header p")].map(node => {
         let ancestor = node;
         while (ancestor && getComputedStyle(ancestor).backgroundColor === "rgba(0, 0, 0, 0)") ancestor = ancestor.parentElement;
         const foreground = getComputedStyle(node).color;
@@ -105,6 +105,30 @@ async function inspectFocusedWorkspace(appWindow, { screenshotDirectory, appeara
     assert(pageState.samples.every(sample => sample.contrast >= 4.5), `${page}: rendered essential text below 4.5: ${JSON.stringify(pageState)}`);
     evidence.pages.push({ page, ...pageState });
   }
+  await selectPage("Models");
+  await evaluate(() => {
+    window.__localScribeSettingsHarness.delayModelOperation();
+    const download = document.querySelector('button[aria-label="Download High profile for qwen3-asr-0-6b"]');
+    if (!download || download.disabled) throw new Error("Missing enabled fixture download action");
+    download.click();
+  });
+  await wait();
+  await evaluate(() => window.__localScribeSettingsHarness.sendModelProgress({ familyId: "qwen3-asr-0-6b", tier: "high", phase: "downloading", completedBytes: 500000000, totalBytes: 1000000000 }));
+  await wait();
+  await evaluate(() => document.querySelector('[aria-label="Downloading 0.50 GB of 1.00 GB (50%)"]').scrollIntoView({ block: "center" }));
+  await capture("models-downloading");
+  const activeDownload = await evaluate(() => ({ progress: document.querySelector('[role="progressbar"]')?.getAttribute("aria-valuenow"), blockedControls: [...document.querySelectorAll('.ls-model-tier-row button')].every(button => button.disabled) }));
+  assert(activeDownload.progress === "50" && activeDownload.blockedControls, "Model download progress is invented or concurrent controls are active");
+  await selectPage("Dictation");
+  assert(await evaluate(() => document.querySelector('.hub-nav-item--active')?.textContent.trim() === "Models" && document.querySelector('.ls-model-feedback')?.textContent.includes("on its own")), "Navigation unmounted an active model download");
+  await evaluate(() => [...document.querySelectorAll('.hub-sidebar__bottom button')].find(button => button.textContent.trim() === "Settings").click());
+  await wait();
+  assert(await evaluate(() => !document.querySelector('.ls-settings-modal')), "Settings opened while the guarded model operation was active");
+  await evaluate(() => window.__localScribeSettingsHarness.finishModelOperation());
+  await wait();
+  await capture("models-download-complete");
+  evidence.modelOperation = { activeDownload, navigationBlocked: true, settingsBlocked: true, completionVerified: await evaluate(() => [...document.querySelectorAll('.ls-model-tier-row')].some(row => row.textContent.includes("High") && row.textContent.includes("Verified"))) };
+  assert(evidence.modelOperation.completionVerified, "Completed download did not refresh verification state");
   await selectPage("Dictation");
   evidence.reading = await evaluate(() => [...document.querySelectorAll(".hi-transcript-text")].map(input => ({ height: input.clientHeight, scrollHeight: input.scrollHeight, complete: input.value.length, readOnly: input.readOnly, fieldSizing: getComputedStyle(input).fieldSizing })));
   assert(evidence.reading.length === 3 && evidence.reading.every(input => input.readOnly), "Fixture transcript values are missing or editable");
@@ -173,7 +197,7 @@ async function inspectFocusedWorkspace(appWindow, { screenshotDirectory, appeara
   await click(".hi-overflow--row > summary");
   assert(await evaluate(() => document.querySelectorAll(".hi-overflow[open]").length === 1), "History opens more than one popup");
   await click(".hi-overflow--row .hi-overflow-menu button");
-  const copied = await evaluate(() => ({ closed: !document.querySelector(".hi-overflow--row").open, focusRestored: document.activeElement === document.querySelector(".hi-overflow--row > summary"), writes: window.__localScribeSettingsHarness.clipboardWrites.length, notice: document.querySelector(".hi-live-region")?.textContent ?? "" }));
+  const copied = await evaluate(() => ({ closed: !document.querySelector(".hi-overflow--row").open, focusRestored: document.activeElement === document.querySelector(".hi-overflow--row > summary"), writes: window.__localScribeSettingsHarness.clipboardWrites.length, notice: document.querySelector(".hi-success-toast, .hi-live-region")?.textContent ?? "" }));
   assert(copied.closed && copied.focusRestored && copied.writes === 1 && copied.notice.includes("Transcript copied."), "Copy action did not close and report success through the isolated clipboard stub");
   await capture("dictation-copy-feedback");
   evidence.copy = copied;
@@ -238,6 +262,11 @@ async function inspectFocusedWorkspace(appWindow, { screenshotDirectory, appeara
     await capture(`${kind}-edit-dialog`);
     await fill(first, "Cancelled draft");
     await fill(second, "Cancelled content");
+    await evaluate(() => window.__localScribeSettingsHarness.setConfirmAnswer(false));
+    await click('.ln-modal__actions button[type="button"]');
+    const retainedDraft = await draft();
+    assert(retainedDraft.values[0] === "Cancelled draft" && retainedDraft.values[1] === "Cancelled content", `${kind}: rejecting discard lost the draft`);
+    await evaluate(() => window.__localScribeSettingsHarness.setConfirmAnswer(true));
     await click('.ln-modal__actions button[type="button"]');
     const cancelled = await evaluate(kind => ({ entries: window.__localScribeSettingsHarness.library()[kind], attempts: window.__localScribeSettingsHarness.librarySaveCalls.length, focusRestored: document.activeElement === document.querySelector(".ln-edit-button") }), kind);
     assert(cancelled.attempts === before.attempts && JSON.stringify(cancelled.entries) === JSON.stringify(before.entries) && cancelled.focusRestored, `${kind}: Cancel wrote data or lost trigger focus`);

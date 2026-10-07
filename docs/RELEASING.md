@@ -277,3 +277,19 @@ artifact intended for straightforward distribution.
 If automatic updates remain disabled, document manual replacement and data
 preservation behavior. Never weaken a fail-closed gate to make a validation
 artifact appear production-ready.
+
+## October 7 distribution preparation
+
+The redesigned dev.21 source is pushed in PR #36. Its local Developer ID-signed
+DMG and ZIP were built and checked against the staged app; the DMG itself is
+also signed. They are local review artifacts, not a published/notarized release.
+The documented `localscribe-notary` Keychain profile is absent on this Mac,
+and the dev.21 DMG has no stapled ticket. A public release still needs the
+credential-backed timestamped release build, full release gates and publication
+procedure above. The public download remains the older notarized dev.20.
+
+The separate iPhone repository has a successful 0.7.0/build 10 Release archive
+with the app and both extensions. Its profiles are development profiles; it
+is not a TestFlight export or a general-install IPA. Distribution signing,
+App Store Connect setup/upload, beta review and a public invitation remain.
+See its [installation guide](https://github.com/bobjoemama/LocalScribeiOS/blob/main/docs/INSTALLATION.md).

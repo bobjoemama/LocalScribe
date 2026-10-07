@@ -181,14 +181,14 @@ function pixelDeclaration(rule: string, property: string): number {
 }
 
 describe("listening toggle width contract", () => {
-  it("fits both end controls and the waveform without clipping", () => {
+  it("fits both end controls and the recording meter without clipping", () => {
     const container = exactCssRule(".pill--listening");
     const padding = /(?:^|;)\s*padding:\s*(?:0|\d+(?:\.\d+)?px)\s+(\d+(?:\.\d+)?)px/.exec(container);
     expect(padding, "listening pill needs two-value pixel padding").not.toBeNull();
 
     const horizontalPadding = Number(padding![1]) * 2;
     const fixedChildren = pixelDeclaration(exactCssRule(".pill__end"), "width") * 2
-      + pixelDeclaration(exactCssRule(".pill-wave"), "width");
+      + pixelDeclaration(exactCssRule(".pill__recording-meter"), "width");
     // Three fixed children make two flex gaps. The Live-only transcript is not
     // mounted in after-stop mode, so it contributes no width here.
     const flexGaps = pixelDeclaration(container, "gap") * 2;

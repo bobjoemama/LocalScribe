@@ -22,11 +22,17 @@ function contrast(foreground: string, background: string): number {
     / (Math.min(foregroundLuminance, backgroundLuminance) + 0.05);
 }
 
-function appearanceColor(token: string, appearance: "light" | "dark"): string {
-  const match = workspaceCss.match(new RegExp(`--${token}:\\s*light-dark\\(\\s*(#[a-f0-9]{3,6}),\\s*(#[a-f0-9]{3,6})\\s*\\)`, "iu"));
-  expect(match, `Missing semantic appearance token: ${token}`).not.toBeNull();
-  const color = match![appearance === "light" ? 1 : 2]!;
-  return color.length === 4 ? `#${[...color.slice(1)].map(channel => channel + channel).join("")}` : color;
+function appearanceColor(token: string, appearance: "light" | "dark", visited = new Set<string>()): string {
+  expect(visited.has(token), `Circular semantic token: ${token}`).toBe(false);
+  visited.add(token);
+  const declaration = workspaceCss.match(new RegExp(`--${token}:\\s*([^;]+);`, "iu"))?.[1]?.trim();
+  expect(declaration, `Missing semantic appearance token: ${token}`).toBeDefined();
+  const alias = declaration?.match(/^var\(\s*--([a-z0-9-]+)\s*\)$/iu)?.[1];
+  if (alias) return appearanceColor(alias, appearance, visited);
+  const dynamic = declaration?.match(/^light-dark\(\s*(#[a-f0-9]{3,6}),\s*(#[a-f0-9]{3,6})\s*\)$/iu);
+  const color = dynamic?.[appearance === "light" ? 1 : 2] ?? declaration;
+  expect(color, `Unsupported semantic color: ${token}`).toMatch(/^#[a-f0-9]{3}(?:[a-f0-9]{3})?$/iu);
+  return color!.length === 4 ? `#${[...color!.slice(1)].map(channel => channel + channel).join("")}` : color!;
 }
 
 describe("renderer contrast contract", () => {
@@ -42,7 +48,7 @@ describe("renderer contrast contract", () => {
         expect(contrast(appearanceColor(foreground!, appearance), appearanceColor(background!, appearance)), `${appearance}: ${foreground} on ${background}`).toBeGreaterThanOrEqual(4.5);
       }
       for (const action of ["action-fill", "action-hover", "action-pressed"]) {
-        expect(contrast("#ffffff", appearanceColor(action, appearance)), `${appearance}: primary action ${action}`).toBeGreaterThanOrEqual(4.5);
+        expect(contrast(appearanceColor("on-accent", appearance), appearanceColor(action, appearance)), `${appearance}: primary action ${action}`).toBeGreaterThanOrEqual(4.5);
       }
     });
 
@@ -52,9 +58,14 @@ describe("renderer contrast contract", () => {
           expect(contrast(appearanceColor(foreground, appearance), appearanceColor(background, appearance)), `${appearance}: ${foreground} on ${background}`).toBeGreaterThanOrEqual(3);
         }
       }
-      // Switch knobs remain identifiable against both enabled states.
-      for (const background of ["control-line", "action-fill"]) {
-        expect(contrast("#ffffff", appearanceColor(background, appearance))).toBeGreaterThanOrEqual(3);
+      // The shipped switch uses the inverse accent knob, muted off track and
+      // semantic success on track. Check both against their containing surface.
+      expect(workspaceCss).toContain(".ls-switch::after { background: var(--on-accent); }");
+      expect(workspaceCss).toContain(".ls-switch:checked { background: var(--success); }");
+      expect(styleCss).toMatch(/\.ls-switch \{[^}]*background: var\(--muted\);/u);
+      for (const background of ["muted", "success"]) {
+        expect(contrast(appearanceColor("on-accent", appearance), appearanceColor(background, appearance)), `${appearance}: switch knob on ${background}`).toBeGreaterThanOrEqual(3);
+        expect(contrast(appearanceColor(background, appearance), appearanceColor("surface", appearance)), `${appearance}: switch track on surface`).toBeGreaterThanOrEqual(3);
       }
     });
   }
@@ -99,7 +110,8 @@ describe("library modal and load lifecycle", () => {
 
   it("makes the page inert behind each add dialog and blocks dismissal while saving", () => {
     expect(librarySource.match(/<div inert=\{showAdd\}>/g)).toHaveLength(2);
-    expect(librarySource.match(/if \(!saveInFlight\.current\) onClose\(\);/g)).toHaveLength(2);
+    expect(librarySource.match(/libraryEditorCanClose\(saveInFlight\.current, changed, \(\) => window\.confirm\(/g)).toHaveLength(2);
+    expect(librarySource).toMatch(/export function libraryEditorCanClose[\s\S]*?if \(saving\) return false;/u);
     expect(librarySource.match(/busy=\{saving\}/g)).toHaveLength(2);
   });
 });

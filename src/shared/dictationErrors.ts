@@ -84,19 +84,19 @@ export function presentDictationError(
   if (/context_not_supported|dictionary.*prompt.*not supported|does not support.*dictionary/.test(normalized)) {
     return {
       title: "This model cannot use an optional speech hint",
-      detail: "Your Dictionary entries still correct finished text locally. Try again; if this repeats, quit and reopen LocalScribe, then check Settings > Model & Performance.",
+      detail: "Your Dictionary entries still correct finished text locally. Try again; if this repeats, quit and reopen LocalScribe, then check Models.",
     };
   }
   if (/model_not_installed|model.*not installed|speech model.*missing/.test(normalized)) {
     return {
       title: "Local model is not installed",
-      detail: "Open Settings > Model & Performance and install the selected local model before dictating.",
+      detail: "Open Models and install the selected local model before dictating.",
     };
   }
   if (/model_not_loaded|model.*not (ready|loaded)|asr model.*not ready/.test(normalized)) {
     return {
       title: "Local model is not ready",
-      detail: "Wait a moment and try again. If this repeats, open Settings > Model & Performance and recheck the selected local model.",
+      detail: "Wait a moment and try again. If this repeats, open Models and recheck the selected local model.",
     };
   }
   if (/bundled python runtime.*missing/.test(normalized)) {
@@ -108,7 +108,7 @@ export function presentDictationError(
   if (/model_checksum_failed|model.*verification failed|checksum/.test(normalized)) {
     return {
       title: "Local model is damaged",
-      detail: "Open Settings > Model & Performance and repair the selected local model.",
+      detail: "Open Models and repair the selected local model.",
     };
   }
   if (/worker.*(timed out|did not start|exited|not running)|speech engine.*(stopped|timeout)/.test(normalized)) {

@@ -34,7 +34,7 @@ describe("codes carried in a wrapped cause", () => {
     // Verbatim from workerSupervisor.ts: the worker's structured failure is
     // rewrapped with actionable instructions and passed as `cause`.
     const rewrapped = new Error(
-      "Local speech model is not installed. Open LocalScribe Settings > Model & Performance"
+      "Local speech model is not installed. Open Models in LocalScribe"
       + " to install it before dictating.",
       { cause: new Error("model_not_installed") },
     );
