@@ -242,7 +242,7 @@ export function automaticPasteSettingsPresentation(
   if (!permissions.automaticPaste.ready) {
     return {
       editable: true,
-      detail: "Accessibility is granted, but automatic insertion is unavailable. Completed dictation is copied. Refresh diagnostics under General to recheck insertion readiness.",
+      detail: "Accessibility is granted, but automatic insertion is unavailable. Completed dictation is copied. Refresh diagnostics under Data & Privacy to recheck insertion readiness.",
       value: null,
     };
   }

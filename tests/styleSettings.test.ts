@@ -994,7 +994,7 @@ describe("redesigned settings and cleanup", () => {
     expect(presentation.editable).toBe(true);
     expect(presentation.detail).toContain("Accessibility is granted");
     expect(presentation.detail).toContain("automatic insertion is unavailable");
-    expect(presentation.detail).toContain("Refresh diagnostics");
+    expect(presentation.detail).toContain("Refresh diagnostics under Data & Privacy");
     expect(presentation.detail).not.toMatch(/not granted|denied|Grant it/iu);
   });
 
