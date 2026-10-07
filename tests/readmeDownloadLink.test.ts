@@ -23,9 +23,9 @@ const approvedRelease: {
   interface: "older" | "redesigned";
   pendingLabel: string | null;
 } = {
-  version: "0.1.0-dev.20",
-  interface: "older",
-  pendingLabel: "dev.21",
+  version: "0.1.0-dev.21",
+  interface: "redesigned",
+  pendingLabel: null,
 };
 const releasesUrl = "https://github.com/bobjoemama/LocalScribe/releases";
 const publishedTagUrl = `${releasesUrl}/tag/v${approvedRelease.version}`;
