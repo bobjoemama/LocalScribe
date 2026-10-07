@@ -109,6 +109,7 @@ const MEASURED_STATUS_COPY_WIDTHS: Readonly<Record<string, number>> = {
   "Paste sent · copied as backup": 150,
   "Copied to clipboard": 99,
   "Copied — allow Accessibility": 143,
+  "Copied — automatic insertion unavailable": 208,
   Done: 27,
   "Try again": 47,
 };
