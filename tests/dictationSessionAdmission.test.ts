@@ -84,6 +84,7 @@ describe("staging audio for transcription", () => {
       isFinalizing: () => true,
       readSettings: () => ({ language: "en" }) as never,
       audioCacheRoot: () => "/tmp/cache",
+      prepareAudioCache: async () => undefined,
       newAudioPath: (root) => `${root}/audio.wav`,
       writeAudio: async () => {
         writes += 1;
@@ -120,17 +121,17 @@ describe("staging audio for transcription", () => {
    * for a dictation the user had already cancelled, and nothing moved it out.
    */
   it("re-checks admission after writing the WAV and removes the orphaned file", async () => {
-    let admitted = 0;
+    const admissionPhases: string[] = [];
     const staged = stage({
       admits: () => {
-        admitted += 1;
-        // Accept the pre-write check; cancel lands while the file is written.
-        return admitted === 1;
+        const afterWrite = staged.writeCount() > 0;
+        admissionPhases.push(afterWrite ? "after write" : "before write");
+        return !afterWrite;
       },
     });
 
     await expect(staged.run()).rejects.toBeInstanceOf(DictationCancelled);
-    expect(admitted).toBe(2);
+    expect(admissionPhases.at(-1)).toBe("after write");
     expect(staged.writeCount()).toBe(1);
     // Order, not just presence: the second check must follow the write.
     expectHappenedBefore(staged.order, "write", "remove");
@@ -146,13 +147,14 @@ describe("staging audio for transcription", () => {
   it("fails the session when the WAV write itself throws", async () => {
     const staged = stage({
       writeAudio: async () => {
-        throw new Error("ENOSPC");
+        throw Object.assign(new Error("private filesystem failure"), { code: "ENOSPC" });
       },
     });
 
-    await expect(staged.run()).rejects.toThrow(/ENOSPC/u);
+    await expect(staged.run()).rejects.toThrow("audio_storage_full");
     expect(staged.failures).toHaveLength(1);
-    expect((staged.failures[0] as Error).message).toBe("ENOSPC");
+    expect((staged.failures[0] as Error).message).toBe("audio_storage_full");
+    expect(((staged.failures[0] as Error).cause as NodeJS.ErrnoException).code).toBe("ENOSPC");
     expect(staged.removed).toEqual(["/tmp/cache/audio.wav"]);
   });
 
@@ -201,6 +203,23 @@ describe("main delegates the prelude", () => {
 
   it("stages the audio through prepareTranscription before entering transcribing", () => {
     expectPrecedes(handler, "await prepareTranscription(", 'state: "transcribing"');
+  });
+
+  it("prepares the known cache only after checking shutdown and exact session admission", () => {
+    const preparation = sliceBetween(handler, "prepareAudioCache:", "newAudioPath:");
+    expectPrecedes(preparation, "quitting || transcribeAudioAdmission", "await ensureAudioCache");
+    expect(preparation).toContain("throw new DictationCancelled()");
+  });
+
+  it("rechecks the after-stop session after model resolution before dispatching inference", () => {
+    expectPrecedes(handler, "await currentModelResolution()", "assertActiveSession(input.sessionId)");
+    expectPrecedes(handler, "assertActiveSession(input.sessionId)", "await worker.transcribe(");
+  });
+
+  it("rechecks the Live session after model resolution before starting its runtime", () => {
+    const live = sliceBetween(main, "handle(IPC.sessionBeginLive", "handle(IPC.sessionPushLive");
+    expectPrecedes(live, "await currentModelResolution()", "assertActiveSession(request.sessionId)");
+    expectPrecedes(live, "assertActiveSession(request.sessionId)", "await worker.beginLive(");
   });
 
   it("does not write the WAV inline any more", () => {

@@ -298,5 +298,23 @@ The separate iPhone app's 0.7.0/build 10 was rebuilt with the required privacy
 and encryption metadata and Apple Distribution signing for the app and both
 extensions. Upload succeeded for App Store Connect record `6820165376`,
 **LocalScribe – Local Dictation**. External TestFlight approval and a public
-invitation are still pending, as is the beta contact phone number. See its
+invitation are still pending. The user saved the beta review contact details;
+Apple has received the build, but it is not yet listed as eligible for testing. See its
 [installation guide](https://github.com/bobjoemama/LocalScribeiOS/blob/main/docs/INSTALLATION.md).
+
+## Audio cache recovery correction
+
+The reported completion failure was reproduced before inference: launching
+another app instance removed the running app's private temporary audio directory,
+and staging its next WAV failed with ENOENT. The installed app's missing directory
+was restored at the same path with private permissions and a verified process
+lease; its next actual dictation completed without restarting or unloading Canary.
+
+The dev.22 correction leases each cache to its owning process. Startup cleanup
+removes a marked cache only when its owner is definitively gone; it preserves live,
+unmarked and uncertain roots. Completion securely restores its original cache
+when needed, preserving the warm worker's temporary-root policy. Tests exercise
+two real processes, dead-owner cleanup, missing-root recovery, cancellation and
+filesystem failures. Diagnostics and the pill use fixed storage-error codes and
+actionable messages, without private paths or dictated text. New public artifacts
+require the usual exact-source release gate; published dev.21 assets are immutable.

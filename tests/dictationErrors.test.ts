@@ -91,6 +91,37 @@ describe("dictation error presentation", () => {
       .toBe("Try again. If this keeps happening, quit and reopen LocalScribe.");
   });
 
+  it.each([
+    ["audio_storage_unavailable", "Recording storage is unavailable"],
+    ["audio_storage_write_failed", "Recording could not be prepared"],
+    ["audio_storage_full", "Not enough storage for recording"],
+    ["audio_storage_permission_denied", "Recording storage could not be accessed"],
+  ])("keeps %s actionable across session normalization without exposing the failed recording path", (code, title) => {
+    const cause = Object.assign(new Error("ENOENT: cannot open '/Users/Alice/private/audio.wav' token=secret"), { code });
+    const wrapped = new Error("Dictation could not finish", { cause });
+    const normalized = normalizeDictationErrorMessage(wrapped);
+    expect(normalized).toBe(code);
+    // Session snapshots cross IPC as a message string, so classify that exact
+    // representation as well as the structured Error in the main process.
+    for (const failure of [wrapped, normalized, `Error invoking remote method 'session:transcribe': Error: ${code}: raw stderr /private/audio.wav`]) {
+      const result = presentDictationError(failure);
+      expect(result.title).toBe(title);
+      expect(`${result.title} ${result.detail}`).not.toMatch(/Alice|audio\.wav|ENOENT|secret|stderr/u);
+      expect(result.detail).not.toContain(code);
+    }
+  });
+
+  it("does not promote an unknown code or the private cause behind a generic wrapper", () => {
+    const failure = new Error("Dictation could not finish", {
+      cause: Object.assign(new Error("private dictated text token=secret at /Users/Alice/audio.wav"), { code: "private_pin_1234" }),
+    });
+    expect(normalizeDictationErrorMessage(failure)).toBe("Dictation could not finish");
+    expect(presentDictationError(failure)).toEqual({
+      title: "Dictation could not finish",
+      detail: "Try again. If this keeps happening, quit and reopen LocalScribe.",
+    });
+  });
+
   it("normalizes whitespace and enforces the session message bound", () => {
     expect(normalizeDictationErrorMessage("  No   speech\n detected  ")).toBe("No speech detected");
     expect(normalizeDictationErrorMessage("x".repeat(500))).toHaveLength(240);

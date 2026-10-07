@@ -65,7 +65,7 @@ import { modelPerformanceTierLabel } from "./shared/modelPerformance";
 import { modelSelectionIsAvailable, UNAVAILABLE_MODEL_SELECTION_MESSAGE } from "./shared/modelAvailability";
 import { unavailableModelDiagnostics } from "./main/unavailableModelDiagnostics";
 import { transcribeAudioAdmission } from "./shared/dictationSession";
-import { discardAudio, prepareTranscription } from "./main/session/transcribePrelude";
+import { DictationCancelled, discardAudio, prepareTranscription } from "./main/session/transcribePrelude";
 import { createFinalizeWatchdog } from "./main/session/finalizeWatchdog";
 import { createNoticeTimer } from "./main/session/noticeTimer";
 import { persistCompletedDictationHistory } from "./main/session/historyPersistence";
@@ -156,6 +156,7 @@ import { writePrivateFile } from "./main/persistence/privateFile";
 import {
   cleanStaleAudioCaches,
   createAudioCache,
+  ensureAudioCache,
   removeAudioCache,
 } from "./main/audioCache";
 import { assertRendererSurfaceCanInvoke } from "./main/ipcAuthorization";
@@ -1771,6 +1772,7 @@ function registerIpc(): void {
       preference: settings.modelPerformanceMode,
     });
     const resolution = await currentModelResolution();
+    assertActiveSession(request.sessionId);
     const sink = await worker.beginLive({
       session: request,
       model: workerSelection(resolution.tier, "live"),
@@ -1899,6 +1901,17 @@ function registerIpc(): void {
       isFinalizing: () => session.state === "finalizing",
       readSettings: () => database.getSettings(),
       audioCacheRoot: () => audioCacheRoot,
+      prepareAudioCache: async (root, sessionId) => {
+        if (quitting || transcribeAudioAdmission({
+          activeSessionId,
+          sessionState: session.state,
+          snapshotSessionId: session.sessionId,
+          sessionId,
+        }) !== "accept") {
+          throw new DictationCancelled();
+        }
+        await ensureAudioCache(app.getPath("temp"), root);
+      },
       newAudioPath: (root) => path.join(root, `${randomUUID()}.wav`),
       writeAudio: async (target, wav) => {
         await writeFile(target, new Uint8Array(wav), { mode: 0o600, flag: "wx" });
@@ -1919,6 +1932,7 @@ function registerIpc(): void {
       }
       const workerLanguage = workerLanguageForActiveModel(settings);
       const resolution = await currentModelResolution();
+      assertActiveSession(input.sessionId);
       const terms = dictionaryAsrContextForCapabilities(
         database.listDictionary(),
         modelCatalog(resolution.tier.familyId).capabilities,

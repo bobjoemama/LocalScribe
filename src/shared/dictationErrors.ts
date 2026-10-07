@@ -1,4 +1,4 @@
-import { rendererSafeErrorMessage } from "./rendererErrors";
+import { rendererKnownErrorCode, rendererSafeErrorMessage } from "./rendererErrors";
 
 export const ERROR_NOTICE_DURATION_MS = 8_000;
 
@@ -21,7 +21,33 @@ export type DictationErrorPlatform = "darwin";
 const FALLBACK_MESSAGE = "Dictation could not finish";
 const FALLBACK_DETAIL = "Try again. If this keeps happening, quit and reopen LocalScribe.";
 
+/* Fixed recovery copy is selected by an operational code, never backend prose.
+ * Normalization preserves that code before the session crosses IPC, where
+ * Error.code and Error.cause would otherwise be lost.
+ */
+const CODE_PRESENTATIONS: Readonly<Record<string, DictationErrorPresentation>> = {
+  audio_storage_unavailable: {
+    title: "Recording storage is unavailable",
+    detail: "LocalScribe could not prepare private temporary storage for this recording. Quit and reopen LocalScribe, then try again.",
+  },
+  audio_storage_write_failed: {
+    title: "Recording could not be prepared",
+    detail: "LocalScribe could not write this recording to private temporary storage. Check available storage, then try again.",
+  },
+  audio_storage_full: {
+    title: "Not enough storage for recording",
+    detail: "Free some storage on this Mac, then try dictating again.",
+  },
+  audio_storage_permission_denied: {
+    title: "Recording storage could not be accessed",
+    detail: "Quit and reopen LocalScribe, then try again. If this repeats, copy diagnostics from Settings > Data & Privacy.",
+  },
+};
+const PRESENTATION_CODES: ReadonlySet<string> = new Set(Object.keys(CODE_PRESENTATIONS));
+
 export function normalizeDictationErrorMessage(error: unknown): string {
+  const code = rendererKnownErrorCode(error, PRESENTATION_CODES);
+  if (code) return code;
   const raw = error instanceof Error
     ? error.message
     : typeof error === "string"
@@ -37,6 +63,8 @@ export function presentDictationError(
 ): DictationErrorPresentation {
   const message = normalizeDictationErrorMessage(error);
   const normalized = message.toLowerCase();
+  const code = rendererKnownErrorCode(message, PRESENTATION_CODES);
+  if (code) return { ...CODE_PRESENTATIONS[code]! };
 
   if (/no usable audio|too (short|quick)|hold the dictation key/.test(normalized)) {
     return {

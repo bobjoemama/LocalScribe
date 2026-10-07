@@ -33,6 +33,8 @@ export interface TranscribePreludeDependencies {
   readSettings: () => AppSettings;
   /** Null until the private audio cache has been created. */
   audioCacheRoot: () => string | null;
+  /** Securely restore only the original worker root; reject shutdown/cancel. */
+  prepareAudioCache: (cacheRoot: string, sessionId: string) => Promise<void>;
   /** A fresh unique path inside the cache root. */
   newAudioPath: (cacheRoot: string) => string;
   writeAudio: (audioPath: string, wav: ArrayBuffer) => Promise<void>;
@@ -101,6 +103,30 @@ export class InactiveSession extends Error {
   }
 }
 
+type AudioStorageCode = "audio_storage_unavailable" | "audio_storage_full" | "audio_storage_permission_denied" | "audio_storage_write_failed";
+
+/** Fixed IPC/diagnostic code, with the original filesystem error kept locally. */
+export class AudioStagingError extends Error {
+  constructor(readonly code: AudioStorageCode, cause?: unknown) {
+    super(code, cause === undefined ? undefined : { cause });
+    this.name = "AudioStagingError";
+  }
+}
+
+function fileSystemCode(error: unknown): unknown {
+  return error instanceof Error ? (error as NodeJS.ErrnoException).code : undefined;
+}
+
+function audioWriteFailure(error: unknown): AudioStagingError {
+  const code = fileSystemCode(error);
+  return new AudioStagingError(
+    code === "ENOSPC" || code === "EDQUOT" ? "audio_storage_full"
+      : code === "EACCES" || code === "EPERM" ? "audio_storage_permission_denied"
+        : "audio_storage_write_failed",
+    error,
+  );
+}
+
 /**
  * Validate, admit, and stage the audio. Resolves only when the caller may
  * safely transition the session to "transcribing".
@@ -135,33 +161,54 @@ export async function prepareTranscription(
   if (!deps.admits(input.sessionId)) throw new InactiveSession();
 
   let audioPath: string | undefined;
+  const requireAdmission = () => {
+    if (deps.admits(input.sessionId)) return;
+    deps.record({ stage: "session", event: "transcribe_admission", outcome: "cancelled", sessionId: input.sessionId });
+    throw new DictationCancelled();
+  };
   try {
+    // Settings failures stay database failures; only filesystem staging is classified below.
     const settings = deps.readSettings();
     const cacheRoot = deps.audioCacheRoot();
-    if (!cacheRoot) throw new Error("Private audio storage is not ready.");
-    audioPath = deps.newAudioPath(cacheRoot);
-    await deps.writeAudio(audioPath, input.wav);
-
-    /*
-     * Cancel is a separate handler and can land while that write is in flight —
-     * several megabytes for a multi-minute dictation. It clears the active
-     * session and returns to idle, but it cannot unwind this call, so
-     * transitioning unconditionally re-entered "transcribing" for a dictation
-     * the user had already cancelled, with nothing left to move it out again.
-     */
-    if (!deps.admits(input.sessionId)) {
-      deps.record({
-        stage: "session",
-        event: "transcribe_admission",
-        outcome: "cancelled",
-        sessionId: input.sessionId,
-      });
-      await discardAudio(audioPath, deps, input.sessionId);
-      throw new DictationCancelled();
+    if (!cacheRoot) throw new AudioStagingError("audio_storage_unavailable");
+    const prepareCache = async () => {
+      requireAdmission();
+      try { await deps.prepareAudioCache(cacheRoot, input.sessionId); }
+      catch (error) {
+        requireAdmission();
+        if (error instanceof DictationCancelled) throw error;
+        throw new AudioStagingError("audio_storage_unavailable", error);
+      }
+      requireAdmission();
+    };
+    await prepareCache();
+    const target = deps.newAudioPath(cacheRoot);
+    audioPath = target;
+    try {
+      await deps.writeAudio(target, input.wav);
+    } catch (error) {
+      // A failed exclusive open never made this file ours, even if Cancel
+      // arrived at the same time. Clear cleanup ownership before admission.
+      if (fileSystemCode(error) === "EEXIST") audioPath = undefined;
+      requireAdmission();
+      if (fileSystemCode(error) !== "ENOENT") throw audioWriteFailure(error);
+      // One secure same-path retry if the OS/cache cleanup removed the root
+      // after preparation. wx still refuses to overwrite any existing file.
+      await prepareCache();
+      try { await deps.writeAudio(target, input.wav); }
+      catch (retryError) {
+        if (fileSystemCode(retryError) === "EEXIST") audioPath = undefined;
+        requireAdmission();
+        throw audioWriteFailure(retryError);
+      }
     }
-    return { input, settings, cacheRoot, audioPath };
+    requireAdmission();
+    return { input, settings, cacheRoot, audioPath: target };
   } catch (error) {
-    if (error instanceof DictationCancelled) throw error;
+    if (error instanceof DictationCancelled) {
+      await discardAudio(audioPath, deps, input.sessionId);
+      throw error;
+    }
     /*
      * `failSession` first and unconditionally: it is synchronous and cannot
      * throw, so nothing after it can stop the session leaving "finalizing".
