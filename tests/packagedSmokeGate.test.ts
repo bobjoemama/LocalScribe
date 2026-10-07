@@ -2,6 +2,8 @@ import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
+import { DEFAULT_SETTINGS, appSettingsSchema } from "../src/shared/contracts";
+import { migrations } from "../src/main/persistence/migrations";
 
 const root = resolve(process.cwd());
 const projectFile = (relativePath: string) => readFileSync(resolve(root, relativePath), "utf8");
@@ -50,6 +52,32 @@ describe("packaged macOS smoke gate cannot fail open", () => {
   it("runs the packaged binary with the flag that makes startup failure deterministic", () => {
     expect(smokeScript).toContain('LOCALSCRIBE_SMOKE: "1"');
     expect(mainSource).toContain('process.env.LOCALSCRIBE_SMOKE === "1"');
+  });
+
+  it("persists an empty migrated smoke profile with separate valid shortcuts before normal startup", () => {
+    const raw = execFileSync(
+      "/bin/bash",
+      [resolve(root, "scripts/smoke-packaged-macos.sh"), "--self-test-profile-settings"],
+      { cwd: root, encoding: "utf8", timeout: 15_000 },
+    );
+    const fixture = JSON.parse(raw) as {
+      settings: unknown; migrationCount: number; integrity: string; emptyHistory: boolean;
+    };
+    const settings = appSettingsSchema.parse(fixture.settings);
+    expect(settings).toEqual({
+      ...DEFAULT_SETTINGS,
+      holdShortcut: "Command+Control+Alt+Shift+F20",
+      toggleShortcut: "Command+Control+Alt+Shift+F19",
+    });
+    expect(settings.holdShortcut).not.toBe(DEFAULT_SETTINGS.holdShortcut);
+    expect(settings.toggleShortcut).not.toBe(DEFAULT_SETTINGS.toggleShortcut);
+    expect(fixture.migrationCount).toBe(migrations.length);
+    expect(fixture.integrity).toBe("ok");
+    expect(fixture.emptyHistory).toBe(true);
+    expect(smokeScript.indexOf("const settings = appSettingsSchema.parse"))
+      .toBeLessThan(smokeScript.indexOf("const child = spawn(executable"));
+    expect(smokeScript).toContain('"--user-data-dir=" + profilePath');
+    expect(smokeScript).toContain("Smoke settings require a fresh, private, owned profile.");
   });
 
   it("keeps the visible failure dialog for real users and suppresses it only under the flag", () => {

@@ -18,10 +18,18 @@ const readmeLinks = Array.from(readme.matchAll(/\[([^\]]+)\]\(([^)]+)\)/gu), (ma
   label: match[1] ?? "",
   target: match[2] ?? "",
 }));
-const publishedVersion = "0.1.0-dev.20";
+const approvedRelease: {
+  version: string;
+  interface: "older" | "redesigned";
+  pendingLabel: string | null;
+} = {
+  version: "0.1.0-dev.20",
+  interface: "older",
+  pendingLabel: "dev.21",
+};
 const releasesUrl = "https://github.com/bobjoemama/LocalScribe/releases";
-const publishedTagUrl = `${releasesUrl}/tag/v${publishedVersion}`;
-const publishedDmgUrl = `${releasesUrl}/download/v${publishedVersion}/LocalScribe-${publishedVersion}-arm64.dmg`;
+const publishedTagUrl = `${releasesUrl}/tag/v${approvedRelease.version}`;
+const publishedDmgUrl = `${releasesUrl}/download/v${approvedRelease.version}/LocalScribe-${approvedRelease.version}-arm64.dmg`;
 
 describe("README download section", () => {
   it("directs readers to an approved release or a source build", () => {
@@ -33,9 +41,11 @@ describe("README download section", () => {
 
   it("tells the reader to verify a download against the checksum manifest", () => {
     expect(readmeText).toContain("checksum manifest");
+    const checksumGuide = readmeLinks.find((link) => /release notes and checksums/iu.test(link.label));
+    expect(checksumGuide?.target).toBe(publishedTagUrl);
     expect(readmeText).toContain("every file it lists into one folder");
     expect(readmeText).toContain("shasum -a 256 -c LocalScribe-<version>-macos-arm64-SHA256SUMS.txt");
-    expect(readmeText).toContain("Each line should say `OK`");
+    expect(readmeText).toMatch(/each line should say `OK`/iu);
   });
 
   it("separates ordinary installation from developer prerequisites", () => {
@@ -50,7 +60,9 @@ describe("README download section", () => {
     expect(readmeText).toContain("**Microphone** access for recording");
     expect(readmeText).toContain("**Accessibility** access for automatic text insertion");
     expect(readmeText).toMatch(/(?:Click|Press) \*\*Apply model\*\*/u);
-    expect(readmeText).toContain("Downloading files does not activate them: apply your selection to load it");
+    expect(readmeText).toContain("Downloading does not activate a model; apply it to load it");
+    expect(readmeText).toContain("The default is **Control + Space**");
+    expect(readmeText).toContain("Use the shortcuts shown in Settings if you have saved different ones");
   });
 
   it("requires a new version and tag instead of overwriting a release", () => {
@@ -63,11 +75,16 @@ describe("README download section", () => {
   it("links the explicitly published DMG without obsolete access restrictions", () => {
     expect(readmeLinks.filter((link) => link.target.startsWith(`${releasesUrl}/download/`))
       .map((link) => link.target)).toEqual([publishedDmgUrl]);
-    const publication = readmeText.match(/The latest public DMG is .*?prerelease with the older interface\./u)?.[0] ?? "";
+    const publication = readmeText.match(/Latest public download: .*?prerelease[^.]*\./u)?.[0] ?? "";
     expect(publication).toContain(publishedTagUrl);
     expect(publication).toContain("Developer ID-signed");
     expect(publication).toContain("Apple-notarized prerelease");
-    expect(readmeText).toMatch(/dev\.21\b[^.]*does not have a public DMG yet\./u);
+    expect(publication).toContain(`(${approvedRelease.interface} interface)`);
+    if (approvedRelease.pendingLabel) {
+      expect(readmeText).toContain(`${approvedRelease.pendingLabel} has no public DMG yet`);
+    } else {
+      expect(readmeText).not.toMatch(/dev\.\d+ has no public DMG yet/u);
+    }
     expect(readmeText).not.toContain("repository is currently private");
     expect(readmeText).not.toContain("available to invited repository members");
     expect(readmeText).not.toContain("staged in a draft release");

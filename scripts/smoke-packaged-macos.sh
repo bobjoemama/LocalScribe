@@ -6,12 +6,16 @@ project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$project_root"
 
 process_group_self_test=0
+profile_settings_self_test=0
 if [[ "${1:-}" == "--self-test-process-group-anchor" ]]; then
   process_group_self_test=1
   shift
+elif [[ "${1:-}" == "--self-test-profile-settings" ]]; then
+  profile_settings_self_test=1
+  shift
 fi
 
-if ((process_group_self_test == 0)); then
+if ((process_group_self_test == 0 && profile_settings_self_test == 0)); then
   release_json="$(node scripts/release-metadata.mjs --platform darwin --format json)"
   default_app_path="$(node -e 'const value=JSON.parse(process.argv[1]); process.stdout.write(value.applicationPath)' "$release_json")"
   target_arch="$(node -e 'const value=JSON.parse(process.argv[1]); process.stdout.write(value.arch)' "$release_json")"
@@ -166,6 +170,106 @@ cleanup() {
   find "$smoke_root" -depth -delete 2>/dev/null || true
 }
 trap cleanup EXIT
+
+# Seed only the fresh smoke profile, using the product's schema and migrations.
+# Production shortcuts must remain registered in the installed app while this
+# second copy exercises its normal startup and teardown. F19/F20 are supported
+# by the native monitor; four-modifier chords avoid the everyday dictation keys.
+# Built-in SQLite avoids depending on the Node/Electron native-module ABI.
+if ((process_group_self_test == 0)); then
+  node --input-type=module - "$profile_path" "$profile_settings_self_test" <<'PROFILE'
+import { DatabaseSync } from "node:sqlite";
+import { existsSync, lstatSync, readFileSync, realpathSync } from "node:fs";
+import { registerHooks } from "node:module";
+import path from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import ts from "typescript";
+
+const [profileArgument, selfTest] = process.argv.slice(2);
+const profile = realpathSync(profileArgument);
+const profileStatus = lstatSync(profileArgument);
+const databasePath = path.join(profile, "localscribe.db");
+if (
+  !profileStatus.isDirectory() || profileStatus.isSymbolicLink()
+  || (profileStatus.mode & 0o777) !== 0o700
+  || path.basename(profile) !== "profile"
+  || !path.basename(path.dirname(profile)).startsWith("localscribe-macos-smoke.")
+  || existsSync(databasePath)
+) {
+  throw new Error("Smoke settings require a fresh, private, owned profile.");
+}
+// The build-time compiler loads the existing sources in this one fixture
+// process. Its hook is scoped to src/ and retired before any database writes.
+const sourceRoot = pathToFileURL(path.resolve("src") + path.sep).href;
+const sourceHook = registerHooks({
+  resolve(specifier, context, nextResolve) {
+    if (specifier.startsWith(".") && context.parentURL?.startsWith(sourceRoot)) {
+      if (specifier.endsWith(".json")) {
+        return { ...nextResolve(specifier, context), importAttributes: { type: "json" } };
+      }
+      const target = new URL(specifier, context.parentURL);
+      if (!path.extname(target.pathname)) {
+        for (const extension of [".ts", ".mts"]) {
+          if (existsSync(fileURLToPath(target.href + extension))) return nextResolve(specifier + extension, context);
+        }
+      }
+    }
+    return nextResolve(specifier, context);
+  },
+  load(url, context, nextLoad) {
+    if (url.startsWith(sourceRoot) && /\.(?:ts|mts)$/.test(url)) {
+      return { format: "module", shortCircuit: true, source: ts.transpileModule(
+        readFileSync(fileURLToPath(url), "utf8"),
+        { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext } },
+      ).outputText };
+    }
+    return nextLoad(url, context);
+  },
+});
+const { DEFAULT_SETTINGS, appSettingsSchema } = await import(
+  pathToFileURL(path.resolve("src/shared/contracts.ts")).href
+);
+const { migrations } = await import(pathToFileURL(path.resolve("src/main/persistence/migrations.ts")).href);
+sourceHook.deregister();
+const settings = appSettingsSchema.parse({
+  ...DEFAULT_SETTINGS,
+  holdShortcut: "Command+Control+Alt+Shift+F20",
+  toggleShortcut: "Command+Control+Alt+Shift+F19",
+});
+const database = new DatabaseSync(databasePath);
+try {
+  database.exec("CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at INTEGER NOT NULL)");
+  const recordMigration = database.prepare("INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)");
+  for (const migration of migrations) {
+    database.exec("BEGIN");
+    try {
+      database.exec(migration.sql);
+      recordMigration.run(migration.version, migration.name, Date.now());
+      database.exec("COMMIT");
+    } catch (error) {
+      database.exec("ROLLBACK");
+      throw error;
+    }
+  }
+  database.prepare("INSERT INTO settings (key, value_json, updated_at) VALUES ('app', ?, ?)")
+    .run(JSON.stringify(settings), Date.now());
+  const stored = database.prepare("SELECT value_json FROM settings WHERE key = 'app'").get();
+  if (JSON.stringify(appSettingsSchema.parse(JSON.parse(stored.value_json))) !== JSON.stringify(settings)) {
+    throw new Error("Smoke settings did not persist intact.");
+  }
+  if (selfTest === "1") {
+    console.log(JSON.stringify({
+      settings, migrationCount: database.prepare("SELECT count(*) AS count FROM schema_migrations").get().count,
+      integrity: database.prepare("PRAGMA integrity_check").get().integrity_check,
+      emptyHistory: database.prepare("SELECT count(*) AS count FROM transcriptions").get().count === 0,
+    }));
+  }
+} finally { database.close(); }
+PROFILE
+fi
+if ((profile_settings_self_test == 1)); then
+  exit 0
+fi
 
 # LOCALSCRIBE_SMOKE makes the packaged app report startup completion on stdout
 # and fail without a modal dialog. The first Node process is a shell-owned
