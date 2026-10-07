@@ -332,7 +332,7 @@ require the usual exact-source release gate; published assets are immutable.
 The dev.22 private artifact was validated locally and never published. Public
 dev.24 includes the audio-cache recovery correction, retryable native helper
 metadata and fresh Accessibility status (granted, denied or unavailable), browser
-target continuity through model warmup, and guards for secure or disabled editors.
+target continuity through Accessibility activation, and guards for secure or disabled editors.
 Permission and copy fallback advice reflects current readiness. Settings confirm
 discarding drafts, preserve edits during pending saves, support Command-S, and
 show pending and failure feedback. The insertion fallback message was measured

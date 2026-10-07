@@ -31,8 +31,19 @@ fi
 repo_root="$(git rev-parse --show-toplevel)"
 cd "$repo_root"
 
+# Git exports repository-local variables to hooks. The gate starts fixture
+# repositories, so its child must discover Git metadata from each fixture's
+# working directory instead of inheriting this push's linked-worktree GIT_DIR.
+# https://git-scm.com/docs/githooks#_description
+git_local_env_vars="$(git rev-parse --local-env-vars)"
+
 echo "pre-push: running the local gate suite (npm run ci)"
-if ! npm run --silent ci; then
+if ! (
+  for git_local_env_var in $git_local_env_vars; do
+    unset "$git_local_env_var"
+  done
+  npm run --silent ci
+); then
   echo ""
   echo "pre-push: gates failed - push refused."
   echo "  Fix the failure, or use 'git push --no-verify' if you accept it."
