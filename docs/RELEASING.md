@@ -319,10 +319,10 @@ filesystem failures. Diagnostics and the pill use fixed storage-error codes and
 actionable messages, without private paths or dictated text. New public artifacts
 require the usual exact-source release gate; published dev.21 assets are immutable.
 
-## dev.23 source candidate
+## dev.24 source candidate
 
 The dev.22 private artifact was validated locally and never published. The next
-dev.23 candidate includes the audio-cache recovery correction, retryable native
+dev.24 candidate includes the audio-cache recovery correction, retryable native
 helper metadata and fresh Accessibility status (granted, denied or unavailable),
 browser target continuity through model warmup, and guards for secure or disabled
 editors. Permission and copy fallback advice reflects current readiness. Settings
@@ -330,7 +330,7 @@ now confirm discarding drafts, preserve edits during pending saves, support
 Command-S, and show pending and failure feedback.
 
 Focused source checks passed 300 tests across 16 files, followed by 94 final tests;
-the native helper compiled and passed its self-test. The full public dev.23 gate
+the native helper compiled and passed its self-test. Final source verification passed 1,652 tests with two existing skips; the insertion fallback message was measured to fit the original pill size. The full public dev.24 gate
 is pending, and physical browser insertion remains unverified. These checks do
 not establish packaged acceptance, notarization or publication. Published
 dev.21 remains the public installer until a new candidate completes its release
