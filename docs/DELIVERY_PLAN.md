@@ -4,6 +4,29 @@ LocalScribe's active product and release scope is Apple Silicon macOS. This
 plan separates implemented source behavior from evidence that still requires a
 physical Mac and an exact packaged artifact.
 
+## Current public Mac download — checked 19 October 2026
+
+- [x] Confirm the latest public release is
+  [dev.24](https://github.com/bobjoemama/LocalScribe/releases/tag/v0.1.0-dev.24),
+  including the 250,866,133-byte arm64 DMG linked in the README.
+- [x] Download the public DMG and confirm SHA-256
+  `e73f16d1391a892d4e3a757bcf98134ec9d964ff26107ceec5f9e8e61cc0c587`
+  against GitHub's asset digest and the published checksum manifest.
+- [x] Verify Developer ID/team H2L3Q52987, strict signatures, stapled
+  notarization tickets and Gatekeeper acceptance for both DMG and enclosed app.
+  The public-release bundle verifier passes; the app is arm64, macOS 14.0+,
+  with the Applications drag-and-drop link. No app launch or installation occurred.
+- [x] Audit the newcomer README and clarify Intel exclusion, permission menus
+  and shortcut conflicts. Models download separately before Apply; no developer
+  tools are required. The iPhone and Mac READMEs link to each other.
+
+The release tag resolves to `d61e7c9`, whose tree equals merged `88a845a`.
+The app's current runtime/UI source is unchanged since that release; later
+commits concern documentation and source-verification hooks/tests. No new binary,
+certificate or runtime change is needed for this documentation follow-up.
+Fresh installation, microphone permission and insertion on a second physical
+Mac were not exercised in this audit. The model comparison below remains proposed.
+
 ## 1. Local inference
 
 Implemented:
@@ -24,6 +47,10 @@ lower profiles. Auto chooses only within the user-selected family.
 
 Remaining product evidence:
 
+- Devesh's 16 October accuracy-first Mac model/runtime research is complete;
+  the proposed comparison is tracked in
+  [model comparison evidence](MODEL_COMPARISON_EVIDENCE.md#accuracy-first-research--16-october-2026).
+  Runtime changes, model additions and a default replacement remain proposed.
 - matched accuracy, warm/cold latency, and memory benchmarks on target Apple
   Silicon hardware;
 - longer-duration Live and after-stop behavior with real recordings;

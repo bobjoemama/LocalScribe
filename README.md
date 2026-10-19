@@ -4,6 +4,7 @@ An open-source alternative to Wispr Flow. Dictate into Mac apps with speech
 models that run locally—no account, subscription, telemetry, or cloud transcription.
 
 **Apple Silicon Mac · macOS 14+** (Phonon requires macOS 15+).
+Intel Macs are not supported by this installer.
 
 ## Install and dictate
 
@@ -15,6 +16,8 @@ a Developer ID-signed, Apple-notarized prerelease (redesigned interface).
 1. Open the downloaded DMG and drag **LocalScribe** into **Applications**.
 2. Open LocalScribe. Grant **Microphone** access for recording and
    **Accessibility** access for automatic text insertion.
+   If either permission is off, open **System Settings → Privacy & Security**,
+   select **Microphone** or **Accessibility**, and enable **LocalScribe**.
 3. Open **Models**. Choose a model and download its
    files; **Parakeet Unified EN 0.6B** is a good English starting point.
    Click **Apply model** (or **Load current model**) and wait until ready.
@@ -23,6 +26,7 @@ a Developer ID-signed, Apple-notarized prerelease (redesigned interface).
 
 You can also hold your hold-to-talk shortcut while speaking; its default is
 **Control**. Use the shortcuts shown in Settings if you have saved different ones.
+If another app uses Control + Space, change the shortcut in **Settings → General**.
 
 The app includes its runtimes. You do not need to install Python, Docker,
 Node.js, Homebrew, Xcode, or use Terminal. Large speech-model files are
