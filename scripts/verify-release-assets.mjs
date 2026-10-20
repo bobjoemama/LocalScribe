@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { verifyReleaseAssets } from "./release-assets.mts";
+import { withVerifiedMacUpdateFeed } from "./update-release-assets.mts";
 
 const arguments_ = process.argv.slice(2);
 const platformIndex = arguments_.indexOf("--platform");
@@ -22,11 +23,12 @@ if (platform !== "darwin") {
 if (unknown.length > 0) {
   throw new Error(`Unknown release verification arguments: ${unknown.join(", ")}`);
 }
-const result = await verifyReleaseAssets(
+const inventory = await verifyReleaseAssets(
   platform,
   process.cwd(),
   candidate ? "candidate" : "publication",
 );
+const result = candidate ? inventory : withVerifiedMacUpdateFeed(inventory);
 if (requirePrerelease && !result.prerelease) {
   throw new Error(
     `Release ${result.tag} is not a semantic-version prerelease; refusing a prerelease upload.`,

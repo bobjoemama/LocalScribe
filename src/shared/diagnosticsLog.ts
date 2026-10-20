@@ -44,6 +44,7 @@ export const DIAGNOSTIC_EVENTS = [
   "auto_tier_held",
   "begin_listening",
   "listening_requested",
+  "native_helper",
   "copied",
   "fallback_register",
   "finalize_watchdog",
@@ -68,6 +69,17 @@ export const DIAGNOSTIC_EVENTS = [
 ] as const;
 
 export const DIAGNOSTIC_OUTCOMES = ["ok", "failed", "cancelled", "skipped"] as const;
+
+export const NATIVE_HELPER_COMMANDS = [
+  "self-test", "accessibility-status", "request-accessibility",
+  "target", "clipboard-sequence", "paste",
+] as const;
+export type NativeHelperCommand = (typeof NATIVE_HELPER_COMMANDS)[number];
+
+export const NATIVE_HELPER_FAILURES = [
+  "timeout", "spawn_failure", "exit_failure", "invalid_response", "integrity_mismatch",
+] as const;
+export type NativeHelperFailure = (typeof NATIVE_HELPER_FAILURES)[number];
 
 /**
  * One diagnostic record.
@@ -95,6 +107,9 @@ export interface DiagnosticEvent {
   readonly accessibilityElement?: string;
   readonly accessibilityActivation?: string;
   readonly accessibilityLookupAttempts?: number;
+  readonly helperCommand?: string;
+  readonly accessibilityTrusted?: boolean;
+  readonly postEventsAllowed?: boolean;
 }
 
 /** Build identity, written once at the head of every diagnostics file. */
@@ -259,6 +274,7 @@ const INSERTION_DIAGNOSTIC_DETAILS = [
 /** Closed detail vocabulary from normalizers and literal diagnostic call sites. */
 export const DIAGNOSTIC_DETAILS: ReadonlySet<string> = new Set([
   ...KNOWN_ERROR_CODES,
+  ...NATIVE_HELPER_FAILURES,
   ...INSERTION_DIAGNOSTIC_DETAILS,
   "model_verification_failed",
   "permission_denied",
@@ -269,6 +285,7 @@ export const DIAGNOSTIC_DETAILS: ReadonlySet<string> = new Set([
 ]);
 
 const DIAGNOSTIC_EVENT_SET: ReadonlySet<string> = new Set(DIAGNOSTIC_EVENTS);
+const NATIVE_HELPER_COMMAND_SET: ReadonlySet<string> = new Set(NATIVE_HELPER_COMMANDS);
 const DIAGNOSTIC_OUTCOME_SET: ReadonlySet<string> = new Set(DIAGNOSTIC_OUTCOMES);
 const MODEL_FAMILIES: ReadonlySet<string> = new Set([
   "parakeet-unified-en-0-6b",
@@ -360,6 +377,14 @@ export function sanitizeDiagnosticEvent(input: DiagnosticEvent): DiagnosticEvent
   if (accessibilityLookupAttempts !== undefined && accessibilityLookupAttempts <= 81) {
     sanitized.accessibilityLookupAttempts = accessibilityLookupAttempts;
   }
+  const helperCommand = memberOf(input.helperCommand, NATIVE_HELPER_COMMAND_SET);
+  if (helperCommand !== undefined) sanitized.helperCommand = helperCommand;
+  if (typeof input.accessibilityTrusted === "boolean") {
+    sanitized.accessibilityTrusted = input.accessibilityTrusted;
+  }
+  if (typeof input.postEventsAllowed === "boolean") {
+    sanitized.postEventsAllowed = input.postEventsAllowed;
+  }
   return sanitized;
 }
 
@@ -405,6 +430,26 @@ export function assertRedacted(content: string): void {
     const match = pattern.exec(content);
     if (match) {
       throw new Error(`diagnostics content contains a ${name}: ${match[0].slice(0, 24)}`);
+    }
+  }
+  // Reads must enforce the same vocabulary as writes, including short strings
+  // that the pattern checks cannot distinguish from private content.
+  for (const line of content.split("\n").filter(Boolean)) {
+    const entry: unknown = JSON.parse(line);
+    // Reject overwritten duplicate keys rather than releasing their hidden
+    // values in the original bytes. Writers already use this JSON encoding.
+    if (typeof entry !== "object" || entry === null || Array.isArray(entry)
+      || JSON.stringify(entry) !== line) {
+      throw new Error("diagnostics content failed structural redaction");
+    }
+    const fields = entry as Record<string, unknown>;
+    const sanitized: Record<string, unknown> = fields.kind === "localscribe-diagnostics"
+      ? JSON.parse(formatDiagnosticHeader(fields as unknown as DiagnosticBuildIdentity))
+      : { ...sanitizeDiagnosticEvent(fields as unknown as DiagnosticEvent) };
+    if (Object.keys(fields).length !== Object.keys(sanitized).length
+      || Object.entries(fields).some(([key, value]) =>
+        !Object.hasOwn(sanitized, key) || sanitized[key] !== value)) {
+      throw new Error("diagnostics content failed structural redaction");
     }
   }
 }

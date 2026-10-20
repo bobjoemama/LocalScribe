@@ -87,6 +87,17 @@ describe("model performance settings persistence", () => {
     database.close();
   });
 
+  it("persists the app-update opt-out across reopen without changing dictation settings", () => {
+    const filePath = databasePath();
+    const database = new LocalDatabase(filePath);
+    const before = database.getSettings();
+    database.saveSettings({ ...before, checkUpdatesOnLaunch: false });
+    database.close();
+    const reopened = new LocalDatabase(filePath);
+    expect(reopened.getSettings()).toEqual({ ...before, checkUpdatesOnLaunch: false });
+    reopened.close();
+  });
+
   it("persists appearance across reopen while preserving model, shortcuts and history preferences", () => {
     const filePath = databasePath();
     for (const appearance of ["dark", "light", "system"] as const) {

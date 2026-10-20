@@ -30,6 +30,13 @@ describe("IPC contracts", () => {
     expect(appSettingsSchema.parse(DEFAULT_SETTINGS)).toEqual(DEFAULT_SETTINGS);
   });
 
+  it("enables metadata checks for legacy installs without injecting a default into unrelated patches", () => {
+    const { checkUpdatesOnLaunch: _preference, ...legacy } = DEFAULT_SETTINGS;
+    expect(appSettingsSchema.parse(legacy).checkUpdatesOnLaunch).toBe(true);
+    expect(appSettingsPatchSchema.parse({ keepHistory: false })).toEqual({ keepHistory: false });
+    expect(appSettingsPatchSchema.parse({ checkUpdatesOnLaunch: false })).toEqual({ checkUpdatesOnLaunch: false });
+  });
+
   it("supports explicit appearance choices without changing legacy dictation settings", () => {
     const { appearance: _appearance, ...legacy } = DEFAULT_SETTINGS;
     expect(appSettingsSchema.parse(legacy)).toEqual(DEFAULT_SETTINGS);

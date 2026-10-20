@@ -35,15 +35,25 @@ Once downloaded, dictation works offline.
 
 Live previews, Dictionary, Snippets, Cleanup, History, Notes, and appearance
 settings are built in. If insertion fails, check macOS **Privacy & Security**
-permissions or copy the transcript. To update, quit and replace the app in
-Applications; your data and downloaded models stay in place.
+permissions or copy the transcript. If it still fails, open **Settings → Data &
+Privacy → Copy diagnostics** after one attempt. Diagnostics exclude dictated text.
+
+**Updates in the dev.25 source candidate:** choose **LocalScribe → Check for Updates…**, or **Settings → System
+→ Updates**. Downloads and restarts require your approval and wait until idle.
+An approved downloaded update also installs on the next normal quit. Models and
+saved data are kept. Automatic checks can be turned off in Settings.
+
+The dev.25 public installer awaits notarization. When published, upgrading from
+dev.24 or earlier requires one manual install: quit LocalScribe, open the new DMG, and
+replace LocalScribe in Applications once. Later releases can update in the app.
 
 [iPhone app and keyboard](https://github.com/bobjoemama/LocalScribeiOS)
 
 ## Advanced
 
 [Models](docs/MODEL_CATALOG.md) · [Privacy](docs/PRIVACY.md) ·
-[Build and verify from source](docs/RELEASING.md) · [Packaging](docs/PACKAGING.md)
+[Build and verify from source](docs/RELEASING.md) · [Packaging](docs/PACKAGING.md) ·
+[Development tasks](tasklist.md)
 
 Optional verification: download the checksum manifest from the
 [release notes and checksums](https://github.com/bobjoemama/LocalScribe/releases/tag/v0.1.0-dev.24)

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { AppUpdateState } from "./appUpdates";
 import {
   holdShortcutSchema,
   shortcutsUseSamePhysicalKeys,
@@ -269,6 +270,7 @@ const appearanceSchema = z.enum(["system", "light", "dark"]);
 const appSettingsFieldsSchema = z.object({
   appearance: appearanceSchema.default("system"),
   launchAtLogin: z.boolean(),
+  checkUpdatesOnLaunch: z.boolean().default(true),
   showPillWhenIdle: z.boolean(),
   autoPaste: z.boolean(),
   keepHistory: z.boolean(),
@@ -319,6 +321,7 @@ export const appSettingsPatchSchema = appSettingsFieldsSchema.omit({
 }).extend({
   // A field patch must never apply a default for an omitted preference.
   appearance: appearanceSchema,
+  checkUpdatesOnLaunch: z.boolean(),
 }).partial().strict().refine(
   (patch) => Object.keys(patch).length > 0,
   "Choose at least one setting to update.",
@@ -875,6 +878,7 @@ export type PillMode = z.infer<typeof pillModeSchema>;
 export const DEFAULT_SETTINGS: AppSettings = {
   appearance: "system",
   launchAtLogin: false,
+  checkUpdatesOnLaunch: true,
   showPillWhenIdle: true,
   autoPaste: true,
   keepHistory: true,
@@ -985,6 +989,13 @@ export const cancelLiveAudioSchema = z.object({
 export type CancelLiveAudioRequest = z.infer<typeof cancelLiveAudioSchema>;
 
 export const IPC = {
+  updatesGet: "updates:get",
+  updatesCheck: "updates:check",
+  updatesInstall: "updates:install",
+  updatesChanged: "updates:changed",
+  updatesPrepareInstall: "updates:prepare-install",
+  updatesPrepared: "updates:prepared",
+  updatesInstallCancelled: "updates:install-cancelled",
   sessionGet: "session:get",
   sessionChanged: "session:changed",
   sessionLivePartial: "session:live-partial",
@@ -1047,6 +1058,14 @@ export const IPC = {
 } as const;
 
 export interface LocalScribeApi {
+  updates: {
+    getState(): Promise<AppUpdateState>;
+    check(): Promise<AppUpdateState>;
+    downloadAndRestart(): Promise<AppUpdateState>;
+    onChanged(listener: (state: AppUpdateState) => void): () => void;
+    onPrepareInstall(listener: (requestId: string) => boolean | Promise<boolean>): () => void;
+    onInstallCancelled(listener: (requestId: string) => void): () => void;
+  };
   session: {
     get(): Promise<SessionSnapshot>;
     toggle(): Promise<SessionSnapshot>;

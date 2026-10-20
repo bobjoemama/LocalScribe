@@ -12,6 +12,7 @@ import {
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { NATIVE_HELPER_COMMANDS, NATIVE_HELPER_FAILURES } from "../src/shared/diagnosticsLog";
 
 /*
  * The recorder is the only evidence a failed dictation leaves behind: the
@@ -510,6 +511,63 @@ describe("filesystem entry safety", () => {
 });
 
 describe("reading the trail back", () => {
+  it("round-trips closed native helper diagnostics and separate permission booleans", async () => {
+    const recorder = makeRecorder();
+    for (const helperCommand of NATIVE_HELPER_COMMANDS) {
+      for (const detail of NATIVE_HELPER_FAILURES) {
+        recorder.record({
+          stage: "insertion", event: "native_helper", outcome: "failed", helperCommand, detail,
+        });
+      }
+    }
+    recorder.record({
+      stage: "insertion", event: "native_helper", outcome: "ok",
+      helperCommand: "accessibility-status", accessibilityTrusted: true, postEventsAllowed: false,
+    });
+    const read = lines(await recorder.read()).slice(1);
+    expect(read).toHaveLength(NATIVE_HELPER_COMMANDS.length * NATIVE_HELPER_FAILURES.length + 1);
+    expect(read.slice(0, -1).map(({ helperCommand, detail }) => [helperCommand, detail])).toEqual(
+      NATIVE_HELPER_COMMANDS.flatMap((command) => NATIVE_HELPER_FAILURES.map((failure) =>
+        [command, failure])),
+    );
+    expect(read.at(-1)).toMatchObject({
+      helperCommand: "accessibility-status", accessibilityTrusted: true, postEventsAllowed: false,
+    });
+  });
+
+  it("redacts arbitrary native metadata on write and withholds unnormalized metadata on read", async () => {
+    const recorder = makeRecorder();
+    recorder.record({
+      stage: "insertion", event: "native_helper", outcome: "failed",
+      helperCommand: "private-command", detail: "private-error",
+      accessibilityTrusted: "private-grant", postEventsAllowed: "false",
+      args: ["private transcript"], processId: 812, applicationId: "com.private",
+      stdout: "private output", stderr: "private error", path: "/private/helper",
+    } as never);
+    const read = await recorder.read();
+    expect(read).not.toContain("private");
+    const event = lines(read)[1];
+    expect(event).toEqual({ at: expect.any(Number),
+      stage: "insertion", event: "native_helper", outcome: "failed" });
+
+    for (const extra of [
+      { helperCommand: "pin7" }, { detail: "pin7" },
+      { helperCommand: "秘密" }, { detail: "x".repeat(100_000) },
+      { accessibilityTrusted: "pin7" }, { postEventsAllowed: "pin7" },
+      { args: ["pin7"] }, { processId: 812 }, { applicationId: "com.private" },
+      { stdout: "pin7" }, { stderr: "pin7" }, { errorCode: "pin7" },
+    ]) {
+      writeFileSync(path.join(directory, "diagnostics.log"), `${JSON.stringify({
+        at: 1, stage: "insertion", event: "native_helper", outcome: "failed", ...extra,
+      })}\n`);
+      await expect(recorder.read()).resolves.toMatch(/withheld/u);
+    }
+    writeFileSync(path.join(directory, "diagnostics.log"),
+      '{"at":1,"stage":"insertion","event":"native_helper","outcome":"failed",'
+      + '"detail":"pin7","detail":"timeout"}\n');
+    await expect(recorder.read()).resolves.toMatch(/withheld/u);
+  });
+
   it("returns the rotated file before the current one", async () => {
     const recorder = makeRecorder();
     for (let index = 0; index < 5_000; index += 1) {

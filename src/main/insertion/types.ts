@@ -1,3 +1,5 @@
+import type { NativeHelperCommand, NativeHelperFailure } from "../../shared/diagnosticsLog";
+
 export const ACCESSIBILITY_ELEMENT_CATEGORIES = [
   "missing",
   "web_area",
@@ -160,3 +162,16 @@ export interface InsertionResult {
   readonly accessibilityActivation?: AccessibilityActivationOutcome;
   readonly accessibilityLookupAttempts?: number;
 }
+
+/** A recorder-ready event containing only closed protocol constants and OS grants. */
+export interface NativeInsertionDiagnostic {
+  readonly stage: "insertion";
+  readonly event: "native_helper";
+  readonly outcome: "ok" | "failed";
+  readonly helperCommand: NativeHelperCommand;
+  readonly detail?: NativeHelperFailure | PasteFailureReason;
+  readonly accessibilityTrusted?: boolean;
+  readonly postEventsAllowed?: boolean;
+}
+
+export type InsertionDiagnosticCallback = (event: NativeInsertionDiagnostic) => void;

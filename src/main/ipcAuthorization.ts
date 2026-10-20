@@ -20,6 +20,10 @@ const PILL_CHANNELS = new Set<string>([
 ]);
 
 const SETTINGS_CHANNELS = new Set<string>([
+  IPC.updatesPrepared,
+  IPC.updatesGet,
+  IPC.updatesCheck,
+  IPC.updatesInstall,
   IPC.historyList,
   IPC.historyDelete,
   IPC.historyClear,
@@ -58,6 +62,7 @@ const SETTINGS_CHANNELS = new Set<string>([
 ]);
 
 const SCRATCHPAD_CHANNELS = new Set<string>([
+  IPC.updatesPrepared,
   IPC.scratchpadList,
   IPC.scratchpadCreate,
   IPC.scratchpadUpdate,

@@ -9,6 +9,9 @@ describe("renderer IPC authorization", () => {
   it("keeps model, history, and data administration in the Settings hub", () => {
     for (const channel of [
       IPC.systemInstallModel,
+      IPC.updatesGet,
+      IPC.updatesCheck,
+      IPC.updatesInstall,
       IPC.systemRemoveModel,
       IPC.systemApplyModelSelection,
       IPC.systemGetLaunchAtLoginStatus,

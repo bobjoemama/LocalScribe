@@ -45,11 +45,118 @@ if (typeof electronBinary !== "string" || electronBinary.length === 0) {
   throw new Error("The electron package did not resolve to an executable path.");
 }
 
+/* global window, document, MutationObserver, requestAnimationFrame, getComputedStyle */
+async function exerciseAppUpdates() {
+  const harness = window.__localScribeSettingsHarness;
+  const require = (condition, message) => { if (!condition) throw new Error(message); };
+  // Observe DOM completion, rather than using a fixed delay as proof of React work.
+  const until = (predicate) => new Promise((resolve, reject) => {
+    let timer;
+    const observer = new MutationObserver(check);
+    function check() {
+      try {
+        if (!predicate()) return;
+        observer.disconnect(); clearTimeout(timer); resolve();
+      } catch (error) { observer.disconnect(); clearTimeout(timer); reject(error); }
+    }
+    observer.observe(document.body, { subtree: true, childList: true, attributes: true, characterData: true });
+    timer = setTimeout(() => { observer.disconnect(); reject(new Error('Updates UI milestone timed out: ' + predicate.toString() + ' status=' + document.querySelector('.ls-settings-scroll')?.textContent.slice(-2200))); }, 4000);
+    check();
+  });
+  const openSystem = async () => {
+    await until(() => Boolean(document.querySelector('.ls-settings-scroll .ls-settings-row')));
+    const tab = [...document.querySelectorAll('.ls-settings-sidebar nav button')].find(button => button.textContent.trim() === 'System');
+    require(tab, 'Missing System settings entry'); tab.click();
+    await until(() => [...document.querySelectorAll('h2')].some(node => node.textContent === 'Updates'));
+    await until(() => Boolean(button('Check for updates')) && !button('Check for updates').disabled);
+  };
+  const group = () => [...document.querySelectorAll('.ls-settings-group')].find(node => node.querySelector('h2')?.textContent === 'Updates');
+  const button = (name) => [...group().querySelectorAll('button')].find(node => node.textContent === name);
+  const status = () => group().querySelector('[role=status]').textContent;
+  const inject = async (phase, message) => {
+    harness.sendUpdateState({ phase, currentVersion: '0.1.0-dev.24', availableVersion: '0.1.0-dev.25', ...(message ? { message } : {}) });
+    await until(() => phase === 'downloading' ? status().includes('Downloading') : status().includes(message));
+  };
+  await until(() => Boolean(document.querySelector(".ls-settings-sidebar nav button")));
+  await openSystem();
+  await until(() => button('Check for updates') && !button('Check for updates').disabled);
+  require(harness.updateSubscriberCount() === 1, 'Updates must have exactly one mounted subscription');
+  const callsBefore = harness.updateCalls.length;
+  button('Check for updates').click();
+  await until(() => Boolean(button('Download and restart')) && !button('Download and restart').disabled);
+  require(JSON.stringify(harness.updateCalls.slice(callsBefore)) === JSON.stringify(['check']), 'Metadata check initiated a download');
+  harness.setConfirmAnswer(false);
+  const confirms = harness.confirmCalls.length;
+  button('Download and restart').click();
+  require(harness.confirmCalls.length === confirms + 1 && harness.updateCalls.length === callsBefore + 1, 'Rejected update approval started installation');
+  harness.setConfirmAnswer(true);
+  button('Download and restart').click();
+  await until(() => Boolean(button('Restart to update')) && !button('Restart to update').disabled);
+  require(harness.updateCalls.at(-1) === 'downloadAndRestart' && button('Check for updates').disabled, 'Approved download did not reach ready');
+  await inject('downloading');
+  require(button('Check for updates').disabled && !button('Download and restart') && !button('Restart to update'), 'Downloading exposed an enabled action');
+  await inject('error', 'Fixture update failed. Check for updates to retry.');
+  require(!button('Check for updates').disabled, 'Update error blocked retry');
+  button('Check for updates').click();
+  await until(() => Boolean(button('Download and restart')) && !button('Download and restart').disabled);
+  const toggle = group().querySelector('input[type=checkbox]');
+  require(toggle.checked, 'Fixture automatic checks must initially be enabled');
+  toggle.click();
+  const save = () => [...document.querySelectorAll('.ls-settings-footer button')].find(node => node.textContent === 'Save changes');
+  await until(() => !save().disabled);
+  save().click();
+  await until(() => document.querySelector('.ls-settings-footer [role=status]')?.textContent === 'Settings saved');
+  require(harness.persisted().checkUpdatesOnLaunch === false, 'Opted-out update preference did not persist');
+  for (let index = 0; index < 3; index += 1) {
+    const oldGroup = group();
+    harness.remount();
+    await until(() => !oldGroup.isConnected);
+    await openSystem();
+    require(harness.updateSubscriberCount() === 1, 'Remount accumulated update subscriptions');
+    require(!group().querySelector('input').checked, 'Saved update opt-out disappeared after remount');
+    group().querySelector('input').click();
+    await until(() => !save().disabled);
+    require(harness.updateSubscriberCount() === 1, 'Draft rerender accumulated update subscriptions');
+    group().querySelector('input').click();
+    await until(() => save().disabled);
+  }
+  const evidence = { checkOnly: true, rejectedApproval: true, approvedReady: true, downloadingDisabled: true, errorRecovery: true, optOutPersisted: true, remounts: 3, maximumSubscriptions: 1 };
+  const scroll = document.querySelector('.ls-settings-scroll');
+  group().scrollIntoView({ block: 'end' });
+  await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  const viewport = scroll.getBoundingClientRect();
+  const luminance = (color) => {
+    const values = color.match(/[\d.]+/g).slice(0, 3).map(Number).map(value => value / 255).map(value => value <= .04045 ? value / 12.92 : ((value + .055) / 1.055) ** 2.4);
+    return values[0] * .2126 + values[1] * .7152 + values[2] * .0722;
+  };
+  evidence.controls = [...group().querySelectorAll('button,input')].map(control => {
+    control.focus();
+    const rect = control.getBoundingClientRect(), style = getComputedStyle(control);
+    require(document.activeElement === control, 'Updates control cannot receive keyboard focus');
+    require(style.outlineStyle !== 'none' || style.boxShadow !== 'none', 'Updates control lacks a visible focus indicator');
+    require(rect.left >= viewport.left && rect.right <= viewport.right && rect.top >= viewport.top - 1 && rect.bottom <= viewport.bottom + 1, 'Updates control clipped outside scroll viewport');
+    const name = control.textContent || control.closest('label')?.querySelector('strong')?.textContent;
+    require(Boolean(name), 'Updates control lacks a name');
+    return { name, fits: true, focus: true, outline: style.outline, boxShadow: style.boxShadow };
+  });
+  evidence.contrast = [...group().querySelectorAll('strong,small,button,.ls-readonly-value')].map(node => {
+    let ancestor = node;
+    while (ancestor && getComputedStyle(ancestor).backgroundColor === 'rgba(0, 0, 0, 0)') ancestor = ancestor.parentElement;
+    const foreground = getComputedStyle(node).color, background = getComputedStyle(ancestor || document.documentElement).backgroundColor;
+    const a = luminance(foreground), b = luminance(background), ratio = (Math.max(a,b) + .05) / (Math.min(a,b) + .05);
+    require(ratio >= 4.5, 'Updates text contrast below AA: ' + node.textContent + ': ' + ratio);
+    return { text: node.textContent, foreground, background, ratio };
+  });
+  return evidence;
+}
+
 const electronMain = `
 import { app, BrowserWindow, nativeTheme, protocol, session } from "electron";
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { inspectSettingsAppearance, inspectWorkspace } from ${JSON.stringify(pathToFileURL(resolve(repository, "scripts/workspace-layout-inspection.mjs")).href)};
+
+import { inspectSettingsPreparation, inspectNotesPreparation } from ${JSON.stringify(pathToFileURL(resolve(repository, "scripts/update-preparation-layout-inspection.mjs")).href)};
 
 const harnessFile = process.env.LOCALSCRIBE_SCROLL_HARNESS_FILE;
 const resultFile = process.env.LOCALSCRIBE_SCROLL_RESULT_FILE;
@@ -57,8 +164,10 @@ const screenshotDirectory = process.env.LOCALSCRIBE_LAYOUT_SCREENSHOT_DIR?.trim(
 const appearance = process.env.LOCALSCRIBE_LAYOUT_APPEARANCE ?? "system";
 if (!["system", "light", "dark"].includes(appearance)) throw new Error("Invalid layout appearance");
 nativeTheme.themeSource = appearance;
+app.setPath("userData", join(resultFile, "..", "profile"));
+const exerciseAppUpdates = ${exerciseAppUpdates.toString()};
 const stageFile = \`${resultFile}.stage\`;
-const stage = (message) => appendFileSync(stageFile, \`${new Date().toISOString()} \${message}\\n\`);
+const stage = (message) => appendFileSync(stageFile, \`\${new Date().toISOString()} \${message}\\n\`);
 stage("module-loaded");
 protocol.registerSchemesAsPrivileged([{
   scheme: "localscribe-layout-test",
@@ -704,7 +813,41 @@ async function exerciseModelOrdering(window) {
   })()\`);
 }
 
-async function inspectSize(width, height, platform, verification, settingsPreset = "default", applyResult = null, saveResult = null) {
+async function inspectUpdates(window, width, height) {
+    {
+      window.webContents.debugger.attach("1.3");
+      await window.webContents.debugger.sendCommand("Emulation.setFocusEmulationEnabled", { enabled: true });
+      await window.webContents.debugger.sendCommand("Input.dispatchKeyEvent", { type: "keyDown", key: "Tab", code: "Tab", windowsVirtualKeyCode: 9 });
+      await window.webContents.debugger.sendCommand("Input.dispatchKeyEvent", { type: "keyUp", key: "Tab", code: "Tab", windowsVirtualKeyCode: 9 });
+    }
+    const updates = await window.webContents.executeJavaScript("(" + exerciseAppUpdates.toString() + ")()");
+    if (updates) {
+      // Send native Chromium keyboard input without showing or focusing a window.
+      await window.webContents.executeJavaScript("[...document.querySelectorAll('.ls-settings-group')].find(node => node.querySelector('h2')?.textContent === 'Updates').querySelector('button').focus()");
+      await window.webContents.debugger.sendCommand("Input.dispatchKeyEvent", { type: "keyDown", key: "Tab", code: "Tab", windowsVirtualKeyCode: 9 });
+      await window.webContents.debugger.sendCommand("Input.dispatchKeyEvent", { type: "keyUp", key: "Tab", code: "Tab", windowsVirtualKeyCode: 9 });
+      updates.keyboardTarget = await window.webContents.executeJavaScript("document.activeElement.textContent");
+      if (updates.keyboardTarget !== "Download and restart") throw new Error("Tab did not reach the named install button: " + updates.keyboardTarget);
+      if (screenshotDirectory) {
+        mkdirSync(screenshotDirectory, { recursive: true });
+        const shot = await window.webContents.capturePage();
+        writeFileSync(join(screenshotDirectory, ["settings-updates", appearance, width + "x" + height].join("-") + ".png"), shot.toPNG());
+      }
+      await window.webContents.executeJavaScript("window.__localScribeSettingsHarness.showCleanup()");
+      await window.webContents.executeJavaScript("new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
+      updates.unmountedSubscriptions = await window.webContents.executeJavaScript("window.__localScribeSettingsHarness.updateSubscriberCount()");
+      await window.webContents.debugger.sendCommand("Emulation.setFocusEmulationEnabled", { enabled: false });
+      window.webContents.debugger.detach();
+      if (updates.unmountedSubscriptions !== 0) throw new Error("Updates subscription leaked after unmount");
+      await window.webContents.executeJavaScript("window.__localScribeSettingsHarness.remount()");
+      await window.webContents.executeJavaScript("new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
+    }
+    updates.preparation = await inspectSettingsPreparation(window);
+    return updates;
+}
+
+async function inspectSize(width, height, platform, verification, settingsPreset = "default", applyResult = null, saveResult = null, surface = "settings") {
+  const consoleErrors = [];
   const window = new BrowserWindow({
     width,
     height,
@@ -712,7 +855,7 @@ async function inspectSize(width, height, platform, verification, settingsPreset
     frame: false,
     show: false,
     // The renderer uses the same isolation posture as the product window.
-    webPreferences: { contextIsolation: true, sandbox: true },
+    webPreferences: { contextIsolation: true, sandbox: true, backgroundThrottling: false },
   });
   window.webContents.on("render-process-gone", (_event, details) => {
     stage(\`render-process-gone reason=\${details.reason} exit=\${details.exitCode}\`);
@@ -720,6 +863,7 @@ async function inspectSize(width, height, platform, verification, settingsPreset
   window.webContents.on("destroyed", () => stage("web-contents-destroyed"));
   window.on("closed", () => stage("browser-window-closed"));
   window.webContents.on("console-message", (_event, level, message, line, source) => {
+    if (level >= 3) consoleErrors.push(message);
     stage(\`console level=\${level} line=\${line} source=\${source} message=\${message}\`);
   });
   window.webContents.on("did-start-loading", () => stage("did-start-loading"));
@@ -739,6 +883,7 @@ async function inspectSize(width, height, platform, verification, settingsPreset
       });
     });
     const harnessUrl = new URL("localscribe-layout-test://settings/");
+    harnessUrl.searchParams.set("surface", surface);
     harnessUrl.searchParams.set("platform", platform);
     harnessUrl.searchParams.set("verification", verification);
     harnessUrl.searchParams.set("settings", settingsPreset);
@@ -749,6 +894,20 @@ async function inspectSize(width, height, platform, verification, settingsPreset
     });
     await didFinishLoad;
     stage("harness-finish-load-observed");
+    if (surface === "notes") {
+      const notes = await inspectNotesPreparation(window, screenshotDirectory ? async () => {
+        // Capture the observed frozen/pending save, before releasing its explicit gate.
+        mkdirSync(screenshotDirectory, { recursive: true });
+        const shot = await window.webContents.capturePage(undefined, { stayHidden: true });
+        writeFileSync(join(screenshotDirectory, "notes-update-preparation-" + appearance + ".png"), shot.toPNG());
+      } : null);
+      return { notes, consoleErrors };
+    }
+    if (process.env.LOCALSCRIBE_LAYOUT_UPDATES_ONLY === "1") {
+      const updates = await inspectUpdates(window, width, height);
+      const contentSize = await window.webContents.executeJavaScript("({width:innerWidth,height:innerHeight})");
+      return { requestedSize: { width, height }, contentSize, updates, consoleErrors };
+    }
     await sleep(100);
     const contentSize = await window.webContents.executeJavaScript(\`({ width: window.innerWidth, height: window.innerHeight })\`);
     const appearanceEvidence = await window.webContents.executeJavaScript(\`(() => {
@@ -815,6 +974,8 @@ async function inspectSize(width, height, platform, verification, settingsPreset
         writeFileSync(join(screenshotDirectory, ["settings", appearance, width + "x" + height, label.toLowerCase().replaceAll(' ', '-')].join('-') + '.png'), shot.toPNG());
       }
     }
+    const updates = verification === "missing" && settingsPreset === "default" && !applyResult && !saveResult
+      ? await inspectUpdates(window, width, height) : null;
     const sidebar = await inspectSidebarReach(window);
     const modelOrdering = await exerciseModelOrdering(window);
     if (screenshotDirectory) {
@@ -863,6 +1024,8 @@ async function inspectSize(width, height, platform, verification, settingsPreset
       modelSelection,
       longFooterStatus,
       permissionPoll,
+      updates,
+      consoleErrors,
     };
   } finally {
     if (!window.isDestroyed()) window.destroy();
@@ -872,6 +1035,7 @@ async function inspectSize(width, height, platform, verification, settingsPreset
 async function run() {
   try {
   stage("app-ready");
+  if (process.platform === "darwin") app.setActivationPolicy("prohibited");
   await session.defaultSession.setProxy({ mode: "direct" });
   stage("proxy-direct");
   protocol.handle("localscribe-layout-test", () => {
@@ -891,15 +1055,18 @@ async function run() {
   for (const [width, height] of sizes) {
     results.push(await inspectSize(width, height, "darwin", "missing"));
   }
-  for (const [width, height] of sizes) {
-    results.push(await inspectSize(width, height, "darwin", "missing", "custom"));
-  }
-  results.push(await inspectSize(900, 640, "darwin", "verified", "default", "success"));
-  results.push(await inspectSize(900, 640, "darwin", "verified", "default", "fail"));
-  // The footer status is the only settings surface whose width is driven by
-  // runtime text, so it is measured at both supported sizes.
-  for (const [width, height] of sizes) {
-    results.push(await inspectSize(width, height, "darwin", "missing", "default", null, "fail"));
+  if (appearance !== "dark") results.push(await inspectSize(900, 640, "darwin", "missing", "default", null, null, "notes"));
+  if (process.env.LOCALSCRIBE_LAYOUT_UPDATES_ONLY !== "1") {
+    for (const [width, height] of sizes) {
+      results.push(await inspectSize(width, height, "darwin", "missing", "custom"));
+    }
+    results.push(await inspectSize(900, 640, "darwin", "verified", "default", "success"));
+    results.push(await inspectSize(900, 640, "darwin", "verified", "default", "fail"));
+    // The footer status is the only settings surface whose width is driven by
+    // runtime text, so it is measured at both supported sizes.
+    for (const [width, height] of sizes) {
+      results.push(await inspectSize(width, height, "darwin", "missing", "default", null, "fail"));
+    }
   }
   writeFileSync(resultFile, JSON.stringify({ results }, null, 2));
   allowQuit = true;
@@ -1247,19 +1414,27 @@ try {
     env: childEnvironment,
     stdio: ["ignore", "pipe", "pipe"],
   });
+  const watchdog = setTimeout(() => child.kill("SIGTERM"), 120_000);
   let stderr = "";
   child.stderr.on("data", (chunk) => { stderr += String(chunk); });
   const exitCode = await new Promise((resolveChild, rejectChild) => {
     child.once("error", rejectChild);
     child.once("close", resolveChild);
   });
+  clearTimeout(watchdog);
   const report = JSON.parse(await readFile(resultFile, "utf8"));
   if (exitCode !== 0 || report.error) {
     throw new Error(`Electron harness failed: ${report.error ?? stderr}`);
   }
   for (const size of report.results) {
+    assert(size.consoleErrors.length === 0, "Renderer console errors: " + JSON.stringify(size.consoleErrors));
+    if (size.notes) { assert(size.notes.retryPersists, "Notes preparation evidence missing"); continue; }
     assert(size.contentSize.width === size.requestedSize.width, "Electron width differs from requested content width");
     assert(size.contentSize.height === size.requestedSize.height, "Electron height differs from requested content height");
+    if (process.env.LOCALSCRIBE_LAYOUT_UPDATES_ONLY === "1") {
+      assert(size.updates?.optOutPersisted && size.updates.unmountedSubscriptions === 0, "Updates focused evidence missing");
+      continue;
+    }
     for (const tab of size.tabs) assertTab(tab, size);
     assertSidebarReach(size);
     assertChangedSettings(size);
