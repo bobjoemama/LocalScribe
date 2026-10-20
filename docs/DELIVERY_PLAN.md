@@ -4,25 +4,48 @@ LocalScribe's active product and release scope is Apple Silicon macOS. This
 plan separates implemented source behavior from evidence that still requires a
 physical Mac and an exact packaged artifact.
 
-## Signed in-app updates — verified candidate, publication pending
+## Signed in-app updates — public dev.25, checked 19 October 2026
 
-Devesh approved signed in-app updates on 19 October. The next release adds
+Devesh approved signed in-app updates on 19 October. The public release adds
 GitHub metadata checks, explicit downloads/restarts, System → Updates and
 content-free native-insertion diagnostics. Existing dev.24 users need one manual
 DMG replacement. The other Mac's insertion recovered before these changes were
-delivered; the recovery has no established root cause. PR #44 contains the source;
-1,816 source tests passed. A signed isolated Squirrel update/relaunch, light/dark
-Updates and editor-save preparation checks passed. The dev.25 local signed app,
-DMG and ZIP passed package/artifact, runtime and startup/shutdown checks. Apple
-currently rejects the saved notary profile with HTTP 401; this candidate is not
-notarized or published. The README retains dev.24. Exact evidence and the skipped
-focus-stealing Accessibility test are in [tasklist](../tasklist.md).
+delivered; the recovery has no established root cause.
+
+- Published [dev.25](https://github.com/bobjoemama/LocalScribe/releases/tag/v0.1.0-dev.25)
+  at `2026-10-20T02:04:15Z` (19 October, Pacific time). The annotated tag resolves
+  to merged PR #44, `c31c8c89ff2605b0e1310334b0634ad1479087ef`.
+- The fresh Developer ID-signed app and DMG are Apple-notarized, stapled and
+  Gatekeeper-accepted. App submission `8adb9f38-6cdd-422a-aa32-cace5f4d6e5c` and
+  DMG submission `8ad734d7-fe04-4dd9-bf57-b082bd4877da` both returned Accepted.
+- All six public files were independently downloaded without credentials. Their
+  names, lengths and SHA-256 values match GitHub's digests and the upload inventory;
+  the checksum manifest passes 4/4. The public DMG, mounted app and ZIP-extracted
+  app pass strict signatures, stapler and Gatekeeper. Both apps are arm64,
+  macOS 14+, bundle `com.localscribe.desktop`, team `H2L3Q52987`.
+- Embedded source provenance matches all 373 tagged inputs:
+  `b2b09639ac1da02d38998eabac11b1ac2b60907fcb0bc5b4142b09b6ebe880a7`.
+  The separate update-feed SHA-256 is
+  `59caa59991086da5b617da47b1cffdea70d6e1c9b22493841e09a71c689b9c8f`.
+  Versioned `SHA256SUMS.txt` remains the authoritative four-file content inventory.
+- Source verification passed 1,816 tests. The fresh package passed 10 runtime
+  tests, 73 Python tests, imports, entitlements and isolated startup/shutdown.
+  A signed isolated Squirrel update/relaunch, light/dark Updates and real
+  Settings/Notes save preparation passed before publication. The actual updater
+  metadata backend discovered public dev.25 with no native download.
+
+Public receipt: `/tmp/localscribe-dev25-public-test-20261019-0rayzp/result.json`;
+metadata receipt: `/tmp/localscribe-dev25-public-discovery-20261019.json`.
+No fresh physical microphone/insertion or production LocalScribe-to-LocalScribe
+upgrade was exercised. The focus-stealing Accessibility harness remains unrun;
+the installed working app was not restarted or replaced. Exact commands and
+other verification limits are in [tasklist](../tasklist.md).
 
 ## Previous public Mac download — checked 19 October 2026
 
-- [x] Confirm the latest public release is
+- [x] Confirm the previous public release was
   [dev.24](https://github.com/bobjoemama/LocalScribe/releases/tag/v0.1.0-dev.24),
-  including the 250,866,133-byte arm64 DMG linked in the README.
+  including the 250,866,133-byte arm64 DMG then linked in the README.
 - [x] Download the public DMG and confirm SHA-256
   `e73f16d1391a892d4e3a757bcf98134ec9d964ff26107ceec5f9e8e61cc0c587`
   against GitHub's asset digest and the published checksum manifest.
@@ -35,7 +58,7 @@ focus-stealing Accessibility test are in [tasklist](../tasklist.md).
   tools are required. The iPhone and Mac READMEs link to each other.
 
 The release tag resolves to `d61e7c9`, whose tree equals merged `88a845a`.
-This receipt covers dev.24, not the pending updater source.
+This historical receipt covers dev.24; dev.25 is recorded above.
 Fresh installation, microphone permission and insertion on a second physical
 Mac were not exercised in this audit. The model comparison below remains proposed.
 
