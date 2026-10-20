@@ -2,11 +2,11 @@
 
 ## Current work — insertion and installed-app updates
 
-Devesh reports that public dev.24 does not insert dictated text in any app on
-another Mac. The affected Mac's exact completion message, clipboard behavior and
-Accessibility status are not yet known. The orchestrator requested those facts;
-the confirmed scope is every app, not one browser. The working Mac installation,
-Control–Space, data, model selection and app/signing identities must be preserved.
+Devesh reported that public dev.24 did not insert dictated text in any app on
+another Mac, then reported recovery before this patch was delivered. The cause
+remains unknown; the diagnostic fix does not establish a repair of that Mac.
+The working Mac installation, Control–Space, data, model selection and app/signing
+identities must be preserved.
 
 - [x] Investigate the shared insertion failure and repair confirmed diagnostic loss.
   Devesh reports insertion recovered on the other Mac before this patch was
@@ -28,18 +28,27 @@ Control–Space, data, model selection and app/signing identities must be preser
   corrected, and all 21 affected tests passed. Final pre-push verification passed
   all audits, lint, typechecking and 1,816 tests; two bundled-runtime cases skipped
   in that source run subsequently passed in the 10-test packaged-runtime suite.
-- [ ] Commit/push the completed changes and publish a new signed, notarized DMG,
+- [x] Commit/push the completed changes and publish a new signed, notarized DMG,
   update ZIP and any required feed. Do not overwrite an older version's assets.
-  A local Developer ID-signed dev.25 app, DMG and ZIP were built from `4306c71`.
+  PR #44 merged as `c31c8c8`; the annotated `v0.1.0-dev.25` tag pins that exact
+  source. A fresh public build passed Developer ID signing, app/DMG notarization,
+  stapling and Gatekeeper, then shipped all six assets at
+  [dev.25](https://github.com/bobjoemama/LocalScribe/releases/tag/v0.1.0-dev.25).
   Exact-app artifact, entitlements, bundled inference imports, startup/shutdown,
   10 runtime tests and 73 Python tests passed. SBOMs/checksums were generated.
-  This candidate has no new notarization ticket and is not a public release.
   The first build stalled in Xcode 27's SDK stat-cache validation; a process sample
   showed CFRunLoop waiting. The owned cache process was stopped, and the same
   pinned Swift package built with `swift build --build-system native`. A temporary
   launcher selected that supported alternative; no project/toolchain setting changed.
-- [ ] Verify the exact public download and document the one manual bootstrap
+- [x] Verify the exact public download and document the one manual bootstrap
   install required for an already-installed dev.24 with no updater.
+  An independent subagent downloaded all six public assets without credentials;
+  lengths/digests matched GitHub and the upload inventory, and SHA256SUMS passed
+  4/4. The public DMG and both enclosed/extracted apps passed strict signatures,
+  stapler and Gatekeeper. The actual metadata backend discovered dev.25 without
+  starting a native download. README links advanced only after this verification.
+  Public artifact receipt: `/tmp/localscribe-dev25-public-test-20261019-0rayzp/result.json`.
+  Durable release identity and limits: [delivery plan](docs/DELIVERY_PLAN.md).
 
 The DMG file is an installer, not an update channel for existing installations.
 No repair of the other physical Mac has been verified. Existing release evidence
@@ -48,10 +57,9 @@ separate proposed comparison in [model evidence](docs/MODEL_COMPARISON_EVIDENCE.
 
 ## Waiting on Devesh
 
-- Refresh the existing `localscribe-notary` credential locally. Apple's
-  `notarytool history` returned HTTP 401 on 19 October; no secret was read or
-  printed. The question card gives the Apple Account and Terminal steps.
-  Source/testing/signing can continue; new notarization/publication waits.
+Nothing. Devesh generated a fresh app-specific password and saved it with Apple's
+interactive prompt. `notarytool history` validated the refreshed Keychain profile,
+and Apple accepted both new submissions. No secret value was read or printed.
 
 Devesh reported insertion working and approved signed in-app updates. If
 insertion recurs, capture Copy diagnostics after a failed attempt and whether
@@ -75,8 +83,10 @@ Minimum measured text contrast was 5.62:1 light and 6.77:1 dark, with no capture
 renderer console errors. The focus-stealing native Accessibility harness remains
 unrun; no repair of the other Mac's insertion or permission state is claimed.
 
-Local candidate logs: `/tmp/localscribe-dev25-local-signed-build-native-20261019.log`
-and `/tmp/localscribe-dev25-package-gates-20261019.log`. The latter ran the existing
-packaged-runtime/smoke/worker/SBOM/checksum gates individually, not the complete
-macOS script containing the skipped Accessibility harness. Public notarization,
-public download verification and a real two-version LocalScribe upgrade remain open.
+Fresh public build logs: `/tmp/localscribe-dev25-public-build-20261019.log`
+and `/tmp/localscribe-dev25-public-package-gates-20261019.log`. The latter ran the
+existing packaged-runtime/smoke/worker/SBOM/checksum gates individually, not the
+complete macOS script containing the skipped Accessibility harness. Public
+notarization and download verification are complete. Fresh physical insertion and
+a real two-version LocalScribe upgrade remain untested; the installed working app
+was neither restarted nor replaced.

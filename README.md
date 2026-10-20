@@ -8,9 +8,9 @@ Intel Macs are not supported by this installer.
 
 ## Install and dictate
 
-### [Download LocalScribe for Mac — dev.24](https://github.com/bobjoemama/LocalScribe/releases/download/v0.1.0-dev.24/LocalScribe-0.1.0-dev.24-arm64.dmg)
+### [Download LocalScribe for Mac — dev.25](https://github.com/bobjoemama/LocalScribe/releases/download/v0.1.0-dev.25/LocalScribe-0.1.0-dev.25-arm64.dmg)
 
-Latest public download: [dev.24](https://github.com/bobjoemama/LocalScribe/releases/tag/v0.1.0-dev.24),
+Latest public download: [dev.25](https://github.com/bobjoemama/LocalScribe/releases/tag/v0.1.0-dev.25),
 a Developer ID-signed, Apple-notarized prerelease (redesigned interface).
 
 1. Open the downloaded DMG and drag **LocalScribe** into **Applications**.
@@ -38,14 +38,14 @@ settings are built in. If insertion fails, check macOS **Privacy & Security**
 permissions or copy the transcript. If it still fails, open **Settings → Data &
 Privacy → Copy diagnostics** after one attempt. Diagnostics exclude dictated text.
 
-**Updates in the dev.25 source candidate:** choose **LocalScribe → Check for Updates…**, or **Settings → System
+**Updates:** choose **LocalScribe → Check for Updates…**, or **Settings → System
 → Updates**. Downloads and restarts require your approval and wait until idle.
 An approved downloaded update also installs on the next normal quit. Models and
 saved data are kept. Automatic checks can be turned off in Settings.
 
-The dev.25 public installer awaits notarization. When published, upgrading from
-dev.24 or earlier requires one manual install: quit LocalScribe, open the new DMG, and
-replace LocalScribe in Applications once. Later releases can update in the app.
+Upgrading from dev.24 or earlier requires one manual install: quit LocalScribe,
+open the new DMG, and replace LocalScribe in Applications once. Later releases
+can update in the app.
 
 [iPhone app and keyboard](https://github.com/bobjoemama/LocalScribeiOS)
 
@@ -56,7 +56,7 @@ replace LocalScribe in Applications once. Later releases can update in the app.
 [Development tasks](tasklist.md)
 
 Optional verification: download the checksum manifest from the
-[release notes and checksums](https://github.com/bobjoemama/LocalScribe/releases/tag/v0.1.0-dev.24)
+[release notes and checksums](https://github.com/bobjoemama/LocalScribe/releases/tag/v0.1.0-dev.25)
 and every file it lists into one folder. Run
 `shasum -a 256 -c LocalScribe-<version>-macos-arm64-SHA256SUMS.txt`;
 each line should say `OK`.
