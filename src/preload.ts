@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer } from "electron";
 import { z } from "zod";
+import { appUpdateStateSchema, updatePreparationSchema, updatePreparedSchema } from "./shared/appUpdates";
 import {
   appInfoSchema,
   appSettingsPatchSchema,
@@ -44,6 +45,40 @@ import {
 } from "./shared/shortcuts";
 
 const api: LocalScribeApi = {
+  updates: {
+    getState: async () => appUpdateStateSchema.parse(await ipcRenderer.invoke(IPC.updatesGet)),
+    check: async () => appUpdateStateSchema.parse(await ipcRenderer.invoke(IPC.updatesCheck)),
+    downloadAndRestart: async () => appUpdateStateSchema.parse(await ipcRenderer.invoke(IPC.updatesInstall)),
+    onPrepareInstall: (listener) => {
+      const wrapped = (_event: Electron.IpcRendererEvent, value: unknown) => {
+        const request = updatePreparationSchema.safeParse(value);
+        if (!request.success) return;
+        // Invoke the listener in this turn so the editor freezes before any await.
+        let preparation: boolean | Promise<boolean>;
+        try { preparation = listener(request.data.requestId); } catch { preparation = false; }
+        void Promise.resolve(preparation).catch(() => false).then((prepared) => {
+          const reply = updatePreparedSchema.parse({ ...request.data, prepared });
+          return ipcRenderer.invoke(IPC.updatesPrepared, reply);
+        }).catch(() => undefined);
+      };
+      ipcRenderer.on(IPC.updatesPrepareInstall, wrapped);
+      return () => ipcRenderer.removeListener(IPC.updatesPrepareInstall, wrapped);
+    },
+    onInstallCancelled: (listener) => {
+      const wrapped = (_event: Electron.IpcRendererEvent, value: unknown) => {
+        const request = updatePreparationSchema.safeParse(value);
+        if (request.success) listener(request.data.requestId);
+      };
+      ipcRenderer.on(IPC.updatesInstallCancelled, wrapped);
+      return () => ipcRenderer.removeListener(IPC.updatesInstallCancelled, wrapped);
+    },
+    onChanged: (listener) => {
+      const wrapped = (_event: Electron.IpcRendererEvent, value: unknown) =>
+        listener(appUpdateStateSchema.parse(value));
+      ipcRenderer.on(IPC.updatesChanged, wrapped);
+      return () => ipcRenderer.removeListener(IPC.updatesChanged, wrapped);
+    },
+  },
   session: {
     get: async () => sessionSnapshotSchema.parse(await ipcRenderer.invoke(IPC.sessionGet)),
     toggle: async () => sessionSnapshotSchema.parse(await ipcRenderer.invoke(IPC.sessionToggle)),

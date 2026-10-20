@@ -35,6 +35,7 @@ import {
   type ModelSelectionDraft,
   type ModelTierRuntimeStatus,
 } from "./ModelPerformanceSettings";
+import { AppUpdatesSettings } from "./AppUpdatesSettings";
 import "./style-settings.css";
 
 export type SettingsTab = "general" | "system" | "model" | "writing" | "experimental" | "privacy";
@@ -517,7 +518,7 @@ function ProfileForm({
 
 export function TransformsScreen() { return <CleanupScreen />; }
 
-export function ModelsScreen({ registerDismissalGate }: { registerDismissalGate?(gate: (() => boolean) | null): void }) {
+export function ModelsScreen({ registerDismissalGate }: { registerDismissalGate?(gate: ((forUpdate?: boolean) => boolean) | null): void }) {
   return <SettingsModal initialTab="model" presentation="page" onClose={() => undefined} registerDismissalGate={registerDismissalGate} />;
 }
 
@@ -531,7 +532,7 @@ export function SettingsModal({ onClose, registerDismissalGate, initialTab = "ge
    * unmounting the dialog on a navigation request. Called with `null` on
    * unmount.
    */
-  registerDismissalGate?(gate: (() => boolean) | null): void;
+  registerDismissalGate?(gate: ((forUpdate?: boolean) => boolean) | null): void;
 }) {
   const [tab, setTab] = useState<SettingsTab>(initialTab);
   // Native Data/Settings navigation can retarget an already-open dialog.
@@ -552,7 +553,12 @@ export function SettingsModal({ onClose, registerDismissalGate, initialTab = "ge
   const [shortcutSaving, setShortcutSaving] = useState(false);
   const [dataAction, setDataAction] = useState<string | null>(null);
   const [modelAction, setModelAction] = useState<ModelActionState>(null);
-  const [pendingModelSelection, setPendingModelSelection] = useState<ModelSelectionDraft | null>(null);
+  const [pendingModelSelection, setPendingModelSelectionState] = useState<ModelSelectionDraft | null>(null);
+  const pendingModelSelectionRef = useRef<ModelSelectionDraft | null>(null);
+  const setPendingModelSelection = useCallback((selection: ModelSelectionDraft | null) => {
+    pendingModelSelectionRef.current = selection;
+    setPendingModelSelectionState(selection);
+  }, []);
   const [modelApplying, setModelApplying] = useState(false);
   const [modelRefreshing, setModelRefreshing] = useState(false);
   const settingsSaveInFlight = useRef(false);
@@ -600,7 +606,7 @@ export function SettingsModal({ onClose, registerDismissalGate, initialTab = "ge
    * model tab and `modelFeedback` only renders on it — between them every tab
    * is covered.
    */
-  const attemptDismissal = useCallback((): boolean => {
+  const attemptDismissal = useCallback((forUpdate = false): boolean => {
     const decision = decideSettingsDismissal({
       modelOperationInFlight: modelOperationInFlight.current,
       settingsSaveInFlight: settingsSaveInFlight.current,
@@ -610,14 +616,17 @@ export function SettingsModal({ onClose, registerDismissalGate, initialTab = "ge
       setModelFeedback({ message: decision.message, isError: false });
       return false;
     }
-    if ((Object.keys(dirtySettings.current).length > 0 || pendingModelSelection)
+    if ((Object.keys(dirtySettings.current).length > 0 || pendingModelSelectionRef.current)
       && !window.confirm("Discard your unsaved settings changes?")) return false;
+    // Preparation checks permission to leave without actually unmounting or
+    // discarding: another editor may still veto this restart.
+    if (forUpdate) return true;
     if (presentation === "modal") {
       setPendingModelSelection(null);
       onClose();
     }
     return true;
-  }, [onClose, presentation, pendingModelSelection]);
+  }, [onClose, presentation, setPendingModelSelection]);
 
   const closeSettings = useCallback(() => {
     attemptDismissal();
@@ -1416,6 +1425,7 @@ export function SettingsModal({ onClose, registerDismissalGate, initialTab = "ge
                     {HISTORY_RETENTION_OPTIONS.map((days) => <option key={days} value={days}>{historyRetentionLabel(days)}</option>)}
                   </SettingsSelect>
                 </SettingsGroup>
+                <AppUpdatesSettings checkAutomatically={settings.checkUpdatesOnLaunch} onCheckAutomaticallyChange={(value) => update("checkUpdatesOnLaunch", value)} />
               </>
             )}
 

@@ -8,8 +8,16 @@ port.
 ## Network behavior
 
 Normal dictation and model inference do not download or contact a fallback
-service. Network access occurs only when the user explicitly installs a model
-from the curated catalog. The install transaction accepts the repository and
+service. By default, startup checks the public LocalScribe GitHub releases for
+app update metadata. Disable this in Settings → System → Updates. Manual
+checks use the same endpoint. No audio, transcript, device identifier or account
+credential is included. GitHub receives the normal network request, including
+the IP address. App update archives download only after an explicit Download
+and restart action. Electron's built-in updater validates the app signature;
+an approved staged update can also install on the next normal quit.
+
+Model downloads occur when the user explicitly installs a model from the
+curated catalog. The install transaction accepts the repository and
 immutable revision declared by the packaged manifest, verifies the expected
 file set, byte sizes, and SHA-256 digests, and activates the completed artifact
 atomically. LocalScribe does not accept an arbitrary model URL, executable

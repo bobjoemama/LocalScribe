@@ -42,6 +42,7 @@ function harness() {
   const pillSizeFor = vi.fn(() => ({ width: 200, height: 60 }));
   const context = {
     quitting: false,
+    updateAdmission: { isPreparing: false },
     pillWindow: null as FakeWindow | null,
     scratchpadWindow: null as FakeWindow | null,
     session: { state: "idle", activation: "toggle" },

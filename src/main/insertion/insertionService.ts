@@ -6,11 +6,13 @@ import type {
   AccessibilityStatus,
   InsertionOutcome,
   InsertionResult,
+  InsertionDiagnosticCallback,
   PasteInjector,
   PlatformInsertionBridge,
 } from "./types";
 
 export interface InsertionServiceDependencies {
+  onDiagnostic?: InsertionDiagnosticCallback;
   clipboard?: ClipboardPort;
   platformBridge?: PlatformInsertionBridge;
   pasteInjector?: PasteInjector;
@@ -35,6 +37,7 @@ export class InsertionService {
     this.platformBridge = dependencies.platformBridge ?? createDefaultInsertionBridge({
       allowEnvironmentOverride: dependencies.allowNativeHelperEnvironmentOverride,
       workingDirectory: dependencies.nativeHelperWorkingDirectory,
+      onDiagnostic: dependencies.onDiagnostic,
     });
     const pasteInjector: PasteInjector = dependencies.pasteInjector ?? {
       paste: async (expectedTarget, expectedClipboardSequence) => {

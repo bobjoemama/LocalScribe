@@ -114,6 +114,45 @@ Developer ID signing, notarization, stapling, or general Gatekeeper trust.
 The gate never sets release credentials or model-license approval. Do not add
 secrets to scripts, repository files, npm configuration, or shell history.
 
+## In-app update feed
+
+The Mac app checks the GitHub releases API, including prereleases, for a strictly
+newer arm64 release with the exact ZIP and `LocalScribe-macos-arm64-update.json`.
+Checks fetch metadata only. An explicit download hands the static feed to
+Electron 43.7.7's built-in Squirrel updater. Keep the bundle ID, Developer ID
+team and designated requirement unchanged. No separate update dependency or
+server is required.
+
+After verifying the signed/notarized app, DMG, ZIP, SBOMs and checksum manifest,
+generate the additional feed from that verified inventory:
+
+```sh
+node scripts/generate-mac-update-feed.mjs --published-at 2026-10-19T00:00:00Z --notes-file /path/to/plaintext-notes.txt --output out/make/LocalScribe-macos-arm64-update.json
+```
+
+Set the timestamp and notes for the release being published. The generator
+refuses to overwrite an existing feed. Upload it with the exact matching tag
+and ZIP after validating the output. The feed is separate from the existing
+four-file checksum inventory; record its digest in release evidence separately.
+The publication command `npm run verify:release-assets:macos` requires that feed
+and returns it as the sixth upload asset with a separate digest. Candidate
+verification remains independent so feed generation has no circular dependency.
+Verify public metadata discovery using the prior app version before announcing
+the release. Older DMGs must remain unchanged.
+
+Squirrel verifies code signatures and the designated requirement. This pinned
+version buffers the ZIP and does not enforce its published digest or byte size;
+JavaScript metadata validation cannot constrain Squirrel's subsequent native
+refetch. Do not claim otherwise. An approved staged download installs on normal
+process exit; explicit Restart to update additionally requests relaunch.
+The app waits for dictation/model operations to finish and retires runtime
+resources before explicit installation. Existing dev.24 users need one manual
+DMG replacement to acquire this updater. Models and private stores remain outside
+the app bundle.
+
+Implementation sources: [pinned Electron updater](https://github.com/electron/electron/blob/v43.7.7/shell/browser/auto_updater_mac.mm),
+[pinned Squirrel termination listener](https://github.com/Squirrel/Squirrel.Mac/blob/0e5d146ba13101a1302d59ea6e6e0b3cace4ae38/Squirrel/SQRLTerminationListener.m).
+
 ## Local signed UI candidate without notarization
 
 For an authorized local review build, `LOCALSCRIBE_LOCAL_SIGNED_CANDIDATE=1`

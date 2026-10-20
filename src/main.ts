@@ -4,6 +4,7 @@ import { mkdir, rm, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import {
   app,
+  autoUpdater,
   BrowserWindow,
   clipboard,
   dialog,
@@ -75,6 +76,9 @@ import {
   sendToLiveRenderers,
 } from "./main/session/rendererResilience";
 import { normalizeDiagnosticCode } from "./shared/diagnosticsLog";
+import { createMacUpdates } from "./main/updates/macUpdates";
+import { createUpdateAdmission, type UpdateEditor } from "./main/updates/updateAdmission";
+import { updatePreparedSchema } from "./shared/appUpdates";
 import { TRAY_BRAND_PNG_1X, TRAY_BRAND_PNG_2X } from "./main/trayBrand";
 import {
   DiagnosticsRecorder,
@@ -240,13 +244,19 @@ let pillMode: PillMode = "collapsed";
 const insertion = new InsertionService({
   allowNativeHelperEnvironmentOverride: !app.isPackaged,
   nativeHelperWorkingDirectory: app.getAppPath(),
+  onDiagnostic: (event) => diagnostics.record(event),
 });
 let session: SessionSnapshot = { state: "idle" };
 let quitting = false;
+let updateRetirementStarted = false;
+const updateAdmission = createUpdateAdmission();
 let workerInitialized = false;
 let databaseInitialized = false;
 let startupPromise: Promise<void> | null = null;
 let runtimeReleasePromise: Promise<void> | null = null;
+let runtimeReleaseFailed = false;
+let updates: ReturnType<typeof createMacUpdates> | null = null;
+let updateFailureShown = false;
 const rendererRecoveryInFlight = new Set<RendererSurface>();
 const handledRendererFailures = new WeakSet<WebContents>();
 const retiringRendererWindows = new WeakSet<BrowserWindow>();
@@ -269,6 +279,13 @@ let acceleratorSnapshot: WorkerAcceleratorSnapshot | null = null;
 let modelOperationTail: Promise<void> = Promise.resolve();
 let modelOperationCount = 0;
 let resettingSavedData = false;
+const UPDATE_BLOCKED_CHANNELS = new Set<string>([
+  IPC.sessionToggle, IPC.sessionBeginLive, IPC.sessionTranscribe,
+  IPC.systemApplyModelSelection, IPC.systemInstallModel, IPC.systemRemoveModel,
+  IPC.systemAddModelFamily, IPC.systemResetSavedData, IPC.windowShowSettings,
+  IPC.scratchpadCreate, IPC.scratchpadDelete,
+]);
+
 const SAVED_DATA_MUTATIONS = new Set<string>([
   IPC.historyDelete, IPC.historyClear, IPC.dictionarySave, IPC.dictionaryDelete,
   IPC.snippetsSave, IPC.snippetsDelete, IPC.profilesSave, IPC.profilesDelete,
@@ -331,7 +348,7 @@ function runtimeModelManifestDirectory(): string {
 }
 
 function canSwitchModelNow(): boolean {
-  return session.state === "idle";
+  return !quitting && !updateAdmission.isPreparing && session.state === "idle";
 }
 
 function assertModelSwitchAllowed(): void {
@@ -805,7 +822,7 @@ type ReadyVisibility = "active" | "inactive" | "hidden";
 function showWhenReady(window: BrowserWindow, visibility: ReadyVisibility): void {
   if (visibility === "hidden") return;
   window.once("ready-to-show", () => {
-    if (quitting || window.isDestroyed()) return;
+    if (quitting || updateAdmission.isPreparing || window.isDestroyed()) return;
     if (visibility === "active") window.show();
     else window.showInactive();
   });
@@ -864,7 +881,7 @@ function installRendererFailureHandlers(window: BrowserWindow, surface: Renderer
     if (!policy.recreate) return;
     rendererRecoveryInFlight.add(surface);
     queueMicrotask(() => {
-      if (quitting) return;
+      if (quitting || updateAdmission.isPreparing) return;
       // A user action can create a new surface before this microtask runs.
       // Keep that newer generation instead of overwriting it with a duplicate.
       if (windowForSurface(surface) !== null) return;
@@ -938,6 +955,7 @@ function applyAppearance(appearance: ReturnType<LocalDatabase["getSettings"]>["a
 }
 
 function createSettingsWindow(readyVisibility: ReadyVisibility = "active"): BrowserWindow {
+  if (quitting || updateAdmission.isPreparing) throw new Error("LocalScribe is preparing to restart.");
   const window = new BrowserWindow({
     width: SETTINGS_WINDOW_LAYOUT.defaultWidth,
     height: SETTINGS_WINDOW_LAYOUT.defaultHeight,
@@ -964,6 +982,7 @@ function createSettingsWindow(readyVisibility: ReadyVisibility = "active"): Brow
 }
 
 function createScratchpadWindow(readyVisibility: ReadyVisibility = "active"): BrowserWindow {
+  if (quitting || updateAdmission.isPreparing) throw new Error("LocalScribe is preparing to restart.");
   const window = new BrowserWindow({
     width: 500,
     height: 430,
@@ -1001,6 +1020,7 @@ function createScratchpadWindow(readyVisibility: ReadyVisibility = "active"): Br
 }
 
 function showScratchpad(): void {
+  if (quitting || updateAdmission.isPreparing) return;
   if (!scratchpadWindow || scratchpadWindow.isDestroyed()) {
     // A direct user action may retry after the one bounded automatic recovery.
     rendererRecoveryInFlight.delete("scratchpad");
@@ -1012,6 +1032,7 @@ function showScratchpad(): void {
 }
 
 function showHub(target: NavigationTarget = "dictation"): void {
+  if (quitting || updateAdmission.isPreparing) return;
   if (target === "style" || target === "transforms") target = "cleanup";
   if (target === "scratchpad") {
     showScratchpad();
@@ -1294,6 +1315,7 @@ function notifySettingsChanged(settings: ReturnType<LocalDatabase["getSettings"]
 }
 
 function beginListening(activation: "hold" | "toggle" = "toggle"): SessionSnapshot {
+  if (quitting || updateAdmission.isPreparing) return session;
   if (session.state !== "idle" && session.state !== "success" && session.state !== "error") return session;
   if (resettingSavedData) return failSession("Finish resetting saved data before dictating.");
   if (modelOperationInProgress()) {
@@ -1710,6 +1732,10 @@ function registerIpc(): void {
     ipcMain.handle(channel, (event, ...args: T) => {
       const surface = trustedSurfaceForEvent(event);
       assertRendererSurfaceCanInvoke(surface, channel);
+      if (quitting) throw new Error("LocalScribe is quitting.");
+      if (updateAdmission.isPreparing && UPDATE_BLOCKED_CHANNELS.has(channel)) {
+        throw new Error("LocalScribe is preparing to restart. Try again if the update is cancelled.");
+      }
       if (resettingSavedData && SAVED_DATA_MUTATIONS.has(channel)) {
         throw new Error("Saved data is being reset. Try again when it finishes.");
       }
@@ -1717,6 +1743,12 @@ function registerIpc(): void {
     });
   };
 
+  handle(IPC.updatesPrepared, (event, payload: unknown) => {
+    updateAdmission.acknowledge(event.sender.id, updatePreparedSchema.parse(payload));
+  });
+  handle(IPC.updatesGet, () => updates!.getState());
+  handle(IPC.updatesCheck, () => updates!.check());
+  handle(IPC.updatesInstall, () => updates!.downloadAndRestart());
   handle(IPC.sessionGet, () => session);
   handle(IPC.sessionToggle, () => (session.state === "listening" ? finishListening() : beginListening("toggle")));
   handle(IPC.sessionCancel, async () => {
@@ -2468,6 +2500,90 @@ function createTray(): Tray {
   return result;
 }
 
+function updateEditors(): UpdateEditor[] {
+  return [settingsWindow, scratchpadWindow].flatMap((window) => {
+    if (!window || window.isDestroyed()) return [];
+    const contents = window.webContents;
+    return [{
+      id: contents.id,
+      prepare: (requestId: string) => contents.send(IPC.updatesPrepareInstall, { requestId }),
+      cancel: (requestId: string) => {
+        if (!contents.isDestroyed()) contents.send(IPC.updatesInstallCancelled, { requestId });
+      },
+      onUnavailable: (cancel: () => void) => {
+        contents.once("destroyed", cancel);
+        contents.once("render-process-gone", cancel);
+        contents.once("did-start-loading", cancel);
+        return () => {
+          contents.removeListener("destroyed", cancel);
+          contents.removeListener("render-process-gone", cancel);
+          contents.removeListener("did-start-loading", cancel);
+        };
+      },
+    }];
+  });
+}
+
+function appUpdateIsIdle(): boolean {
+  return !quitting && !updateAdmission.isPreparing && databaseInitialized && !resettingSavedData
+    && !modelOperationInProgress()
+    && (session.state === "idle" || session.state === "success" || session.state === "error");
+}
+
+async function prepareAppUpdateInstall(): Promise<void> {
+  if (!appUpdateIsIdle()) throw new Error("LocalScribe is busy.");
+  // prepare() acquires admission synchronously. Save IPC remains available until
+  // every existing editor has frozen and acknowledged its durable writes.
+  await updateAdmission.prepare(updateEditors());
+  if (!updateAdmission.isPreparing || quitting || !updateAdmission.retire()) throw new Error("LocalScribe is busy.");
+  updateRetirementStarted = true;
+  if (!beginShutdown()) {
+    updateRetirementStarted = false;
+    updateAdmission.cancel();
+    throw new Error("LocalScribe is busy.");
+  }
+  await startupPromise;
+  await releaseRuntimeResources();
+  if (runtimeReleaseFailed) {
+    await dialog.showMessageBox({
+      type: "error", title: "Could not finish updating",
+      message: "LocalScribe could not close cleanly. Reopen it before dictating again.",
+      buttons: ["Quit LocalScribe"],
+    });
+    app.exit(1);
+    throw new Error("Runtime cleanup failed.");
+  }
+}
+
+async function checkForAppUpdatesFromMenu(): Promise<void> {
+  if (!updates || quitting) return;
+  try {
+    const state = await updates.check();
+    if (quitting) return;
+    const canInstall = state.phase === "available" || state.phase === "ready";
+    const result = await dialog.showMessageBox({
+      type: state.phase === "error" ? "warning" : "info",
+      title: "LocalScribe updates",
+      message: state.availableVersion ? `LocalScribe ${state.availableVersion}` : `LocalScribe ${state.currentVersion}`,
+      detail: canInstall
+        ? "Download and restart when idle. An approved downloaded update also installs on the next normal quit. Models and saved data are kept."
+        : state.message ?? "Check for updates in Settings → System.",
+      buttons: canInstall ? [state.phase === "ready" ? "Restart to update" : "Download and restart", "Later"] : ["OK"],
+      defaultId: canInstall ? 1 : 0,
+      cancelId: canInstall ? 1 : 0,
+    });
+    if (canInstall && result.response === 0 && !quitting) {
+      void updates.downloadAndRestart().then((next) => {
+        if (!quitting && next.phase !== "installing") return dialog.showMessageBox({
+          type: "info", message: next.message ?? "Check update status in Settings → System.", buttons: ["OK"],
+        });
+      }).catch((error: unknown) => console.warn("LocalScribe update failed", error));
+    }
+  } catch (error) {
+    console.warn("LocalScribe could not check for updates", error);
+  }
+}
+
 function installApplicationMenu(): void {
   /*
    * Read lazily, inside the click handler. Building the menu must not decrypt
@@ -2482,6 +2598,7 @@ function installApplicationMenu(): void {
       label: "LocalScribe",
       submenu: [
         { role: "about" },
+        { label: "Check for Updates…", click: () => void checkForAppUpdatesFromMenu() },
         { type: "separator" },
         { label: "Settings…", accelerator: "CommandOrControl+,", click: () => showHub("settings") },
         { type: "separator" },
@@ -2682,6 +2799,28 @@ startupPromise = app.whenReady().then(async () => {
   // path waits for this promise before closing the database; do not construct
   // app windows, IPC handlers, or hotkeys after that request.
   if (quitting) return;
+  updates = createMacUpdates({
+    currentVersion: app.getVersion(),
+    platform: process.platform,
+    arch: process.arch,
+    isPackaged: app.isPackaged && !smokeMode,
+    fetch: globalThis.fetch,
+    updater: autoUpdater,
+    isIdle: appUpdateIsIdle,
+    prepareInstall: prepareAppUpdateInstall,
+  });
+  updates.subscribe((state) => {
+    sendToLiveRenderers([settingsWindow], IPC.updatesChanged, state,
+      (error) => console.warn("LocalScribe could not deliver update status", error));
+    if (updateRetirementStarted && state.phase === "error" && !updateFailureShown) {
+      updateFailureShown = true;
+      void dialog.showMessageBox({
+        type: "error", title: "Could not finish updating",
+        message: "LocalScribe could not restart to install the update. Reopen it before dictating again.",
+        buttons: ["Quit LocalScribe"],
+      }).finally(() => app.exit(1));
+    }
+  });
   registerIpc();
   pillWindow = createPillWindow();
   startPillDisplayFollowing();
@@ -2759,6 +2898,7 @@ startupPromise = app.whenReady().then(async () => {
   // This is a readiness verdict, not a startup-attempt marker. It is emitted
   // only after windows, IPC, menus, worker policy, and hotkeys are established.
   diagnostics.record({ stage: "lifecycle", event: "startup", outcome: "ok" });
+  if (database.getSettings().checkUpdatesOnLaunch) void updates.check();
 });
 void startupPromise.then(() => {
   if (smokeMode && !quitting) process.stdout.write(`${SMOKE_READY_MARKER}\n`);
@@ -2841,6 +2981,7 @@ function releaseRuntimeResources(): Promise<void> {
     // the final startup/shutdown failure can remain only in an abandoned
     // Promise and never reach the durable diagnostics file.
     await diagnostics.flush();
+    runtimeReleaseFailed = releaseFailed;
   })();
   return runtimeReleasePromise;
 }
@@ -2858,6 +2999,11 @@ async function finishShutdown(): Promise<void> {
 app.on("before-quit", (event) => {
   if (quitting) return;
   event.preventDefault();
+  // Metadata failure during an ordinary quit must not masquerade as a failed
+  // install or interrupt the worker's cleanup. Squirrel still owns staged
+  // installation on normal process exit; disposing JS does not unstage it.
+  updates?.dispose();
+  updateAdmission.cancel();
   beginShutdown();
   void finishShutdown();
 });

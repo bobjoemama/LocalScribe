@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { registerUpdatePreparation } from "../updatePreparation";
 import type { AppInfo, NavigationTarget } from "../../shared/contracts";
 import { HistoryScreen, InsightsScreen } from "./screens/HistoryInsights";
 import { DictionaryScreen, SnippetsScreen } from "./screens/LibraryNotes";
@@ -24,6 +25,9 @@ export function navigationSection(target: NavigationTarget): NavigationSection |
 }
 
 export function SettingsApp() {
+  const shellRef = useRef<HTMLElement>(null);
+  const updatePreparing = useRef(false);
+  const [updateNotice, setUpdateNotice] = useState("");
   const [section, setSection] = useState<Section>("dictation");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsInitialTab, setSettingsInitialTab] = useState<SettingsTab>("general");
@@ -31,12 +35,13 @@ export function SettingsApp() {
   const [dataRevision, setDataRevision] = useState(0);
 
   // Model operations publish the same live guard whether shown as a page or dialog.
-  const dismissalGate = useRef<(() => boolean) | null>(null);
-  const modelPageGate = useRef<(() => boolean) | null>(null);
-  const registerDismissalGate = useCallback((gate: (() => boolean) | null) => { dismissalGate.current = gate; }, []);
-  const registerModelPageGate = useCallback((gate: (() => boolean) | null) => { modelPageGate.current = gate; }, []);
+  const dismissalGate = useRef<((forUpdate?: boolean) => boolean) | null>(null);
+  const modelPageGate = useRef<((forUpdate?: boolean) => boolean) | null>(null);
+  const registerDismissalGate = useCallback((gate: ((forUpdate?: boolean) => boolean) | null) => { dismissalGate.current = gate; }, []);
+  const registerModelPageGate = useCallback((gate: ((forUpdate?: boolean) => boolean) | null) => { modelPageGate.current = gate; }, []);
 
   const openSection = useCallback((target: NavigationSection) => {
+    if (updatePreparing.current) return;
     if (dismissalGate.current && !dismissalGate.current()) return;
     if (modelPageGate.current && !modelPageGate.current()) return;
     setSettingsOpen(false);
@@ -48,10 +53,31 @@ export function SettingsApp() {
   }, []);
 
   const openSettings = useCallback((tab: SettingsTab = "general") => {
+    if (updatePreparing.current) return;
     if (modelPageGate.current && !modelPageGate.current()) return;
     setSettingsInitialTab(tab);
     setSettingsOpen(true);
   }, []);
+
+  useEffect(() => registerUpdatePreparation({
+    updates: window.localScribe.updates,
+    freeze: (frozen) => {
+      updatePreparing.current = frozen;
+      if (shellRef.current) shellRef.current.inert = frozen;
+    },
+    prepare: () => {
+      // Library editors own independent drafts and have no published dismissal
+      // gate. Preserve them intact; the user can save/close and retry explicitly.
+      if (shellRef.current?.querySelector(".ln-modal, .ls-profile-form")) {
+        setUpdateNotice("Save or close the open Dictionary, Snippets, or app profile editor before choosing Restart to update again.");
+        return false;
+      }
+      if (dismissalGate.current && !dismissalGate.current(true)) return false;
+      if (modelPageGate.current && !modelPageGate.current(true)) return false;
+      setUpdateNotice("");
+      return true;
+    },
+  }), []);
 
   useEffect(() => window.localScribe.windows.onNavigate((target) => {
     const destination = navigationSection(target);
@@ -82,7 +108,7 @@ export function SettingsApp() {
   }, []);
 
   return (
-    <main className="hub-shell">
+    <main className="hub-shell" ref={shellRef}>
       {/*
         * The settings dialog says aria-modal="true". `inert` is what makes that
         * claim true for the keyboard as well as for assistive technology:
@@ -136,6 +162,7 @@ export function SettingsApp() {
         * where an announcement can say what actually changed.
         */}
       <section className="hub-content" inert={settingsOpen} key={dataRevision}>
+        {updateNotice && <p role="alert">{updateNotice}</p>}
         {section === "dictation" && <HistoryScreen
           onOpenSettings={() => openSettings()}
           onChooseModel={() => openSection("models")}

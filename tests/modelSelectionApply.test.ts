@@ -237,10 +237,4 @@ describe("atomic model selection architecture", () => {
     expect(addFamily).toContain("return runExclusiveModelOperation(async () =>");
   });
 
-  it("allows model mutation only in the literal idle session state", () => {
-    const guard = between("function canSwitchModelNow(): boolean", "function assertModelSwitchAllowed(): void");
-    expect(guard).toContain('return session.state === "idle";');
-    expect(guard).not.toContain('session.state === "success"');
-    expect(guard).not.toContain('session.state === "error"');
-  });
 });

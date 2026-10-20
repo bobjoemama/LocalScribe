@@ -4,7 +4,21 @@ LocalScribe's active product and release scope is Apple Silicon macOS. This
 plan separates implemented source behavior from evidence that still requires a
 physical Mac and an exact packaged artifact.
 
-## Current public Mac download — checked 19 October 2026
+## Signed in-app updates — verified candidate, publication pending
+
+Devesh approved signed in-app updates on 19 October. The next release adds
+GitHub metadata checks, explicit downloads/restarts, System → Updates and
+content-free native-insertion diagnostics. Existing dev.24 users need one manual
+DMG replacement. The other Mac's insertion recovered before these changes were
+delivered; the recovery has no established root cause. PR #44 contains the source;
+1,816 source tests passed. A signed isolated Squirrel update/relaunch, light/dark
+Updates and editor-save preparation checks passed. The dev.25 local signed app,
+DMG and ZIP passed package/artifact, runtime and startup/shutdown checks. Apple
+currently rejects the saved notary profile with HTTP 401; this candidate is not
+notarized or published. The README retains dev.24. Exact evidence and the skipped
+focus-stealing Accessibility test are in [tasklist](../tasklist.md).
+
+## Previous public Mac download — checked 19 October 2026
 
 - [x] Confirm the latest public release is
   [dev.24](https://github.com/bobjoemama/LocalScribe/releases/tag/v0.1.0-dev.24),
@@ -21,9 +35,7 @@ physical Mac and an exact packaged artifact.
   tools are required. The iPhone and Mac READMEs link to each other.
 
 The release tag resolves to `d61e7c9`, whose tree equals merged `88a845a`.
-The app's current runtime/UI source is unchanged since that release; later
-commits concern documentation and source-verification hooks/tests. No new binary,
-certificate or runtime change is needed for this documentation follow-up.
+This receipt covers dev.24, not the pending updater source.
 Fresh installation, microphone permission and insertion on a second physical
 Mac were not exercised in this audit. The model comparison below remains proposed.
 
@@ -148,4 +160,5 @@ approved GitHub binary publication:
 5. inspect the draft release and asset inventory;
 6. never overwrite or silently replace an existing asset.
 
-If automatic updates remain disabled, document manual replacement behavior.
+Publish the static update feed using [Releasing](RELEASING.md#in-app-update-feed).
+Keep the manual DMG fallback and preserve existing versioned assets.

@@ -4,6 +4,7 @@ import {
   type ScratchpadListResult,
   type ScratchpadNote,
 } from "../../shared/contracts";
+import { registerUpdatePreparation } from "../updatePreparation";
 import { scratchpadNoteMatches } from "./search";
 import { createWordCountCache } from "./wordCounts";
 import "./scratchpad-window.css";
@@ -118,6 +119,11 @@ export function ScratchpadWindowControls({
 }
 
 export function ScratchpadWindow() {
+  const rootRef = useRef<HTMLElement>(null);
+  const updatePreparingRef = useRef(false);
+  const noteOperationsRef = useRef(0);
+  const loadingRef = useRef(true);
+  const drainPendingSavesRef = useRef<() => Promise<boolean>>(async () => false);
   const [notes, setNotes] = useState<ScratchpadNote[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [query, setQuery] = useState("");
@@ -168,7 +174,9 @@ export function ScratchpadWindow() {
 
   const persistNote = (id: string, body: string, sequence: number) => {
     if (deletedIdsRef.current.has(id)) return;
-    if (inFlightSequencesRef.current.get(id) === sequence) return;
+    // Keep one write per note in flight. A newer body stays pending and is
+    // started when this write settles, including a revert to the saved body.
+    if (inFlightSavePromisesRef.current.has(id)) return;
     inFlightSequencesRef.current.set(id, sequence);
     noteSaveStatesRef.current.set(id, "saving");
     if (selectedIdRef.current === id) setStatus("saving");
@@ -204,6 +212,10 @@ export function ScratchpadWindow() {
       if (inFlightSavePromisesRef.current.get(id) === operation) {
         inFlightSavePromisesRef.current.delete(id);
       }
+      const nextSequence = saveSequencesRef.current.get(id);
+      const nextBody = pendingBodiesRef.current.get(id);
+      if (nextSequence !== undefined && nextSequence !== sequence && nextBody !== undefined
+        && !deletedIdsRef.current.has(id)) persistNote(id, nextBody, nextSequence);
     });
     inFlightSavePromisesRef.current.set(id, operation);
   };
@@ -241,8 +253,9 @@ export function ScratchpadWindow() {
   };
 
   const addNewNote = useCallback(async () => {
-    if (creatingRef.current) return;
+    if (creatingRef.current || updatePreparingRef.current) return;
     creatingRef.current = true;
+    noteOperationsRef.current += 1;
     setCreating(true);
     if (notesRef.current.length === 0) setStatus("loading");
     try {
@@ -258,6 +271,7 @@ export function ScratchpadWindow() {
       setStatus("create-error");
     } finally {
       creatingRef.current = false;
+      noteOperationsRef.current -= 1;
       setCreating(false);
     }
   }, [replaceNotes, selectNote]);
@@ -267,6 +281,7 @@ export function ScratchpadWindow() {
     void window.localScribe.scratchpad.list().then(
       async (result) => {
         if (!active) return;
+        loadingRef.current = false;
         const listedNotes = result.items;
         setIntegrityWarning(scratchpadIntegrityWarning(result.skippedUnreadable));
         const loadAction = scratchpadInitialLoadAction(result);
@@ -291,6 +306,7 @@ export function ScratchpadWindow() {
         await addNewNote();
       },
       () => {
+        loadingRef.current = false;
         if (active) setStatus("load-error");
       },
     );
@@ -303,7 +319,7 @@ export function ScratchpadWindow() {
       if (timer !== undefined) window.clearTimeout(timer);
       saveTimersRef.current.delete(id);
       if (deletedIdsRef.current.has(id)) continue;
-      if (persistedBodiesRef.current.get(id) === body) {
+      if (persistedBodiesRef.current.get(id) === body && !inFlightSavePromisesRef.current.has(id)) {
         pendingBodiesRef.current.delete(id);
         noteSaveStatesRef.current.set(id, "saved");
         if (selectedIdRef.current === id) setStatus("saved");
@@ -337,8 +353,21 @@ export function ScratchpadWindow() {
     return pendingBodiesRef.current.size === 0 && inFlightSavePromisesRef.current.size === 0;
   };
 
+  drainPendingSavesRef.current = drainPendingSaves;
+  useEffect(() => registerUpdatePreparation({
+    updates: window.localScribe.updates,
+    freeze: (frozen) => {
+      updatePreparingRef.current = frozen;
+      if (rootRef.current) rootRef.current.inert = frozen;
+    },
+    prepare: () => {
+      if (loadingRef.current || noteOperationsRef.current > 0 || closingRef.current) return false;
+      return drainPendingSavesRef.current();
+    },
+  }), []);
+
   const closeScratchpad = async () => {
-    if (closingRef.current) return;
+    if (closingRef.current || updatePreparingRef.current) return;
     closingRef.current = true;
     setClosing(true);
     if (pendingBodiesRef.current.size > 0 || inFlightSavePromisesRef.current.size > 0) {
@@ -385,7 +414,7 @@ export function ScratchpadWindow() {
   const filteredNotes = useMemo(() => notes.filter((note) => scratchpadNoteMatches(note, query)), [notes, query]);
 
   const updateActiveBody = (body: string) => {
-    if (!activeNote) return;
+    if (!activeNote || updatePreparingRef.current) return;
     const noteId = activeNote.id;
     if (deletedIdsRef.current.has(noteId)) return;
     replaceNotes(notesRef.current.map((note) => note.id === noteId ? { ...note, body } : note));
@@ -393,7 +422,7 @@ export function ScratchpadWindow() {
   };
 
   const deleteNote = async (note: ScratchpadNote) => {
-    if (deletedIdsRef.current.has(note.id)) return;
+    if (updatePreparingRef.current || deletedIdsRef.current.has(note.id)) return;
     if (!window.confirm(`Delete “${note.title}”?`)) return;
     const unsavedBody = pendingBodiesRef.current.get(note.id)
       ?? (persistedBodiesRef.current.get(note.id) !== note.body ? note.body : undefined);
@@ -402,6 +431,7 @@ export function ScratchpadWindow() {
     saveTimersRef.current.delete(note.id);
     pendingBodiesRef.current.delete(note.id);
     deletedIdsRef.current.add(note.id);
+    noteOperationsRef.current += 1;
     setDeletingIds((current) => new Set(current).add(note.id));
     try {
       await window.localScribe.scratchpad.delete(note.id);
@@ -423,6 +453,7 @@ export function ScratchpadWindow() {
       }
       setStatus("delete-error");
     } finally {
+      noteOperationsRef.current -= 1;
       setDeletingIds((current) => {
         const next = new Set(current);
         next.delete(note.id);
@@ -454,6 +485,7 @@ export function ScratchpadWindow() {
 
   return (
     <main
+      ref={rootRef}
       className={`scratchpad-window${notesCollapsed ? " scratchpad-window--notes-collapsed" : ""}${integrityWarning ? " scratchpad-window--integrity-warning" : ""}`}
       data-window-controls={windowControlMode}
       aria-busy={status === "loading"}

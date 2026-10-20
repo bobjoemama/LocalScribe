@@ -9,19 +9,20 @@ vi.mock("electron", () => ({ clipboard: {}, nativeImage: {} }));
 describe.skipIf(process.platform !== "darwin")("private AppKit pasteboard boundary", () => {
   it("distinguishes one text write from a concurrent same-text copy and rejects unsupported images", async () => {
     const { clipboardFormatMatchers } = await import("../src/main/insertion/electronClipboard");
+    // Chromium 150.0.7871.250 ClipboardMac prepares contents, then writes text.
     const source = `
 import AppKit
 import Foundation
 let board = NSPasteboard(name: NSPasteboard.Name("localscribe-test-" + UUID().uuidString))
 defer { board.releaseGlobally() }
 let before = board.changeCount
-board.clearContents()
+board.prepareForNewContents(with: [])
 guard board.setString("synthetic dictation", forType: .string) else { fatalError("write failed") }
 let afterWrite = board.changeCount
-board.clearContents()
+board.prepareForNewContents(with: [])
 guard board.setString("synthetic dictation", forType: .string) else { fatalError("copy failed") }
 let afterForeignCopy = board.changeCount
-board.clearContents()
+board.prepareForNewContents(with: [])
 let item = NSPasteboardItem()
 item.setData(Data("<svg/>".utf8), forType: NSPasteboard.PasteboardType("public.svg-image"))
 guard board.writeObjects([item]) else { fatalError("image write failed") }
@@ -37,6 +38,10 @@ FileHandle.standardOutput.write(data)
       maxBuffer: 16 * 1024,
     })) as { before: number; afterWrite: number; afterForeignCopy: number; formats: string[] };
 
+    expect({ writeDelta: payload.afterWrite - payload.before,
+      foreignCopyDelta: payload.afterForeignCopy - payload.afterWrite }).toEqual({
+      writeDelta: 1, foreignCopyDelta: 1,
+    });
     expect(clipboardAdvancedExactlyOnce(payload.before, payload.afterWrite)).toBe(true);
     expect(clipboardAdvancedExactlyOnce(payload.before, payload.afterForeignCopy)).toBe(false);
     expect(payload.formats).toContain("public.svg-image");

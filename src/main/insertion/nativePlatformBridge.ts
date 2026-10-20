@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import type { NativeHelperCommand, NativeHelperFailure } from "../../shared/diagnosticsLog";
 import {
   resolveNativeActiveTargetHelperPath,
   type NativeActiveTargetHelperPathOptions,
@@ -20,6 +21,8 @@ import {
 import type {
   ActiveTarget,
   AccessibilityStatus,
+  InsertionDiagnosticCallback,
+  NativeInsertionDiagnostic,
   PasteFailureReason,
   PasteInjectionResult,
   PlatformInsertionBridge,
@@ -66,16 +69,42 @@ interface HelperAccessibilityPayload {
   postEvents?: unknown;
 }
 
-function parseAccessibilityStatus(raw: string): AccessibilityStatus {
+function parseAccessibilityPermissions(raw: string): {
+  accessibilityTrusted: boolean;
+  postEventsAllowed: boolean;
+} | null {
   try {
     const payload = JSON.parse(raw) as HelperAccessibilityPayload;
     if (typeof payload?.accessibility !== "boolean" || typeof payload.postEvents !== "boolean") {
-      return "unavailable";
+      return null;
     }
-    return payload.accessibility && payload.postEvents ? "granted" : "denied";
+    return { accessibilityTrusted: payload.accessibility, postEventsAllowed: payload.postEvents };
   } catch {
-    return "unavailable";
+    return null;
   }
+}
+
+function parseAccessibilityStatus(raw: string): AccessibilityStatus {
+  const permissions = parseAccessibilityPermissions(raw);
+  return permissions === null ? "unavailable"
+    : permissions.accessibilityTrusted && permissions.postEventsAllowed ? "granted" : "denied";
+}
+
+function executionFailure(error: unknown): NativeHelperFailure {
+  // Never read messages, invoke getters, or coerce arbitrary code/signal values.
+  // Node's execFile errors carry these process facts as own data properties.
+  try {
+    if (typeof error !== "object" || error === null) return "spawn_failure";
+    const code: unknown = Object.getOwnPropertyDescriptor(error, "code")?.value;
+    const killed: unknown = Object.getOwnPropertyDescriptor(error, "killed")?.value;
+    const signal: unknown = Object.getOwnPropertyDescriptor(error, "signal")?.value;
+    if (code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") return "invalid_response";
+    if (code === "ETIMEDOUT" || (killed === true && signal === "SIGTERM")) return "timeout";
+    if (typeof code === "number" || typeof signal === "string") return "exit_failure";
+  } catch {
+    // Even a descriptor proxy trap must not break insertion or leak its error.
+  }
+  return "spawn_failure";
 }
 
 function parseAccessibility(raw: string): boolean {
@@ -112,6 +141,7 @@ function parseTarget(raw: string): ActiveTarget | null {
   }
 
   if (
+    payload === null || typeof payload !== "object" ||
     payload.platform !== "darwin" ||
     !Number.isSafeInteger(payload.processId) ||
     (payload.processId as number) <= 0 ||
@@ -218,10 +248,12 @@ function pasteArguments(
 export class NativeExecutableInsertionBridge implements PlatformInsertionBridge {
   private readiness: Promise<boolean> | null = null;
   private pinnedProof: RegularExecutableProof | null;
+  private lastPermissions: string | null = null;
 
   constructor(
     private readonly executablePath: string,
     private readonly proveExecutable: ExecutableProofReader = proveRegularExecutable,
+    private readonly onDiagnostic?: InsertionDiagnosticCallback,
   ) {
     this.pinnedProof = this.proveExecutable(this.executablePath);
   }
@@ -235,17 +267,21 @@ export class NativeExecutableInsertionBridge implements PlatformInsertionBridge 
   async ready(): Promise<boolean> {
     if (!this.executableMatchesPin()) {
       this.readiness = null;
+      this.diagnostic("self-test", "integrity_mismatch");
       return false;
     }
-    this.readiness ??= this.run(["self-test"]).then((output) => {
+    this.readiness ??= this.run("self-test").then((output) => {
       if (output === null) return false;
       try {
         const payload = JSON.parse(output) as {
           platform?: unknown;
           selfTest?: unknown;
         };
-        return payload.platform === "darwin" && payload.selfTest === true;
+        const ready = payload.platform === "darwin" && payload.selfTest === true;
+        this.diagnostic("self-test", ready ? undefined : "invalid_response");
+        return ready;
       } catch {
+        this.diagnostic("self-test", "invalid_response");
         return false;
       }
     });
@@ -258,12 +294,15 @@ export class NativeExecutableInsertionBridge implements PlatformInsertionBridge 
   }
 
   async captureActiveTarget(): Promise<ActiveTarget | null> {
-    const output = await this.run(["target"]);
-    return output === null ? null : parseTarget(output);
+    const output = await this.run("target");
+    if (output === null) return null;
+    const target = parseTarget(output);
+    if (target === null) this.diagnostic("target", "invalid_response");
+    return target;
   }
 
   async clipboardSequence(): Promise<number | null> {
-    const output = await this.run(["clipboard-sequence"]);
+    const output = await this.run("clipboard-sequence");
     if (output === null) return null;
     let payload: { platform?: unknown; sequence?: unknown };
     try {
@@ -272,13 +311,16 @@ export class NativeExecutableInsertionBridge implements PlatformInsertionBridge 
         sequence?: unknown;
       };
     } catch {
+      this.diagnostic("clipboard-sequence", "invalid_response");
       return null;
     }
     if (
+      payload === null || typeof payload !== "object" ||
       payload.platform !== "darwin" ||
       !Number.isSafeInteger(payload.sequence) ||
       (payload.sequence as number) < 0
     ) {
+      this.diagnostic("clipboard-sequence", "invalid_response");
       return null;
     }
     return payload.sequence as number;
@@ -292,10 +334,15 @@ export class NativeExecutableInsertionBridge implements PlatformInsertionBridge 
       expectedTarget,
       expectedClipboardSequence,
     );
-    if (arguments_ === null) return { status: "failed", reason: "invalid_request" };
-    const output = await this.run(arguments_);
+    if (arguments_ === null) {
+      this.diagnostic("paste", "invalid_request");
+      return { status: "failed", reason: "invalid_request" };
+    }
+    const output = await this.run("paste", arguments_.slice(1));
     if (output === null) return { status: "failed", reason: "helper_unavailable" };
-    return parsePaste(output);
+    const result = parsePaste(output);
+    if (result.status === "failed") this.diagnostic("paste", result.reason);
+    return result;
   }
 
   async accessibilityReady(): Promise<boolean> {
@@ -313,15 +360,47 @@ export class NativeExecutableInsertionBridge implements PlatformInsertionBridge 
   private async readAccessibility(
     command: "accessibility-status" | "request-accessibility",
   ): Promise<AccessibilityStatus> {
-    const output = await this.run([command]);
+    const output = await this.run(command);
     if (output === null) return "unavailable";
-    return parseAccessibilityStatus(output);
+    const permissions = parseAccessibilityPermissions(output);
+    if (permissions === null) {
+      this.diagnostic(command, "invalid_response");
+      return "unavailable";
+    }
+    const state = `${permissions.accessibilityTrusted}:${permissions.postEventsAllowed}`;
+    if (state !== this.lastPermissions) {
+      this.lastPermissions = state;
+      this.diagnostic(command, undefined, permissions);
+    }
+    return permissions.accessibilityTrusted && permissions.postEventsAllowed ? "granted" : "denied";
+  }
+
+  private diagnostic(
+    helperCommand: NativeHelperCommand,
+    detail?: NativeInsertionDiagnostic["detail"],
+    permissions?: Pick<NativeInsertionDiagnostic, "accessibilityTrusted" | "postEventsAllowed">,
+  ): void {
+    if (detail !== undefined && (
+      helperCommand === "accessibility-status" || helperCommand === "request-accessibility"
+    )) this.lastPermissions = null;
+    if (!this.onDiagnostic) return;
+    try {
+      // A recorder failure, including an accidentally async callback, is isolated.
+      void Promise.resolve(this.onDiagnostic({
+        stage: "insertion", event: "native_helper", outcome: detail === undefined ? "ok" : "failed",
+        helperCommand, ...(detail === undefined ? {} : { detail }), ...permissions,
+      })).catch(() => {});
+    } catch {
+      // Diagnostics never change the helper result or insertion safety policy.
+    }
   }
 
   private async run(
-    arguments_: readonly string[],
+    command: NativeHelperCommand,
+    arguments_: readonly string[] = [],
   ): Promise<string | null> {
     if (!this.executableMatchesPin()) {
+      this.diagnostic(command, "integrity_mismatch");
       return null;
     }
     /*
@@ -336,16 +415,17 @@ export class NativeExecutableInsertionBridge implements PlatformInsertionBridge 
      * pathname execution atomic.
      */
     try {
-      const { stdout } = await execFileAsync(this.executablePath, arguments_, {
+      const { stdout } = await execFileAsync(this.executablePath, [command, ...arguments_], {
         encoding: "utf8",
         env: nativeHelperEnvironment(),
-        timeout: helperTimeoutForCommand(arguments_[0]),
+        timeout: helperTimeoutForCommand(command),
         maxBuffer: 16 * 1024,
         shell: false,
         windowsHide: true,
       });
       return stdout.trim();
-    } catch {
+    } catch (error) {
+      this.diagnostic(command, executionFailure(error));
       return null;
     }
   }
@@ -379,11 +459,11 @@ export function createDefaultInsertionBridge(
   options: Pick<
     NativeActiveTargetHelperPathOptions,
     "allowEnvironmentOverride" | "workingDirectory"
-  > = {},
+  > & { onDiagnostic?: InsertionDiagnosticCallback } = {},
 ): PlatformInsertionBridge {
   const helperPath = resolveNativeActiveTargetHelperPath(options);
   return helperPath
-    ? new NativeExecutableInsertionBridge(helperPath)
+    ? new NativeExecutableInsertionBridge(helperPath, proveRegularExecutable, options.onDiagnostic)
     : new UnavailableInsertionBridge();
 }
 

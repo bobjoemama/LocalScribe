@@ -4,6 +4,7 @@
  * It bundles the real SettingsModal into Chromium with deterministic IPC
  * responses. This is deliberately separate from product runtime code.
  */
+import type { AppUpdateState } from "../src/shared/appUpdates";
 import { createRoot } from "react-dom/client";
 import {
   DEFAULT_SETTINGS,
@@ -23,6 +24,7 @@ import {
   type Snippet,
   type SnippetSaveInput,
 } from "../src/shared/contracts";
+import { ScratchpadWindow } from "../src/renderer/scratchpad/ScratchpadWindow";
 import { SettingsApp } from "../src/renderer/settings/SettingsApp";
 import { CleanupScreen, ModelsScreen, SettingsModal } from "../src/renderer/settings/screens/StyleSettings";
 import "../src/renderer/styles.css";
@@ -259,7 +261,86 @@ const diagnostics: Diagnostics = {
   dataPath: "/tmp/localscribe-layout-harness",
 };
 
+const updateListeners = new Set<(state: AppUpdateState) => void>();
+const updatePreparationListeners = new Set<(requestId: string) => boolean | Promise<boolean>>();
+const updateCancellationListeners = new Set<(requestId: string) => void>();
+const updateCalls: string[] = [];
+const updateFixture = harnessParams.get("updates");
+const updatePhase = (["available", "downloading", "ready", "error", "unsupported"] as const)
+  .find(phase => phase === updateFixture) ?? "idle";
+let updateState: AppUpdateState = {
+  phase: updatePhase,
+  currentVersion: "0.1.0-dev.24",
+  availableVersion: ["available", "downloading", "ready"].includes(updatePhase) ? "0.1.0-dev.25" : undefined,
+  message: updatePhase === "error" ? "The native update attempt failed. Relaunch LocalScribe before trying again."
+    : updatePhase === "unsupported" ? "Signed installed macOS apps support updates; this development fixture does not."
+    : undefined,
+};
+const sendUpdateState = (state: AppUpdateState) => {
+  updateState = state;
+  for (const listener of updateListeners) listener(state);
+};
+
+const noteWrites: Array<{ id: string; body: string }> = [];
+let noteEntries = [{ id: "88888888-8888-4888-8888-888888888888", body: "Fixture saved note", title: "Fixture saved note", createdAt: 1, updatedAt: 1 }];
+let noteSaveGate: Promise<void> | null = null;
+let resolveNoteSave: (() => void) | null = null;
+let rejectNoteSave: ((reason: Error) => void) | null = null;
+let noteSaveStarted = Promise.resolve();
+let announceNoteSave: (() => void) | null = null;
+const notesHarness = {
+  writes: noteWrites,
+  persisted: () => noteEntries.map(note => ({ ...note })),
+  holdSave: () => {
+    noteSaveGate = new Promise<void>((resolve, reject) => { resolveNoteSave = resolve; rejectNoteSave = reject; });
+    noteSaveStarted = new Promise<void>(resolve => { announceNoteSave = resolve; });
+  },
+  saveStarted: () => noteSaveStarted,
+  releaseSave: () => { resolveNoteSave?.(); resolveNoteSave = null; rejectNoteSave = null; },
+  rejectSave: () => { rejectNoteSave?.(new Error("Fixture durable save failed")); resolveNoteSave = null; rejectNoteSave = null; },
+};
+(window as unknown as { __localScribeNotesHarness: typeof notesHarness }).__localScribeNotesHarness = notesHarness;
+
 window.localScribe = {
+  scratchpad: {
+    list: async () => ({ items: notesHarness.persisted(), totalStored: noteEntries.length, skippedUnreadable: 0, complete: true }),
+    create: async () => {
+      const note = { id: crypto.randomUUID(), body: "", title: "Untitled note", createdAt: 1, updatedAt: 1 };
+      noteEntries = [note, ...noteEntries]; return { ...note };
+    },
+    update: async (id: string, body: string) => {
+      noteWrites.push({ id, body });
+      const waiting = noteSaveGate; noteSaveGate = null;
+      announceNoteSave?.(); announceNoteSave = null;
+      if (waiting) await waiting;
+      const previous = noteEntries.find(note => note.id === id);
+      if (!previous) throw new Error("Missing fixture note");
+      const note = { ...previous, body, title: body.split("\n")[0] || "Untitled note", updatedAt: previous.updatedAt + 1 };
+      noteEntries = [note, ...noteEntries.filter(entry => entry.id !== id)];
+      return { ...note };
+    },
+    delete: async (id: string) => { noteEntries = noteEntries.filter(note => note.id !== id); },
+  },
+  updates: {
+    onPrepareInstall: (listener: (requestId: string) => boolean | Promise<boolean>) => {
+      updatePreparationListeners.add(listener); return () => { updatePreparationListeners.delete(listener); };
+    },
+    onInstallCancelled: (listener: (requestId: string) => void) => {
+      updateCancellationListeners.add(listener); return () => { updateCancellationListeners.delete(listener); };
+    },
+    getState: async () => ({ ...updateState }),
+    check: async () => {
+      updateCalls.push("check");
+      sendUpdateState({ phase: "available", currentVersion: updateState.currentVersion, availableVersion: "0.1.0-dev.25" });
+      return { ...updateState };
+    },
+    downloadAndRestart: async () => {
+      updateCalls.push("downloadAndRestart");
+      sendUpdateState({ ...updateState, phase: "ready", message: undefined });
+      return { ...updateState };
+    },
+    onChanged: (listener: (state: AppUpdateState) => void) => { updateListeners.add(listener); return () => { updateListeners.delete(listener); }; },
+  },
   settings: {
     get: async () => appSettingsSchema.parse(persistedSettings),
     patch: async (patch: AppSettingsPatch) => {
@@ -457,6 +538,8 @@ window.localScribe = {
     removeModel: async () => diagnostics,
   },
   windows: {
+    closeScratchpad: async () => undefined,
+    toggleScratchpadSize: async () => undefined,
     onNavigate: () => () => undefined,
     showSettings: async () => undefined,
     /*
@@ -480,6 +563,11 @@ const renderSettings = () => {
 };
 (window as unknown as {
   __localScribeSettingsHarness: {
+    updateCalls: string[];
+    prepareUpdate(requestId: string): Promise<boolean>;
+    cancelUpdate(requestId: string): void;
+    sendUpdateState(state: AppUpdateState): void;
+    updateSubscriberCount(): number;
     patchCalls: AppSettingsPatch[];
     applyCalls: ModelSelectionApplyRequest[];
     persisted(): AppSettings;
@@ -504,6 +592,14 @@ const renderSettings = () => {
     setWindowVisible(visible: boolean): void;
   };
 }).__localScribeSettingsHarness = {
+  updateCalls,
+  prepareUpdate: async (requestId: string) => {
+    if (updatePreparationListeners.size !== 1) throw new Error("Expected one update preparation handler.");
+    return (await Promise.all([...updatePreparationListeners].map(listener => listener(requestId)))).every(Boolean);
+  },
+  cancelUpdate: (requestId: string) => { for (const listener of updateCancellationListeners) listener(requestId); },
+  sendUpdateState,
+  updateSubscriberCount: () => updateListeners.size,
   patchCalls: settingsPatchCalls,
   applyCalls: modelApplyCalls,
   permissionPolls: () => permissionPollCount,
@@ -529,4 +625,5 @@ const renderSettings = () => {
   delayLibrarySave: () => { nextLibrarySaveWait = new Promise(resolve => { releaseLibrarySave = resolve; }); },
   finishLibrarySave: () => { releaseLibrarySave?.(); releaseLibrarySave = null; },
 };
-renderSettings();
+if (harnessParams.get("surface") === "notes") root.render(<ScratchpadWindow />);
+else renderSettings();
