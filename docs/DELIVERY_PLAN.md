@@ -4,14 +4,19 @@ LocalScribe's active product and release scope is Apple Silicon macOS. This
 plan separates implemented source behavior from evidence that still requires a
 physical Mac and an exact packaged artifact.
 
-## Signed in-app updates — in source, verification pending
+## Signed in-app updates — verified candidate, publication pending
 
 Devesh approved signed in-app updates on 19 October. The next release adds
 GitHub metadata checks, explicit downloads/restarts, System → Updates and
 content-free native-insertion diagnostics. Existing dev.24 users need one manual
 DMG replacement. The other Mac's insertion recovered before these changes were
-delivered; the recovery has no established root cause. Publication and native
-update proof remain open in [tasklist](../tasklist.md).
+delivered; the recovery has no established root cause. PR #44 contains the source;
+1,816 source tests passed. A signed isolated Squirrel update/relaunch, light/dark
+Updates and editor-save preparation checks passed. The dev.25 local signed app,
+DMG and ZIP passed package/artifact, runtime and startup/shutdown checks. Apple
+currently rejects the saved notary profile with HTTP 401; this candidate is not
+notarized or published. The README retains dev.24. Exact evidence and the skipped
+focus-stealing Accessibility test are in [tasklist](../tasklist.md).
 
 ## Previous public Mac download — checked 19 October 2026
 

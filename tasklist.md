@@ -21,13 +21,23 @@ Control–Space, data, model selection and app/signing identities must be preser
   digest enforcement in this pinned runtime. Automatic checks fetch metadata only.
 - [x] Implement the verified fixes and agreed updater; verify the real native
   and lifecycle boundaries plus the changed UI on an isolated development copy.
-  Three review rounds ended with no findings above low. A real signed Squirrel
+  Implementation is committed/pushed as `4306c71` (PR #44). Three review rounds ended with no findings above low. A real signed Squirrel
   fixture updated and relaunched; light/dark Updates and real React Notes checks
   passed. The first full source run passed 1,809 tests and found seven failures
   in stale window fixtures and premature README publication links; both were
-  corrected, and all 21 affected tests passed. Final pre-push verification follows.
+  corrected, and all 21 affected tests passed. Final pre-push verification passed
+  all audits, lint, typechecking and 1,816 tests; two bundled-runtime cases skipped
+  in that source run subsequently passed in the 10-test packaged-runtime suite.
 - [ ] Commit/push the completed changes and publish a new signed, notarized DMG,
   update ZIP and any required feed. Do not overwrite an older version's assets.
+  A local Developer ID-signed dev.25 app, DMG and ZIP were built from `4306c71`.
+  Exact-app artifact, entitlements, bundled inference imports, startup/shutdown,
+  10 runtime tests and 73 Python tests passed. SBOMs/checksums were generated.
+  This candidate has no new notarization ticket and is not a public release.
+  The first build stalled in Xcode 27's SDK stat-cache validation; a process sample
+  showed CFRunLoop waiting. The owned cache process was stopped, and the same
+  pinned Swift package built with `swift build --build-system native`. A temporary
+  launcher selected that supported alternative; no project/toolchain setting changed.
 - [ ] Verify the exact public download and document the one manual bootstrap
   install required for an already-installed dev.24 with no updater.
 
@@ -64,3 +74,9 @@ The orchestrator inspected all four Updates captures and the Notes capture.
 Minimum measured text contrast was 5.62:1 light and 6.77:1 dark, with no captured
 renderer console errors. The focus-stealing native Accessibility harness remains
 unrun; no repair of the other Mac's insertion or permission state is claimed.
+
+Local candidate logs: `/tmp/localscribe-dev25-local-signed-build-native-20261019.log`
+and `/tmp/localscribe-dev25-package-gates-20261019.log`. The latter ran the existing
+packaged-runtime/smoke/worker/SBOM/checksum gates individually, not the complete
+macOS script containing the skipped Accessibility harness. Public notarization,
+public download verification and a real two-version LocalScribe upgrade remain open.
