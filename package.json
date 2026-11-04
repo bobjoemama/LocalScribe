@@ -62,7 +62,7 @@
     "react": "19.2.8",
     "react-dom": "19.2.8",
     "uiohook-napi": "1.5.5",
-    "zod": "4.4.3"
+    "zod": "4.6.7"
   },
   "devDependencies": {
     "@electron-forge/cli": "7.11.2",
